@@ -53,6 +53,23 @@ export function setScriptInjectorForTest(injector: (url: string, onerror: () => 
   injectScriptElement = injector;
 }
 
+/** 库脚本注入缝（loadAsset script 类用；onload/onerror Promise 化——
+ *  库文件不调 JishuPlugin.register，不能复用注册等待机制）。 */
+let injectLibraryScript: (url: string) => Promise<void> = (url) =>
+  new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = url;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`库脚本加载失败: ${url}`));
+    document.head.appendChild(script);
+  });
+
+/** 测试口：替换库脚本注入器。 */
+export function setLibraryScriptInjectorForTest(injector: (url: string) => Promise<void>): void {
+  injectLibraryScript = injector;
+}
+
 /** 混合代码契约版本；hub 升级保证兼容或给出明确迁移错误。
  *  bump 判据（1e 同 SESSION_PLUGIN_CONTRACT_VERSION）：纯加法（新可选
  *  API/props 字段）不 bump；注入 API 签名变化/删除/语义变更必须 bump，
@@ -69,6 +86,66 @@ export interface HybridPluginApi {
   useCallback: typeof useCallback;
   t: (key: string, fallback?: string) => string;
   cn: typeof cn;
+  /** 需求14 M1（02 §3.2，v1 纯加法不 bump）：加载插件目录内资产。
+   *  - rel：相对插件根目录的文件名（必须平铺——_files 是浅层扫描，B3）；
+   *    拒绝 `..`/绝对路径/反斜杠/盘符等越界形态。
+   *  - kind：script = 注入 `<script>` 并等待 onload（模块级缓存——同一库
+   *    多代码块实例只加载一次，内容指纹变才重注）；url/style = 仅返回
+   *    asset 协议 URL（style-src CSP 无 asset 源，样式注入走 M2 主题装载
+   *    器，此处不做 `<link>`）。
+   *  - 存在性以 Rust 注入的 `_files` 指纹清单为白名单。 */
+  loadAsset?: (rel: string, kind?: "script" | "style" | "url") => Promise<string>;
+}
+
+/** loadAsset 的插件目录上下文（_dir 基址 + _files 指纹白名单）。 */
+interface PluginAssetScope {
+  dir: string;
+  files: Record<string, string>;
+}
+
+/** 模块级库脚本缓存（R4，性能关键）：URL（含内容指纹 ?v=）→ 加载 Promise。
+ *  同一库只注入一次、多代码块实例共享；失败不缓存（下次可重试）。 */
+const libraryScripts = new Map<string, Promise<void>>();
+
+function loadLibraryScript(url: string): Promise<void> {
+  let pending = libraryScripts.get(url);
+  if (!pending) {
+    pending = injectLibraryScript(url);
+    libraryScripts.set(url, pending);
+    pending.catch(() => libraryScripts.delete(url));
+  }
+  return pending;
+}
+
+/** 测试口：清空库脚本缓存。 */
+export function clearLibraryScriptCacheForTest(): void {
+  libraryScripts.clear();
+}
+
+async function loadPluginAsset(
+  scope: PluginAssetScope,
+  rel: string,
+  kind?: "script" | "style" | "url",
+): Promise<string> {
+  const normalized = rel.trim();
+  if (
+    !normalized ||
+    normalized.includes("..") ||
+    normalized.includes("\\") ||
+    normalized.startsWith("/") ||
+    /^[a-zA-Z]:/.test(normalized)
+  ) {
+    throw new Error(`loadAsset: 非法资产路径 ${rel}（仅限插件目录内相对路径）`);
+  }
+  const fingerprint = scope.files[normalized];
+  if (!fingerprint) {
+    throw new Error(
+      `loadAsset: 资产 ${rel} 不在插件文件清单——资产必须平铺在插件根目录（子目录不入 _files 白名单）`,
+    );
+  }
+  const url = `${buildAssetUrl(scope.dir, normalized)}?v=${fingerprint}`;
+  if (kind === "script") await loadLibraryScript(url);
+  return url;
 }
 
 /** 插件代码注册的 factory 形状。组件 props 与组合渲染组件同构
@@ -144,7 +221,7 @@ export function ensureGlobalRegisterForTest(): GlobalRegistrar {
   return registrar;
 }
 
-function buildApi(): HybridPluginApi {
+function buildApi(assetScope?: PluginAssetScope): HybridPluginApi {
   return {
     h: createElement,
     useState,
@@ -154,6 +231,14 @@ function buildApi(): HybridPluginApi {
     useCallback,
     t: (key, fallback) => i18next.t(key, { defaultValue: fallback }),
     cn,
+    // loadAsset 仅对有目录上下文的混合插件注入（@file: 组件装载链路必带
+    //_dir/_files；防御性可选——测试替身/异常形态下不炸）。
+    ...(assetScope
+      ? {
+          loadAsset: (rel: string, kind?: "script" | "style" | "url") =>
+            loadPluginAsset(assetScope, rel, kind),
+        }
+      : {}),
   };
 }
 
@@ -181,8 +266,12 @@ export async function loadHybridComponent(
   dir: string,
   relFile: string,
   fingerprint: string,
+  files?: Record<string, string>,
 ): Promise<ComponentType<Record<string, unknown>> | Error> {
   ensureGlobal();
+  // 需求14 M1：_files 白名单随装载链传入——api.loadAsset 的资产基址与
+  //存在性校验据此构建（无 files 时不注入 loadAsset，旧调用形态不受影响）。
+  const assetScope = files ? { dir, files } : undefined;
   // 打开全局错误抑制窗口（具体处理器优先于兜底——用户架构裁决）。
   setErrorSuppression(true);
   // 热更：指纹变化 → 移除旧脚本重新注入；未变化直接复用注册结果。
@@ -190,7 +279,7 @@ export async function loadHybridComponent(
     const cached = registrations.get(pluginId);
     if (cached) {
       const invalid = validateFactory(pluginId, cached);
-      return invalid ? new Error(invalid) : cached.component(buildApi());
+      return invalid ? new Error(invalid) : cached.component(buildApi(assetScope));
     }
   }
   loadedFingerprints.set(pluginId, fingerprint);
@@ -232,7 +321,7 @@ export async function loadHybridComponent(
     setErrorSuppression(false);
     return new Error(invalid);
   }
-  const component = factory.component(buildApi());
+  const component = factory.component(buildApi(assetScope));
   setErrorSuppression(false);
   return component;
 }
@@ -249,6 +338,9 @@ export function setHybridErrorHandler(handler: (pluginId: string, error: unknown
 interface BoundaryProps {
   pluginId: string;
   children: ReactNode;
+  /** 需求14 M1（B1）：崩溃时的兜底渲染（manifest 声明的 fallback 键组件）。
+   *  缺省维持旧行为（崩溃即卸载不占位）；onError 自动停用链路不受影响。 */
+  fallback?: ReactNode;
 }
 
 interface BoundaryState {
@@ -268,8 +360,9 @@ export class HybridErrorBoundary extends Component<BoundaryProps, BoundaryState>
 
   render(): ReactNode {
     if (this.state.error) {
-      // 崩溃即卸载渲染（宿主已收到回调停用整插件），不占位扰民。
-      return null;
+      // 崩溃即卸载渲染（宿主已收到回调停用整插件），不占位扰民；
+      // 声明了 fallback（B1）则以兜底渲染占位（如源码视图），会话不空白。
+      return this.props.fallback ?? null;
     }
     return this.props.children;
   }

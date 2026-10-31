@@ -76,3 +76,114 @@ describe("1a：engine 去早退 + source/render 可选（两臂合并装配）",
     expect(errors.some((e) => e.includes("[render]"))).toBe(true);
   });
 });
+
+describe("需求14 M1：block-renderer 解禁——fileComponent 透传与 fallback 消费", () => {
+  beforeAll(() => {
+    if (!rendererRegistry.get("render.mono-text")) {
+      rendererRegistry.register({ key: "render.mono-text", component: () => null });
+    }
+  });
+
+  function blockRendererManifest(fallback?: string): SessionComposedManifest {
+    return {
+      plugin: { id: "test.hy", name: "混合渲染" },
+      kind: "session-composed",
+      source: { type: "code-block", languages: ["echarts"] },
+      render: { component: "@file:component.js", mount: "block-renderer", ...(fallback ? { fallback } : {}) },
+    };
+  }
+
+  it("code 臂透传 fileComponent——混合组件收统一 payload {kind:'code-block', language, code}（R1 契约）", async () => {
+    const { render } = await import("@testing-library/react");
+    const { createElement } = await import("react");
+    const seen: unknown[] = [];
+    const HybridComp = (props: Record<string, unknown>) => {
+      seen.push(props.payload);
+      return createElement("span", null, "hybrid-out");
+    };
+    const desc = buildComposedDescriptor(blockRendererManifest(), {
+      component: HybridComp as never,
+    });
+    const mount = desc.mounts.find((m) => m.kind === "block-renderer") as unknown as {
+      matching: string;
+      Component: (props: { code: string; language: string }) => React.ReactElement;
+    };
+    expect(mount.matching).toBe("code");
+    const { container } = render(createElement(mount.Component, { code: "{a:1}", language: "echarts" }));
+    expect(container.textContent).toBe("hybrid-out");
+    expect(seen[seen.length - 1]).toMatchObject({ kind: "code-block", language: "echarts", code: "{a:1}" });
+  });
+
+  it("block-type 臂同样透传 fileComponent（payload {kind:'block', blockType, block}）", async () => {
+    const { render } = await import("@testing-library/react");
+    const { createElement } = await import("react");
+    const seen: unknown[] = [];
+    const HybridComp = (props: Record<string, unknown>) => {
+      seen.push(props.payload);
+      return createElement("span", null, "hybrid-block");
+    };
+    const manifest: SessionComposedManifest = {
+      plugin: { id: "test.hy2", name: "混合块渲染" },
+      kind: "session-composed",
+      source: { type: "block-type", blockTypes: ["phase_divider"] },
+      render: { component: "@file:component.js", mount: "block-renderer" },
+    };
+    const desc = buildComposedDescriptor(manifest, { component: HybridComp as never });
+    const mount = desc.mounts.find((m) => m.kind === "block-renderer") as unknown as {
+      matching: string;
+      BlockComponent: (props: { block: unknown }) => React.ReactElement;
+    };
+    expect(mount.matching).toBe("block-type");
+    render(createElement(mount.BlockComponent, { block: { type: "phase_divider", title: "x" } }));
+    expect(seen[seen.length - 1]).toMatchObject({ kind: "block", blockType: "phase_divider" });
+  });
+
+  it("B1 fallback 消费：代码组件崩溃 → 渲染声明的兜底键组件（同 payload，源码不空白）", async () => {
+    const { render } = await import("@testing-library/react");
+    const { createElement } = await import("react");
+    rendererRegistry.register({
+      key: "render.test-fb",
+      component: ({ payload }: { payload: { kind?: string; code?: string } }) =>
+        createElement("pre", null, `fallback:${payload.code ?? ""}`),
+    });
+    function Boom(): null {
+      throw new Error("组件炸了");
+    }
+    const desc = buildComposedDescriptor(blockRendererManifest("render.test-fb"), {
+      component: Boom as never,
+    });
+    const mount = desc.mounts.find((m) => m.kind === "block-renderer") as unknown as {
+      Component: (props: { code: string; language: string }) => React.ReactElement;
+    };
+    const { container } = render(createElement(mount.Component, { code: "ABC", language: "echarts" }));
+    expect(container.textContent).toBe("fallback:ABC");
+  });
+});
+
+describe("需求14 M4：descriptor 透传 [plugin].icon（B15）", () => {
+  it("声明 icon 时描述符携带（能力中心/插件中心统一图标来源）", () => {
+    const manifest = {
+      ...baseManifest(),
+      plugin: { id: "test.iconic", name: "图标件", icon: "sparkles" },
+    } as SessionComposedManifest;
+    const desc = buildComposedDescriptor(manifest);
+    expect(desc.icon).toBe("sparkles");
+    // 未声明 → undefined（消费侧走内置 id 映射/默认图标兜底）。
+    const bare = buildComposedDescriptor(baseManifest());
+    expect(bare.icon).toBeUndefined();
+  });
+});
+
+describe("需求14 M2：主题描述符透传（app-theme 无会话挂载臂）", () => {
+  it("descriptor 携带 theme（base 缺省归一 dark）且 mounts 为空", () => {
+    const manifest = {
+      plugin: { id: "session.theme-test", name: "主题" },
+      kind: "session-composed",
+      theme: { css: "@file:theme.css", preview: ["#111", "#eee"] },
+      render: { component: "", mount: "app-theme" },
+    } as unknown as SessionComposedManifest;
+    const desc = buildComposedDescriptor(manifest);
+    expect(desc.theme).toMatchObject({ css: "@file:theme.css", base: "dark", preview: ["#111", "#eee"] });
+    expect(desc.mounts).toEqual([]);
+  });
+});

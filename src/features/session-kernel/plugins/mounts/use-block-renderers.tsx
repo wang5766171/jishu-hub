@@ -17,14 +17,23 @@ export function BlockRenderersProvider({
   children: ReactNode;
 }) {
   const renderers = useMemo(
-    () =>
-      listSessionPlugins()
+    () => {
+      // 需求14 M1（02 §3.3「用户插件 > 内置」遮蔽，B2）：matchBlockRenderer
+      // 按序首命中——非 builtin（source=config/dynamic，组合件含用户混合件）
+      // 排在内置 TS 件之前；组合族内部「用户件先于内置组合件（mermaid 等）」
+      // 由后端 composed_session_manifests 排序保证（builtin 殿后）。两配合
+      // 完成整条遮蔽链：用户混合件 > 内置组合件 > 内置 TS 件。
+      const ordered = [...listSessionPlugins()].sort(
+        (a, b) => Number(a.source === "builtin") - Number(b.source === "builtin"),
+      );
+      return ordered
         .filter((plugin) => enabled.has(plugin.id))
         .flatMap((plugin) =>
           plugin.mounts.filter(
             (mount): mount is BlockRendererMount => mount.kind === "block-renderer",
           ),
-        ),
+        );
+    },
     [enabled],
   );
   return <BlockRenderersContext.Provider value={renderers}>{children}</BlockRenderersContext.Provider>;

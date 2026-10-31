@@ -1,0 +1,15 @@
+[plugin]
+id = "session.theme-midnight"
+name = "午夜蓝"
+description = "官方示范主题（随包分发，可禁用/可复制派生）——深蓝夜色配色"
+kind = "session-composed"
+category = "appearance"
+icon = "sparkles"
+
+[theme]
+css = "@file:theme.css"
+base = "dark"
+preview = ["#0b1220", "#1e293b", "#e2e8f0"]
+
+[render]
+mount = "app-theme"

@@ -127,10 +127,16 @@ export interface SessionComposedManifest {
    *  source/render 改可选——纯流水线清单（如 video-maker）不再被迫填假渲染臂；
    *  「至少一臂」由 validateManifest 保证（无 pipeline 且无 source/render 拒绝）。 */
   pipeline?: import("./pipeline/contracts").PipelineDeclaration;
-  plugin: { id: string; name: string; description?: string };
+  plugin: { id: string; name: string; description?: string; icon?: string };
   kind: "session-composed";
   source?: SourceDeclaration;
   render?: { component: string; mount: string; fallback?: string };
+  /** 需求14 M2（S3 外观能力点）：主题声明段——css 只覆盖公开令牌契约子集
+   *  （--color-background/--color-layer-0~4/--message-*-bg 等，见 02 §4.1），
+   *  base = 基座三档（light/colorful/dark，data-theme 属性保留供 variant 工具类），
+   *  preview = 选择器色卡。装载走「后端读文件 → 前端内联 <style>」
+   * （R3-b：免改 CSP，级联顺序确定在打包 CSS 之后）。 */
+  theme?: { css: string; base?: string; preview?: string[] };
   action?: ActionDeclaration[];
   config?: ComposedConfigFieldDecl[];
   /** [[agent-tool]] 声明段（6a；可选——缺失即旧行为）。 */
@@ -161,6 +167,13 @@ const MOUNT_SOURCE_MATRIX: Record<string, string[]> = {
   // P1-4 更正：tool_result 块不作为独立块渲染，此挂载由 ToolCallCard 的
   // matchToolResultRenderer 咨询消费）。
   "tool-output": ["tool-result"],
+  // 需求14 M2（02 §4.2）：全局外观挂载——无源（不消费会话数据面，主题由
+  // 应用级装载器消费描述符 theme 字段，非会话挂载臂）。
+  "app-theme": [],
+  // 需求14 M5（06-P2/G12）：应用级浮层挂载——无源（全局悬浮钮/铺开面板，
+  // 页面层外常驻；宿主 AppOverlayHost 挂 app.tsx 全局浮层区）。开放给
+  // 第三方复刻「应用级监控面板」（DevLogCenter 形态）。
+  "app-overlay": [],
 };
 
 /** manifest 校验：结构合法 + 组件键存在 + 源域字段显式且互斥 + 挂载配对
@@ -180,7 +193,7 @@ export function validateManifest(
   // 均缺失）的空清单拒绝；纯 pipeline 清单（如 video-maker）不再强求渲染字段。
   // 声明了 source/render 任一字段即视为声明了渲染臂，按完整渲染校验（残缺报具体缺失）。
   const hasPipeline = Boolean(manifest.pipeline);
-  const hasRenderArm = Boolean(manifest.source) || Boolean(manifest.render);
+  const hasRenderArm = Boolean(manifest.source) || Boolean(manifest.render) || Boolean(manifest.theme);
   if (!hasPipeline && !hasRenderArm) {
     errors.push("清单需至少声明 pipeline 或 source/render 之一");
   }
@@ -189,15 +202,20 @@ export function validateManifest(
   const fileError = (manifest as SessionComposedManifest & { _file_error?: string })._file_error;
   if (fileError) errors.push(`[render] ${fileError}`);
   const component = manifest.render?.component;
-  if (!component) errors.push("[render] component 缺失");
+  const mount = manifest.render?.mount;
+  // 无源挂载集（app-theme 外观 / app-overlay 应用浮层——不消费会话数据面）。
+  const isSourceless = mount === "app-theme" || mount === "app-overlay";
+  // 需求14 M2：app-theme 挂载的渲染体即 theme.css（无组件键）——component
+  // 必填校验对主题形态豁免；其余挂载维持必填。
+  if (!component && !isSourceless) errors.push("[render] component 缺失");
   const isFileComponent = typeof component === "string" && component.startsWith("@file:");
   if (isFileComponent) {
-    // 混合插件（需求25）：组件来自插件目录代码文件。首期限定数据面挂载
-    //（block-renderer 的语言匹配域组件契约更严，后续单独评审）；
-    // export-file 依赖注册表 toFile，代码组件无此能力——一并拒绝。
-    if (manifest.render?.mount === "block-renderer") {
-      errors.push("[render] @file: 代码组件首期不支持 block-renderer 挂载");
-    }
+    // 混合插件（需求25）：组件来自插件目录代码文件。
+    // 需求14 M1（02 §3.1）：block-renderer 解禁——代码组件可接管代码块
+    // 渲染，payload 与其他挂载统一（{kind:"code-block", language, code}，
+    // 引擎 block-renderer 臂透传 fileComponent）。export-file 维持禁令
+    //（依赖注册表渲染件 toFile，代码组件无此通道——02 §13-6 方案 b：
+    // 随真需求再评审 API 加法）。
     if ((manifest.action ?? []).some((a) => a.type === "export-file")) {
       errors.push("[action] @file: 代码组件不支持 export-file 动作");
     }
@@ -207,7 +225,37 @@ export function validateManifest(
   } else if (component && !renderers.get(component)) {
     errors.push(`渲染组件未注册: ${component}`);
   }
-  if (!manifest.source?.type) errors.push("[source] type 缺失");
+  // 需求14 M1（B1）：fallback 键校验——fallback 此前为死字段（三处写、
+  // 零处读），本期起消费（组件崩溃时渲染兜底键，见 RendererShell）；
+  // 声明了但未注册 → fail loud（typo 在装载期暴露而非崩溃期）。
+  const fallback = manifest.render?.fallback;
+  if (fallback) {
+    if (fallback.startsWith("@file:")) {
+      errors.push("[render] fallback 不支持 @file:（须为内置渲染键，如 render.mono-text）");
+    } else if (!renderers.get(fallback)) {
+      errors.push(`回退渲染组件未注册: ${fallback}`);
+    }
+  }
+  // 需求14 M2（B6）：app-theme 挂载免 source 强校验（主题不消费会话数据面，
+  // 矩阵行声明无源）——其余挂载维持「声明渲染臂必须带源」的既有强校验。
+  if (!isSourceless && !manifest.source?.type) errors.push("[source] type 缺失");
+  // 需求14 M2：[theme] 段校验——css 必须 @file:（存在性经 Rust _file_error）、
+  // base 三档枚举、主题段必须配 app-theme 挂载（且反向：app-theme 必须带主题段）。
+  const theme = manifest.theme;
+  if (theme) {
+    if (mount !== "app-theme") {
+      errors.push("[theme] 主题声明须配 [render] mount = \"app-theme\"");
+    }
+    if (!theme.css.startsWith("@file:")) {
+      errors.push("[theme] css 必须为 @file: 引用（如 \"@file:theme.css\"）");
+    }
+    if (theme.base !== undefined && !["light", "colorful", "dark"].includes(theme.base)) {
+      errors.push(`[theme] base 非法: ${String(theme.base)}（合法：light/colorful/dark）`);
+    }
+  }
+  if (mount === "app-theme" && !theme) {
+    errors.push("[render] app-theme 挂载须声明 [theme] 段");
+  }
   if (manifest.source?.type === "code-block" && !(manifest.source.languages?.length)) {
     errors.push("[source] code-block 需声明 languages");
   }
@@ -221,7 +269,6 @@ export function validateManifest(
     errors.push("[source] code-block 不得声明 blockTypes（跨匹配域混合）");
   }
   // 挂载配对矩阵。
-  const mount = manifest.render?.mount;
   if (!mount || !MOUNT_SOURCE_MATRIX[mount]) {
     errors.push(`[render] mount 非法: ${String(mount)}`);
   } else if (manifest.source?.type && !MOUNT_SOURCE_MATRIX[mount].includes(manifest.source.type)) {

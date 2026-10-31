@@ -91,7 +91,9 @@ async function resolveFileComponent(
     await onHybridLoadFailed(id, name, "插件目录元信息缺失（_dir/_files）——请检查目录结构");
     return null;
   }
-  const component = await loadHybridComponent(id, dir, rel, fingerprint);
+  // 需求14 M1：_files 全量传入——api.loadAsset 据此做资产存在性白名单
+  //（含 component.js 自身在内的浅层文件指纹表）。
+  const component = await loadHybridComponent(id, dir, rel, fingerprint, manifest._files);
   if (component instanceof Error) {
     await onHybridLoadFailed(id, name, component.message);
     return null;

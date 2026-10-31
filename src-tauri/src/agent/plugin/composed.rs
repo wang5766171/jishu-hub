@@ -42,6 +42,16 @@ const BUILTIN_COMPOSED_MANIFESTS: &[(&str, &str)] = &[
         "session.task-board",
         include_str!("../../../resources/composed-plugins/task-board.toml"),
     ),
+    // 需求14 M5 批1：html/interaction 自 TS 内置件组合化（mermaid 先例——
+    // 组件经渲染键注册，描述符/挂载由本清单承载）。
+    (
+        "session.html-render",
+        include_str!("../../../resources/composed-plugins/html-render.toml"),
+    ),
+    (
+        "session.interaction-render",
+        include_str!("../../../resources/composed-plugins/interaction-render.toml"),
+    ),
     // v0.9.5 需求5 T9：识图路由（纯配置载体组合插件——无挂载无动作，
     // 承载图片委派话术/识图工具/识图模型三项配置，chat.rs 消费；系统
     // 语义随包分发，禁用 = 注入内置兜底话术）。
@@ -65,7 +75,17 @@ pub fn composed_plugins_dir() -> PathBuf {
 /// 与 agents/ 分支的 is_system_plugin 同纪律）。
 pub fn is_builtin_composed(id: &str) -> bool {
     BUILTIN_COMPOSED_MANIFESTS.iter().any(|(bid, _)| *bid == id)
+        || BUILTIN_THEME_PLUGINS.iter().any(|(bid, _, _)| *bid == id)
 }
+
+/// 需求14 M2/P5 批2：内置主题插件（官方示范——「内置 = 注册表默认条目」
+/// 的主题形态样例；内置三档基座保留在 index.css，K9 启动闪烁风险见 05 §12）。
+/// 三元组 = (id, plugin.toml, theme.css)——部署时两文件成对落盘。
+const BUILTIN_THEME_PLUGINS: &[(&str, &str, &str)] = &[(
+    "session.theme-midnight",
+    include_str!("../../../resources/composed-plugins/theme-midnight.toml"),
+    include_str!("../../../resources/composed-plugins/theme-midnight.css"),
+)];
 
 /// 幂等部署内置组合清单（lib.rs 启动调用）。
 pub fn ensure_builtin_composed_manifests() {
@@ -80,6 +100,31 @@ pub fn ensure_builtin_composed_manifests() {
         }
         if let Err(e) = crate::util::atomic_write(&target, toml.as_bytes()) {
             log::warn!("[composition] deploy {id} failed: {e}");
+        }
+    }
+    // 内置主题插件：清单 + theme.css 成对部署（幂等同判）。
+    for (id, toml, css) in BUILTIN_THEME_PLUGINS {
+        let dir = composed_plugins_root().join(id);
+        let _ = std::fs::create_dir_all(&dir);
+        let target = dir.join("plugin.toml");
+        let needs_toml = match std::fs::read_to_string(&target) {
+            Ok(existing) => existing != *toml,
+            Err(_) => true,
+        };
+        if needs_toml {
+            if let Err(e) = crate::util::atomic_write(&target, toml.as_bytes()) {
+                log::warn!("[composition] deploy {id} failed: {e}");
+            }
+        }
+        let css_target = dir.join("theme.css");
+        let needs_css = match std::fs::read_to_string(&css_target) {
+            Ok(existing) => existing != *css,
+            Err(_) => true,
+        };
+        if needs_css {
+            if let Err(e) = crate::util::atomic_write(&css_target, css.as_bytes()) {
+                log::warn!("[composition] deploy {id} theme.css failed: {e}");
+            }
         }
     }
 }
@@ -115,7 +160,16 @@ pub fn composed_session_manifests() -> Vec<(String, serde_json::Value)> {
         attach_plugin_files(&mut json, &entry.path());
         out.push((id, json));
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
+    // 需求14 M1（02 §3.3「用户插件 > 内置」遮蔽）：用户件排前、内置组合件
+    // 殿后（同组内仍按 id）。前端 matchBlockRenderer 首命中语义下，用户
+    // 插件由此遮蔽同语言的内置渲染（mermaid 可被自建渲染器接管）；组合族
+    // 与内置 TS 件之间的排序由前端 BlockRenderersProvider 按 source 分区
+    // 完成（use-block-renderers.tsx），两配合成完整遮蔽链。
+    out.sort_by(|a, b| {
+        let a_builtin = is_builtin_composed(&a.0);
+        let b_builtin = is_builtin_composed(&b.0);
+        a_builtin.cmp(&b_builtin).then_with(|| a.0.cmp(&b.0))
+    });
     out
 }
 
@@ -151,14 +205,20 @@ fn attach_plugin_files(json: &mut serde_json::Value, dir: &std::path::Path) {
         }
     }
     if let Some(obj) = json.as_object_mut() {
-        // @file: 组件存在性（render.component 形如 "@file:component.js"）。
-        let file_component = obj
-            .get("render")
-            .and_then(|r| r.get("component"))
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.strip_prefix("@file:"))
-            .map(str::to_string);
-        if let Some(rel) = file_component {
+        // @file: 引用存在性（需求14 M2 泛化：render.component（混合代码件）
+        // 与 theme.css（主题件）都查——缺失注入 _file_error 供前端装载期拒绝）。
+        let file_refs = ["component", "css"]
+            .iter()
+            .filter_map(|key| {
+                let section = if *key == "css" { "theme" } else { "render" };
+                obj.get(section)
+                    .and_then(|s| s.get(*key))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.strip_prefix("@file:"))
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        for rel in file_refs {
             if !files.contains_key(&rel) {
                 obj.insert(
                     "_file_error".into(),
@@ -183,6 +243,93 @@ pub struct PendingHybridPlugin {
     pub mount: String,
     pub code_lines: u64,
     pub dir: String,
+    /// 需求14 M1（02 §7 确认卡增强）：资产文件清单（名/字节数/sha256 前
+    /// 8 位）——echarts.min.js 这类随插件分发的库对用户可见可核对。
+    #[serde(default)]
+    pub assets: Vec<PendingAssetInfo>,
+    /// 能力接管范围摘要（如「将接管 echarts, chart 语言代码块渲染」）；
+    /// 非渲染接管型插件为 None。
+    #[serde(default)]
+    pub takeover: Option<String>,
+    /// 需求14 M3（B4/02 §5.2）：桥插件携带的可执行体清单（bridge.js 等
+    /// ——确认卡**最高警示级**：启用即随插件启动第三方可执行体）。
+    #[serde(default)]
+    pub bridges: Vec<String>,
+}
+
+/// 待确认标记的资产条目（浅层常规文件；.pending-confirm 自身排除）。
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingAssetInfo {
+    pub name: String,
+    pub size: u64,
+    pub sha8: String,
+}
+
+/// 标记增强数据（需求14 M1）：插件目录资产清单 + 语言接管摘要——CLI
+/// finalize 与 GUI hybrid_plugin_save 两写入端共用，保证确认卡同形。
+pub fn pending_confirm_extras(
+    dir: &std::path::Path,
+    manifest: &toml::Value,
+) -> (Vec<PendingAssetInfo>, Option<String>) {
+    use sha2::{Digest, Sha256};
+    let mut assets = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            let name = match entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            if name == ".pending-confirm" || name == "plugin.toml" {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(entry.path()) else {
+                continue;
+            };
+            let sha8 = Sha256::digest(&bytes)
+                .iter()
+                .take(4)
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            assets.push(PendingAssetInfo {
+                name,
+                size: bytes.len() as u64,
+                sha8,
+            });
+        }
+    }
+    assets.sort_by(|a, b| a.name.cmp(&b.name));
+    let source = manifest.get("source");
+    let is_code_block = source
+        .and_then(|s| s.get("type"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|t| t == "code-block");
+    let takeover = if is_code_block {
+        let langs: Vec<String> = source
+            .and_then(|s| s.get("languages"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if langs.is_empty() {
+            None
+        } else {
+            Some(format!("将接管 {} 语言代码块渲染", langs.join(", ")))
+        }
+    } else if manifest.get("theme").is_some() {
+        // 需求14 M2：主题插件确认卡摘要（外观是全局接管——警示级别同代码件）。
+        Some("将应用全局外观主题".to_string())
+    } else {
+        None
+    };
+    (assets, takeover)
 }
 
 /// 扫描 `~/.jishu-hub/plugins/*/.pending-confirm`（确认卡轮询数据源；CLI 是
@@ -251,6 +398,51 @@ pub fn save_composed_manifest(id: &str, toml: &str) -> Result<(), String> {
         .unwrap_or_default();
     if !tool_names.is_empty() {
         ensure_agent_tool_names_free(id, &tool_names)?;
+    }
+    // 需求14 M1（02 §3.3）：code-block 语言接管冲突守卫——用户插件之间的
+    // 语言集不得相交（先装先得，装第二个时 fail loud 指认接管者）；与内置
+    // 组合件相交 = 遮蔽（用户>内置），不受此限。只对启用集校验（对方已
+    // 禁用则不占语言位，禁用/移除对方即可化解冲突）。
+    let source_type = value
+        .get("source")
+        .and_then(|s| s.get("type"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if source_type == "code-block" {
+        let languages: Vec<String> = value
+            .get("source")
+            .and_then(|s| s.get("languages"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !languages.is_empty() {
+            let disabled = load_plugin_config().disabled;
+            for (other_id, other) in composed_session_manifests() {
+                if other_id == id || is_builtin_composed(&other_id) || disabled.contains(&other_id)
+                {
+                    continue;
+                }
+                let other_langs: Vec<String> = other
+                    .get("source")
+                    .and_then(|s| s.get("languages"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|l| l.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(hit) = languages.iter().find(|l| other_langs.contains(l)) {
+                    return Err(format!(
+                        "语言接管冲突：语言「{hit}」已由插件 {other_id} 接管——请改语言集，或先禁用/移除对方（用户插件之间不允许同语言并存；遮蔽内置渲染不受限）"
+                    ));
+                }
+            }
+        }
     }
     let dir = composed_plugins_root().join(id);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -419,36 +611,352 @@ pub fn composed_pipeline_by_id(id: &str) -> Result<serde_json::Value, String> {
 pub fn composed_session_plugin_specs(disabled: &HashSet<String>) -> Vec<PluginDescriptor> {
     composed_session_manifests()
         .into_iter()
-        .map(|(id, manifest)| PluginDescriptor {
-            display_name: manifest
-                .get("plugin")
-                .and_then(|p| p.get("name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or(&id)
-                .to_string(),
-            description: manifest
-                .get("plugin")
-                .and_then(|p| p.get("description"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            id: id.clone(),
-            kind: PluginKind::Session,
-            version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            source_path: None,
-            core: false,
-            enabled: !disabled.contains(&id),
-            has_mcp: false,
-            has_panel: false,
-            has_skill: false,
-            has_pi_extension: false,
-            panel: None,
-            system: BUILTIN_COMPOSED_MANIFESTS.iter().any(|(bid, _)| *bid == id),
-            icon: String::new(),
-            composed: false,
-            // 1d：声明 [[pipeline.stages]] 的组合式插件归「流水线」分类
-            //（video-maker 等编排形态；pipeline+render 共存型同样以流水线
-            // 为主导形态分派）。
-            has_pipeline: manifest.get("pipeline").is_some(),
+        .map(|(id, manifest)| {
+            let plugin_sec = manifest.get("plugin");
+            let get_str = |key: &str| {
+                plugin_sec
+                    .and_then(|p| p.get(key))
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            };
+            PluginDescriptor {
+                display_name: get_str("name").unwrap_or_else(|| id.clone()),
+                description: get_str("description"),
+                id: id.clone(),
+                kind: PluginKind::Session,
+                // 需求14 M4（B9）：版本透出 [plugin].version 声明值——此前恒为
+                // hub 版本（CARGO_PKG_VERSION），用户件「看版本」是假数据；
+                // 未声明为 None（卡片 tooltip 不再显示误导版本）。
+                version: get_str("version"),
+                // 需求14 M4：source_path = 插件目录（详情「打开所在位置」与
+                // 源码视图寻址；此前 None，目录信息无处可看）。
+                source_path: Some(
+                    composed_plugins_root()
+                        .join(&id)
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+                core: false,
+                enabled: !disabled.contains(&id),
+                has_mcp: false,
+                has_panel: false,
+                has_skill: false,
+                has_pi_extension: false,
+                panel: None,
+                system: is_builtin_composed(&id),
+                // 需求14 M4（04 §2.3-5/B15）：icon 透传 [plugin].icon——此前
+                // 硬编码空串，新插件在管理面/能力中心一律回退同一图标。
+                icon: get_str("icon").unwrap_or_default(),
+                // 需求14 M4（G9 连带修复）：composed 此前恒 false——前端
+                // 卸载按钮的 `plugin.composed` 分支是死代码（用户组合件在
+                // GUI 一直删不了，只能 CLI）。置 true 后走 composed_plugin_
+                // delete（内置守卫不变）。
+                composed: true,
+                // 1d：声明 [[pipeline.stages]] 的组合式插件归「流水线」分类
+                //（video-maker 等编排形态；pipeline+render 共存型同样以流水线
+                // 为主导形态分派）。
+                has_pipeline: manifest.get("pipeline").is_some(),
+                // 需求14 M4（G10 分类显式化）：显式声明优先于前端推断链。
+                category: get_str("category"),
+            }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::manifest::env_test_lock;
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        env_test_lock().lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn code_block_toml(id: &str, languages: &[&str]) -> String {
+        let langs = languages
+            .iter()
+            .map(|l| format!("\"{l}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            r#"[plugin]
+id = "{id}"
+name = "{id}"
+kind = "session-composed"
+
+[source]
+type = "code-block"
+languages = [{langs}]
+
+[render]
+component = "@file:component.js"
+mount = "block-renderer"
+"#
+        )
+    }
+
+    /// 需求14 M1（02 §3.3）：用户插件之间同语言互斥（fail loud 指认先装者）；
+    /// 与内置组合件相交 = 遮蔽，不受限；对方已禁用则不占语言位。
+    #[test]
+    fn save_composed_manifest_language_conflict_guard() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+
+        // 先装 A（echarts）→ 成功。
+        save_composed_manifest("session.a-charts", &code_block_toml("session.a-charts", &["echarts"]))
+            .expect("first install ok");
+
+        // B 同语言 → 拒绝并指认 A。
+        let err = save_composed_manifest(
+            "session.b-charts",
+            &code_block_toml("session.b-charts", &["echarts", "chart"]),
+        )
+        .expect_err("overlap must be rejected");
+        assert!(err.contains("语言接管冲突"), "got: {err}");
+        assert!(err.contains("session.a-charts"), "got: {err}");
+
+        // B 改不相交语言 → 成功。
+        save_composed_manifest("session.b-charts", &code_block_toml("session.b-charts", &["chart"]))
+            .expect("disjoint languages ok");
+
+        // 与内置组合件（mermaid）相交 = 遮蔽，允许。
+        std::fs::create_dir_all(composed_plugins_root().join("session.mermaid-render")).unwrap();
+        std::fs::write(
+            composed_plugins_root()
+                .join("session.mermaid-render")
+                .join("plugin.toml"),
+            code_block_toml("session.mermaid-render", &["mermaid", "mmd"])
+                .replace("@file:component.js", "render.mermaid"),
+        )
+        .unwrap();
+        save_composed_manifest(
+            "session.my-mermaid",
+            &code_block_toml("session.my-mermaid", &["mermaid"]),
+        )
+        .expect("shadowing builtin must be allowed");
+
+        // 对方禁用后不占语言位：禁用 a-charts，c-charts 用 echarts → 成功。
+        let mut cfg = load_plugin_config();
+        cfg.disabled.push("session.a-charts".to_string());
+        save_plugin_config(&cfg).unwrap();
+        save_composed_manifest(
+            "session.c-charts",
+            &code_block_toml("session.c-charts", &["echarts"]),
+        )
+        .expect("disabled holder frees the language");
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// 需求14 M1（02 §3.3 遮蔽链后端半边）：组合清单排序 = 用户件在前
+    ///（按 id）、内置组合件殿后——前端 matchBlockRenderer 首命中语义下
+    /// 用户件由此遮蔽同语言内置渲染。
+    #[test]
+    fn composed_manifests_user_before_builtin_ordering() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+
+        for (id, component) in [
+            ("session.mermaid-render", "render.mermaid"),
+            ("session.a-user", "@file:component.js"),
+            ("session.z-user", "@file:component.js"),
+        ] {
+            let dir = composed_plugins_root().join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("plugin.toml"),
+                code_block_toml(id, &["x"]).replace("@file:component.js", component),
+            )
+            .unwrap();
+        }
+
+        let order: Vec<String> = composed_session_manifests()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                "session.a-user".to_string(),
+                "session.z-user".to_string(),
+                "session.mermaid-render".to_string(),
+            ],
+            "用户件须排在内置组合件之前（同组内按 id）"
+        );
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// 需求14 M1（02 §7 确认卡增强）：资产清单（浅层、排除清单/标记）+
+    /// 语言接管摘要。
+    #[test]
+    fn pending_confirm_extras_assets_and_takeover() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("session.echarts-render");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plugin.toml"), code_block_toml("session.echarts-render", &["echarts", "chart"])).unwrap();
+        std::fs::write(dir.join("component.js"), "JishuPlugin.register(...)").unwrap();
+        std::fs::write(dir.join("echarts.min.js"), "fake-lib-bytes").unwrap();
+        std::fs::write(dir.join(".pending-confirm"), "{}").unwrap();
+
+        let manifest: toml::Value =
+            code_block_toml("session.echarts-render", &["echarts", "chart"]).parse().unwrap();
+        let (assets, takeover) = pending_confirm_extras(&dir, &manifest);
+        let names: Vec<&str> = assets.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["component.js", "echarts.min.js"]);
+        assert!(assets.iter().all(|a| a.sha8.len() == 8 && a.size > 0));
+        assert_eq!(
+            takeover.as_deref(),
+            Some("将接管 echarts, chart 语言代码块渲染")
+        );
+
+        // 非渲染接管型（messages 面板）→ 无接管摘要。
+        let panel = r#"[plugin]
+id = "session.panel"
+name = "p"
+kind = "session-composed"
+[source]
+type = "messages"
+[render]
+component = "render.list"
+mount = "dock-panel"
+"#;
+        let (_, takeover_none) = pending_confirm_extras(&dir, &panel.parse::<toml::Value>().unwrap());
+        assert!(takeover_none.is_none());
+    }
+}
+
+/// 需求14 M4：plugin_read_file（G9 源码视图 IPC）——双落点寻址、浅层白名单
+/// 与越界拒绝；CLI edit --field 定点编辑（R9）。
+#[cfg(test)]
+mod read_and_edit_tests {
+    use super::*;
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn plugin_read_file_dual_location_and_traversal_guard() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        // 目录形态组合件：plugins/<id>/plugin.toml + component.js。
+        save_composed_manifest(
+            "session.read-hy",
+            &format!(
+                "[plugin]\nid = \"session.read-hy\"\nname = \"r\"\nkind = \"session-composed\"\n[source]\ntype = \"messages\"\n[render]\ncomponent = \"@file:component.js\"\nmount = \"dock-panel\"\n{}", 
+                ""
+            ),
+        )
+        .unwrap();
+        let dir = composed_plugins_root().join("session.read-hy");
+        std::fs::write(dir.join("component.js"), "JishuPlugin.register(...)\n").unwrap();
+        // 单文件形态：agents/<id>.toml（虚拟名 plugin.toml）。
+        std::fs::create_dir_all(crate::agent::manifest::manifest_dir()).unwrap();
+        std::fs::write(
+            crate::agent::manifest::manifest_dir().join("read-tool.toml"),
+            "schema = 1\nkind = \"tool\"\n[info]\nid = \"read-tool\"\ndisplay_name = \"rt\"\n[tool]\nusage = \"x\"\ndescription = \"d\"\n",
+        )
+        .unwrap();
+
+        let toml = crate::commands::agents::plugin_read_file(
+            "session.read-hy".to_string(),
+            "plugin.toml".to_string(),
+        )
+        .expect("dir-form toml");
+        assert!(toml.content.contains("session-composed"));
+        assert!(toml.path.ends_with("plugin.toml"));
+
+        let js = crate::commands::agents::plugin_read_file(
+            "session.read-hy".to_string(),
+            "component.js".to_string(),
+        )
+        .expect("dir-form js");
+        assert!(js.content.contains("JishuPlugin.register"));
+
+        let single = crate::commands::agents::plugin_read_file(
+            "read-tool".to_string(),
+            "plugin.toml".to_string(),
+        )
+        .expect("single-form virtual name");
+        assert!(single.path.ends_with("read-tool.toml"));
+
+        // 越界/非法名拒绝：路径分隔、父目录段、点开头、不存在的单文件形态名。
+        for bad in ["../x.toml", "sub/a.js", ".pending-confirm", "a/b"] {
+            let err = crate::commands::agents::plugin_read_file(
+                "session.read-hy".to_string(),
+                bad.to_string(),
+            )
+            .expect_err(bad);
+            assert!(err.contains("非法文件名") || err.contains("文件不存在"), "{bad}: {err}");
+        }
+        let err = crate::commands::agents::plugin_read_file(
+            "read-tool".to_string(),
+            "component.js".to_string(),
+        )
+        .expect_err("single-form rejects non-manifest");
+        assert!(err.contains("文件不存在"));
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+}
+
+/// 需求14 M2：[theme].css 的 @file: 存在性检查进 _file_error 链。
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn theme_css_missing_yields_file_error() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        save_composed_manifest(
+            "session.theme-missing",
+            r#"[plugin]
+id = "session.theme-missing"
+name = "t"
+kind = "session-composed"
+[theme]
+css = "@file:theme.css"
+base = "dark"
+[render]
+mount = "app-theme"
+"#,
+        )
+        .unwrap();
+        // 未落 theme.css → _file_error 注入（前端装载期拒绝并提示文件名）。
+        let (_, manifest) = composed_session_manifests()
+            .into_iter()
+            .find(|(id, _)| id == "session.theme-missing")
+            .expect("manifest present");
+        assert_eq!(
+            manifest.get("_file_error").and_then(|v| v.as_str()),
+            Some("代码文件不存在: theme.css")
+        );
+        // 落盘后消除。
+        std::fs::write(
+            composed_plugins_root().join("session.theme-missing").join("theme.css"),
+            "[data-jishu-theme=\"session.theme-missing\"]{}",
+        )
+        .unwrap();
+        let (_, manifest) = composed_session_manifests()
+            .into_iter()
+            .find(|(id, _)| id == "session.theme-missing")
+            .expect("manifest present");
+        assert!(manifest.get("_file_error").is_none());
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
 }

@@ -93,11 +93,28 @@ function RendererShell({
   fileComponent?: ComponentType<RendererComponentProps>;
 }) {
   const { values } = usePluginConfig(manifest.plugin.id, schema);
+  const actions = buildActions(manifest, values, sessionId, payload);
   if (fileComponent) {
     const HybridComp = fileComponent;
+    // 需求14 M1（B1）：fallback 消费——代码组件崩溃时渲染声明的兜底键
+    //（render.mono-text 等；缺省维持「崩溃即卸载」旧行为）。onError 自动
+    // 停用链路不变，兜底仅保证本次渲染不空白。
+    const fallbackKey = manifest.render?.fallback;
+    const fallbackReg =
+      fallbackKey && !fallbackKey.startsWith("@file:")
+        ? rendererRegistry.get(fallbackKey)
+        : undefined;
+    const FallbackComp = fallbackReg?.component as ComponentType<RendererComponentProps> | undefined;
     return (
-      <HybridErrorBoundary pluginId={manifest.plugin.id}>
-        <HybridComp payload={payload} options={values} actions={buildActions(manifest, values, sessionId, payload)} />
+      <HybridErrorBoundary
+        pluginId={manifest.plugin.id}
+        fallback={
+          FallbackComp ? (
+            <FallbackComp payload={payload} options={values} actions={actions} />
+          ) : undefined
+        }
+      >
+        <HybridComp payload={payload} options={values} actions={actions} />
       </HybridErrorBoundary>
     );
   }
@@ -106,7 +123,7 @@ function RendererShell({
     return <div className="p-2 text-xs text-muted-foreground">渲染组件未注册：{manifest.render!.component}</div>;
   }
   const Comp = reg.component as ComponentType<RendererComponentProps>;
-  return <Comp payload={payload} options={values} actions={buildActions(manifest, values, sessionId, payload)} />;
+  return <Comp payload={payload} options={values} actions={actions} />;
 }
 
 /** 数据面源包装：rail/dock 等挂件组件经 ctx 计算 payload。 */
@@ -180,14 +197,24 @@ export function buildComposedDescriptor(
     // 匹配域按源类型定臂（测试期修复23 结构收口）：code-block 源 → 代码块域
     // （语言过滤在 languages 表达，detect 恒真=声明语言内全收）；block-type
     // 源 → 块类型域（无语言/detect 字段，类型层不可误入语言咨询路径）。
+    // 需求14 M1（02 §3.1）：两臂补传 fileComponent——@file: 混合组件解禁
+    // block-renderer 后经此透传（数据面/tool-output 分支原有的传参缺口）。
     mounts.push(
       source.blockTypes?.length
         ? {
             kind: "block-renderer",
             matching: "block-type",
             blockTypes: source.blockTypes,
+            pluginId: id,
+            pluginLabel: manifest.plugin.name,
             BlockComponent: ({ block }: { block: PluginBlock }) => (
-              <RendererShell manifest={manifest} schema={schema} payload={{ kind: "block", blockType: block.type, block }} sessionId={null} />
+              <RendererShell
+                manifest={manifest}
+                schema={schema}
+                payload={{ kind: "block", blockType: block.type, block }}
+                sessionId={null}
+                fileComponent={hybrid?.component}
+              />
             ),
           }
         : {
@@ -195,8 +222,16 @@ export function buildComposedDescriptor(
             matching: "code",
             languages: source.languages ?? [],
             detect: () => true,
+            pluginId: id,
+            pluginLabel: manifest.plugin.name,
             Component: ({ code, language }: { code: string; language: string }) => (
-              <RendererShell manifest={manifest} schema={schema} payload={{ kind: "code-block", language, code }} sessionId={null} />
+              <RendererShell
+                manifest={manifest}
+                schema={schema}
+                payload={{ kind: "code-block", language, code }}
+                sessionId={null}
+                fileComponent={hybrid?.component}
+              />
             ),
           },
     );
@@ -266,6 +301,25 @@ export function buildComposedDescriptor(
         component: Comp as unknown as ComponentType<Record<string, unknown>>,
       } as SessionPluginDescriptor["mounts"][number]);
     }
+  } else if (render.mount === "app-theme") {
+    // 需求14 M2（02 §4.1）：全局外观挂载——无会话挂载臂（不进 mounts），
+    // 主题声明经描述符 theme 字段由应用级装载器消费（plugin-theme.tsx：
+    // 后端读 css → 内联 <style> 注入 + data-jishu-theme 属性）。
+  } else if (render.mount === "app-overlay") {
+    // 需求14 M5（06-P2）：应用级浮层挂载——无源空数据面，页面层外常驻
+    //（AppOverlayHost 消费；DevLogCenter 形态的第三方复刻位）。
+    mounts.push({
+      kind: "app-overlay",
+      Component: () => (
+        <RendererShell
+          manifest={manifest}
+          schema={schema}
+          payload={{ kind: "aggregate", data: [] }}
+          sessionId={null}
+          fileComponent={hybrid?.component}
+        />
+      ),
+    } as SessionPluginDescriptor["mounts"][number]);
   } else {
     // rail-widget / dock-panel / sidebar-panel / composer-trailing：数据面挂件。
     const mountBase = {
@@ -318,6 +372,14 @@ export function buildComposedDescriptor(
     displayNameFallback: manifest.plugin.name,
     descriptionKey: "",
     descriptionFallback: manifest.plugin.description ?? "",
+    // 需求14 M4（B15）：[plugin].icon 透传——能力中心/插件中心图标统一走
+    // 声明值（icon-picker 注册表渲染），新插件不再一律回退同一图标。
+    icon: manifest.plugin.icon,
+    // 需求14 M2（S3）：主题声明透传（base 归一化缺省 dark——暗色基座的
+    // dark: variant 工具类可用面更广，02 §4.1 示例取向）。
+    theme: manifest.theme
+      ? { ...manifest.theme, base: manifest.theme.base ?? "dark" }
+      : undefined,
     contractVersion: SESSION_PLUGIN_CONTRACT_VERSION,
     source: "config",
     implKind,

@@ -18,6 +18,15 @@ import { UniModal } from "@/components/ui/uni-modal";
 import { requestPanelActivation } from "@/features/session-kernel/shell/panel-activation";
 import { requestInstallSpotlight } from "@/features/session-kernel/shell/install-spotlight";
 
+interface PendingAssetInfo {
+  /** 资产文件名（平铺于插件根目录）。 */
+  name: string;
+  /** 字节数。 */
+  size: number;
+  /** sha256 前 8 位（核对指纹）。 */
+  sha8: string;
+}
+
 interface PendingHybridPlugin {
   /** 插件 id（session.xxx）。 */
   id: string;
@@ -29,6 +38,21 @@ interface PendingHybridPlugin {
   codeLines: number;
   /** 插件目录绝对路径。 */
   dir: string;
+  /** 需求14 M1（02 §7 确认卡增强）：资产文件清单（名/字节/指纹）——
+   *  echarts.min.js 这类随插件分发的库对用户可见可核对（旧标记无此字段）。 */
+  assets?: PendingAssetInfo[];
+  /** 能力接管范围摘要（如「将接管 echarts 语言代码块渲染」）。 */
+  takeover?: string | null;
+  /** 需求14 M3（B4/02 §5.2）：桥插件携带的可执行体清单——最高警示级
+   *（启用即随插件启动第三方可执行体）。 */
+  bridges?: string[];
+}
+
+/** 资产体积可读化（B/KB/MB）。 */
+function fmtAssetSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
 }
 
 /** 轮询间隔：安装后 CLI 侧即时广播 plugins-changed 但确认卡需要额外数据，
@@ -122,7 +146,11 @@ export function HybridInstallConfirmation() {
       {pending.map((p) => (
         <div
           key={p.id}
-          className="w-[min(480px,92vw)] shrink-0 rounded-xl border border-amber-500/40 bg-background p-5 shadow-2xl"
+          className={
+            (p.bridges ?? []).length > 0
+              ? "w-[min(480px,92vw)] shrink-0 rounded-xl border border-red-500/60 bg-background p-5 shadow-2xl"
+              : "w-[min(480px,92vw)] shrink-0 rounded-xl border border-amber-500/40 bg-background p-5 shadow-2xl"
+          }
         >
           <div className="flex items-start gap-3">
             <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
@@ -133,6 +161,27 @@ export function HybridInstallConfirmation() {
               <div className="mt-2 space-y-1 text-xs text-muted-foreground">
                 <div><span className="text-foreground/80">{p.name}</span>（{p.id}）</div>
                 <div>挂载：{p.mount} · 代码 {p.codeLines} 行</div>
+                {p.takeover ? (
+                  <div className="text-amber-600 dark:text-amber-400">接管范围：{p.takeover}</div>
+                ) : null}
+                {(p.bridges ?? []).length > 0 ? (
+                  <div className="rounded-md border border-red-500/50 bg-red-500/5 px-2 py-1.5 text-red-600 dark:text-red-400">
+                    ⚠ 最高警示：将随插件启动可执行体——{(p.bridges ?? []).join("、")}
+                    （启用前务必核验脚本内容）
+                  </div>
+                ) : null}
+                {(p.assets ?? []).length > 0 ? (
+                  <div className="rounded-md border border-border/40 bg-muted/30 px-2 py-1.5 font-mono text-[10px] leading-relaxed">
+                    {(p.assets ?? []).map((a) => (
+                      <div key={a.name} className="flex justify-between gap-2">
+                        <span className="break-all text-foreground/70">{a.name}</span>
+                        <span className="shrink-0 text-muted-foreground/60">
+                          {fmtAssetSize(a.size)} · {a.sha8}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="font-mono text-[10px] break-all text-muted-foreground/60">{p.dir}</div>
               </div>
               <div className="mt-3 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">

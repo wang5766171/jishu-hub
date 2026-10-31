@@ -21,6 +21,7 @@ pub fn run(action: PluginAction, ctx: &ExecutionContext) -> Result<(), CliError>
         PluginAction::List => list(ctx),
         PluginAction::Get { id } => get(&id, ctx),
         PluginAction::Update { id, path } => update(&id, &path, ctx),
+        PluginAction::Edit { id, field, open } => edit(&id, &field, open, ctx),
         PluginAction::Remove { id } => remove(&id, ctx),
         PluginAction::Enable { id } => set_enabled(&id, true, ctx),
         PluginAction::Disable { id } => set_enabled(&id, false, ctx),
@@ -30,6 +31,11 @@ pub fn run(action: PluginAction, ctx: &ExecutionContext) -> Result<(), CliError>
 }
 
 fn add(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
+    // 需求14 M3（B4）：目录形态——智能体桥插件（plugin.toml + bridge.js 等
+    // 附带文件）整体落 plugins/<id>/（运行时 load_manifests 目录形态装载）。
+    if std::path::Path::new(path).is_dir() {
+        return add_agent_dir(path, ctx);
+    }
     let content = std::fs::read_to_string(path)
         .map_err(|e| CliError::InvalidArg(format!("cannot read {path}: {e}")))?;
     // 1b（v0.9.5 需求1，原需求26）先判别后解析：读 TOML 为 toml::Value 检查
@@ -79,6 +85,116 @@ fn add(path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
          agent/tool manifests need an [info] table"
             .to_string(),
     ))
+}
+
+/// 智能体桥插件目录安装（需求14 M3/B4）：`<dir>/plugin.toml`（A 家族
+/// [info] 清单）+ 附带文件（bridge.js 等）整体复制到 plugins/<id>/（目录
+/// 形态——运行时 load_manifests 装载、{plugin_dir} 从此派生）；组合家族
+/// 目录请走 add-hybrid。安全阀与混合件同级：默认禁用 + 确认标记，且携带
+/// 可执行体清单（bridges——确认卡最高警示级）。
+fn add_agent_dir(dir_path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
+    let dir = std::path::Path::new(dir_path);
+    let toml_path = dir.join("plugin.toml");
+    let content = std::fs::read_to_string(&toml_path)
+        .map_err(|e| CliError::InvalidArg(format!("cannot read {}: {e}", toml_path.display())))?;
+    let value: toml::Value = content
+        .parse()
+        .map_err(|e| CliError::InvalidArg(format!("invalid TOML: {e}")))?;
+    // 判别：[plugin].id = 组合家族目录 → 指引 add-hybrid（通道不混用）。
+    if value
+        .get("plugin")
+        .and_then(|p| p.get("id"))
+        .and_then(|v| v.as_str())
+        .is_some()
+    {
+        return Err(CliError::InvalidArg(
+            "composed/session manifests in directory form go through `plugins add-hybrid` (this path is for agent manifests with [info])".to_string(),
+        ));
+    }
+    let parsed: agent::manifest::schema::AgentManifestFile = toml::from_str(&content)
+        .map_err(|e| CliError::InvalidArg(format!("invalid manifest TOML: {e}")))?;
+    parsed
+        .validate()
+        .map_err(|e| CliError::InvalidArg(format!("invalid manifest: {e}")))?;
+    let id = parsed.info.id.clone();
+    let name = parsed.info.display_name.clone();
+    let target_dir = agent::plugin::composed_plugins_dir().join(&id);
+    std::fs::create_dir_all(&target_dir)
+        .map_err(|e| CliError::InvalidArg(format!("cannot create {}: {e}", target_dir.display())))?;
+    // 浅层常规文件整体复制（plugin.toml + bridge.js 等；与 _files/资产纪律
+    // 同口径——附带文件必须平铺）。
+    let mut bridges: Vec<String> = Vec::new();
+    const EXECUTABLE_EXTS: &[&str] = &["js", "mjs", "cjs", "exe", "cmd", "bat", "ps1", "sh", "py"];
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if file_name == ".pending-confirm" {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        let dest = target_dir.join(&file_name);
+        crate::util::atomic_write(&dest, &bytes).map_err(|e| {
+            CliError::InvalidArg(format!("cannot write {}: {e}", dest.display()))
+        })?;
+        let ext = file_name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        if file_name != "plugin.toml" && EXECUTABLE_EXTS.contains(&ext.as_str()) {
+            bridges.push(file_name);
+        }
+    }
+    // 默认禁用 + 确认标记（桥=可执行体最高警示）+ 输出。已知 id 含目录形态
+    //（load_manifests 扫描）——set 失败时直写 disabled 兜底（同 finalize）。
+    if agent::plugin::set_plugin_enabled(&id, false).is_err() {
+        let mut config = agent::plugin::load_plugin_config();
+        if !config.disabled.iter().any(|x| x == &id) {
+            config.disabled.push(id.clone());
+            config.updated_at = crate::util::now_ms();
+            let _ = agent::plugin::save_plugin_config(&config);
+        }
+    }
+    let (assets, _) = std::fs::read_to_string(target_dir.join("plugin.toml"))
+        .ok()
+        .and_then(|c| c.parse::<toml::Value>().ok())
+        .map(|v| agent::plugin::pending_confirm_extras(&target_dir, &v))
+        .unwrap_or_default();
+    let pending = serde_json::json!({
+        "id": id,
+        "name": name,
+        "mount": "agent",
+        "codeLines": 0,
+        "dir": target_dir.to_string_lossy(),
+        "assets": assets,
+        "takeover": Some(format!(
+            "将以外部智能体形式接入（{}）",
+            parsed.transport.as_ref().map(|t| match t.kind {
+                agent::manifest::schema::TransportKind::Acp => "ACP 传输",
+                agent::manifest::schema::TransportKind::Cli => "CLI 传输",
+            }).unwrap_or("未声明传输")
+        )),
+        "bridges": bridges,
+    });
+    crate::util::atomic_write(
+        &target_dir.join(".pending-confirm"),
+        pending.to_string().as_bytes(),
+    )
+    .map_err(|e| CliError::InvalidArg(format!("cannot write pending-confirm marker: {e}")))?;
+    if ctx.json {
+        println!(
+            "{}",
+            serde_json::json!({"installed": true, "id": id, "dir": target_dir.to_string_lossy(), "bridges": bridges})
+        );
+    } else {
+        println!("Installed agent plugin {id} ({})", target_dir.display());
+        if !bridges.is_empty() {
+            println!("WARNING: this plugin ships executables ({}) — review before enabling.", bridges.join(", "));
+        }
+        println!("Disabled by default; enable it via the hub GUI confirmation card.");
+    }
+    Ok(())
 }
 
 /// 安装组合式/流水线清单（1b 统一寻址组合臂）：经
@@ -141,12 +257,22 @@ fn finalize_composed_install(
         }
     }
     let target_dir = agent::plugin::composed_plugins_dir().join(id);
+    // 需求14 M1（02 §7 确认卡增强）：资产清单（名/字节/指纹）+ 语言接管
+    // 摘要——从刚落盘的清单与目录现状计算；解析失败降级为空（标记主字段
+    // 不受影响）。CLI/GUI 两写入端共用同一计算（composed.rs）。
+    let (assets, takeover) = std::fs::read_to_string(target_dir.join("plugin.toml"))
+        .ok()
+        .and_then(|c| c.parse::<toml::Value>().ok())
+        .map(|v| agent::plugin::pending_confirm_extras(&target_dir, &v))
+        .unwrap_or_default();
     let pending = serde_json::json!({
         "id": id,
         "name": name,
         "mount": mount,
         "codeLines": code_lines,
         "dir": target_dir.to_string_lossy(),
+        "assets": assets,
+        "takeover": takeover,
     });
     crate::util::atomic_write(
         &target_dir.join(".pending-confirm"),
@@ -208,29 +334,63 @@ fn add_hybrid(dir_path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
         .to_string();
 
     // 代码契约校验：非空 + JishuPlugin.register 注册调用（安装即 fail loud）。
+    // 需求14 M2：主题形态（[theme] 段 + theme.css、无 component.js）放行——
+    // 渲染体是 css 而非代码组件，JishuPlugin 契约不适用（css 存在性由
+    // save_composed_manifest → attach_plugin_files 的 _file_error 链兜底）。
     let code_path = dir.join("component.js");
-    let code = std::fs::read_to_string(&code_path)
-        .map_err(|e| CliError::InvalidArg(format!("cannot read {}: {e}", code_path.display())))?;
+    let theme_form = value.get("theme").is_some() && !code_path.is_file();
+    let code = if theme_form {
+        String::new()
+    } else {
+        std::fs::read_to_string(&code_path).map_err(|e| {
+            CliError::InvalidArg(format!("cannot read {}: {e}", code_path.display()))
+        })?
+    };
     let code_lines = code.lines().count();
-    if code_lines == 0 {
-        return Err(CliError::InvalidArg(
-            "component.js is empty (expected JishuPlugin.register)".to_string(),
-        ));
-    }
-    if !code.contains("JishuPlugin.register") {
-        return Err(CliError::InvalidArg(
-            "component.js missing \"JishuPlugin.register\" (code contract)".to_string(),
-        ));
+    if !theme_form {
+        if code_lines == 0 {
+            return Err(CliError::InvalidArg(
+                "component.js is empty (expected JishuPlugin.register)".to_string(),
+            ));
+        }
+        if !code.contains("JishuPlugin.register") {
+            return Err(CliError::InvalidArg(
+                "component.js missing \"JishuPlugin.register\" (code contract)".to_string(),
+            ));
+        }
     }
 
     // 落盘两文件：清单走 save_composed_manifest（继承全部守卫并建目录），
     // 代码文件随后写入同一目录（~/.jishu-hub/plugins/<id>/）。
     agent::plugin::save_composed_manifest(&id, &toml_content).map_err(CliError::InvalidArg)?;
     let target_dir = agent::plugin::composed_plugins_dir().join(&id);
-    let target_code = target_dir.join("component.js");
-    crate::util::atomic_write(&target_code, code.as_bytes()).map_err(|e| {
-        CliError::InvalidArg(format!("cannot write {}: {e}", target_code.display()))
-    })?;
+    // 主题形态无代码文件——不落空 component.js（避免空文件进 _files 指纹表）。
+    if !theme_form {
+        let target_code = target_dir.join("component.js");
+        crate::util::atomic_write(&target_code, code.as_bytes()).map_err(|e| {
+            CliError::InvalidArg(format!("cannot write {}: {e}", target_code.display()))
+        })?;
+    }
+
+    // 需求14 M1（S1 资产随插件分发）：源目录浅层常规文件整体复制——
+    // plugin.toml/component.js 之外的资产（echarts.min.js 等库文件）。
+    // 浅层与 attach_plugin_files 的 _files 扫描口径一致（B3：资产平铺）。
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == "plugin.toml" || name == "component.js" || name == ".pending-confirm" {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        crate::util::atomic_write(&target_dir.join(&name), &bytes).map_err(|e| {
+            CliError::InvalidArg(format!("cannot write asset {name}: {e}"))
+        })?;
+    }
 
     // 默认禁用 + 确认标记 + 输出（1b：与 add 组合臂共用公共尾部）。
     finalize_composed_install(&id, &name, &mount, code_lines as u64, ctx)
@@ -257,13 +417,157 @@ fn get(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
     };
     let content = std::fs::read_to_string(&path)
         .map_err(|e| CliError::InvalidArg(format!("cannot read {}: {e}", path.display())))?;
+    // 需求14 M5（B10）：agent 自验回路输出增强——启用态 / 资产清单（名/字节/
+    // 指纹）/ 能力接管摘要（目录形态经 pending_confirm_extras 与确认卡同源；
+    // agents/ 单文件形态仅启用态）。skill 端到端流程第 7 步依赖本输出。
+    let disabled = agent::plugin::load_plugin_config();
+    let enabled = !disabled.disabled.iter().any(|x| x == id);
+    let (assets, takeover) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| c.parse::<toml::Value>().ok())
+        .map(|v| agent::plugin::pending_confirm_extras(path.parent().unwrap_or(&path), &v))
+        .unwrap_or_default();
+    let pending = path
+        .parent()
+        .map(|d| d.join(".pending-confirm").is_file())
+        .unwrap_or(false);
     if ctx.json {
         println!(
             "{}",
-            serde_json::json!({"id": id, "path": path.to_string_lossy(), "manifest": content})
+            serde_json::json!({
+                "id": id,
+                "path": path.to_string_lossy(),
+                "enabled": enabled,
+                "pendingConfirm": pending,
+                "takeover": takeover,
+                "files": assets,
+                "manifest": content,
+            })
         );
     } else {
         print!("{content}");
+        println!("
+# --- 状态 ---");
+        println!("# enabled: {enabled}{}", if enabled { "" } else { "（已禁用）" });
+        if pending {
+            println!("# pending-confirm: 待确认安装（hub 确认卡启用）");
+        }
+        if let Some(t) = &takeover {
+            println!("# takeover: {t}");
+        }
+        for a in &assets {
+            println!("# file: {} ({} B, sha8 {})", a.name, a.size, a.sha8);
+        }
+    }
+    Ok(())
+}
+
+/// 需求14 M4（R9）：定点编辑——`--field section.key=value`（可重复）就地改
+/// 清单字段（dotted path 末段为键、中间段须是表；值先按 TOML 解析、失败
+/// 回落字符串；数组元素不可寻址），落盘走与 update 同源守卫（组合式经
+/// save_composed_manifest；A 家族经 schema 校验 + 原子写），保持启用态、
+/// 不重落确认标记（定点微调 ≠ 整包覆盖）；`--open` 仅在文件管理器定位
+/// 清单（改完经 update 应用）。注意：字段编辑会规范化重排清单格式
+///（注释不保留）——在意格式请用 --open + update。
+fn edit(id: &str, fields: &[String], open: bool, ctx: &ExecutionContext) -> Result<(), CliError> {
+    // 双落点寻址（同 update/get）：agents/ 单文件优先，plugins/<id>/ 次之。
+    let single = agent::manifest::manifest_dir().join(format!("{id}.toml"));
+    let dir_toml = agent::plugin::composed_plugins_dir().join(id).join("plugin.toml");
+    let path = if single.is_file() {
+        single
+    } else if dir_toml.is_file() {
+        dir_toml.clone()
+    } else {
+        return Err(CliError::InvalidArg(format!(
+            "plugin not found: {id} (expected {} or {})",
+            single.display(),
+            dir_toml.display()
+        )));
+    };
+    if open {
+        crate::os_adapter::file_reveal::reveal_in_file_manager(&path.to_string_lossy())
+            .map_err(|e| CliError::InvalidArg(format!("cannot open {}: {e}", path.display())))?;
+        if ctx.json {
+            println!("{}", serde_json::json!({"opened": true, "id": id, "path": path.to_string_lossy()}));
+        } else {
+            println!("Opened {} — apply changes via `plugins update {id} <toml>`.", path.display());
+        }
+        return Ok(());
+    }
+    if fields.is_empty() {
+        return Err(CliError::InvalidArg(
+            "nothing to do: pass --field section.key=value (repeatable) or --open".to_string(),
+        ));
+    }
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| CliError::InvalidArg(format!("cannot read {}: {e}", path.display())))?;
+    let mut value: toml::Value = content
+        .parse()
+        .map_err(|e| CliError::InvalidArg(format!("invalid TOML in {}: {e}", path.display())))?;
+    for spec in fields {
+        let (key_path, raw) = spec.rsplit_once('=').ok_or_else(|| {
+            CliError::InvalidArg(format!("--field expects section.key=value, got {spec:?}"))
+        })?;
+        let segs: Vec<&str> = key_path
+            .split('.')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if segs.is_empty() {
+            return Err(CliError::InvalidArg(format!("--field empty key path in {spec:?}")));
+        }
+        // 数组下标形态（languages[0]）不支持——fail loud 而非当普通键插入
+        // 静默产生垃圾段。
+        if segs.iter().any(|s| s.contains('[') || s.contains(']')) {
+            return Err(CliError::InvalidArg(format!(
+                "--field array items are not addressable, got {spec:?}"
+            )));
+        }
+        let new_value: toml::Value = raw
+            .parse()
+            .unwrap_or_else(|_| toml::Value::String(raw.to_string()));
+        let mut cur = &mut value;
+        for seg in &segs[..segs.len() - 1] {
+            let table = cur.as_table_mut().ok_or_else(|| {
+                CliError::InvalidArg(format!(
+                    "--field path segment {seg:?} is not a table (array items are not addressable)"
+                ))
+            })?;
+            cur = table
+                .entry(seg.to_string())
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        }
+        let last = segs[segs.len() - 1].to_string();
+        cur.as_table_mut()
+            .ok_or_else(|| {
+                CliError::InvalidArg(format!(
+                    "--field path segment {last:?} is not a table (array items are not addressable)"
+                ))
+            })?
+            .insert(last, new_value);
+    }
+    let new_toml = toml::to_string_pretty(&value)
+        .map_err(|e| CliError::InvalidArg(format!("cannot serialize TOML: {e}")))?;
+    let is_composed = path == dir_toml;
+    if is_composed {
+        agent::plugin::save_composed_manifest(id, &new_toml).map_err(CliError::InvalidArg)?;
+    } else {
+        let parsed: agent::manifest::schema::AgentManifestFile = toml::from_str(&new_toml)
+            .map_err(|e| CliError::InvalidArg(format!("invalid manifest TOML: {e}")))?;
+        parsed
+            .validate()
+            .map_err(|e| CliError::InvalidArg(format!("invalid manifest: {e}")))?;
+        crate::util::atomic_write(&path, new_toml.as_bytes())
+            .map_err(|e| CliError::InvalidArg(format!("cannot write {}: {e}", path.display())))?;
+    }
+    if ctx.json {
+        println!(
+            "{}",
+            serde_json::json!({"edited": true, "id": id, "path": path.to_string_lossy(), "fields": fields})
+        );
+    } else {
+        println!("Edited {id} ({}) — reload the GUI (or its plugin page's Reload) to apply.", path.display());
+        println!("Note: the manifest was re-serialized (comments not preserved).");
     }
     Ok(())
 }
@@ -433,8 +737,12 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
             )));
         }
         // 1b 统一寻址组合臂：组合式/流水线/混合插件（kind Session、无
-        // agents/ 落点）→ 删除 plugins/<id>/ 目录。
-        (Some(p), _) if p.kind == agent::plugin::PluginKind::Session && p.source_path.is_none() => {
+        // agents/ 落点）→ 删除 plugins/<id>/ 目录。需求14 M4：组合件描述符
+        // source_path 已改为插件目录（Some）——判别加 composed 旗标，旧
+        // source_path None 路径（内置 TS 会话件）保持原语义。
+        (Some(p), _) if p.kind == agent::plugin::PluginKind::Session
+            && (p.source_path.is_none() || p.composed) =>
+        {
             if agent::plugin::is_builtin_composed(id) {
                 return Err(CliError::InvalidArg(format!(
                     "plugin {id} is a built-in composed plugin and cannot be removed"
@@ -964,6 +1272,174 @@ key = 1
             other => format!("{other:?}"),
         };
         assert!(msg.contains("unrecognized manifest format"), "got: {msg}");
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+/// 需求14 M4（R9）：edit --field 定点编辑——dotted path 赋值 + 值 TOML 化；
+/// 与 update 同守卫（组合件经 save_composed_manifest）；非法路径/未知插件拒绝。
+#[test]
+fn edit_field_targets_composed_manifest() {
+    let _guard = lock_env();
+    let tmp = tempfile::tempdir().unwrap();
+    std::env::set_var("JISHU_HUB_HOME", tmp.path());
+    // 语言封闭集清单（code-block）——改 name 顶层 [plugin] 段字段。
+    let toml_src = r#"[plugin]
+id = "session.edit-me"
+name = "旧名"
+kind = "session-composed"
+[source]
+type = "code-block"
+languages = ["echarts"]
+[render]
+component = "render.mono-text"
+mount = "block-renderer"
+"#;
+    agent::plugin::save_composed_manifest("session.edit-me", toml_src).unwrap();
+    edit(
+        "session.edit-me",
+        &["plugin.name=新名字".to_string(), "render.fallback=\"render.mono-text\"".to_string()],
+        false,
+        &ctx(),
+    )
+    .expect("edit ok");
+    let updated = std::fs::read_to_string(composed_dir("session.edit-me").join("plugin.toml")).unwrap();
+    assert!(updated.contains("新名字"), "got: {updated}");
+    assert!(updated.contains("render.mono-text"));
+    // 守卫仍生效：id 不可变（改 id → save_composed_manifest 拒绝清单 id 不一致）。
+    let err = edit("session.edit-me", &["plugin.id=session.other".to_string()], false, &ctx())
+        .expect_err("id change must be rejected");
+    assert!(format!("{err:?}").contains("不一致") || format!("{err:?}").contains("cannot change"), "got: {err:?}");
+    // 非法 dotted path（数组元素）拒绝。
+    let err = edit("session.edit-me", &["source.languages[0]=x".to_string()], false, &ctx())
+        .expect_err("array item must be rejected");
+    assert!(format!("{err:?}").contains("--field"), "got: {err:?}");
+    // 未知插件拒绝。
+    let err = edit("session.no-such", &["a.b=1".to_string()], false, &ctx())
+        .expect_err("unknown id must be rejected");
+    assert!(format!("{err:?}").contains("plugin not found"), "got: {err:?}");
+    std::env::remove_var("JISHU_HUB_HOME");
+}
+
+    /// 需求14 M2：add-hybrid 主题形态——无 component.js 但有 theme.css 时
+    /// 放行（渲染体是 css），目标目录不落空 component.js，资产随装。
+    #[test]
+    fn add_hybrid_accepts_theme_form_without_component_js() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(
+            src.path().join("plugin.toml"),
+            r#"[plugin]
+id = "session.theme-cli"
+name = "CLI 主题"
+kind = "session-composed"
+category = "appearance"
+[theme]
+css = "@file:theme.css"
+base = "dark"
+[render]
+mount = "app-theme"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.path().join("theme.css"),
+            "[data-jishu-theme=\"session.theme-cli\"]{}",
+        )
+        .unwrap();
+        add_hybrid(src.path().to_str().unwrap(), &ctx()).expect("theme form installs");
+        let target = agent::plugin::composed_plugins_dir().join("session.theme-cli");
+        assert!(target.join("theme.css").is_file(), "theme.css 随装");
+        assert!(!target.join("component.js").exists(), "主题形态不落空 component.js");
+        assert!(target.join(".pending-confirm").is_file(), "确认标记就位");
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+/// 需求14 M3（B4）：add 目录形态——智能体桥插件整体落 plugins/<id>/，
+/// 可执行体进确认标记（最高警示），组合家族目录指引 add-hybrid。
+#[test]
+fn add_agent_directory_installs_with_bridge_warning() {
+    let _guard = lock_env();
+    let tmp = tempfile::tempdir().unwrap();
+    std::env::set_var("JISHU_HUB_HOME", tmp.path());
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("plugin.toml"),
+        r#"schema = 1
+kind = "agent"
+[info]
+id = "zcode-test"
+display_name = "zcode test"
+[transport]
+kind = "acp"
+acp_command = ["node", "{plugin_dir}/bridge.js", "--stdio"]
+"#,
+    )
+    .unwrap();
+    std::fs::write(src.path().join("bridge.js"), "/* bridge */").unwrap();
+    add(src.path().to_str().unwrap(), &ctx()).expect("dir add installs");
+    let target = agent::plugin::composed_plugins_dir().join("zcode-test");
+    assert!(target.join("plugin.toml").is_file(), "清单落目录形态");
+    assert!(target.join("bridge.js").is_file(), "桥脚本随装");
+    assert!(!agent::manifest::manifest_dir().join("zcode-test.toml").exists());
+    // 默认禁用（确认卡安全阀）。
+    assert!(agent::plugin::load_plugin_config()
+        .disabled
+        .iter()
+        .any(|x| x == "zcode-test"));
+    // 标记：bridges 最高警示 + ACP 接管摘要。
+    let marker = std::fs::read_to_string(target.join(".pending-confirm")).unwrap();
+    assert!(marker.contains("bridge.js"), "bridges in marker: {marker}");
+    assert!(marker.contains("ACP"), "takeover in marker: {marker}");
+    // 组合家族目录 → 指引 add-hybrid。
+    let comp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        comp.path().join("plugin.toml"),
+        "[plugin]\nid = \"session.x\"\nname = \"x\"\nkind = \"session-composed\"\n",
+    )
+    .unwrap();
+    let err = add(comp.path().to_str().unwrap(), &ctx()).expect_err("composed dir rejected");
+    assert!(format!("{err:?}").contains("add-hybrid"), "got: {err:?}");
+    std::env::remove_var("JISHU_HUB_HOME");
+}
+
+    /// 需求14 M5（B10）：get 输出增强数据源——extras（资产指纹+接管摘要）与
+    /// get 同源计算；agent 自验回路（skill 第 7 步）依赖该结构。
+    #[test]
+    fn get_reports_enabled_and_file_fingerprints() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let toml_src = "[plugin]
+id = \"session.get-me\"
+name = \"g\"
+kind = \"session-composed\"
+[source]
+type = \"code-block\"
+languages = [\"echarts\"]
+[render]
+component = \"@file:component.js\"
+mount = \"block-renderer\"
+";
+        agent::plugin::save_composed_manifest("session.get-me", toml_src).unwrap();
+        std::fs::write(
+            composed_dir("session.get-me").join("component.js"),
+            "JishuPlugin.register(1)",
+        )
+        .unwrap();
+        // get 的增强数据源（同源计算）。
+        let path = composed_dir("session.get-me").join("plugin.toml");
+        let value: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        let (assets, takeover) =
+            agent::plugin::pending_confirm_extras(path.parent().unwrap(), &value);
+        assert!(assets.iter().any(|a| a.name == "component.js" && a.sha8.len() == 8 && a.size > 0));
+        assert_eq!(takeover.as_deref(), Some("将接管 echarts 语言代码块渲染"));
+        // 启用态：未禁用。
+        assert!(!agent::plugin::load_plugin_config()
+            .disabled
+            .iter()
+            .any(|x| x == "session.get-me"));
         std::env::remove_var("JISHU_HUB_HOME");
     }
 }

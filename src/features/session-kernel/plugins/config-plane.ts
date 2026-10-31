@@ -63,14 +63,18 @@ let unlistenStarted = false;
 function ensureListening(): void {
   if (unlistenStarted || typeof window === "undefined") return;
   unlistenStarted = true;
-  void import("@tauri-apps/api/event").then(({ listen }) =>
-    listen<{ pluginId?: string }>("plugins-config-changed", () => {
-      // 保存端（本进程）已先更新缓存；此事件兜底跨窗口/异常路径——统一失效重拉。
-      cache = null;
-      loadPromise = null;
-      for (const fn of listeners) fn();
-    }),
-  );
+  void import("@tauri-apps/api/event")
+    .then(({ listen }) =>
+      listen<{ pluginId?: string }>("plugins-config-changed", () => {
+        // 保存端（本进程）已先更新缓存；此事件兜底跨窗口/异常路径——统一失效重拉。
+        cache = null;
+        loadPromise = null;
+        for (const fn of listeners) fn();
+      }),
+    )
+    // 非 Tauri 环境（vitest/jsdom 无 __TAURI_INTERNALS__）listen 同步抛错——
+    // 链尾兜底避免 unhandled rejection（loader.ts 同款纪律）。
+    .catch(() => undefined);
 }
 
 async function loadAll(): Promise<AllPluginConfigs> {
