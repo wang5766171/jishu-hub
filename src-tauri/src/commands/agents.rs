@@ -537,6 +537,25 @@ pub(crate) struct PluginReadFile {
 }
 
 /// 读取插件源码文件（需求14 M4 G9 源码视图/编辑数据源）。
+/// 需求14 补齐（GUI 主题向导）：写插件目录内的 theme.css——向导产出的
+/// 颜色配置落盘（与 hybrid_plugin_save 配合：先 save 存 TOML，再此写 CSS）。
+#[tauri::command]
+pub(crate) fn plugin_write_theme_css(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    css: String,
+) -> Result<(), String> {
+    let dir = agent::plugin::composed_plugins_dir().join(&plugin_id);
+    if !dir.is_dir() {
+        return Err(format!("plugin directory not found: {}", dir.display()));
+    }
+    crate::util::atomic_write(&dir.join("theme.css"), css.as_bytes())
+        .map_err(|e| format!("cannot write theme.css: {e}"))?;
+    use tauri::Emitter;
+    let _ = app.emit("plugins-changed", ());
+    Ok(())
+}
+
 /// 寻址双落点同 plugin_update：目录形态 plugins/<id>/<file> 优先；单文件
 /// 形态 agents/<id>.toml 仅接受虚拟名 "plugin.toml"。安全边界：file 只允许
 /// 浅层普通文件名（拒绝路径分隔/父目录段/点开头），不越出插件自身目录。

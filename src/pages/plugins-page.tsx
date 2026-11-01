@@ -18,6 +18,8 @@ import { PluginComposeDialog } from "./plugin-compose-dialog";
 import { PluginHybridWizard } from "./plugin-hybrid-wizard";
 // 3c（v0.9.5 需求1）：流水线向导（列表式阶段编排器）。
 import { PluginPipelineWizard } from "./plugin-pipeline-wizard";
+// 需求14 补齐：主题可视化向导。
+import { PluginThemeWizard } from "./plugin-theme-wizard";
 // 3a-1（v0.9.5 需求1，原需求26）：统一创建入口——类型选择卡片页分流。
 import { PluginCreateEntry } from "./plugin-create-entry";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
@@ -209,6 +211,8 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
   const [hybridPresetMount, setHybridPresetMount] = useState<"dock-panel" | "rail-widget" | "sidebar-panel" | "composer-trailing" | undefined>(undefined);
   // 3c：流水线向导。
   const [pipelineOpen, setPipelineOpen] = useState(false);
+  // 需求14 补齐：主题向导。
+  const [themeWizardOpen, setThemeWizardOpen] = useState(false);
   const [detailTab, setDetailTab] = useState<"info" | "settings" | "source">("info");
   const [panelOutputs, setPanelOutputs] = useState<Record<number, string>>({});
   const [panelRunning, setPanelRunning] = useState<number | null>(null);
@@ -725,6 +729,7 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
       <PluginComposeDialog open={composeOpen} onOpenChange={setComposeOpen} onCreated={refresh} />
       <PluginHybridWizard open={hybridOpen} onOpenChange={setHybridOpen} onCreated={refresh} presetMount={hybridPresetMount} />
       <PluginPipelineWizard open={pipelineOpen} onOpenChange={setPipelineOpen} onCreated={refresh} />
+      <PluginThemeWizard open={themeWizardOpen} onOpenChange={setThemeWizardOpen} onCreated={refresh} />
       {/* 3a-1：统一创建入口——四类型卡片分流（agent-tool → agents 向导；
           session-composed → 组合式向导；pipeline/hybrid → 指引卡；describe →
           引导到会话对话创建）。替换原两并列按钮（新建插件/新建组合插件）。 */}
@@ -749,6 +754,9 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
               break;
             case "pipeline-guide":
               setPipelineOpen(true);
+              break;
+            case "theme-wizard":
+              setThemeWizardOpen(true);
               break;
             case "describe":
               void alertDialog({

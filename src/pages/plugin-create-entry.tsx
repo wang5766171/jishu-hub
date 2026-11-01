@@ -20,6 +20,7 @@ import {
   Code2,
   Lightbulb,
   Copy,
+  Palette,
   X,
   Activity,
   Bell,
@@ -35,6 +36,7 @@ export type CreateEntryChoice =
   | { kind: "session-composed"; face?: SessionPluginFace } // → PluginComposeDialog（组合式向导）
   | { kind: "pipeline-guide" } // 流水线向导（V2 3c）
   | { kind: "hybrid-guide"; face?: SessionPluginFace } // 混合代码向导（V2 3b，face→presetMount）
+  | { kind: "theme-wizard" } // 主题向导（需求14 补齐）
   | { kind: "describe" }; // 描述功能 → 会话对话创建指引
 
 const PIPELINE_TEMPLATE = `[plugin]
@@ -170,12 +172,12 @@ function GuideCard({
 
 export type SessionPluginFace = "panel" | "widget" | "render" | "action";
 
-type EntryFace = SessionPluginFace | "pipeline" | "tool";
+type EntryFace = SessionPluginFace | "pipeline" | "tool" | "theme";
 
 type EntryImpl = "config" | "code" | "combo";
 
 /** 业务形态 × 可行实现（v3 双维度交叉矩阵的创建侧子集：✓向导直达 / guide=指引卡承接）。 */
-const FACE_IMPLS: Record<EntryFace, Array<{ impl: EntryImpl; route: "compose" | "hybrid" | "pipeline" | "guide" }>> = {
+const FACE_IMPLS: Record<EntryFace, Array<{ impl: EntryImpl; route: "compose" | "hybrid" | "pipeline" | "guide" | "theme" }>> = {
   panel: [
     { impl: "config", route: "compose" },
     { impl: "code", route: "hybrid" },
@@ -200,10 +202,12 @@ const FACE_IMPLS: Record<EntryFace, Array<{ impl: EntryImpl; route: "compose" | 
     { impl: "config", route: "pipeline" },
     { impl: "combo", route: "guide" },
   ],
-  tool: [], // 声明式定义——向导内配置，无实现选择
+  tool: [],
+  theme: [{ impl: "config" as EntryImpl, route: "theme" as const }], // 声明式定义——向导内配置，无实现选择
 };
 
 const FACES: Array<{ key: EntryFace; icon: typeof Bot; title: string; desc: string }> = [
+  { key: 'theme' as EntryFace, icon: Palette, title: '主题外观', desc: '自定义配色/聊天背景（可视化调色板，无需代码）' },
   { key: "panel", icon: LayoutDashboard, title: "会话面板", desc: "悬浮/侧栏数据面板（会话大纲、统计类）" },
   { key: "widget", icon: Activity, title: "会话挂件", desc: "边缘细条/输入区小挂件（常驻轻展示）" },
   { key: "render", icon: Code2, title: "会话渲染", desc: "消息流内渲染（代码块/图表接管）" },
@@ -248,6 +252,8 @@ export function PluginCreateEntry({
       onChoose({ kind: "session-composed", face: face as SessionPluginFace });
     } else if (route === "hybrid") {
       onChoose({ kind: "hybrid-guide", face: face as SessionPluginFace });
+    } else if (route === "theme") {
+      onChoose({ kind: "theme-wizard" });
     } else if (route === "pipeline") {
       onChoose({ kind: "pipeline-guide" });
     } else {

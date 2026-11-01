@@ -440,6 +440,7 @@ pub fn run() {
             commands::agents::plugin_create_skill_folder,
             commands::agents::plugin_get,
             commands::agents::plugin_read_file,
+            commands::agents::plugin_write_theme_css,
             commands::agents::plugin_update,
             commands::agents::plugin_config_get_all,
             commands::agents::plugin_config_set,

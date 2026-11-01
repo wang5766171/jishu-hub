@@ -121,6 +121,18 @@ export function subscribeDevLogs(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
+// ── 需求15：全局挂载——CDP/自动化测试在生产包直接读取（免开面板）──
+// window.__jishuDevLogs = { get(), version(), enabled() }
+// CDP 用法：Runtime.evaluate("window.__jishuDevLogs.get().filter(e => e.category === 'capability')")
+if (typeof window !== "undefined") {
+  const g = window as unknown as { __jishuDevLogs?: object };
+  g.__jishuDevLogs = {
+    get: () => entries.map((e) => ({ seq: e.seq, ts: e.ts, category: e.category, message: e.message, data: e.data })),
+    version: () => version,
+    enabled: () => enabled(),
+  };
+}
+
 /** v0.9.5 需求2 测试期（会话 01a0d868 复盘）：订阅后端 `hub-dev-log` 事件 →
  *  [runtime] 类别入环形缓冲。此前 Pi RPC 循环的状态迁移/watchdog/命令处置
  *  只落终端/日志文件，日志中心无后端视角，「prompt 到达时循环处于什么状态」
