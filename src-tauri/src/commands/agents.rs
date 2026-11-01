@@ -389,12 +389,14 @@ pub(crate) fn plugin_get(
 #[tauri::command]
 pub(crate) fn composed_plugin_save(
     app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
     id: String,
     toml: String,
 ) -> Result<(), String> {
     agent::plugin::save_composed_manifest(&id, &toml)?;
-    use tauri::Emitter;
-    let _ = app.emit("plugins-changed", ());
+    // 需求14 补齐：保存后重建 registry——plugin_list 才能看到新插件
+    //（外观页 enabledIds 过滤依赖 plugin_list；不重建则新装主题不可见）。
+    rebuild_registry(&app, &state);
     Ok(())
 }
 

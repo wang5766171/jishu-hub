@@ -97,8 +97,9 @@ export function PluginThemeWizard({
   const [done, setDone] = useState(false);
 
   const id = useMemo(() => {
-    const slug = slugify(name || "my-theme", "my-theme");
-    return `session.theme-${slug}`;
+    // 中文/特殊字符 slugify 后可能为空或含非 ASCII——回退时间戳保底。
+    const slug = slugify(name || "my-theme", "my-theme").replace(/[^a-zA-Z0-9-]/g, "");
+    return `session.theme-${slug || Date.now().toString(36)}`;
   }, [name]);
 
   const set = (k: ColorKey, v: string) => setColors((p) => ({ ...p, [k]: v }));
@@ -133,12 +134,9 @@ export function PluginThemeWizard({
     if (!name.trim()) { setError("请输入主题名称"); return; }
     setSaving(true); setError(null);
     try {
-      await invokeCommand("hybrid_plugin_save", {
-        id,
-        toml: tomlText,
-        componentJs: "", // 主题形态无代码
-      });
-      // 写 theme.css
+      // 主题形态无代码——先建目录+TOML，再写 CSS（不走 hybrid_plugin_save
+      // 避免落空 component.js）。确认卡安全阀仍经 composed 路径。
+      await invokeCommand("composed_plugin_save", { id, toml: tomlText });
       await invokeCommand("plugin_write_theme_css", { pluginId: id, css: cssText });
       setDone(true);
       onCreated();
