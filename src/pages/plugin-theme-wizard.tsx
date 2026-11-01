@@ -88,7 +88,7 @@ const PRESETS: Array<{ name: string; base: BuiltinTheme; colors: Partial<Record<
 ];
 
 const DEFAULT_CONFIG: ThemeConfig = {
-  name: "",
+  name: "我的配色",
   base: "dark",
   colors: {
     background: "#0b1220", foreground: "#e2e8f0", primary: "#3b82f6", border: "#1e293b",
@@ -165,12 +165,13 @@ export function PluginThemeWizard({ open, onOpenChange, onCreated }: {
     if (!cfg.name.trim()) { setError("请输入主题名称"); return; }
     setSaving(true); setError(null);
     try {
+      // 保存顺序：TOML（建目录）→ 图片 → CSS（最后写，触发 loader 重载时图片已在位）。
       await invokeCommand("composed_plugin_save", { id, toml: tomlText });
-      await invokeCommand("plugin_write_theme_css", { pluginId: id, css: cssText });
       if (cfg.bgImage?.dataUrl) {
         const base64 = cfg.bgImage.dataUrl.split(",")[1];
         await invokeCommand("plugin_save_theme_asset", { pluginId: id, fileName: cfg.bgImage.name, base64 });
       }
+      await invokeCommand("plugin_write_theme_css", { pluginId: id, css: cssText });
       setDone(true); onCreated();
     } catch (e) { setError(String(e)); }
     finally { setSaving(false); }
@@ -189,7 +190,7 @@ export function PluginThemeWizard({ open, onOpenChange, onCreated }: {
 
   const applyPreset = (p: typeof PRESETS[0]) => {
     setCfg((prev) => ({ ...prev, base: p.base, colors: { ...DEFAULT_CONFIG.colors, ...p.colors } }));
-    if (!cfg.name.trim()) setCfg((prev) => ({ ...prev, name: p.name }));
+    // 预设只改颜色——名称由用户决定，不自动覆盖。
   };
 
   if (!open) return null;

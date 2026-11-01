@@ -542,6 +542,7 @@ pub(crate) struct PluginReadFile {
 /// 需求14 补齐：保存主题资产文件（背景图等）——base64 解码写入插件目录。
 #[tauri::command]
 pub(crate) fn plugin_save_theme_asset(
+    app: tauri::AppHandle,
     plugin_id: String,
     file_name: String,
     base64: String,
@@ -564,7 +565,12 @@ pub(crate) fn plugin_save_theme_asset(
         return Err("asset too large (max 10MB)".to_string());
     }
     crate::util::atomic_write(&dir.join(&file_name), &bytes)
-        .map_err(|e| format!("cannot write {file_name}: {e}"))
+        .map_err(|e| format!("cannot write {file_name}: {e}"))?;
+    // 需求14 修复：广播让 loader 重扫目录——背景图写入后 _files 清单才会
+    // 包含它，主题 CSS 的 url(@file:) 才能被展开。
+    use tauri::Emitter;
+    let _ = app.emit("plugins-changed", ());
+    Ok(())
 }
 
 /// 需求14 补齐（GUI 主题向导）：写插件目录内的 theme.css——向导产出的
