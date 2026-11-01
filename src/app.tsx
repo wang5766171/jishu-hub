@@ -43,7 +43,7 @@ import { useCliValidateBridge } from "@/features/session-kernel/capabilities/cli
 import { usePluginToolInvokeBridge } from "@/features/session-kernel/capabilities/plugin-tool-invoke-bridge";
 import { HybridErrorNotification } from "@/features/session-kernel/capabilities/composition/hybrid-errors";
 // 批次5（v0.9.5 需求1 GUI 改造）：会话区 → 管理页导航事件。
-import { onManageNav } from "@/lib/app-nav";
+import { onManageNav, openManagePage } from "@/lib/app-nav";
 import type { Page, Project, ProjectMeta } from "@/types";
 
 const ChatPage = lazy(() => import("@/pages/chat-page").then(m => ({ default: m.ChatPage })));
@@ -54,7 +54,7 @@ const themeConfig: Record<BuiltinTheme, { icon: typeof Sun; labelKey: string }> 
   colorful: { icon: Palette, labelKey: "theme.colorful" },
   dark: { icon: Moon, labelKey: "theme.dark" },
 };
-const themeOrder: BuiltinTheme[] = ["light", "colorful", "dark"];
+// themeOrder 已移除（Fix1：不再循环切换）
 const appWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? getCurrentWindow() : null;
 
 const fontLevels: { id: FontLevel; labelKey: string }[] = [
@@ -120,7 +120,7 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   const [updateReady, setUpdateReady] = useState<{ version: string; path: string } | null>(null);
   const [fontOpen, setFontOpen] = useState(false);
   const [maximized, setMaximized] = useState(false);
-  const { theme, setTheme } = useTheme();
+  const { theme } = useTheme();
   const logo = theme === "light" ? logoLightSvg : logoSvg;
   const { fontSizeBase, fontSizeProse, setFontSizeBase, setFontSizeProse } = useFontSize();
   const aboutRef = useRef<HTMLDivElement>(null);
@@ -212,9 +212,9 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   };
 
   const cycleTheme = () => {
-    // 循环仅在内置三档间轮换（插件主题时 idx=-1 → 回 light）。
-    const idx = themeOrder.indexOf(isBuiltinTheme(theme) ? theme : "light");
-    setTheme(themeOrder[(idx + 1) % themeOrder.length]);
+    // Fix1: 点击直接跳转外观页（替代原循环切换）。
+    onNavigate("manage");
+    setTimeout(() => openManagePage("appearance"), 500);
   };
 
   const scheduleAboutClose = () => {
@@ -245,12 +245,12 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   // 需求14 测试期修复（P3/B5 连带）：Theme 值域已含插件主题 id——标题栏
   // 主题按钮查表对非内置值兜底（原 Record<Theme> 索引 undefined 解构崩溃：
   // 切到主题插件即整页报错「Cannot destructure property 'icon'」）。
+  // Fix1: 外观按钮不再显示当前主题名——统一入口跳转外观页。
   const themeMeta: { icon: typeof Sun; labelKey: string; fallback?: string } =
     isBuiltinTheme(theme)
       ? themeConfig[theme]
       : { icon: Palette, labelKey: "theme.pluginTheme", fallback: "主题插件" };
-  const { icon: ThemeIcon } = themeMeta;
-  const themeLabel = t(themeMeta.labelKey, { defaultValue: themeMeta.fallback });
+  void themeMeta; // 保留类型引用供未来恢复显示
 
   return (
     <div
@@ -306,10 +306,10 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
         <button
           onClick={cycleTheme}
           className="h-7 px-3 rounded-md flex items-center gap-1.5 text-xs transition-fast text-muted-foreground hover:bg-accent/30 hover:text-foreground"
-          title={themeLabel}
+          title="外观设置"
         >
-          <ThemeIcon className="h-3.5 w-3.5 text-[var(--icon-theme)]" />
-          <span>{themeLabel}</span>
+          <Palette className="h-3.5 w-3.5 text-[var(--icon-theme)]" />
+          <span>外观</span>
         </button>
         <div className="relative" ref={fontRef}>
           <button
