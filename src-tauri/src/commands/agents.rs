@@ -539,6 +539,34 @@ pub(crate) struct PluginReadFile {
 }
 
 /// 读取插件源码文件（需求14 M4 G9 源码视图/编辑数据源）。
+/// 需求14 补齐：保存主题资产文件（背景图等）——base64 解码写入插件目录。
+#[tauri::command]
+pub(crate) fn plugin_save_theme_asset(
+    plugin_id: String,
+    file_name: String,
+    base64: String,
+) -> Result<(), String> {
+    let dir = agent::plugin::composed_plugins_dir().join(&plugin_id);
+    if !dir.is_dir() {
+        return Err(format!("plugin directory not found: {}", dir.display()));
+    }
+    // 安全校验：仅允许常见图片扩展名，拒绝路径分隔。
+    let ext = file_name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    if !["jpg", "jpeg", "png", "webp", "gif", "svg"].contains(&ext.as_str()) {
+        return Err(format!("unsupported asset type: .{ext} (allowed: jpg/png/webp/gif/svg)"));
+    }
+    if file_name.contains('/') || file_name.contains('\\') || file_name.contains("..") {
+        return Err("invalid file name".to_string());
+    }
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(&base64).map_err(|e| format!("base64 decode: {e}"))?;
+    if bytes.len() > 10 * 1024 * 1024 {
+        return Err("asset too large (max 10MB)".to_string());
+    }
+    crate::util::atomic_write(&dir.join(&file_name), &bytes)
+        .map_err(|e| format!("cannot write {file_name}: {e}"))
+}
+
 /// 需求14 补齐（GUI 主题向导）：写插件目录内的 theme.css——向导产出的
 /// 颜色配置落盘（与 hybrid_plugin_save 配合：先 save 存 TOML，再此写 CSS）。
 #[tauri::command]
