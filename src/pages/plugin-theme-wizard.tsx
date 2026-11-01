@@ -133,6 +133,12 @@ export function PluginThemeWizard({ open, onOpenChange, onCreated }: {
   const cssText = useMemo(() => {
     const lines: string[] = [`[data-jishu-theme="${id}"] {`];
     for (const f of ALL_COLOR_FIELDS) {
+      // 有背景图时，全局底色改为半透明——否则子元素 bg-background 不透明
+      // 会完全遮住根元素上的 background-image。
+      if (f.key === 'background' && cfg.bgImage) {
+        lines.push(`  ${f.cssVar}: transparent;`);
+        continue;
+      }
       lines.push(`  ${f.cssVar}: ${cfg.colors[f.key]};`);
     }
     if (cfg.bgImage) {
