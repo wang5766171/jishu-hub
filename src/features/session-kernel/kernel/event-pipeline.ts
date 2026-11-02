@@ -49,6 +49,11 @@ import { devLog } from "@/lib/dev-log";
 /** v0.9.4 需求6 v2：AI 标题生成前端触发一次守卫（会话 id 维度，进程内）。 */
 const titledOnce = new Set<string>();
 
+/** v0.9.6 需求6 F6：伪完成守卫兜底定时器（会话 key 维度，进程内）——
+ * 跳过的 turn_complete 若永远等不到真实回复，5s 后强制收口空回合
+ *（否则流状态无人 drop，前端永卡「思考中」）。 */
+const spuriousGuardTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 export interface AgentEventPipelineDeps {
   // —— refs（监听体只读 .current）——
   activeIdRef: MutableRefObject<string | null>;
@@ -468,6 +473,43 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             && hasNoReplyText
             && !explicitFailure
           ) {
+            // v0.9.6 需求6 F6：伪完成跳过兜底——跳过后若真实回复永远不来
+            //（空回合已 settle / 事件流断裂），流状态无人 drop → 前端永卡
+            // 「思考中」。挂 5s 定时器：期间仍无任何文本则强制收口（提交
+            // pendingUserMessage + drop 流）；有文本说明真回复已开始，取消。
+            // 每 key 单定时器，连续伪完成跳过刷新而非叠加。
+            const guardKey = finalKey ?? cid;
+            const prev = spuriousGuardTimers.get(guardKey);
+            if (prev) clearTimeout(prev);
+            spuriousGuardTimers.set(guardKey, setTimeout(() => {
+              spuriousGuardTimers.delete(guardKey);
+              const st = streamStore.getState(cid);
+              if (!st) return; // 已被正常路径/停止收口
+              if (st.text.length || st.thinking.length) return; // 真回复已开始
+              devLog("pipeline", "伪完成兜底触发：5s 无回复文本，强制收口空回合", {
+                session: cid, finalKey,
+              });
+              deps.pendingReplyStartedAtRef.current.delete(guardKey);
+              deps.pendingReplyStartedAtRef.current.delete(cid);
+              if (st.pendingUserMessage) {
+                const base =
+                  getCachedSessionMessages(finalKey)
+                  ?? getCachedSessionMessages(cid)
+                  ?? [];
+                const updated = [...base, {
+                  role: "user" as const,
+                  content: [{ type: "text" as const, text: st.pendingUserMessage }],
+                  timestamp: Date.now(),
+                }];
+                setCachedSessionMessages(finalKey, updated);
+                if (cid !== finalKey) setCachedSessionMessages(cid, updated);
+                const viewed = deps.selectedSessionRef.current;
+                if (viewed === cid || viewed === finalKey) {
+                  deps.setSessionMessages(updated);
+                }
+              }
+              streamStore.drop(cid);
+            }, 5000));
             continue;
           }
           const isNewSessionStream =
@@ -798,6 +840,16 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // forcing a synchronous flush here can remove the live row before
           // React commits its formal Markdown replacement.
           streamStore.drop(cid);
+          // v0.9.6 需求6 F6：真实收口已发生——撤销伪完成兜底定时器（防误收
+          // 口后续回合的流）。
+          {
+            const guardKey = finalKey ?? cid;
+            const guardTimer = spuriousGuardTimers.get(guardKey);
+            if (guardTimer) {
+              clearTimeout(guardTimer);
+              spuriousGuardTimers.delete(guardKey);
+            }
+          }
           deps.abortLocalCommitRef.current.delete(finalKey);
           deps.abortLocalCommitRef.current.delete(cid);
           if ((viewed === cid || viewed === finalKey) && shouldKeepFollowingOutput) {
