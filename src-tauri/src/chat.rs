@@ -26,6 +26,10 @@ pub struct ChatProcess {
     /// 长驻进程的 --model/--provider/通道 env 在 spawn 时固定，GUI 切换配置
     /// 只落盘不触达旧进程——发送时比对签名，漂移且回合空闲则回收重拉。
     pub spawn_signature: String,
+    /// v0.9.6 需求4：所属项目编码（encode_project_path；标题栏项目标签据此
+    /// 归属——chat_active_sessions 返回给前端）。orchestrator 镜像条目无
+    /// 项目上下文，填空串。
+    pub project_encoded: String,
 }
 
 pub struct ChatState {
@@ -426,6 +430,9 @@ pub async fn send_message(
     message: String,
     model_override: Option<(String, String)>,
 ) -> Result<ChatSession, String> {
+    // v0.9.6 需求4：项目编码先缓存（project_path 随后 move 进 turn 请求，
+    // 进程表条目需要它做项目归属）。
+    let spawn_project_encoded = crate::project::encode_project_path(&project_path);
     log::info!(
         "send_message: agent={}, project={}, session={:?}, message_len={}",
         agent_id,
@@ -579,6 +586,7 @@ pub async fn send_message(
             stdin: handle.stdin.clone(),
             acp: handle.acp.clone(),
             spawn_signature,
+            project_encoded: spawn_project_encoded,
         };
         s.processes
             .insert(handle.session_id.clone(), process.clone());
@@ -1083,6 +1091,7 @@ async fn spawn_resume_session_process(
         stdin: None,
         acp: Some(acp.clone()),
         spawn_signature,
+        project_encoded: crate::project::encode_project_path(project_path),
     };
     {
         let chat_state = app.state::<Mutex<ChatState>>();
@@ -1126,6 +1135,40 @@ pub fn chat_turn_active(app: AppHandle, session_id: String) -> bool {
         },
         None => false,
     }
+}
+
+/// v0.9.6 需求4：全局活跃回合会话清单（标题栏项目标签的数据源）。
+/// 遍历进程表返回 turn_active 的条目（含项目归属编码）；turn_active 判据
+/// 与 chat_turn_active 同源（ACP/Pi/Codex 连接循环标志；CLI 无 acp 的
+/// 条目以「进程存在」等价——回合结束即被 on_finish 移除）。编排器镜像
+/// 条目（project_encoded 空）跳过——无项目归属，不参与标签聚合。
+#[tauri::command]
+pub fn chat_active_sessions(app: AppHandle) -> Vec<ActiveChatSession> {
+    let chat_state = app.state::<Mutex<ChatState>>();
+    let Ok(state) = chat_state.lock() else {
+        return Vec::new();
+    };
+    state
+        .processes
+        .iter()
+        .filter(|(_, process)| !process.project_encoded.is_empty())
+        .filter(|(_, process)| match &process.acp {
+            Some(acp) => acp.turn_active(),
+            None => true,
+        })
+        .map(|(session_id, process)| ActiveChatSession {
+            session_id: session_id.clone(),
+            agent_id: process.agent_id.clone(),
+            project_encoded: process.project_encoded.clone(),
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ActiveChatSession {
+    pub session_id: String,
+    pub agent_id: String,
+    pub project_encoded: String,
 }
 
 /// v0.8.0 需求10：读取会话累计用量（SQLite 权威来源；无记录返回全零行）。

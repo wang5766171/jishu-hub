@@ -27,6 +27,10 @@
   "nav": {
     "config": "管理"
   },
+  "titlebar": {
+    "closeProject": "关闭当前项目",
+    "switchToProject": "切换到「{{name}}」项目的对话"
+  },
   "manage": {
     "back": "返回工作区",
     "groupWorkspace": "工作区",

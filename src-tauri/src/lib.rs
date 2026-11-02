@@ -259,6 +259,8 @@ pub fn run() {
                                             acp: Some(control),
                                             // 节点会话由编排器自管，签名未知 → 跳过漂移检测。
                                             spawn_signature: String::new(),
+                                            // v0.9.6 需求4：编排器节点会话无项目上下文。
+                                            project_encoded: String::new(),
                                         },
                                     );
                                 }
@@ -482,6 +484,8 @@ pub fn run() {
             chat::compact_agent_session,
             chat::fork_agent_session,
             chat::chat_turn_active,
+            // v0.9.6 需求4：全局活跃回合会话清单（标题栏项目标签数据源）。
+            chat::chat_active_sessions,
             chat::get_session_usage,
             chat::get_agent_auto_compaction,
             chat::set_agent_auto_compaction,

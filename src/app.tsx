@@ -6,6 +6,7 @@ import { lazy, Suspense } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { useTranslation } from "react-i18next";
 import { Copy, Minus, Pin, PinOff, Settings, Square, Sun, Palette, Moon, Info, Type, X } from "lucide-react";
+import { ProjectTabs } from "@/components/titlebar/project-tabs";
 import logoSvg from "@/assets/logo.svg";
 import logoLightSvg from "@/assets/logo-light.svg";
 import { Github } from "@/components/icons/github";
@@ -109,7 +110,18 @@ function LoadingOverlay({ label }: { label?: string }) {
   );
 }
 
-function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; onNavigate: (page: Page) => void; disabled?: boolean }) {
+function TitleBar({
+  currentPage,
+  onNavigate,
+  disabled,
+  tabs,
+}: {
+  currentPage: Page;
+  onNavigate: (page: Page) => void;
+  disabled?: boolean;
+  /** v0.9.6 需求4：标题栏项目标签（中间区渲染；由 AppContent 组装数据）。 */
+  tabs?: React.ReactNode;
+}) {
   const { t } = useTranslation();
   const [pinned, setPinned] = useState(false);
   const [version, setVersion] = useState("");
@@ -407,7 +419,11 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
           <span>{pinned ? t("about.unpin") : t("about.pin")}</span>
         </button>
       </div>
-      <div className="min-w-8 flex-1 self-stretch" onDoubleClick={toggleMaximizeWindow} />
+      <div className="flex min-w-8 flex-1 self-stretch items-stretch" onDoubleClick={toggleMaximizeWindow}>
+        {/* v0.9.6 需求4：项目标签条（类浏览器 tab）——组件内部交互区已设
+            no-drag，其余空白保留窗口拖拽 + 双击最大化。 */}
+        {tabs}
+      </div>
       {/* 需求2（v0.9.4）：dev 窗口显著标识——开发实例与安装版同图标同标题，
           易误操作；dev 下右上角常驻徽标 + 窗口标题后缀，生产构建零变化。 */}
       {import.meta.env.DEV && (
@@ -621,6 +637,24 @@ useEffect(() => {
     return () => { cancelled = true; unlistenFn?.(); };
   }, [chatAgentId, projects, setChatAgent]);
 
+  // v0.9.6 需求4：标题栏项目标签切换——复刻 floating-restore 模式
+  //（上方 floating-restore 处理器先例）：直接 setCurrentProject + 定位
+  // 会话，不经管理页中转（ChatPage 不卸载，事件管线持续存活，跨项目流式
+  // 状态不断链）。
+  const handleTabSwitchToProject = useCallback((project: Project, sessionId: string | null, agentId: string | null) => {
+    if (agentId && agentId !== chatAgentId) {
+      setChatAgent(agentId);
+    }
+    setCurrentProject(project);
+    invokeCommand("save_last_project", { encodedName: project.encoded_name }).catch(console.error);
+    setCurrentPage("chat");
+    if (sessionId) {
+      setTimeout(() => setNavigateToSession(sessionId), 100);
+      setTimeout(() => setNavigateToSession(null), 500);
+    }
+    getCurrentWindow().setFocus().catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
+  }, [chatAgentId, setChatAgent]);
+
   // Diagnostic: surface the REAL transport dispatch path in the F12 console so
   // the actual command route (ACP vs CLI) is inspectable at runtime — this is
   // the subprocess genuinely spawned, not the probe/declarative surface. No UI;
@@ -661,7 +695,20 @@ useEffect(() => {
     // 工具的相对路径需要当前项目根，只有这里持有 currentProject。
     <FileViewerProvider projectPath={currentProject?.path ?? null}>
       <div className="flex flex-col h-screen bg-background relative">
-        <TitleBar currentPage={currentPage} onNavigate={setCurrentPage} disabled={blockingLoading} />
+        <TitleBar
+          currentPage={currentPage}
+          onNavigate={setCurrentPage}
+          disabled={blockingLoading}
+          tabs={
+            <ProjectTabs
+              currentProject={currentProject}
+              projects={projects}
+              onSwitchToProject={handleTabSwitchToProject}
+              onCloseCurrentProject={handleSwitchProject}
+              disabled={blockingLoading}
+            />
+          }
+        />
       <ViewerPushRow>
         <Suspense fallback={<LoadingOverlay />}>
           {currentPage === "chat"

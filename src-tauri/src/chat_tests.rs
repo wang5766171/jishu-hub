@@ -374,6 +374,7 @@ mod remove_entries_tests {
             stdin: None,
             acp: None,
             spawn_signature: String::new(),
+            project_encoded: String::new(),
         }
     }
 
