@@ -55,9 +55,9 @@
 |------|-----|
 | 上游仓库 | `https://github.com/earendil-works/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支 | `release_v1.1.0-13` |
+| 当前维护分支 | `release_v1.4.0-13` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `release_v1.1.0-13` |
+| `.gitmodules` branch | `release_v1.4.0-13` |
 
 ## 1.5 日常源码变动流程
 
@@ -118,6 +118,62 @@
 ---
 
 # 第二部分：改动记录
+
+## 2026-11-02 | 合并上游 v1.4.0（release_v1.4.0-13）——jishu-hub v0.9.6 需求 5
+
+**版本**：上游从 `v1.1.0` 跨越 `v1.2.0`/`v1.3.0` 到 `v1.4.0`（3 个 minor tag、225 commits、906 files、+73831/-42639）。按版本规则（§1.3），Pi 版本升至 `1.4.0`、自研尾号保持 `-13`，完整版本号 `1.4.0-13`，分支 `release_v1.4.0-13`。合并提交 `e876342c6` + 适配提交 `488db7d39`。**fork 分支已推送远端**。（上游已有 v1.5.0 tag——308 commits/1578 files 含 chord 子系统大改，未经 D1 评估不合并，留后续版本候选。）
+
+### 合并动机（用户指令）
+
+v0.9.6 需求 5「合并最新版本pi」。D1 评估（docs/v0.9.6/需求5/01）先行并裁决**排在需求 6 修复之后**：上游未修 LLM stall/ack 语义域（rpc-mode/session-manager/cli 零变更），hub 侧修复不白做且后合并冲突面小。
+
+### 上游重点变更（与自研面交互，D1 七领域）
+
+1. **rpc-mode 全目录/session-manager/cli 零变更**——hub 依赖的 RPC 协议、spawn 命令行、JSONL 落盘完全兼容。
+2. **v1.2.0 breaking ×4**：busy 语义提前（run 启动期含 before_agent_start 即 !isIdle，sendMessage 排队合流）；`before_agent_start` 事件 union 化（messageType: user|custom）；theme schema 迁 .ts（json 删除）；**experimental client/server/plugin 栈整体删除**（pi-client/protocol/server 三包不再发布）。
+3. **v1.4.0 compaction 语义**：摘要不再以 0.8×reserveTokens 封顶（改模型输出上限，#9512）；`reserveTokens` 弱化为仅控触发；settings **schema 化**（settings-schema.ts TypeBox + settings-defaults.ts，发布 JSON Schema）；`CompactionSettings/CompactionModelOverride` 接口迁出 settings-manager。
+4. settings 新增键：sessionShareDestination/retry.provider.*/branchSummary.skipPrompt/terminal 系列等。
+5. LLM API 层无通用 stall 检测（仅 Mistral header 60s/OpenRouter 列表超时）——**hub 侧分级看门狗（需求6 F2）是必要且不重复的**。
+6. subagent/扩展：v1.2.0 删 experimental 三包；extensions +343/-212（reachesTools、并发 dialog 栈化、late-registration）。
+
+### 冲突解决（23 文件）
+
+| 类别 | 文件 | 解法 |
+|---|---|---|
+| 机械版本号 | 12 个 packages/*/package.json + 根 package.json | 版本统一 `1.4.0-13`；内部依赖精确 pin `1.4.0-13`（fork 策略——裸 `1.4.0` 会解析到 npm registry 上游版而非 workspace 本地） |
+| 删包接受 | packages/{client,protocol,server}/package.json、theme-schema.json | 接受上游删除（v1.2.0 experimental 退役；fork 36aa34c73 已提前降 devDeps 方向一致）；coding-agent 残余三行 devDeps 删除 |
+| 语义融合 | settings-manager.ts / settings-schema.ts / settings-defaults.ts | **thresholdPercent 融进上游新 schema 结构**：两处 TypeBox 字段（1-99）+ defaults 90 + DEFAULT_COMPACTION_TOKEN_SETTINGS 引 SETTINGS_DEFAULTS（fork 百分比触发语义保留，接口形态对齐上游） |
+| 语义对齐 | compaction/compaction.ts | 三处 reserveTokens 实参随上游签名删除；fork「摘要预算随阈值换算」块退役（上游摘要不封顶，预算概念消失；触发语义仍由 shouldCompact 的 thresholdPercent 承担）；本地 CompactionSettings 加 reserveTokens 可选字段（上游 settings 层仍传该键）+ thresholdPercent 改可选（上游测试不传，shouldCompact 回退默认 90） |
+| 测试对齐 | compaction-summary-reasoning / agent-session-compaction-model-overrides / virtual-models | 断言取上游（预算语义退役）；settings 传参补齐 |
+| lock | package-lock ×2 + install-lock | 上游 lock 为基底重生成；install-lock 121 包重生成（PI_ALLOW_LOCKFILE_CHANGE 确认——openai 6.40→7.19 钉扎迁移 + photon 新增） |
+
+### 合并后适配（两提交）
+
+1. `e876342c6` 内含：**entry-graphs 检查脚本 Windows 路径归一化**（fork 适配：`path.relative` 返回反斜杠致 `allow` 后缀匹配失效——上游 allow 规则 v1.2+ 新增，Windows 上必炸）；**cache-retention 测试采纳上游 main 修复**（v1.4.0 tag 自身不自洽：测试引 deepseek-v4-flash，模型目录已更名 v4.1-flash）；models.generated 恢复上游锁定版（重生成版与上游测试错位）。
+2. `488db7d39`：**mcp-extension BOM 测试目录常量化**（上游新用例硬编码 `.pi`，fork 品牌目录为 CONFIG_DIR_NAME——与 88aa3c523 同款适配）。
+
+### 保留自研（上游 v1.4.0 均未实现，逐一核实——D0 退役判据零命中）
+
+品牌与目录统一 jishu（piConfig/configDir/命令名/文案）、compaction thresholdPercent 百分比触发 + set_auto_compaction 热推、jishu-tool-approval 审批扩展 + getSetting API、工具批次守卫、request_user_input→扩展化（multiSelect API）、esbuild 打包收敛（build-bundle 清单 + runtime-deps.json）、内部依赖精确 pin + openai 7.19.0 钉扎、队列续跑状态暴露、mcp 测试品牌常量化。
+
+### 对 jishu-hub v0.9.6 需求的影响
+
+- **需求 6（已实施）**：rpc-mode 零变更 → hub 看门狗/落盘修复不受影响；「busy 语义提前」需 dev 回归验证（started 后 sendMessage 合流行为 vs hub 三态分发交互）。
+- **需求 1/2（已实施）**：compaction 事件流（compaction_start/end 形态）上游未变；`_checkCompaction` 仍在 started 之前——hub 前端状态逻辑与 compact 兜底不受影响。
+- **需求 3（已实施）**：session-manager 零变更 → sessions 目录编码不变，过滤逻辑兼容。
+- **hub 扩展**（审批/批次守卫等部署扩展）：`before_agent_start` union 化——hub 现有扩展若监听该事件需按 `{messageType, ...}` 适配（dev 冒烟确认）。
+- 上游 pi-subagents probe --no-session 建议：pi-subagents 是独立 npm 包（非本 fork），随 hub PI_EXTENSION_PACKAGES 升级另议。
+
+### 验证
+
+- pi 侧：pre-commit 全链过（biome/pinned-deps/runtime-deps/ts-imports/entry-graphs/install-lock/tsc/browser-smoke）；`tsgo --noEmit` 0 error；定向 vitest 全过（compaction-summary-reasoning/agent-session-compaction-model-overrides/virtual-models/settings-manager-compaction 62 用例 + mcp-extension 29 用例）；`cli --version` → `1.4.0-13`。
+- 主仓：cargo test / npm run build（pack-pi 断言）见主仓提交。
+
+### 主仓配套（jishu-hub 同步落地）
+
+- `src-tauri/src/agent/jishu_self/mod.rs`：`PI_AGENT_VERSION` 1.1.0-13 → **1.4.0-13**。
+- `.gitmodules`：branch → `release_v1.4.0-13`；submodule 指针随本次提交。
+- 文档：docs/v0.9.6/需求5-合并pi上游v1.4.0/（01 D1 评估含本合并记录回写）。
 
 ## 2026-10-08 | 合并上游 v1.1.0（release_v1.1.0-13）——jishu-hub v0.9.5 需求 11
 
