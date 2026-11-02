@@ -361,3 +361,74 @@ mod image_dispatch_tests {
         assert_eq!(hint, "工具：mcp__jishu_hub__p__t；模型：prov/m");
     }
 }
+
+/// v0.9.6 需求6 F1：进程表删除的竞态守卫单测（纯函数 remove_process_entries_from）。
+mod remove_entries_tests {
+    use crate::chat::{remove_process_entries_from, ChatProcess, ChatState};
+    use std::collections::HashMap;
+
+    fn proc(pid: u32) -> ChatProcess {
+        ChatProcess {
+            agent_id: "jishu-self".into(),
+            process_id: pid,
+            stdin: None,
+            acp: None,
+            spawn_signature: String::new(),
+        }
+    }
+
+    fn state_with(entries: &[(&str, u32)]) -> ChatState {
+        ChatState {
+            processes: entries
+                .iter()
+                .map(|(sid, pid)| (sid.to_string(), proc(*pid)))
+                .collect::<HashMap<_, _>>(),
+        }
+    }
+
+    /// 竞态主场景：漂移回收后旧进程 on_finish 晚到——键上是新 pid 条目，不得误删
+    ///（误删后果：abort_chat 查无条目 → 卡死后停止无效）。
+    #[test]
+    fn stale_finish_does_not_delete_new_entry() {
+        let mut st = state_with(&[("sess-1", 200)]);
+        remove_process_entries_from(&mut st, Some(100), Some("sess-1"));
+        assert!(
+            st.processes.contains_key("sess-1"),
+            "旧 pid 的 on_finish 不得删掉新进程条目"
+        );
+        assert_eq!(st.processes["sess-1"].process_id, 200);
+    }
+
+    /// 正常删除：键上就是本次 pid 的条目。
+    #[test]
+    fn own_entry_removed_by_pid_and_sid() {
+        let mut st = state_with(&[("sess-1", 100), ("other", 300)]);
+        remove_process_entries_from(&mut st, Some(100), Some("sess-1"));
+        assert!(!st.processes.contains_key("sess-1"));
+        assert!(st.processes.contains_key("other"));
+    }
+
+    /// pid retain 语义不变：同 pid 双键（pending id + 真实 id）全删。
+    #[test]
+    fn dual_keys_same_pid_all_removed() {
+        let mut st = state_with(&[("pending-1", 100), ("real-id", 100)]);
+        remove_process_entries_from(&mut st, Some(100), Some("real-id"));
+        assert!(st.processes.is_empty(), "同 pid 双键应全部删除");
+    }
+
+    /// process_id=None 维持旧语义：仅按 sid 删（不守卫）。
+    #[test]
+    fn none_pid_removes_by_sid_only() {
+        let mut st = state_with(&[("sess-1", 200)]);
+        remove_process_entries_from(&mut st, None, Some("sess-1"));
+        assert!(!st.processes.contains_key("sess-1"));
+    }
+
+    /// 键不存在时幂等。
+    #[test]
+    fn missing_key_is_noop() {
+        let mut st = state_with(&[("sess-1", 200)]);
+        remove_process_entries_from(&mut st, Some(999), Some("nope"));
+        assert_eq!(st.processes.len(), 1);
+    }
+}

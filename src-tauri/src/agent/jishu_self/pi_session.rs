@@ -84,6 +84,8 @@ pub(crate) fn delete_pi_session_in_dir(session_dir: &Path, session_id: &str) -> 
     if sidecar.is_file() {
         let _ = fs::remove_file(&sidecar);
     }
+    // v0.9.6 需求6 F3：会话删除联动清理 pending 记录（防孤儿条目）。
+    crate::pending_messages::drop_session(session_id);
     Ok(())
 }
 
@@ -108,7 +110,40 @@ pub(crate) fn load_pi_session_messages(
         if path.extension().map(|ext| ext == "jsonl").unwrap_or(false) {
             if let Some(session) = load_pi_session(&path) {
                 if session.id == session_id {
-                    return Ok(session.messages);
+                    let mut messages = session.messages;
+                    // v0.9.6 需求6 F3：与 hub 侧 pending 记录对账——已落盘的
+                    // pending 清除（ack 丢失兜底）；未落盘的（pi 受理后回合未
+                    // 启动：压缩预检/钩子挂死、进程被杀）并入消息列表尾部，
+                    // 重启后用户消息不丢。
+                    let persisted_user_texts: Vec<String> = messages
+                        .iter()
+                        .filter(|m| m.role == "user")
+                        .map(|m| {
+                            m.content
+                                .iter()
+                                .filter_map(|b| match b {
+                                    crate::session::ContentBlock::Text { text, .. } => {
+                                        Some(text.clone())
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("")
+                        })
+                        .collect();
+                    for pending in
+                        crate::pending_messages::dedupe_against(session_id, &persisted_user_texts)
+                    {
+                        messages.push(crate::session::Message {
+                            role: "user".to_string(),
+                            content: vec![crate::session::ContentBlock::Text {
+                                text: pending.content,
+                                tool_ids: Vec::new(),
+                            }],
+                            timestamp: Some(pending.sent_at),
+                        });
+                    }
+                    return Ok(messages);
                 }
             }
         }

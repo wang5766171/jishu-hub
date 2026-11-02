@@ -156,15 +156,19 @@ fn spawn_codex_app_server_session_inner(
     let supports_interaction_mid_turn = Arc::new(AtomicBool::new(true));
     // v0.8.0 需求7：codex turn/start 在连接初始化后立即发出（初始即 Prompting）。
     let turn_active = Arc::new(AtomicBool::new(true));
+    // v0.9.6 需求6 F4：收尾信号（与 pi/ACP runtime 同款，漂移回收等待用）。
+    let (finished_tx, _) = tokio::sync::watch::channel(false);
 
     let control = AcpControl {
         tx: cmd_tx,
         acp_session_id: acp_session_id.clone(),
         supports_interaction_mid_turn: supports_interaction_mid_turn.clone(),
         turn_active: turn_active.clone(),
+        finished: Arc::new(finished_tx),
     };
     let control_clone = control.clone();
     let turn_active_for_exit = turn_active.clone();
+    let finished_for_exit = control.finished.clone();
     // v0.9.0 需求5：连接循环与错误出口共享的用量累积器。
     let usage_cell = Arc::new(UsageCell::new(None));
     let usage_cell_for_loop = usage_cell.clone();
@@ -242,6 +246,8 @@ fn spawn_codex_app_server_session_inner(
 
         // v0.8.0 需求7：循环已退出（正常或出错），回合必然不再进行。
         turn_active_for_exit.store(false, Ordering::Relaxed);
+        // v0.9.6 需求6 F4：通知等待方（漂移回收）收尾完成。
+        let _ = finished_for_exit.send(true);
 
         on_finish();
     });

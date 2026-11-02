@@ -186,6 +186,9 @@ fn spawn_pi_rpc_session_inner(
 
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(8);
 
+    // v0.9.6 需求6 F4：收尾信号（true = 循环退出、进程已清理）。
+    let (finished_tx, _) = tokio::sync::watch::channel(false);
+
     let control = AcpControl {
         tx: cmd_tx,
         acp_session_id: acp_session_id.clone(),
@@ -194,10 +197,13 @@ fn spawn_pi_rpc_session_inner(
         // （true）；resume-fork 形态 first_message=None，停在 Idle 等待
         // ForkSession（false）。
         turn_active: Arc::new(AtomicBool::new(first_message.is_some())),
+        finished: Arc::new(finished_tx),
     };
     let control_clone = control.clone();
     let turn_active_for_loop = control.turn_active.clone();
     let turn_active_for_exit = control.turn_active.clone();
+    // v0.9.6 需求6 F4：退出路径发收尾信号（watch sender 克隆进清理任务）。
+    let finished_for_exit = control.finished.clone();
 
     tauri::async_runtime::spawn(async move {
         let result = pi_rpc_connection_loop(
@@ -304,6 +310,9 @@ fn spawn_pi_rpc_session_inner(
         // v0.8.0 需求7：循环已退出（正常或出错），回合必然不再进行。
         turn_active_for_exit.store(false, Ordering::Relaxed);
 
+        // v0.9.6 需求6 F4：通知等待方（漂移回收）收尾完成。
+        let _ = finished_for_exit.send(true);
+
         on_finish();
     });
 
@@ -320,10 +329,66 @@ enum LoopState {
     CancelPending { pending_prompt: Option<String> },
 }
 
-/// v0.9.5 需求2 测试期：prompt 回合启动 watchdog——prompt 发出后该时限内
-/// 无任何 pi 事件（连 message_start 都没有）视为回合未启动（实测 01a0db68：
-/// 消息不落盘、模型请求未发出、前端思考中 5.5 分钟）。事件到达即清零。
-const PROMPT_ACK_TIMEOUT: Duration = Duration::from_secs(20);
+/// v0.9.6 需求6 F2：回合分级看门狗相位。
+/// 取代 v0.9.5 的单闹钟 `prompt_ack_at`（20s，response 到达即解除——实测该
+/// 等价不成立：pi 的 prompt response success 只代表 preflight「started」，
+/// 回合真正启动（压缩预检/before_agent_start/LLM 首请求）之前的静默无人
+/// 看护，命中即永停 Prompting、前端永「思考中」且消息不落盘）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WatchdogPhase {
+    /// prompt 已写 stdin，等 rpc response。response 之前 pi 可能先跑自动压缩
+    /// 预检（summarize 的 LLM chunk 不外发 stdout——对 hub 整段静默，大上下文
+    /// +思考模型分钟级且无 transport 上限约束）+ auth 刷新（≤15s）+
+    /// before_agent_start 钩子（内置 MCP ≤10s；第三方理论无界）→ 宽窗。
+    AwaitResponse,
+    /// response(started) 已到，等首个回合事件。started→agent_start/turn_start
+    /// 之间无 I/O（仅扩展微任务链，MCP 重连秒级）→ 紧凑窗。
+    AwaitTurnStart,
+    /// 回合事件已到。正常静默的两硬上限：请求建立期（undici headersTimeout
+    /// 300s）与流分块间隙（bodyTimeout 300s），超时 pi 必发 error 事件 →
+    /// 兜底窗略高于锚点；compaction 括号内（turn 间压缩）summarize 无界 → 宽窗。
+    InTurn,
+}
+
+/// v0.9.6 需求6 F2：各相位窗口（依据见 WatchdogPhase 注释；触发均出
+/// recoverable Error 引导重发，devlog 留证可调窗）。
+const WATCHDOG_AWAIT_RESPONSE: Duration = Duration::from_secs(300);
+const WATCHDOG_AWAIT_TURN_START: Duration = Duration::from_secs(15);
+const WATCHDOG_IN_TURN: Duration = Duration::from_secs(360);
+const WATCHDOG_IN_COMPACTION: Duration = Duration::from_secs(900);
+
+/// v0.9.6 需求6 F2：窗口选择（纯函数，供单测）。
+fn turn_watchdog_window(phase: WatchdogPhase, in_compaction: bool) -> Duration {
+    match phase {
+        WatchdogPhase::AwaitResponse => WATCHDOG_AWAIT_RESPONSE,
+        WatchdogPhase::AwaitTurnStart => WATCHDOG_AWAIT_TURN_START,
+        WatchdogPhase::InTurn => {
+            if in_compaction {
+                WATCHDOG_IN_COMPACTION
+            } else {
+                WATCHDOG_IN_TURN
+            }
+        }
+    }
+}
+
+/// v0.9.6 需求6 F2：事件驱动的相位转移（纯函数，供单测）。
+/// 回合生命周期事件 → InTurn；compaction 括号事件保持当前相位（宽窄由
+/// in_compaction 标记控制）；其余事件（extension_ui_request 等）仅刷新不改相。
+fn watchdog_phase_on_event(phase: WatchdogPhase, event_type: &str) -> WatchdogPhase {
+    match event_type {
+        "agent_start"
+        | "turn_start"
+        | "message_start"
+        | "message_end"
+        | "tool_execution_start"
+        | "tool_execution_end"
+        | "agent_end"
+        | "agent_settled" => WatchdogPhase::InTurn,
+        _ => phase,
+    }
+}
+
 /// CancelPending（abort 后）收尾 watchdog——pi 滞留时 agent_settled 永不到
 ///（停止不了的兜底）——超时杀进程终结流。
 const CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -550,12 +615,15 @@ async fn pi_rpc_connection_loop(
     }
     on_session_resolved(&session_id);
 
-    // v0.9.5 需求2 测试期 watchdog 状态（绝对时刻）：
-    // - prompt_ack_at：prompt 发出后 20s 内未收到任何 pi 事件的判定线——
-    //   事件到达（回合启动）即清零；回合启动后的间隙（模型慢）不再计时。
+    // v0.9.6 需求6 F2：回合分级看门狗状态（相位 + 绝对时刻，事件到达刷新）：
+    // - turn_watchdog：AwaitResponse（等 response，宽窗——response 前可能先跑
+    //   压缩预检）→ AwaitTurnStart（response started 后等首个回合事件，紧凑窗）
+    //   → InTurn（回合事件流兜底窗；compaction 括号内宽窗）。取代 v0.9.5 的
+    //   prompt_ack_at 单闹钟（其「response 即解除」= 回合启动前静默盲区）。
     // - cancel_settle_at：abort 进入 CancelPending 后 15s 未 agent_settled
     //   的判定线——杀进程终结（pi 滞留时 turn_end(Aborted) 永不到）。
-    let mut prompt_ack_at: Option<tokio::time::Instant> = None;
+    let mut turn_watchdog: Option<(WatchdogPhase, tokio::time::Instant)> = None;
+    let mut in_compaction = false;
     let mut cancel_settle_at: Option<tokio::time::Instant> = None;
 
     // 3. Send first prompt. v0.8.0 需求1 A5：resume-fork 形态传 None——不发
@@ -573,7 +641,13 @@ async fn pi_rpc_connection_loop(
         )
         .await?;
         log::debug!("Pi RPC sent first prompt");
-        prompt_ack_at = Some(tokio::time::Instant::now() + PROMPT_ACK_TIMEOUT);
+        // v0.9.6 需求6 F3：受理即记录待确认消息（注入后文本，与 pi 落盘
+        // 内容一致；message_end(user) 时对账清除）。
+        crate::pending_messages::record(&session_id, &agent_id, &first_message);
+        turn_watchdog = Some((
+            WatchdogPhase::AwaitResponse,
+            tokio::time::Instant::now() + turn_watchdog_window(WatchdogPhase::AwaitResponse, false),
+        ));
         state = LoopState::Prompting;
     }
     // v0.8.0 需求10：经 Steer 命令注入的文本登记——用于区分 pi 回显的
@@ -630,7 +704,7 @@ async fn pi_rpc_connection_loop(
         };
         let next_deadline = [
             Some(idle_deadline),
-            prompt_ack_at,
+            turn_watchdog.map(|(_, deadline)| deadline),
             cancel_settle_at,
             flush_deadline,
         ]
@@ -656,11 +730,17 @@ async fn pi_rpc_connection_loop(
                                     "message": msg
                                 })).await?;
                                 log::info!("Pi RPC prompt sent to Pi ({} bytes)", msg.len());
-                                prompt_ack_at = Some(tokio::time::Instant::now() + PROMPT_ACK_TIMEOUT);
+                                // v0.9.6 需求6 F3：受理即记录（Idle 直发路径）。
+                                crate::pending_messages::record(&session_id, &agent_id, &msg);
+                                turn_watchdog = Some((
+                                    WatchdogPhase::AwaitResponse,
+                                    tokio::time::Instant::now()
+                                        + turn_watchdog_window(WatchdogPhase::AwaitResponse, false),
+                                ));
                                 state = LoopState::Prompting;
                                 devlog(
                                     "info",
-                                    "Prompt 直发 pi（Prompting，20s 看门狗武装）",
+                                    "Prompt 直发 pi（Prompting，AwaitResponse 看门狗武装）",
                                     &session_id,
                                     json!({ "bytes": msg.len() }),
                                 );
@@ -697,9 +777,9 @@ async fn pi_rpc_connection_loop(
                                     "type": "abort"
                                 })).await;
                                 // v0.9.5 三轮评审 P1-1：同 GUI 停止路径——进入
-                                // CancelPending 解除 prompt 看门狗（互斥，防双闹钟
+                                // CancelPending 解除回合看门狗（互斥，防双闹钟
                                 // 竞速时 ack 先检查误报失联并丢弃缓冲消息）。
-                                prompt_ack_at = None;
+                                turn_watchdog = None;
                                 cancel_settle_at =
                                     Some(tokio::time::Instant::now() + CANCEL_SETTLE_TIMEOUT);
                                 state = LoopState::CancelPending {
@@ -843,11 +923,11 @@ async fn pi_rpc_connection_loop(
                                     "type": "abort"
                                 })).await;
                                 log::info!("Pi RPC cancel sent (clear_queue + abort)");
-                                // v0.9.5 三轮评审 P1-1：进入停止善中即解除 prompt
-                                // 看门狗——两看门狗互斥（ack 只武装于 Idle/Prompting
-                                // 的「等回合启动」，CancelPending 的兜底职责归
-                                // settle 看门狗），否则停止后 20s 误报「pi 未响应」。
-                                prompt_ack_at = None;
+                                // v0.9.5 三轮评审 P1-1：进入停止善中即解除回合
+                                // 看门狗——两看门狗互斥（回合看门狗只武装于
+                                // Idle/Prompting 的「等回合推进」，CancelPending 的
+                                // 兜底职责归 settle 看门狗），否则停止后误报「pi 未响应」。
+                                turn_watchdog = None;
                                 cancel_settle_at =
                                     Some(tokio::time::Instant::now() + CANCEL_SETTLE_TIMEOUT);
                                 state = LoopState::CancelPending {
@@ -937,36 +1017,78 @@ async fn pi_rpc_connection_loop(
                             if cmd == "response" {
                                 let response_cmd = msg.get("command").and_then(|v| v.as_str()).unwrap_or_default();
                                 let success = msg.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-                                // v0.9.5 三轮评审 P1-1：response 到达（无论成败）=
-                                // pi 活着且已处理请求——解除 prompt 看门狗（事件类
-                                // 消息在下方统一清，response 不走那条路）。失败路径
-                                // 若不清：Error+TurnComplete 已发、state=Idle 后 20s
-                                // 看门狗仍会误触发一次「pi 未响应本轮」。
-                                prompt_ack_at = None;
+                                let disposition = msg
+                                    .get("data")
+                                    .and_then(|d| d.get("disposition"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                // v0.9.6 需求6 F2：response 不再「到达即解除」——
+                                // pi 的 prompt response success 只代表 preflight
+                                // 「started」（回合真正启动之前：压缩预检/
+                                // before_agent_start/LLM 首请求均在其后），解除即
+                                // 留下「永停 Prompting」盲区。按语义分流：
+                                // - prompt+started → AwaitTurnStart 紧凑窗（盯「受理
+                                //   后未开工」，started→首个回合事件无 I/O）
+                                // - prompt+queued（pi 原生排队，hub 当前策略不触发）
+                                //   → 挂 InTurn 窗（等当前回合事件流）
+                                // - prompt+handled（扩展吃掉，无回合）→ 解除
+                                // - steer/follow_up（注入当前回合不起新回合）→ 仅刷新
+                                // - 失败（Error+TurnComplete 已终结名单）→ 解除
+                                if success && response_cmd == "prompt" {
+                                    turn_watchdog = match disposition {
+                                        "started" => Some((
+                                            WatchdogPhase::AwaitTurnStart,
+                                            tokio::time::Instant::now()
+                                                + turn_watchdog_window(
+                                                    WatchdogPhase::AwaitTurnStart,
+                                                    in_compaction,
+                                                ),
+                                        )),
+                                        "queued" => Some((
+                                            WatchdogPhase::InTurn,
+                                            tokio::time::Instant::now()
+                                                + turn_watchdog_window(
+                                                    WatchdogPhase::InTurn,
+                                                    in_compaction,
+                                                ),
+                                        )),
+                                        _ => None, // handled / n/a：无回合将启动
+                                    };
+                                } else if success
+                                    && (response_cmd == "steer" || response_cmd == "follow_up")
+                                {
+                                    if let Some((phase, _)) = turn_watchdog {
+                                        turn_watchdog = Some((
+                                            phase,
+                                            tokio::time::Instant::now()
+                                                + turn_watchdog_window(phase, in_compaction),
+                                        ));
+                                    }
+                                } else {
+                                    turn_watchdog = None;
+                                }
 
                                 match response_cmd {
                                     "prompt" | "steer" | "follow_up" => {
                                         if success {
                                             // Prompt accepted, events will follow
                                             log::info!("Pi RPC response for {}: success=true", response_cmd);
-                                            // 需求11 追加三 C：pi 1.1.0 起 prompt/steer/follow_up
-                                            // 响应携带 per-input disposition（started/handled/
-                                            // queued）——hub 当前消息策略（Prompting 态
-                                            // abort+缓冲重发、不用 pi 原生排队）下恒为
-                                            // started，先记入日志供可观测/排障；若后续改用
-                                            // pi 原生 steer/follow_up 排队（08 文档 C 节
-                                            // 演进项），此处是反馈接入点。
-                                            let disposition = msg
-                                                .get("data")
-                                                .and_then(|d| d.get("disposition"))
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("n/a");
+                                            // 需求11 追加三 C：disposition 解析已上移至
+                                            // 看门狗分流处（v0.9.6 F2）；此处仅保留可观测日志。
                                             if response_cmd == "prompt" {
                                                 devlog(
                                                     "info",
                                                     "pi 受理 prompt（response success，等待回合启动）",
                                                     &session_id,
-                                                    json!({ "disposition": disposition }),
+                                                    json!({
+                                                        "disposition": if disposition.is_empty() { "n/a" } else { disposition },
+                                                        "watchdog": match turn_watchdog {
+                                                            Some((WatchdogPhase::AwaitTurnStart, _)) => "AwaitTurnStart",
+                                                            Some((WatchdogPhase::InTurn, _)) => "InTurn",
+                                                            Some((WatchdogPhase::AwaitResponse, _)) => "AwaitResponse",
+                                                            None => "disarmed",
+                                                        },
+                                                    }),
                                                 );
                                             }
                                         } else {
@@ -1418,6 +1540,32 @@ async fn pi_rpc_connection_loop(
                             }
                         }
 
+                        // v0.9.6 需求6 F3：pi 在 message_end(role=user) 时把用户
+                        // 消息 append 落盘（agent-session appendMessage）——这是
+                        // 「消息真实落盘」的权威信号，据此清除 hub 侧 pending
+                        // 记录（record 时为注入后文本，两侧内容一致精确对账）。
+                        if event_type == "message_end" {
+                            let role = msg
+                                .get("message")
+                                .and_then(|m| m.get("role"))
+                                .and_then(|v| v.as_str());
+                            if role == Some("user") {
+                                let text = msg
+                                    .get("message")
+                                    .and_then(|m| m.get("content"))
+                                    .and_then(|c| c.as_array())
+                                    .map(|blocks| {
+                                        blocks
+                                            .iter()
+                                            .filter_map(|b| b.get("text").and_then(|v| v.as_str()))
+                                            .collect::<Vec<_>>()
+                                            .join("")
+                                    })
+                                    .unwrap_or_default();
+                                crate::pending_messages::ack_persisted(&session_id, &text);
+                            }
+                        }
+
                         // v0.8.0 需求10：压缩事件入 usage_compaction 表（压缩
                         // 前后规模 + firstKeptEntryId 数据定位 + 摘要调用开销
                         // 并入总量），为后续会话索引等能力提供数据支撑。
@@ -1429,20 +1577,38 @@ async fn pi_rpc_connection_loop(
                             );
                         }
 
-                        // v0.9.5：任何 pi 事件到达 = pi 活着且（若在）回合已启动
-                        // ——清 prompt watchdog（回合启动后不再计时，防模型慢误杀）。
-                        prompt_ack_at = None;
+                        // v0.9.6 需求6 F2：任何 pi 事件到达 = pi 活着——刷新回合
+                        // 看门狗（按相位重算窗口，不再「到达即解除」）；compaction
+                        // 括号事件切换宽窄窗；回合生命周期事件把相位升到 InTurn。
+                        match event_type {
+                            "compaction_start" => in_compaction = true,
+                            "compaction_end" => in_compaction = false,
+                            _ => {}
+                        }
+                        if let Some((phase, _)) = turn_watchdog {
+                            let next_phase = watchdog_phase_on_event(phase, event_type);
+                            turn_watchdog = Some((
+                                next_phase,
+                                tokio::time::Instant::now()
+                                    + turn_watchdog_window(next_phase, in_compaction),
+                            ));
+                        }
                         if matches!(event_type, "agent_start" | "turn_start")
                             && !matches!(state, LoopState::CancelPending { .. })
                         {
                             // v0.9.5 需求2 测试期：settle 后晚到的 agent_start 会把
                             // Idle 翻回 Prompting（01a0d868 事故「路径 A」的签名）——
-                            // 此后无事件的 Prompting 是看门狗盲区。仅在翻转发生时
-                            // 打点（Prompting 内的常规 agent_start 不记，防噪声）。
+                            // v0.9.6 F2：翻转即武装 InTurn 看门狗（此前该路径是
+                            // 「翻转后无事件 = 看门狗盲区」，永停 Prompting）。
                             if matches!(state, LoopState::Idle) {
+                                turn_watchdog = Some((
+                                    WatchdogPhase::InTurn,
+                                    tokio::time::Instant::now()
+                                        + turn_watchdog_window(WatchdogPhase::InTurn, in_compaction),
+                                ));
                                 devlog(
                                     "info",
-                                    "回合启动（Idle→Prompting 翻转）",
+                                    "回合启动（Idle→Prompting 翻转，InTurn 看门狗武装）",
                                     &session_id,
                                     json!({ "event": event_type }),
                                 );
@@ -1542,6 +1708,9 @@ async fn pi_rpc_connection_loop(
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
                             cancel_settle_at = None;
+                            // v0.9.6 需求6 F2：回合收口（settle）——回合看门狗
+                            // 解除（Idle 态的兜底职责归 IDLE_TIMEOUT 回收）。
+                            turn_watchdog = None;
                             if matches!(state, LoopState::CancelPending { .. }) {
                                 pending_turn_complete = Some(NormalizedEvent::TurnComplete {
                                     reason: TurnEndReason::Aborted,
@@ -1611,10 +1780,21 @@ async fn pi_rpc_connection_loop(
                                         "type": "prompt",
                                         "message": msg
                                     })).await?;
-                                    // v0.9.5 需求2 测试期：settle 后重发的 prompt 同样
-                                    // 纳入 20s prompt_ack 看门狗（与 Idle 直发一致）——
-                                    // 滞留回合恢复后 pi 若再次无响应，兜底终结而非永挂。
-                                    prompt_ack_at = Some(tokio::time::Instant::now() + PROMPT_ACK_TIMEOUT);
+                                    // v0.9.6 需求6 F3：settle 后重发同样记录
+                                    //（缓冲期消息此前无 pending 记录）。
+                                    crate::pending_messages::record(&session_id, &agent_id, &msg);
+                                    // v0.9.6 需求6 F2：settle 后重发的 prompt 同样
+                                    // 纳入分级看门狗（与 Idle 直发一致，AwaitResponse
+                                    // 宽窗起）——滞留回合恢复后 pi 若再次无响应，
+                                    // 兜底终结而非永挂。
+                                    turn_watchdog = Some((
+                                        WatchdogPhase::AwaitResponse,
+                                        tokio::time::Instant::now()
+                                            + turn_watchdog_window(
+                                                WatchdogPhase::AwaitResponse,
+                                                false,
+                                            ),
+                                    ));
                                     resent_buffered = true;
                                     LoopState::Prompting
                                 } else {
@@ -1723,40 +1903,72 @@ async fn pi_rpc_connection_loop(
                         json!({}),
                     );
                     flush_buf(&emit, &session_id, &mut buf);
-                    emit(
-                        &[NormalizedEvent::TurnComplete { reason: TurnEndReason::Aborted, usage: None }],
-                        &session_id,
-                    );
+                    // v0.9.6 需求6 F5：缓冲中的用户消息未送达模型（杀进程后
+                    // pending_prompt 丢弃）——明确告知，配合 F3 的 pending 落盘
+                    // 保证重启后消息可见不丢。
+                    let buffered_unsent = matches!(&state, LoopState::CancelPending { pending_prompt: Some(_) });
+                    let mut terminal_events = Vec::with_capacity(2);
+                    if buffered_unsent {
+                        terminal_events.push(NormalizedEvent::Error {
+                            message: "停止超时，已强制结束智能体进程；缓冲中的消息未能送达模型，请重新发送。".to_string(),
+                            recoverable: true,
+                        });
+                    }
+                    terminal_events.push(NormalizedEvent::TurnComplete { reason: TurnEndReason::Aborted, usage: None });
+                    emit(&terminal_events, &session_id);
                     if let Some(pid) = child_pid {
                         let _ = crate::process_control::terminate_process_tree(pid);
                     }
                     true
-                } else if prompt_ack_at.is_some() && tokio::time::Instant::now() >= prompt_ack_at.unwrap() {
-                    // ⚠ prompt 送达后回合未启动（20s 无任何事件）——合成终结。
-                    log::warn!(
-                        "[watchdog] Pi RPC prompt unacknowledged 20s (session {session_id}) — \
-                         round never started (message not persisted); synthesizing abort"
-                    );
-                    devlog(
-                        "error",
-                        "prompt 看门狗触发：20s 零事件——回合未启动（消息未送达），合成 Aborted 终结，可重发",
-                        &session_id,
-                        json!({}),
-                    );
-                    flush_buf(&emit, &session_id, &mut buf);
-                    emit(
-                        &[
-                            NormalizedEvent::Error {
-                                message: "智能体未响应本轮（20 秒无事件，回合未启动——消息未送达模型）。请重新发送；若反复出现请重启会话。".to_string(),
-                                recoverable: true,
-                            },
-                            NormalizedEvent::TurnComplete { reason: TurnEndReason::Aborted, usage: None },
-                        ],
-                        &session_id,
-                    );
-                    prompt_ack_at = None;
-                    state = LoopState::Idle;
-                    false
+                } else if let Some((phase, deadline)) = turn_watchdog {
+                    if tokio::time::Instant::now() >= deadline {
+                        // v0.9.6 需求6 F2：回合分级看门狗触发——按相位给出
+                        // 面向用户的差异化原因（秒数不写死在文案里，窗口常量
+                        // 可独立调整；窗口值进 devlog 取证）。
+                        let (reason_user, reason_log) = match phase {
+                            WatchdogPhase::AwaitResponse => (
+                                "智能体长时间无响应（可能在整理上下文或启动中）。请重新发送；若反复出现请重启会话。",
+                                "AwaitResponse：prompt 发出后长时间无 response（压缩预检/钩子/受理静默）",
+                            ),
+                            WatchdogPhase::AwaitTurnStart => (
+                                "智能体受理了消息但回合未能启动。请重新发送；若反复出现请重启会话。",
+                                "AwaitTurnStart：response started 后无回合事件（回合未开工）",
+                            ),
+                            WatchdogPhase::InTurn => (
+                                "对话事件流长时间中断（智能体无响应）。请重新发送；若反复出现请重启会话。",
+                                "InTurn：回合事件流中断（模型流挂死/静默超窗）",
+                            ),
+                        };
+                        log::warn!(
+                            "[watchdog] Pi RPC turn watchdog fired (session {session_id}, phase={phase:?}, in_compaction={in_compaction}) — {reason_log}"
+                        );
+                        devlog(
+                            "error",
+                            &format!("回合看门狗触发（{phase:?}）：{reason_log}——合成 Aborted 终结，可重发"),
+                            &session_id,
+                            json!({
+                                "phase": format!("{phase:?}"),
+                                "in_compaction": in_compaction,
+                                "window_secs": turn_watchdog_window(phase, in_compaction).as_secs(),
+                            }),
+                        );
+                        flush_buf(&emit, &session_id, &mut buf);
+                        emit(
+                            &[
+                                NormalizedEvent::Error {
+                                    message: reason_user.to_string(),
+                                    recoverable: true,
+                                },
+                                NormalizedEvent::TurnComplete { reason: TurnEndReason::Aborted, usage: None },
+                            ],
+                            &session_id,
+                        );
+                        turn_watchdog = None;
+                        state = LoopState::Idle;
+                        false
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 }
@@ -2789,5 +3001,71 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
             "statusText": "50%"
         }))
         .is_none());
+    }
+
+    // ---- v0.9.6 需求6 F2：回合分级看门狗纯函数 ----
+
+    #[test]
+    fn watchdog_windows_ordered_by_risk() {
+        use super::*;
+        // 紧凑窗最小；压缩宽窗最大（AwaitResponse 300s 与 InTurn 360s 服务
+        // 不同相位语义，无大小关系约束）
+        let ar = turn_watchdog_window(WatchdogPhase::AwaitResponse, false);
+        let ats = turn_watchdog_window(WatchdogPhase::AwaitTurnStart, false);
+        let it = turn_watchdog_window(WatchdogPhase::InTurn, false);
+        let ic = turn_watchdog_window(WatchdogPhase::InTurn, true);
+        assert!(ats < it && ats < ar && ats < ic, "紧凑窗最小: {ats:?}");
+        assert!(ic > it && ic > ar, "压缩宽窗最大: {ic:?}");
+        // 压缩标记只影响 InTurn（AwaitResponse 本身已是最宽窗）
+        assert_eq!(turn_watchdog_window(WatchdogPhase::AwaitResponse, true), ar);
+        assert_eq!(
+            turn_watchdog_window(WatchdogPhase::AwaitTurnStart, true),
+            ats
+        );
+    }
+
+    #[test]
+    fn watchdog_phase_promotes_on_turn_events_only() {
+        use super::*;
+        // 回合生命周期事件把相位升到 InTurn（含从 AwaitResponse 直升——
+        // response 未回但回合事件已到 = pi 已开工）
+        for ev in [
+            "agent_start",
+            "turn_start",
+            "message_start",
+            "message_end",
+            "tool_execution_start",
+            "tool_execution_end",
+            "agent_end",
+            "agent_settled",
+        ] {
+            assert_eq!(
+                watchdog_phase_on_event(WatchdogPhase::AwaitTurnStart, ev),
+                WatchdogPhase::InTurn,
+                "事件 {ev} 应升级到 InTurn"
+            );
+            assert_eq!(
+                watchdog_phase_on_event(WatchdogPhase::AwaitResponse, ev),
+                WatchdogPhase::InTurn
+            );
+        }
+        // 非回合事件（compaction 括号/交互请求/杂项）不改相位——仅刷新计时
+        for ev in [
+            "compaction_start",
+            "compaction_end",
+            "extension_ui_request",
+            "thinking_level_changed",
+            "auto_retry_scheduled",
+        ] {
+            assert_eq!(
+                watchdog_phase_on_event(WatchdogPhase::AwaitTurnStart, ev),
+                WatchdogPhase::AwaitTurnStart,
+                "事件 {ev} 不应改相位"
+            );
+            assert_eq!(
+                watchdog_phase_on_event(WatchdogPhase::InTurn, ev),
+                WatchdogPhase::InTurn
+            );
+        }
     }
 }

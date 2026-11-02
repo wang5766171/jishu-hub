@@ -20,7 +20,9 @@ mod image;
 mod llm;
 mod memory_store;
 mod orchestrator;
+// v0.9.6 需求6 F3：用户消息发送受理即落盘（pending_messages.db）。
 pub mod os_adapter;
+mod pending_messages;
 mod pi_rpc_runtime;
 mod process_command;
 mod process_control;

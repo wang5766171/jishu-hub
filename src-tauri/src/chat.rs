@@ -466,6 +466,20 @@ pub async fn send_message(
                 );
                 if let Some(acp) = process.acp.as_ref() {
                     acp.shutdown().await;
+                    // v0.9.6 需求6 F4：shutdown 是 fire-and-forget——不等旧进程
+                    // 收尾就重拉，新旧进程会短暂并发写同一会话 JSONL（旧进程
+                    // flush 大文件/被 5s 超时强杀期间仍在写）。有限等待收尾
+                    //（≤8s：child.wait 5s + 杀树余量）再重拉；超时不阻塞
+                    //（F1 守卫保证旧 on_finish 不误删新条目，旧进程随后被强杀）。
+                    let finished = tokio::time::timeout(
+                        std::time::Duration::from_secs(8),
+                        acp.wait_finished(),
+                    )
+                    .await
+                    .is_ok();
+                    log::info!(
+                        "drift recycle: old process {pid} finished={finished}, proceeding to respawn"
+                    );
                 }
                 remove_process_entries(&app, Some(pid), Some(sid))?;
             } else if let Some(acp) = process.acp.as_ref() {
@@ -545,6 +559,9 @@ pub async fn send_message(
             // M0：会话工具集随 id 解析搬家（pending-<ts> → 真实 id），第二条
             // 消息起 compose 按真实键命中注入。
             agent::tool_plugin::migrate_session_tools(&sid_for_resolve, real_id);
+            // v0.9.6 需求6 F3：pending 消息记录同点迁移（首条消息以临时 id
+            // 记录，ack/加载按真实 id 对账）。
+            crate::pending_messages::rename_session(&sid_for_resolve, real_id);
         },
     )
     .await?;
@@ -616,13 +633,35 @@ fn remove_process_entries(
     let mut state = chat_state
         .lock()
         .map_err(|_| "Chat state lock poisoned".to_string())?;
+    remove_process_entries_from(&mut state, process_id, session_id);
+    Ok(())
+}
+
+/// v0.9.6 需求6 F1：从进程表删除条目（纯函数，供单测）。
+/// sid 删除带 pid 守卫——仅当该键当前条目确属本次 pid 才删：
+/// 漂移回收 spawn 新进程后旧进程 on_finish 晚到（同键已是新条目），
+/// 无条件按键删会误删新进程条目 → abort_chat 查无条目（卡死后停止无效）
+/// 与 turn_active 失真。`process_id=None` 时维持旧语义（仅按 sid 删）。
+pub(crate) fn remove_process_entries_from(
+    state: &mut ChatState,
+    process_id: Option<u32>,
+    session_id: Option<&str>,
+) {
     if let Some(pid) = process_id {
         state.processes.retain(|_, item| item.process_id != pid);
     }
     if let Some(sid) = session_id {
+        if let Some(pid) = process_id {
+            let owns_key = state
+                .processes
+                .get(sid)
+                .is_some_and(|p| p.process_id == pid);
+            if !owns_key {
+                return;
+            }
+        }
         state.processes.remove(sid);
     }
-    Ok(())
 }
 
 #[tauri::command]
@@ -1012,6 +1051,9 @@ async fn spawn_resume_fork_process(
             // M0：会话工具集随 id 解析搬家（pending-<ts> → 真实 id），第二条
             // 消息起 compose 按真实键命中注入。
             agent::tool_plugin::migrate_session_tools(&sid_for_resolve, real_id);
+            // v0.9.6 需求6 F3：pending 消息记录同点迁移（首条消息以临时 id
+            // 记录，ack/加载按真实 id 对账）。
+            crate::pending_messages::rename_session(&sid_for_resolve, real_id);
         },
     )
     .await?;
