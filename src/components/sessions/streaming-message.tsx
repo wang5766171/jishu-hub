@@ -81,10 +81,16 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     }
     // v0.9.4 需求13：纯压缩流（内容只有 compaction divider）→ 压缩中文案
     //（大上下文压缩可持续 2 分钟+，落"处理中"误导用户以为模型在干活）。
+    // v0.9.6 需求1 防御：title 已是终态（已压缩/已取消/失败）不再报「压缩中」。
     if (
       content.length > 0 && displayText.length === 0 && thinkingText.length === 0
       && toolUses.length === 0
       && content.every((b) => b.type === "phase_divider" && b.phase === "compaction")
+      && content.every(
+        (b) =>
+          b.type !== "phase_divider"
+          || !["上下文已压缩", "上下文压缩已取消", "上下文压缩失败"].includes(b.title ?? ""),
+      )
     ) {
       return t("sessions.compacting", "上下文压缩中...");
     }

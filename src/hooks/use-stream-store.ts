@@ -159,6 +159,17 @@ export interface InteractionResponseCheckpoint {
 }
 
 function canStartContinuationStream(chunk: StreamChunk): boolean {
+  // v0.9.6 需求1：compaction 终态 divider（已压缩/已取消/失败——Rust
+  // normalize.rs 硬编码文案，与终态判定集合同步维护）不自动起流——它只
+  // 可能出现在流已被 compaction_status(active=false) 终结之后，起流即
+  // 「复活出无人终结的流」（灰字「上下文压缩中...」永挂的根因）。
+  if (
+    chunk.data.kind === "phase_divider"
+    && (chunk.data as { phase?: string }).phase === "compaction"
+    && COMPACTION_TERMINAL_TITLES.has((chunk.data as { title?: string }).title ?? "")
+  ) {
+    return false;
+  }
   return chunk.data.kind === "text_delta"
     || chunk.data.kind === "thinking"
     || chunk.data.kind === "tool_use_start"
@@ -167,6 +178,14 @@ function canStartContinuationStream(chunk: StreamChunk): boolean {
     || chunk.data.kind === "phase_divider"
     || chunk.data.kind === "interaction_request";
 }
+
+/** v0.9.6 需求1：compaction 分隔线终态文案集合（与 Rust normalize.rs
+ * compaction_end 三态 title 同步维护——两侧同版本发布，无跨版本兼容问题）。 */
+const COMPACTION_TERMINAL_TITLES = new Set([
+  "上下文已压缩",
+  "上下文压缩已取消",
+  "上下文压缩失败",
+]);
 
 class StreamStore {
   /** Canonical key -> state. */

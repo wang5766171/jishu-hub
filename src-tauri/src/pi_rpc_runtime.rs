@@ -2588,8 +2588,8 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         assert!(matches!(
             success.as_slice(),
             [
-                NormalizedEvent::CompactionStatus { active: false, .. },
-                NormalizedEvent::PhaseDivider { title, .. }
+                NormalizedEvent::PhaseDivider { title, .. },
+                NormalizedEvent::CompactionStatus { active: false, .. }
             ] if title == "上下文已压缩"
         ));
 
@@ -2604,8 +2604,8 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         assert!(matches!(
             aborted.as_slice(),
             [
-                NormalizedEvent::CompactionStatus { active: false, .. },
-                NormalizedEvent::PhaseDivider { title, .. }
+                NormalizedEvent::PhaseDivider { title, .. },
+                NormalizedEvent::CompactionStatus { active: false, .. }
             ] if title == "上下文压缩已取消"
         ));
 
@@ -2621,8 +2621,8 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         assert!(matches!(
             failed.as_slice(),
             [
-                NormalizedEvent::CompactionStatus { active: false, .. },
                 NormalizedEvent::PhaseDivider { title, .. },
+                NormalizedEvent::CompactionStatus { active: false, .. },
                 NormalizedEvent::Error { message, recoverable: true }
             ] if title == "上下文压缩失败" && message.contains("provider 500")
         ));

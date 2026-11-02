@@ -162,4 +162,42 @@ describe("v0.9.4 需求13：手动压缩流终结", () => {
     emit({ agent_id: "jishu-self", session_id: "s1", data: { kind: "compaction_status", active: false, reason: "threshold" } });
     expect(streamStore.getState("s1")).toBeNull();
   });
+
+  // ── v0.9.6 需求1：真实事件顺序（Rust 调序后 end = divider 在前、status 在后）──
+
+  it("真实顺序：start divider → end divider(终态) → status(false) → 流终结且缓存 title 为终态", () => {
+    // compaction_start：divider(压缩中) 起纯压缩流
+    emit(dividerChunk("上下文压缩中…"));
+    emit({ agent_id: "jishu-self", session_id: "s1", data: { kind: "compaction_status", active: true, reason: "manual" } });
+    expect(streamStore.getState("s1")).not.toBeNull();
+
+    // compaction_end（调序后）：终态 divider 先到——原位替换 title（流仍在）
+    emit(dividerChunk("上下文已压缩"));
+    // status(false) 后到——终结纯压缩流，提交的 divider title 应已是终态
+    emit({ agent_id: "jishu-self", session_id: "s1", data: { kind: "compaction_status", active: false, reason: "manual" } });
+
+    expect(streamStore.getState("s1")).toBeNull();
+    expect(setCachedSessionMessages).toHaveBeenCalledWith(
+      "s1",
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          content: [expect.objectContaining({ type: "phase_divider", phase: "compaction", title: "上下文已压缩" })],
+        }),
+      ]),
+    );
+  });
+
+  it("防御层：终态 divider 在无流状态下不自动起流（堵「复活出无人终结的流」）", () => {
+    // 流不存在时直接到达终态 divider（异常残余路径）——不得起流
+    emit(dividerChunk("上下文已压缩"));
+    expect(streamStore.getState("s1")).toBeNull();
+    emit(dividerChunk("上下文压缩失败"));
+    expect(streamStore.getState("s1")).toBeNull();
+    emit(dividerChunk("上下文压缩已取消"));
+    expect(streamStore.getState("s1")).toBeNull();
+    // 进行中 divider 仍正常起流（既有行为不回归）
+    emit(dividerChunk("上下文压缩中…"));
+    expect(streamStore.getState("s1")).not.toBeNull();
+  });
 });

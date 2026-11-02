@@ -277,13 +277,20 @@ pub(crate) fn normalize_pi_agent_event(
                     "上下文已压缩".to_string()
                 };
                 let mut events = vec![
-                    NormalizedEvent::CompactionStatus {
-                        active: false,
-                        reason,
-                    },
+                    // v0.9.6 需求1：终态 divider 在前、status(false) 在后（与
+                    // compaction_start 的 [divider, status] 对称）。旧序（status
+                    // 先到）触发前端「纯压缩流终结」drop 后，终态 divider 又经
+                    // canStartContinuationStream 自动起一条无人终结的新流——
+                    // 「上下文压缩中...」灰字永挂（用户实测手动压缩后卡住）。
+                    // 调序后：divider 先到原位替换 title（流仍在），status 后到
+                    // 再终结——提交缓存的 title 也已是终态。
                     NormalizedEvent::PhaseDivider {
                         phase: "compaction".to_string(),
                         title,
+                    },
+                    NormalizedEvent::CompactionStatus {
+                        active: false,
+                        reason,
                     },
                 ];
                 if let Some(error) = error_message {
