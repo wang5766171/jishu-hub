@@ -1060,6 +1060,17 @@ pub(crate) fn scan_pi_projects() -> Vec<crate::project::Project> {
         if !Path::new(&project_path).is_dir() {
             continue;
         }
+        // v0.9.6 需求3：过滤非项目 cwd 的目录（子智能体旁路产生）——
+        // pi-subagents 的模型探测 probe 以 os.tmpdir() 为 cwd 起一次性
+        // pi 子进程（profiles.js probeModel），pi 会话目录是 f(cwd) 且
+        // 创建即 mkdir，mint 出的 sessions/--Temp-- 目录会被当作新项目
+        //（用户实测项目列表出现陌生条目）。主链（前台 subagent）的子会话
+        // 本就嵌套在父会话目录内（物理归并），不受此过滤影响；存量目录
+        // 不迁移（磁盘不动，仅列表不显示）。
+        if is_non_project_cwd(Path::new(&project_path)) {
+            log::debug!("scan_pi_projects: skipping non-project cwd directory: {project_path}");
+            continue;
+        }
         if !seen_paths.insert(project_path.clone()) {
             continue;
         }
@@ -1079,6 +1090,16 @@ pub(crate) fn scan_pi_projects() -> Vec<crate::project::Project> {
 
     projects.sort_by(|a, b| b.last_active.cmp(&a.last_active));
     projects
+}
+
+/// v0.9.6 需求3：判定一个 cwd 是否「非项目路径」（扫描时过滤）。
+/// 当前确定的非项目来源：系统临时目录——pi-subagents 模型探测 probe 的
+/// 一次性 pi 子进程 cwd=os.tmpdir()，产生 sessions/--…Temp---- 目录。
+/// 保守白名单式：只过滤 temp 前缀，worktree 等真实工作目录不过滤（用户
+/// 可能在其中主动工作，误伤代价高于收益）。
+fn is_non_project_cwd(cwd: &Path) -> bool {
+    let temp = std::env::temp_dir();
+    cwd.starts_with(&temp)
 }
 
 /// Read the `cwd` field from the first JSONL session header in a directory.
@@ -1712,5 +1733,22 @@ mod tests {
         if let Some(s) = session {
             println!("Messages count: {}", s.messages.len());
         }
+    }
+}
+
+#[cfg(test)]
+mod non_project_cwd_tests {
+    use super::is_non_project_cwd;
+    use std::path::PathBuf;
+
+    /// v0.9.6 需求3：temp 前缀过滤（pi-subagents probe 的 os.tmpdir() cwd）。
+    #[test]
+    fn temp_dir_cwd_is_filtered() {
+        let temp = std::env::temp_dir();
+        assert!(is_non_project_cwd(&temp));
+        assert!(is_non_project_cwd(&temp.join("subagent-probe")));
+        // 真实项目路径不过滤（含恰好含 "Temp" 字样的正常路径）
+        assert!(!is_non_project_cwd(&PathBuf::from("D:/MyCodes/jishu-hub")));
+        assert!(!is_non_project_cwd(&PathBuf::from("D:/work/Temp-projects")));
     }
 }
