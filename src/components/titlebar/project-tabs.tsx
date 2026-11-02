@@ -19,10 +19,13 @@ import { cn } from "@/lib/utils";
  * 信号提示列后续迭代。
  */
 
+/** v0.9.6 需求4 R1 修复：字段名对齐后端 serde 序列化（snake_case——项目
+ * 跨端规约，v0.9.5 评审 P1-7 同款裁决；首版前端误写驼峰键名致项目归属
+ * 恒 undefined，其他项目标签永不显示）。 */
 interface ActiveChatSession {
-  sessionId: string;
-  agentId: string;
-  projectEncoded: string;
+  session_id: string;
+  agent_id: string;
+  project_encoded: string;
 }
 
 export interface ProjectTabsProps {
@@ -74,13 +77,13 @@ export function ProjectTabs({
   const otherActiveProjects = useMemo(() => {
     const byProject = new Map<string, ActiveChatSession>();
     for (const row of active) {
-      if (currentProject && row.projectEncoded === currentProject.encoded_name) continue;
-      byProject.set(row.projectEncoded, row);
+      if (currentProject && row.project_encoded === currentProject.encoded_name) continue;
+      byProject.set(row.project_encoded, row);
     }
     const out: { project: Project; sessionId: string; agentId: string }[] = [];
     for (const [encoded, row] of byProject) {
       const project = projects?.find(p => p.encoded_name === encoded);
-      if (project) out.push({ project, sessionId: row.sessionId, agentId: row.agentId });
+      if (project) out.push({ project, sessionId: row.session_id, agentId: row.agent_id });
     }
     return out;
   }, [active, currentProject, projects]);

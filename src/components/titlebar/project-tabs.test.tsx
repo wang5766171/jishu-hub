@@ -56,9 +56,9 @@ describe("v0.9.6 需求4：ProjectTabs", () => {
 
   it("其他活跃项目：渲染 tab 并过滤当前项目；点击带 sessionId/agentId 回调", async () => {
     invokeMock.mockResolvedValue([
-      { sessionId: "s-in-a", agentId: "jishu-self", projectEncoded: "enc-a" }, // 当前项目 → 过滤
-      { sessionId: "s-in-b", agentId: "codex", projectEncoded: "enc-b" },
-      { sessionId: "s-unknown", agentId: "jishu-self", projectEncoded: "enc-missing" }, // 项目列表查无 → 过滤
+      { session_id: "s-in-a", agent_id: "jishu-self", project_encoded: "enc-a" }, // 当前项目 → 过滤
+      { session_id: "s-in-b", agent_id: "codex", project_encoded: "enc-b" },
+      { session_id: "s-unknown", agent_id: "jishu-self", project_encoded: "enc-missing" }, // 项目列表查无 → 过滤
     ]);
     const onSwitch = vi.fn();
     render(
