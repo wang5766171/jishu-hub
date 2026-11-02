@@ -885,33 +885,45 @@ fn agent_supports_compact(app: &AppHandle, agent_id: &str) -> Result<bool, Strin
 
 /// Manually compact the session context (v0.7.4 需求1 A3). Capability-gated
 /// (CONTEXT_COMPACT); resolves when compaction finishes.
+///
+/// v0.9.6 需求2：历史会话（无活跃进程：重启后/闲置回收后）不再报
+/// "No active ACP session found"——先静默拉起仅 resume 的进程（与 fork
+/// 同款兜底，「先连接会话再压缩」），连接完成后再压缩。
 #[tauri::command]
 pub async fn compact_agent_session(
     app: AppHandle,
+    agent_id: String,
+    project_path: String,
     session_id: String,
     instructions: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let (acp, agent_id) = {
-        let chat_state = app.state::<Mutex<ChatState>>();
-        let state = chat_state
-            .lock()
-            .map_err(|_| "Chat state lock poisoned".to_string())?;
-        let process = state
-            .processes
-            .get(&session_id)
-            .ok_or_else(|| format!("No active ACP session found for {session_id}"))?;
-        (
+    let (acp, agent_id) = match existing_chat_process(&app, &session_id, &agent_id) {
+        Some(process) => (
             process
                 .acp
                 .clone()
                 .ok_or_else(|| format!("No active ACP session found for {session_id}"))?,
             process.agent_id.clone(),
-        )
+        ),
+        // 无进程（重启/闲置回收）→ 先连接：静默拉起仅 resume 的进程再压缩。
+        None => {
+            let (acp, process) =
+                spawn_resume_session_process(&app, &agent_id, &project_path, &session_id).await?;
+            (acp, process.agent_id.clone())
+        }
     };
     if !agent_supports_compact(&app, &agent_id)? {
         return Err("Context compaction is not supported by this agent".to_string());
     }
-    acp.compact(instructions).await
+    // v0.9.6 需求2：大上下文压缩可达 2 分钟+（summarize 长调用），超时上限
+    // 放宽到 180s（fork 的 45s 不够用）。超时只是 IPC 放弃等待——压缩在
+    // 智能体侧继续，compaction_end 事件仍走事件链路刷新 UI。
+    tokio::time::timeout(
+        std::time::Duration::from_secs(180),
+        acp.compact(instructions),
+    )
+    .await
+    .map_err(|_| "压缩超时（3 分钟无完成回执）——压缩可能仍在后台进行，请稍后查看会话".to_string())?
 }
 
 /// Fork the live session at its current end (v0.8.0 需求1 A5). The Pi RPC
@@ -953,7 +965,7 @@ pub async fn fork_agent_session(
                 .ok_or_else(|| "This session has no forkable runtime".to_string())?,
             process,
         ),
-        None => spawn_resume_fork_process(&app, &agent_id, &project_path, &session_id).await?,
+        None => spawn_resume_session_process(&app, &agent_id, &project_path, &session_id).await?,
     };
 
     let result = tokio::time::timeout(std::time::Duration::from_secs(45), acp.fork_session())
@@ -993,10 +1005,12 @@ fn existing_chat_process(app: &AppHandle, session_id: &str, agent_id: &str) -> O
     (process.agent_id == agent_id).then(|| process.clone())
 }
 
-/// 历史会话 fork 的静默 resume：拉起一个仅恢复会话、不发首条消息的 PiRpc
+/// 历史会话的静默 resume：拉起一个仅恢复会话、不发首条消息的 PiRpc
 /// 进程（start_gui_piresume_session，first_message=None），注册进进程表并
-/// 等待会话解析完成后返回。clone 由调用方经 AcpControl 发起。
-async fn spawn_resume_fork_process(
+/// 等待会话解析完成后返回。v0.9.6 需求2：由 fork 专属泛化为 fork/compact
+/// 共用（「先连接会话再压缩」的连接段）；clone/compact 由调用方经
+/// AcpControl 发起。
+async fn spawn_resume_session_process(
     app: &AppHandle,
     agent_id: &str,
     project_path: &str,

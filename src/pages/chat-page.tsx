@@ -230,12 +230,17 @@ export function ChatPage({
     const sessionId = selectedSessionRef.current;
     if (!sessionId || sessionId === "new" || compacting) return;
     try {
-      await compaction.runCompact(sessionId, null);
+      // v0.9.6 需求2：传 agentId/projectPath——无活跃进程的历史会话由后端
+      // 先静默连接（resume）再压缩（「先连接会话再压缩」）。
+      await compaction.runCompact(sessionId, null, {
+        agentId: activeId,
+        projectPath: currentProject?.path ?? null,
+      });
     } catch (err) {
       console.error("Compact failed:", err);
       void alertDialog({ title: "压缩失败", description: String(err) });
     }
-  }, [compacting, alertDialog, compaction]);
+  }, [compacting, alertDialog, compaction, activeId, currentProject]);
   const handleAutoCompactionChange = useCallback(async (enabled: boolean) => {
     if (!activeId) return;
     try {

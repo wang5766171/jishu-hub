@@ -12,7 +12,11 @@ import { invokeCommand, useInvoke } from "@/hooks/use-invoke";
 export interface UseCompaction {
   autoCompaction: boolean | null;
   compacting: boolean;
-  runCompact(sessionId: string | null, instructions?: string | null): Promise<void>;
+  runCompact(
+    sessionId: string | null,
+    instructions?: string | null,
+    extra?: { agentId?: string | null; projectPath?: string | null },
+  ): Promise<void>;
   setAuto(enabled: boolean): Promise<void>;
 }
 
@@ -27,13 +31,24 @@ export function useCompaction(
     agentId ?? undefined,
   );
 
-  /** sessionId：会话内压缩目标（无会话时禁用）；instructions 可选摘要指令。 */
+  /** sessionId：会话内压缩目标（无会话时禁用）；instructions 可选摘要指令；
+   * agentId/projectPath（v0.9.6 需求2）：无活跃进程的历史会话由后端先静默
+   * 连接（resume）再压缩——两参用于该兜底的进程拉起。 */
   const runCompact = useCallback(
-    async (sessionId: string | null, instructions?: string | null) => {
+    async (
+      sessionId: string | null,
+      instructions?: string | null,
+      extra?: { agentId?: string | null; projectPath?: string | null },
+    ) => {
       if (!sessionId || sessionId === "new" || compacting) return;
       setCompacting(true);
       try {
-        await invokeCommand("compact_agent_session", { sessionId, instructions: instructions ?? null });
+        await invokeCommand("compact_agent_session", {
+          sessionId,
+          instructions: instructions ?? null,
+          agentId: extra?.agentId ?? null,
+          projectPath: extra?.projectPath ?? null,
+        });
       } finally {
         setCompacting(false);
       }
