@@ -85,6 +85,17 @@ export function ProjectTabs({
             )}
             title={project!.path}
           >
+            {/* 补充⑥（2026-11-03 用户裁决）：当前项目标签同样常驻状态灯——
+                选中后圆点不消失（此前当前分支无灯=「选中后灯消失」的观感）。 */}
+            <span className="flex h-2 w-2 shrink-0 items-center justify-center">
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  light ? LIGHT_CLASS[light] : "bg-muted-foreground/40",
+                  light === "running" && "animate-pulse",
+                )}
+              />
+            </span>
             <span className="truncate text-xs font-medium">{project!.name}</span>
             <button
               type="button"
