@@ -39,6 +39,9 @@ export interface ProjectTabsState {
   noteLeave: (project: Project | null) => void;
   /** 点击标签（已查看）——清绿/红灯。 */
   clearLight: (encoded: string) => void;
+  /** v0.9.6 补充⑦：抑制下一次对该项目的离开自动固定（关闭当前标签时用——
+   * 关闭=取消固定，若不抑制，切换触发 noteLeave 会把它固定回来）。 */
+  suppressPinOnce: (encoded: string) => void;
 }
 
 function readJson<T>(key: string, fallback: T): T {
@@ -99,8 +102,13 @@ export function useProjectTabs(): ProjectTabsState {
     });
   }, []);
 
+  const suppressRef = useRef<Set<string>>(new Set());
+  const suppressPinOnce = useCallback((encoded: string) => {
+    suppressRef.current.add(encoded);
+  }, []);
   const noteLeave = useCallback((project: Project | null) => {
     if (!project) return;
+    if (suppressRef.current.delete(project.encoded_name)) return; // 关闭触发的离开不固定
     pinProject(project.encoded_name);
   }, [pinProject]);
 
@@ -200,5 +208,5 @@ export function useProjectTabs(): ProjectTabsState {
     return unsub;
   }, []);
 
-  return { pins, lights, lastSession, pinProject, unpinProject, reorderPins, noteLeave, clearLight };
+  return { pins, lights, lastSession, pinProject, unpinProject, reorderPins, noteLeave, clearLight, suppressPinOnce };
 }

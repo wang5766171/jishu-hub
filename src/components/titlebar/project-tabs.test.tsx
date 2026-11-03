@@ -32,6 +32,7 @@ function makeTabs(over: Partial<ProjectTabsState> = {}): ProjectTabsState {
     pinProject: vi.fn(),
     unpinProject: vi.fn(),
     reorderPins: vi.fn(),
+    suppressPinOnce: vi.fn(),
     noteLeave: vi.fn(),
     clearLight: vi.fn(),
     ...over,

@@ -612,6 +612,24 @@ useEffect(() => {
     getCurrentWindow().setFocus().catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
   }, [chatAgentId, setChatAgent]);
 
+  // v0.9.6 需求4 补充⑦（用户裁决 2026-11-03）：关闭当前标签不再回管理页——
+  // 切到前一个固定标签（pins 序左邻，无左邻取右邻）；唯一标签时关闭无效果。
+  // 关闭同时解除该项目固定（suppressPinOnce 抑制切换触发的离开自动固定）。
+  const handleCloseCurrentTab = useCallback(() => {
+    const cur = currentProject;
+    if (!cur) return;
+    const idx = projectTabs.pins.indexOf(cur.encoded_name);
+    const others = projectTabs.pins.filter(e => e !== cur.encoded_name);
+    if (others.length === 0) return; // 唯一标签：关闭无效
+    const prevEnc = idx > 0 ? projectTabs.pins[idx - 1] : projectTabs.pins[idx + 1];
+    const target = projects?.find(p => p.encoded_name === prevEnc);
+    if (!target) return;
+    projectTabs.suppressPinOnce(cur.encoded_name);
+    projectTabs.unpinProject(cur.encoded_name);
+    const last = projectTabs.lastSession[prevEnc];
+    handleTabSwitchToProject(target, last?.sessionId ?? null, last?.agentId ?? null);
+  }, [currentProject, projects, projectTabs, handleTabSwitchToProject]);
+
   // Diagnostic: surface the REAL transport dispatch path in the F12 console so
   // the actual command route (ACP vs CLI) is inspectable at runtime — this is
   // the subprocess genuinely spawned, not the probe/declarative surface. No UI;
@@ -662,7 +680,7 @@ useEffect(() => {
               projects={projects}
               tabs={projectTabs}
               onSwitchToProject={handleTabSwitchToProject}
-              onCloseCurrentProject={handleSwitchProject}
+              onCloseCurrentProject={handleCloseCurrentTab}
             />
           }
         />
