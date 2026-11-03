@@ -89,6 +89,50 @@ pub(crate) fn delete_pi_session_in_dir(session_dir: &Path, session_id: &str) -> 
     Ok(())
 }
 
+/// v0.9.6 需求4 补充⑤③：会话消息解析缓存（切标签秒回）。
+/// get_session_messages 每次全量解析 JSONL（大会话数百 ms~秒级），前端虽有
+/// session-cache 但仅覆盖本生命周期打开过的会话；跨项目切换/重启后首次
+/// 仍要付全量解析。此处按 (mtime, size) 缓存解析结果——文件未变直接返回
+/// 克隆（克隆成本远低于解析）。容量粗上限，超限整体清空（简单且足够——
+/// 缓存价值集中在「反复切换的少数会话」）。
+struct ParseCacheEntry {
+    mtime: std::time::SystemTime,
+    size: u64,
+    messages: Vec<crate::session::Message>,
+}
+
+fn parse_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, ParseCacheEntry>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, ParseCacheEntry>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 命中缓存（文件 mtime/size 未变）→ 返回克隆；未命中返回 None。
+fn session_parse_cache_get(path: &Path) -> Option<Vec<crate::session::Message>> {
+    let meta = fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok()?;
+    let size = meta.len();
+    let cache = parse_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let entry = cache.get(path)?;
+    if entry.mtime == mtime && entry.size == size {
+        Some(entry.messages.clone())
+    } else {
+        None
+    }
+}
+
+/// 写入缓存（超上限整体清空）。
+fn session_parse_cache_put(path: &Path, messages: Vec<crate::session::Message>) {
+    let Ok(meta) = fs::metadata(path) else { return };
+    let Ok(mtime) = meta.modified() else { return };
+    let size = meta.len();
+    let mut cache = parse_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= 64 && !cache.contains_key(path) {
+        cache.clear();
+    }
+    cache.insert(path.to_path_buf(), ParseCacheEntry { mtime, size, messages });
+}
+
 pub(crate) fn load_pi_session_messages(
     session_id: &str,
     encoded_name: &str,
@@ -110,7 +154,17 @@ pub(crate) fn load_pi_session_messages(
         if path.extension().map(|ext| ext == "jsonl").unwrap_or(false) {
             if let Some(session) = load_pi_session(&path) {
                 if session.id == session_id {
-                    let mut messages = session.messages;
+                    // v0.9.6 需求4 补充⑤③：解析缓存命中（mtime/size 未变）——
+                    // 跳过 JSONL 全量重解析，直接用缓存消息（切标签秒回）。
+                    // 注意：缓存的是**纯 JSONL 解析结果**（不含 F3 pending 并入
+                    // 条目——pending 对账每次照跑，避免 ack 后缓存残留）。
+                    let mut messages = match session_parse_cache_get(&path) {
+                        Some(cached) => cached,
+                        None => {
+                            session_parse_cache_put(&path, session.messages.clone());
+                            session.messages
+                        }
+                    };
                     // v0.9.6 需求6 F3：与 hub 侧 pending 记录对账——已落盘的
                     // pending 清除（ack 丢失兜底）；未落盘的（pi 受理后回合未
                     // 启动：压缩预检/钩子挂死、进程被杀）并入消息列表尾部，

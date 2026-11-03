@@ -70,7 +70,8 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
     );
     fireEvent.click(screen.getByText("other-work"));
     expect(onSwitch).toHaveBeenCalledWith(PROJECT_B, "s-b", "codex");
-    expect(tabs.clearLight).toHaveBeenCalledWith("enc-b");
+    // 补充⑤：点击不清灯（灯常驻随状态流转）
+    expect(tabs.clearLight).not.toHaveBeenCalled();
   });
 
   it("灯色 class：running 蓝 / done 绿 / failed 红映射正确", () => {
@@ -94,6 +95,13 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
       expect(dot, `${light} → ${cls}`).not.toBeNull();
       expect(dot?.className).toContain(cls);
     }
+  });
+
+  it("补充⑤灯常驻：空闲固定标签显示灰点（无灯不消失）", () => {
+    render(
+      <ProjectTabs currentProject={PROJECT_A} projects={[PROJECT_A, PROJECT_B]} tabs={makeTabs({ pins: ["enc-b"] })} onSwitchToProject={vi.fn()} onCloseCurrentProject={vi.fn()} />,
+    );
+    expect(document.querySelector("span[class*='bg-muted-foreground']")).not.toBeNull();
   });
 
   it("关闭标签（=取消固定）：按钮点击触发 unpinProject 且不触发切换", () => {

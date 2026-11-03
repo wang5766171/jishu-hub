@@ -121,21 +121,19 @@ export function ProjectTabs({
             )}
             title={project!.path}
             onClick={() => {
-              tabs.clearLight(enc);
               onSwitchToProject(project!, last?.sessionId ?? null, last?.agentId ?? null);
             }}
           >
-            {/* 会话状态灯：蓝=进行中 / 绿=完成 / 红=失败（无灯=空闲） */}
+            {/* 会话状态灯（补充⑤常驻四态）：灰=空闲 / 蓝(呼吸)=进行中 /
+                绿=完成 / 红=失败——点击查看不清灯（灯随状态自然流转）。 */}
             <span className="flex h-2 w-2 shrink-0 items-center justify-center">
-              {light && (
-                <span
-                  className={cn(
-                    "h-1.5 w-1.5 rounded-full",
-                    LIGHT_CLASS[light],
-                    light === "running" && "animate-pulse",
-                  )}
-                />
-              )}
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  light ? LIGHT_CLASS[light] : "bg-muted-foreground/40",
+                  light === "running" && "animate-pulse",
+                )}
+              />
             </span>
             <span className="truncate">{project!.name}</span>
             {/* 关闭标签=取消固定（用户裁决 2026-11-03：出现即默认固定，无需独立
@@ -146,7 +144,7 @@ export function ProjectTabs({
                 e.stopPropagation();
                 tabs.unpinProject(enc);
               }}
-              className="hidden h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground group-hover:flex hover:bg-accent hover:text-foreground"
+              className="flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground/70 hover:bg-accent hover:text-foreground"
               title={t("titlebar.closeTab", "关闭标签")}
               aria-label={t("titlebar.closeTab", "关闭标签")}
             >
