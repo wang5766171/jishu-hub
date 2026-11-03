@@ -29,7 +29,9 @@
   },
   "titlebar": {
     "closeProject": "Close current project",
-    "switchToProject": "Switch to project \"{{name}}\""
+    "switchToProject": "Switch to project \"{{name}}\"",
+    "unpinProject": "Unpin",
+    "pinnedHint": "Pinned projects"
   },
   "manage": {
     "back": "Back to workspace",

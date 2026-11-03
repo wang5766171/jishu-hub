@@ -1,106 +1,59 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { X } from "lucide-react";
-import { invokeCommand } from "@/hooks/use-invoke";
 import { useTranslation } from "react-i18next";
+import { Pin, PinOff, X } from "lucide-react";
 import type { Project } from "@/types";
 import { cn } from "@/lib/utils";
+import type { ProjectTabsState, TabLight } from "./use-project-tabs";
 
 /**
- * v0.9.6 需求4：标题栏项目标签（类浏览器 tab strip）。
+ * v0.9.6 需求4：标题栏项目标签（类浏览器 tab strip）+ 补充②固定标签。
  *
- * 产品定位（用户裁决）：工作区单项目专注——会话列表只展示当前项目；多项目
- * 并行操作经标题栏标签兼顾：**当前项目标签带操作按钮（关闭）明显区分，
- * 其他「正在对话中」的项目仅标签名+状态标识（无操作按钮），点击直达该项目
- * 的活跃会话**（不经管理页中转，ChatPage 不卸载、事件管线持续存活）。
- *
- * 数据源（后端权威）：`chat_active_sessions` 轮询（3s + 窗口聚焦即拉）——
- * 进程表 turn_active 条目含 project_encoded 归属，覆盖事件管线不在场
- * （管理页）期间启动/结束的回合。实时脉冲来自轮询粒度，回合完成的即时
- * 信号提示列后续迭代。
+ * - 当前项目标签：带操作按钮（关闭=回管理页）明显区分（用户裁决形态）。
+ * - 固定标签（补充②，2026-11-03）：切换离开的项目自动固定（回合结束不
+ *   消失，手动解除前常驻——修「任务回复完标签就关闭了还没看到结果」）；
+ *   带会话状态灯——蓝=进行中 / 绿=完成 / 红=失败；点击直达该项目最近
+ *   活跃会话；hover 显解除固定按钮。
+ * - 状态与数据由 useProjectTabs（父组件）供给；本组件纯渲染。
  */
-
-/** v0.9.6 需求4 R1 修复：字段名对齐后端 serde 序列化（snake_case——项目
- * 跨端规约，v0.9.5 评审 P1-7 同款裁决；首版前端误写驼峰键名致项目归属
- * 恒 undefined，其他项目标签永不显示）。 */
-interface ActiveChatSession {
-  session_id: string;
-  agent_id: string;
-  project_encoded: string;
-}
 
 export interface ProjectTabsProps {
   currentProject: Project | null;
   projects: Project[] | null;
+  tabs: ProjectTabsState;
   /** 切到目标项目的指定会话（agentId 对齐该会话所属智能体）。 */
   onSwitchToProject: (project: Project, sessionId: string | null, agentId: string | null) => void;
   /** 关闭当前项目标签（回管理页，复用既有切换流程）。 */
   onCloseCurrentProject: () => void;
-  disabled?: boolean;
 }
 
-const POLL_INTERVAL_MS = 3000;
+const LIGHT_CLASS: Record<TabLight, string> = {
+  running: "bg-blue-500",
+  done: "bg-emerald-500",
+  failed: "bg-red-500",
+};
 
 export function ProjectTabs({
   currentProject,
   projects,
+  tabs,
   onSwitchToProject,
   onCloseCurrentProject,
-  disabled,
 }: ProjectTabsProps) {
   const { t } = useTranslation();
-  const [active, setActive] = useState<ActiveChatSession[]>([]);
 
-  // 轮询活跃回合（disabled 时不拉——启动 loading 期等）
-  useEffect(() => {
-    if (disabled) return;
-    let stopped = false;
-    const poll = async () => {
-      try {
-        const rows = await invokeCommand<ActiveChatSession[]>("chat_active_sessions");
-        if (!stopped) setActive(Array.isArray(rows) ? rows : []);
-      } catch {
-        /* 单次失败静默（下次轮询重试） */
-      }
-    };
-    void poll();
-    const timer = window.setInterval(poll, POLL_INTERVAL_MS);
-    const onFocus = () => void poll();
-    window.addEventListener("focus", onFocus);
-    return () => {
-      stopped = true;
-      window.clearInterval(timer);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [disabled]);
+  // 固定标签 = pins 中排除当前项目、且项目列表可查（过滤已删除项目）
+  const pinnedTabs = tabs.pins
+    .filter(enc => enc !== currentProject?.encoded_name)
+    .map(enc => {
+      const project = projects?.find(p => p.encoded_name === enc);
+      return project ? { project, light: tabs.lights[enc], last: tabs.lastSession[enc] } : null;
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null);
 
-  // 按项目聚合（过滤当前项目与未知项目；同项目多活跃会话取最后一条定位）
-  const otherActiveProjects = useMemo(() => {
-    const byProject = new Map<string, ActiveChatSession>();
-    for (const row of active) {
-      if (currentProject && row.project_encoded === currentProject.encoded_name) continue;
-      byProject.set(row.project_encoded, row);
-    }
-    const out: { project: Project; sessionId: string; agentId: string }[] = [];
-    for (const [encoded, row] of byProject) {
-      const project = projects?.find(p => p.encoded_name === encoded);
-      if (project) out.push({ project, sessionId: row.session_id, agentId: row.agent_id });
-    }
-    return out;
-  }, [active, currentProject, projects]);
-
-  const handleSwitch = useCallback(
-    (entry: { project: Project; sessionId: string; agentId: string }) => {
-      onSwitchToProject(entry.project, entry.sessionId, entry.agentId);
-    },
-    [onSwitchToProject],
-  );
-
-  // 无当前项目且无其他活跃项目：整条不渲染（保持单项目专注的默认观感）
-  if (!currentProject && otherActiveProjects.length === 0) return null;
+  if (!currentProject && pinnedTabs.length === 0) return null;
 
   return (
     <div
-      className="flex h-full min-w-0 items-end gap-0.5 overflow-x-auto pb-0 pr-2"
+      className="flex h-full min-w-0 flex-1 items-end gap-0.5 overflow-x-auto pr-2"
       style={{ WebkitAppRegion: "no-drag", scrollbarWidth: "none" } as React.CSSProperties}
     >
       {currentProject && (
@@ -123,24 +76,58 @@ export function ProjectTabs({
           </button>
         </div>
       )}
-      {otherActiveProjects.map(({ project, sessionId, agentId }) => (
-        <button
+      {pinnedTabs.map(({ project, light, last }) => (
+        <div
           key={project.encoded_name}
-          type="button"
-          onClick={() => handleSwitch({ project, sessionId, agentId })}
           className={cn(
-            "flex h-8 max-w-44 min-w-0 shrink items-center gap-1.5 self-end rounded-t-md px-3 text-xs transition-fast",
-            "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
+            "group relative flex h-8 max-w-44 min-w-0 shrink cursor-pointer items-center gap-1.5 self-end rounded-t-md px-3 text-xs transition-fast",
+            light === "running"
+              ? "bg-accent/30 text-foreground"
+              : "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
           )}
-          title={t("titlebar.switchToProject", "切换到该项目", { name: project.name })}
+          title={project.path}
+          onClick={() => {
+            tabs.clearLight(project.encoded_name);
+            onSwitchToProject(project, last?.sessionId ?? null, last?.agentId ?? null);
+          }}
         >
-          <span className="relative flex h-2 w-2 shrink-0 items-center justify-center">
-            <span className="absolute h-2 w-2 animate-ping rounded-full bg-emerald-500/60" />
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+          {/* 会话状态灯：蓝=进行中 / 绿=完成 / 红=失败（无灯=空闲） */}
+          <span className="flex h-2 w-2 shrink-0 items-center justify-center">
+            {light && (
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  LIGHT_CLASS[light],
+                  light === "running" && "animate-pulse",
+                )}
+              />
+            )}
           </span>
           <span className="truncate">{project.name}</span>
-        </button>
+          {/* 解除固定（hover 显示；点击不冒泡到切换） */}
+          <button
+            type="button"
+            onClick={e => {
+              e.stopPropagation();
+              tabs.unpinProject(project.encoded_name);
+            }}
+            className="hidden h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground group-hover:flex hover:bg-accent hover:text-foreground"
+            title={t("titlebar.unpinProject", "解除固定")}
+            aria-label={t("titlebar.unpinProject", "解除固定")}
+          >
+            <PinOff className="h-3 w-3" />
+          </button>
+        </div>
       ))}
+      {/* 无当前项目（管理页）但存在固定标签时的视觉锚 */}
+      {pinnedTabs.length > 0 && !currentProject && (
+        <div
+          className="flex items-center gap-1 self-center pl-1 text-muted-foreground/60"
+          title={t("titlebar.pinnedHint", "已固定的项目")}
+        >
+          <Pin className="h-3 w-3" />
+        </div>
+      )}
     </div>
   );
 }

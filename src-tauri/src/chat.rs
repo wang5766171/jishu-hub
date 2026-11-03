@@ -1157,7 +1157,16 @@ pub fn chat_active_sessions(app: AppHandle) -> Vec<ActiveChatSession> {
             None => true,
         })
         .map(|(session_id, process)| ActiveChatSession {
-            session_id: session_id.clone(),
+            // v0.9.6 需求4 补充②：优先真实会话 id（resolve 后）——复用连接的第二
+            // 回合不发 session_resolved，进程表只有 pending-* 键，而前端
+            // turn-complete 信号带真实 id：两侧不一致会让状态灯反查失败
+            //（R3 实测教训）。pending/真实双键条目归并为同一真实 id，前端
+            // 按项目聚合天然去重。
+            session_id: process
+                .acp
+                .as_ref()
+                .and_then(|acp| acp.resolved_session_id())
+                .unwrap_or_else(|| session_id.clone()),
             agent_id: process.agent_id.clone(),
             project_encoded: process.project_encoded.clone(),
         })

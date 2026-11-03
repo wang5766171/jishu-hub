@@ -5,8 +5,9 @@ import { attachWindowActivityTracking } from "@/features/session-kernel/window-a
 import { lazy, Suspense } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { useTranslation } from "react-i18next";
-import { Copy, Minus, Pin, PinOff, Settings, Square, Sun, Palette, Moon, Info, Type, X } from "lucide-react";
+import { Copy, Minus, Pin, PinOff, Settings, Square, Sun, Palette, Moon, Info, X } from "lucide-react";
 import { ProjectTabs } from "@/components/titlebar/project-tabs";
+import { useProjectTabs } from "@/components/titlebar/use-project-tabs";
 import logoSvg from "@/assets/logo.svg";
 import logoLightSvg from "@/assets/logo-light.svg";
 import { Github } from "@/components/icons/github";
@@ -20,7 +21,6 @@ import { useTheme, isBuiltinTheme, type BuiltinTheme, ThemeProvider } from "@/ho
 import { usePluginTheme } from "@/features/theme/plugin-theme";
 // 需求14 M5（06-P2）：应用级浮层宿主（插件 app-overlay 挂载，跨页常驻）。
 import { AppOverlayHost } from "@/features/session-kernel/plugins/mounts/app-overlay-host";
-import { useFontSize, type FontLevel } from "@/hooks/use-font-size";
 import { AgentProvider, useAgent } from "@/agents";
 import { FileViewerProvider, useFileViewer } from "@/components/file-viewer";
 import {
@@ -58,36 +58,6 @@ const themeConfig: Record<BuiltinTheme, { icon: typeof Sun; labelKey: string }> 
 // themeOrder 已移除（Fix1：不再循环切换）
 const appWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? getCurrentWindow() : null;
 
-const fontLevels: { id: FontLevel; labelKey: string }[] = [
-  { id: "s", labelKey: "fontSize.small" },
-  { id: "m", labelKey: "fontSize.medium" },
-  { id: "l", labelKey: "fontSize.large" },
-  { id: "xl", labelKey: "fontSize.xlarge" },
-];
-
-function FontSizeRow({ label, value, onChange, t }: { label: string; value: FontLevel; onChange: (v: FontLevel) => void; t: (k: string) => string }) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-[11px] text-muted-foreground w-14 shrink-0">{label}</span>
-      <div className="flex gap-1">
-        {fontLevels.map(({ id, labelKey }) => (
-          <button
-            key={id}
-            onClick={() => onChange(id)}
-            className={cn(
-              "px-2 py-0.5 rounded text-[11px] transition-fast",
-              value === id
-                ? "bg-primary text-primary-foreground font-medium"
-                : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-            )}
-          >
-            {t(labelKey)}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 function LoadingOverlay({ label }: { label?: string }) {
   const { theme } = useTheme();
@@ -130,13 +100,10 @@ function TitleBar({
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateResult, setUpdateResult] = useState<{ latest_version: string | null; has_update: boolean; release_url: string; error: string | null } | null>(null);
   const [updateReady, setUpdateReady] = useState<{ version: string; path: string } | null>(null);
-  const [fontOpen, setFontOpen] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const { theme } = useTheme();
   const logo = theme === "light" ? logoLightSvg : logoSvg;
-  const { fontSizeBase, fontSizeProse, setFontSizeBase, setFontSizeProse } = useFontSize();
   const aboutRef = useRef<HTMLDivElement>(null);
-  const fontRef = useRef<HTMLDivElement>(null);
   const aboutTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
@@ -182,18 +149,15 @@ function TitleBar({
   }, []);
 
   useEffect(() => {
-    if (!aboutOpen && !fontOpen) return;
+    if (!aboutOpen) return;
     const handler = (e: MouseEvent) => {
       if (aboutOpen && aboutRef.current && !aboutRef.current.contains(e.target as Node)) {
         setAboutOpen(false);
       }
-      if (fontOpen && fontRef.current && !fontRef.current.contains(e.target as Node)) {
-        setFontOpen(false);
-      }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [aboutOpen, fontOpen]);
+  }, [aboutOpen]);
 
   const handleToggle = async () => {
     try {
@@ -294,14 +258,15 @@ function TitleBar({
           </div>
         </div>
       )}
+      {/* v0.9.6 需求4 补充①：左区 228px（= 侧栏 w-60 线 240 − 根 pl-3 12px）——首个
+          项目标签与侧栏分界线对齐；按钮精简为 管理/外观（字体并入外观页——
+          v0.9.5 主题自定义器已含字号滑杆）。 */}
       <div
-        className="mr-1 flex h-full w-8 shrink-0 items-center justify-start"
+        className="flex h-full w-[228px] shrink-0 items-center gap-1"
+        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         onDoubleClick={toggleMaximizeWindow}
       >
-        <img src={logo} alt="" draggable={false} className="pointer-events-none h-6 w-6 rounded-md shadow-sm" />
-      </div>
-
-      <div className="flex items-center gap-1" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+        <img src={logo} alt="" draggable={false} className="pointer-events-none ml-1 h-6 w-6 shrink-0 rounded-md shadow-sm" />
         <button
           onClick={disabled ? undefined : () => onNavigate(currentPage === "chat" ? "manage" : "chat")}
           className={cn(
@@ -323,41 +288,40 @@ function TitleBar({
           <Palette className="h-3.5 w-3.5 text-[var(--icon-theme)]" />
           <span>外观</span>
         </button>
-        <div className="relative" ref={fontRef}>
-          <button
-            onClick={() => setFontOpen(!fontOpen)}
-            className={cn(
-              "h-7 px-3 rounded-md flex items-center gap-1.5 text-xs transition-fast text-muted-foreground hover:bg-accent/30 hover:text-foreground",
-              fontOpen && "bg-accent/30 text-foreground"
-            )}
-            title={t("fontSize.title")}
-          >
-            <Type className="h-3.5 w-3.5 text-[var(--icon-theme)]" />
-            <span>{t("fontSize.title")}</span>
-          </button>
-          {fontOpen && (
-            <div className="absolute left-0 top-full mt-1 w-64 rounded-lg border border-border bg-card shadow-lg z-50 p-3 space-y-2">
-              <FontSizeRow label={t("fontSize.ui")} value={fontSizeBase} onChange={setFontSizeBase} t={t} />
-              <FontSizeRow label={t("fontSize.prose")} value={fontSizeProse} onChange={setFontSizeProse} t={t} />
-            </div>
-          )}
-        </div>
-        <div className="relative" ref={aboutRef}>
+      </div>
+      <div className="flex min-w-8 flex-1 self-stretch items-stretch" onDoubleClick={toggleMaximizeWindow}>
+        {/* v0.9.6 需求4：项目标签条（类浏览器 tab）——组件内部交互区已设
+            no-drag，其余空白保留窗口拖拽 + 双击最大化。 */}
+        {tabs}
+      </div>
+      {/* 需求2（v0.9.4）：dev 窗口显著标识——开发实例与安装版同图标同标题，
+          易误操作；dev 下右上角常驻徽标 + 窗口标题后缀，生产构建零变化。 */}
+      {import.meta.env.DEV && (
+        <span
+          className="mr-2 flex h-5 shrink-0 items-center self-center rounded bg-amber-500 px-1.5 text-[10px] font-bold tracking-widest text-black shadow-sm"
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          title="DEV 开发模式窗口"
+        >
+          DEV
+        </span>
+      )}
+      <div className="ml-2 flex h-full items-stretch" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+        {/* v0.9.6 需求4 补充①：关于/置顶移到窗口控制旁（左区精简让位 tab）。 */}
+        <div className="relative flex items-center pr-1" ref={aboutRef}>
           <button
             onClick={() => setAboutOpen(!aboutOpen)}
             onMouseLeave={aboutOpen ? scheduleAboutClose : undefined}
             className={cn(
-              "h-7 px-3 rounded-md flex items-center gap-1.5 text-xs transition-fast text-muted-foreground hover:bg-accent/30 hover:text-foreground",
+              "h-7 w-7 rounded-md flex items-center justify-center text-xs transition-fast text-muted-foreground hover:bg-accent/30 hover:text-foreground",
               aboutOpen && "bg-accent/30 text-foreground"
             )}
             title={t("about.title")}
           >
             <Info className="h-3.5 w-3.5 text-[var(--icon-about)]" />
-            <span>{t("about.title")}</span>
           </button>
           {aboutOpen && (
             <div
-              className="absolute left-0 top-full mt-1 w-56 rounded-lg border border-border bg-card shadow-lg z-50 p-4"
+              className="absolute right-0 top-full mt-1 w-56 rounded-lg border border-border bg-card shadow-lg z-50 p-4"
               onMouseEnter={cancelAboutClose}
               onMouseLeave={() => { setAboutHovered(false); setAboutOpen(false); }}
             >
@@ -410,32 +374,13 @@ function TitleBar({
         <button
           onClick={handleToggle}
           className={cn(
-            "h-7 px-3 rounded-md flex items-center gap-1.5 text-xs transition-fast",
+            "h-7 w-7 rounded-md flex items-center justify-center text-xs transition-fast",
             pinned ? "text-primary" : "text-muted-foreground hover:bg-accent/30 hover:text-foreground"
           )}
           title={pinned ? "取消置顶" : "置顶窗口"}
         >
           {pinned ? <PinOff className="h-3.5 w-3.5 text-[var(--icon-pin)]" /> : <Pin className="h-3.5 w-3.5 text-[var(--icon-pin)]" />}
-          <span>{pinned ? t("about.unpin") : t("about.pin")}</span>
         </button>
-      </div>
-      <div className="flex min-w-8 flex-1 self-stretch items-stretch" onDoubleClick={toggleMaximizeWindow}>
-        {/* v0.9.6 需求4：项目标签条（类浏览器 tab）——组件内部交互区已设
-            no-drag，其余空白保留窗口拖拽 + 双击最大化。 */}
-        {tabs}
-      </div>
-      {/* 需求2（v0.9.4）：dev 窗口显著标识——开发实例与安装版同图标同标题，
-          易误操作；dev 下右上角常驻徽标 + 窗口标题后缀，生产构建零变化。 */}
-      {import.meta.env.DEV && (
-        <span
-          className="mr-2 flex h-5 shrink-0 items-center self-center rounded bg-amber-500 px-1.5 text-[10px] font-bold tracking-widest text-black shadow-sm"
-          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          title="DEV 开发模式窗口"
-        >
-          DEV
-        </span>
-      )}
-      <div className="ml-2 flex h-full items-stretch" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
         <button
           type="button"
           onClick={minimizeWindow}
@@ -637,6 +582,18 @@ useEffect(() => {
     return () => { cancelled = true; unlistenFn?.(); };
   }, [chatAgentId, projects, setChatAgent]);
 
+  // v0.9.6 需求4 补充②：固定标签状态（pins/lastSession/状态灯）+ 离开自动固定。
+  const projectTabs = useProjectTabs();
+  const prevProjectRef = useRef<Project | null>(null);
+  useEffect(() => {
+    const prev = prevProjectRef.current;
+    if (prev && prev.encoded_name !== currentProject?.encoded_name) {
+      // 项目切换（任意路径：tab 点击/管理页/浮动恢复）——被离开的项目自动固定
+      projectTabs.noteLeave(prev);
+    }
+    prevProjectRef.current = currentProject ?? null;
+  }, [currentProject, projectTabs]);
+
   // v0.9.6 需求4：标题栏项目标签切换——复刻 floating-restore 模式
   //（上方 floating-restore 处理器先例）：直接 setCurrentProject + 定位
   // 会话，不经管理页中转（ChatPage 不卸载，事件管线持续存活，跨项目流式
@@ -703,9 +660,9 @@ useEffect(() => {
             <ProjectTabs
               currentProject={currentProject}
               projects={projects}
+              tabs={projectTabs}
               onSwitchToProject={handleTabSwitchToProject}
               onCloseCurrentProject={handleSwitchProject}
-              disabled={blockingLoading}
             />
           }
         />
