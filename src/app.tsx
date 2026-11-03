@@ -374,7 +374,7 @@ function TitleBar({
         <button
           onClick={handleToggle}
           className={cn(
-            "h-7 w-7 rounded-md flex items-center justify-center text-xs transition-fast",
+            "h-7 w-7 self-center rounded-md flex items-center justify-center text-xs transition-fast",
             pinned ? "text-primary" : "text-muted-foreground hover:bg-accent/30 hover:text-foreground"
           )}
           title={pinned ? "取消置顶" : "置顶窗口"}
