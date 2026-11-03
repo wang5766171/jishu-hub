@@ -30,8 +30,8 @@
   "titlebar": {
     "closeProject": "关闭当前项目",
     "switchToProject": "切换到「{{name}}」项目的对话",
-    "unpinProject": "解除固定",
-    "pinnedHint": "已固定的项目"
+    "pinnedHint": "已固定的项目",
+    "closeTab": "关闭标签"
   },
   "manage": {
     "back": "返回工作区",

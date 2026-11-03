@@ -30,8 +30,8 @@
   "titlebar": {
     "closeProject": "Close current project",
     "switchToProject": "Switch to project \"{{name}}\"",
-    "unpinProject": "Unpin",
-    "pinnedHint": "Pinned projects"
+    "pinnedHint": "Pinned projects",
+    "closeTab": "Close tab"
   },
   "manage": {
     "back": "Back to workspace",

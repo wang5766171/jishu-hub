@@ -96,13 +96,13 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
     }
   });
 
-  it("解除固定：按钮点击触发 unpinProject 且不触发切换", () => {
+  it("关闭标签（=取消固定）：按钮点击触发 unpinProject 且不触发切换", () => {
     const onSwitch = vi.fn();
     const tabs = makeTabs({ pins: ["enc-b"] });
     render(
       <ProjectTabs currentProject={PROJECT_A} projects={[PROJECT_A, PROJECT_B]} tabs={tabs} onSwitchToProject={onSwitch} onCloseCurrentProject={vi.fn()} />,
     );
-    fireEvent.click(screen.getByTitle("解除固定"));
+    fireEvent.click(screen.getByTitle("关闭标签"));
     expect(tabs.unpinProject).toHaveBeenCalledWith("enc-b");
     expect(onSwitch).not.toHaveBeenCalled();
   });

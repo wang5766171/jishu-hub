@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { Pin, PinOff, X } from "lucide-react";
+import { Pin, X } from "lucide-react";
 import type { Project } from "@/types";
 import { cn } from "@/lib/utils";
 import type { ProjectTabsState, TabLight } from "./use-project-tabs";
@@ -138,7 +138,8 @@ export function ProjectTabs({
               )}
             </span>
             <span className="truncate">{project!.name}</span>
-            {/* 解除固定（hover 显示；点击不冒泡到切换） */}
+            {/* 关闭标签=取消固定（用户裁决 2026-11-03：出现即默认固定，无需独立
+                固定/解除按钮——关闭即取消；hover 显示，点击不冒泡到切换）。 */}
             <button
               type="button"
               onClick={e => {
@@ -146,10 +147,10 @@ export function ProjectTabs({
                 tabs.unpinProject(enc);
               }}
               className="hidden h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground group-hover:flex hover:bg-accent hover:text-foreground"
-              title={t("titlebar.unpinProject", "解除固定")}
-              aria-label={t("titlebar.unpinProject", "解除固定")}
+              title={t("titlebar.closeTab", "关闭标签")}
+              aria-label={t("titlebar.closeTab", "关闭标签")}
             >
-              <PinOff className="h-3 w-3" />
+              <X className="h-3 w-3" />
             </button>
           </div>
         ),
