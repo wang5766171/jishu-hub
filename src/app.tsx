@@ -230,7 +230,7 @@ function TitleBar({
 
   return (
     <div
-      className="flex h-11 items-center border-b border-border/30 pl-3 select-none"
+      className="flex h-11 items-center border-b border-border/30 select-none"
       style={{ background: "var(--color-layer-0)", WebkitAppRegion: "drag" } as React.CSSProperties}
     >
       {updateReady && (
@@ -258,11 +258,11 @@ function TitleBar({
           </div>
         </div>
       )}
-      {/* v0.9.6 需求4 补充①：左区 228px（= 侧栏 w-60 线 240 − 根 pl-3 12px）——首个
+      {/* v0.9.6 需求4 补充①：左区 240px 内含 pl-3（根去 pl）——tab 区精确始于侧栏线 240px——首个
           项目标签与侧栏分界线对齐；按钮精简为 管理/外观（字体并入外观页——
           v0.9.5 主题自定义器已含字号滑杆）。 */}
       <div
-        className="flex h-full w-[228px] shrink-0 items-center gap-1"
+        className="flex h-full w-[240px] shrink-0 items-center gap-1 pl-3"
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         onDoubleClick={toggleMaximizeWindow}
       >

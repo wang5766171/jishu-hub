@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Pin, PinOff, X } from "lucide-react";
 import type { Project } from "@/types";
@@ -5,14 +6,16 @@ import { cn } from "@/lib/utils";
 import type { ProjectTabsState, TabLight } from "./use-project-tabs";
 
 /**
- * v0.9.6 需求4：标题栏项目标签（类浏览器 tab strip）+ 补充②固定标签。
+ * v0.9.6 需求4：标题栏项目标签（类浏览器 tab strip）+ 补充②③。
  *
  * - 当前项目标签：带操作按钮（关闭=回管理页）明显区分（用户裁决形态）。
- * - 固定标签（补充②，2026-11-03）：切换离开的项目自动固定（回合结束不
- *   消失，手动解除前常驻——修「任务回复完标签就关闭了还没看到结果」）；
- *   带会话状态灯——蓝=进行中 / 绿=完成 / 红=失败；点击直达该项目最近
- *   活跃会话；hover 显解除固定按钮。
- * - 状态与数据由 useProjectTabs（父组件）供给；本组件纯渲染。
+ * - 固定标签（补充②）：切换离开的项目自动固定（回合结束不消失，手动解除
+ *   前常驻）；会话状态灯——蓝=进行中 / 绿=完成 / 红=失败；点击直达该项目
+ *   最近活跃会话；hover 显解除固定按钮。
+ * - 顺序固定 + 拖拽（补充③，2026-11-03）：标签按 pins 顺序渲染（当前项目
+ *   不强制首位——多标签场景位置不跳动；当前项目未固定时排末尾）；固定
+ *   标签可按住拖拽调整位置（reorderPins 持久化）。
+ * - 状态与数据由 useProjectTabs（父组件）供给；本组件纯渲染 + 拖拽交互。
  */
 
 export interface ProjectTabsProps {
@@ -39,88 +42,120 @@ export function ProjectTabs({
   onCloseCurrentProject,
 }: ProjectTabsProps) {
   const { t } = useTranslation();
+  const dragEnc = useRef<string | null>(null);
 
-  // 固定标签 = pins 中排除当前项目、且项目列表可查（过滤已删除项目）
-  const pinnedTabs = tabs.pins
-    .filter(enc => enc !== currentProject?.encoded_name)
-    .map(enc => {
-      const project = projects?.find(p => p.encoded_name === enc);
-      return project ? { project, light: tabs.lights[enc], last: tabs.lastSession[enc] } : null;
-    })
-    .filter((x): x is NonNullable<typeof x> => x !== null);
+  // ── 显示序（补充③）：pins 顺序为准（当前项目在其中按其固定位置渲染，
+  // 未固定过的当前项目排末尾）——切换项目时标签位置不跳动。 ──
+  const orderedEntries: {
+    enc: string;
+    project: Project | null;
+    isCurrent: boolean;
+    light?: TabLight;
+    last?: { sessionId: string; agentId: string };
+  }[] = tabs.pins.map(enc => {
+    const isCurrent = enc === currentProject?.encoded_name;
+    return {
+      enc,
+      project: projects?.find(p => p.encoded_name === enc) ?? (isCurrent ? currentProject : null),
+      isCurrent,
+      light: tabs.lights[enc],
+      last: tabs.lastSession[enc],
+    };
+  });
+  if (currentProject && !tabs.pins.includes(currentProject.encoded_name)) {
+    orderedEntries.push({ enc: currentProject.encoded_name, project: currentProject, isCurrent: true });
+  }
+  const visible = orderedEntries.filter(e => e.project);
 
-  if (!currentProject && pinnedTabs.length === 0) return null;
+  if (visible.length === 0) return null;
 
   return (
     <div
       className="flex h-full min-w-0 flex-1 items-end gap-0.5 overflow-x-auto pr-2"
       style={{ WebkitAppRegion: "no-drag", scrollbarWidth: "none" } as React.CSSProperties}
     >
-      {currentProject && (
-        <div
-          className={cn(
-            "group relative flex h-9 max-w-56 min-w-0 shrink items-center gap-1.5 rounded-t-md border border-b-0 px-3",
-            "bg-[var(--color-layer-1)] text-foreground",
-          )}
-          title={currentProject.path}
-        >
-          <span className="truncate text-xs font-medium">{currentProject.name}</span>
-          <button
-            type="button"
-            onClick={onCloseCurrentProject}
-            className="flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-60 transition-fast hover:bg-accent hover:opacity-100"
-            title={t("titlebar.closeProject", "关闭当前项目")}
-            aria-label={t("titlebar.closeProject", "关闭当前项目")}
-          >
-            <X className="h-3 w-3" />
-          </button>
-        </div>
-      )}
-      {pinnedTabs.map(({ project, light, last }) => (
-        <div
-          key={project.encoded_name}
-          className={cn(
-            "group relative flex h-8 max-w-44 min-w-0 shrink cursor-pointer items-center gap-1.5 self-end rounded-t-md px-3 text-xs transition-fast",
-            light === "running"
-              ? "bg-accent/30 text-foreground"
-              : "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
-          )}
-          title={project.path}
-          onClick={() => {
-            tabs.clearLight(project.encoded_name);
-            onSwitchToProject(project, last?.sessionId ?? null, last?.agentId ?? null);
-          }}
-        >
-          {/* 会话状态灯：蓝=进行中 / 绿=完成 / 红=失败（无灯=空闲） */}
-          <span className="flex h-2 w-2 shrink-0 items-center justify-center">
-            {light && (
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full",
-                  LIGHT_CLASS[light],
-                  light === "running" && "animate-pulse",
-                )}
-              />
+      {visible.map(({ enc, project, isCurrent, light, last }) =>
+        isCurrent ? (
+          // ── 当前项目标签（带关闭操作；不可拖拽——不在 pins 序中） ──
+          <div
+            key={enc}
+            className={cn(
+              "group relative flex h-9 max-w-56 min-w-0 shrink items-center gap-1.5 rounded-t-md border border-b-0 px-3",
+              "bg-[var(--color-layer-1)] text-foreground",
             )}
-          </span>
-          <span className="truncate">{project.name}</span>
-          {/* 解除固定（hover 显示；点击不冒泡到切换） */}
-          <button
-            type="button"
-            onClick={e => {
-              e.stopPropagation();
-              tabs.unpinProject(project.encoded_name);
-            }}
-            className="hidden h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground group-hover:flex hover:bg-accent hover:text-foreground"
-            title={t("titlebar.unpinProject", "解除固定")}
-            aria-label={t("titlebar.unpinProject", "解除固定")}
+            title={project!.path}
           >
-            <PinOff className="h-3 w-3" />
-          </button>
-        </div>
-      ))}
+            <span className="truncate text-xs font-medium">{project!.name}</span>
+            <button
+              type="button"
+              onClick={onCloseCurrentProject}
+              className="flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-60 transition-fast hover:bg-accent hover:opacity-100"
+              title={t("titlebar.closeProject", "关闭当前项目")}
+              aria-label={t("titlebar.closeProject", "关闭当前项目")}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        ) : (
+          // ── 固定标签（可拖拽重排；状态灯；hover 解除固定） ──
+          <div
+            key={enc}
+            draggable
+            onDragStart={e => {
+              dragEnc.current = enc;
+              e.dataTransfer.effectAllowed = "move";
+            }}
+            onDragOver={e => e.preventDefault()}
+            onDrop={e => {
+              e.preventDefault();
+              if (dragEnc.current && dragEnc.current !== enc) {
+                tabs.reorderPins(dragEnc.current, enc);
+              }
+              dragEnc.current = null;
+            }}
+            className={cn(
+              "group relative flex h-8 max-w-44 min-w-0 shrink cursor-pointer items-center gap-1.5 self-end rounded-t-md px-3 text-xs transition-fast",
+              light === "running"
+                ? "bg-accent/30 text-foreground"
+                : "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
+            )}
+            title={project!.path}
+            onClick={() => {
+              tabs.clearLight(enc);
+              onSwitchToProject(project!, last?.sessionId ?? null, last?.agentId ?? null);
+            }}
+          >
+            {/* 会话状态灯：蓝=进行中 / 绿=完成 / 红=失败（无灯=空闲） */}
+            <span className="flex h-2 w-2 shrink-0 items-center justify-center">
+              {light && (
+                <span
+                  className={cn(
+                    "h-1.5 w-1.5 rounded-full",
+                    LIGHT_CLASS[light],
+                    light === "running" && "animate-pulse",
+                  )}
+                />
+              )}
+            </span>
+            <span className="truncate">{project!.name}</span>
+            {/* 解除固定（hover 显示；点击不冒泡到切换） */}
+            <button
+              type="button"
+              onClick={e => {
+                e.stopPropagation();
+                tabs.unpinProject(enc);
+              }}
+              className="hidden h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground group-hover:flex hover:bg-accent hover:text-foreground"
+              title={t("titlebar.unpinProject", "解除固定")}
+              aria-label={t("titlebar.unpinProject", "解除固定")}
+            >
+              <PinOff className="h-3 w-3" />
+            </button>
+          </div>
+        ),
+      )}
       {/* 无当前项目（管理页）但存在固定标签时的视觉锚 */}
-      {pinnedTabs.length > 0 && !currentProject && (
+      {visible.some(e => !e.isCurrent) && !currentProject && (
         <div
           className="flex items-center gap-1 self-center pl-1 text-muted-foreground/60"
           title={t("titlebar.pinnedHint", "已固定的项目")}

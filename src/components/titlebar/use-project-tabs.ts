@@ -33,6 +33,8 @@ export interface ProjectTabsState {
   lastSession: Record<string, LastSessionInfo>;
   pinProject: (encoded: string) => void;
   unpinProject: (encoded: string) => void;
+  /** v0.9.6 补充③：拖拽重排固定标签顺序（持久化——标签位置固定不跳动）。 */
+  reorderPins: (from: string, to: string) => void;
   /** 离开项目时调用（自动固定入口）。 */
   noteLeave: (project: Project | null) => void;
   /** 点击标签（已查看）——清绿/红灯。 */
@@ -79,6 +81,20 @@ export function useProjectTabs(): ProjectTabsState {
       if (!(encoded in prev)) return prev;
       const next = { ...prev };
       delete next[encoded];
+      return next;
+    });
+  }, []);
+
+  const reorderPins = useCallback((from: string, to: string) => {
+    if (from === to) return;
+    setPins(prev => {
+      const fromIdx = prev.indexOf(from);
+      const toIdx = prev.indexOf(to);
+      if (fromIdx < 0 || toIdx < 0) return prev;
+      const next = [...prev];
+      next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, from);
+      localStorage.setItem(PINS_KEY, JSON.stringify(next));
       return next;
     });
   }, []);
@@ -184,5 +200,5 @@ export function useProjectTabs(): ProjectTabsState {
     return unsub;
   }, []);
 
-  return { pins, lights, lastSession, pinProject, unpinProject, noteLeave, clearLight };
+  return { pins, lights, lastSession, pinProject, unpinProject, reorderPins, noteLeave, clearLight };
 }
