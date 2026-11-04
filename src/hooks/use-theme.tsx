@@ -21,6 +21,8 @@ export function isBuiltinTheme(t: string): t is BuiltinTheme {
 interface ThemeContextType {
   theme: Theme;
   setTheme: (theme: Theme) => void;
+  /** v0.9.6 需求7：仅内存回落——插件主题装载窗口的 UI 兜底，不污染持久值。 */
+  setThemeTransient: (theme: Theme) => void;
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
@@ -60,8 +62,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     invokeCommand("save_theme", { theme: t }).catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
   }, []);
 
+  /// v0.9.6 需求7：仅内存回落（不写 localStorage / 不 save_theme）——插件主题
+  /// 「暂时找不到」（启动竞态/装载窗口）时 UI 兜底用，永不污染持久值；持久
+  /// 化回落只保留用户显式操作路径（外观页选主题/删主题）。
+  const setThemeTransient = useCallback((t: Theme) => {
+    setThemeState(t);
+  }, []);
+
   return (
-    <ThemeContext.Provider value={{ theme, setTheme }}>
+    <ThemeContext.Provider value={{ theme, setTheme, setThemeTransient }}>
       {children}
     </ThemeContext.Provider>
   );

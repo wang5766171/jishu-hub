@@ -8,8 +8,11 @@
  * 保证级联顺序在打包 CSS 之后）→ 注入 + 设 data-jishu-theme 选择器属性
  * 与 data-theme 基座属性（dark:/colorful: variant 工具类依赖基座）。
  *
- * 回落纪律：插件缺失/禁用/装载失败 → 回落内置 dark 并持久化（主题插件
- * 卸载后主题自然回内置基座，不残留半套样式）。
+ * 回落纪律（v0.9.6 需求7 修正）：装载未就绪不判定；插件缺失/禁用/装载
+ * 失败 → 仅内存回落内置 dark（setThemeTransient，不写盘——启动竞态/装载
+ * 窗口曾把「暂时找不到」当「真找不到」持久化回落，用户主题被偶发还原）；
+ * 持久化回落只保留用户显式操作路径（外观页选/删主题）。激活成功幂等回写
+ * save_theme（自愈历史暗伤）。
  */
 import { useEffect, useSyncExternalStore } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -18,6 +21,7 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { devLog } from "@/lib/dev-log";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
 import {
+  composedReady,
   composedVersion,
   subscribeComposed,
 } from "@/features/session-kernel/capabilities/composition/loader";
@@ -72,7 +76,7 @@ export function expandThemeAssetUrls(
 
 /** App 根部调用一次（ThemeProvider 内）；订阅组合清单版本实现 css 热更。 */
 export function usePluginTheme(): void {
-  const { theme, setTheme } = useTheme();
+  const { theme, setTheme, setThemeTransient } = useTheme();
   const version = useSyncExternalStore(subscribeComposed, composedVersion, () => 0);
 
   useEffect(() => {
@@ -82,10 +86,16 @@ export function usePluginTheme(): void {
       cleanupPluginTheme();
       return;
     }
+    // v0.9.6 需求7 F1：组合清单未装载完成不判定——避免启动竞态把「暂时找不
+    // 到」当「真找不到」（cache 初始为空，装载完成 version++ 会重跑本 effect）。
+    if (!composedReady()) {
+      devLog("capability", "theme activation deferred: composed manifests not ready", { requested: theme });
+      return;
+    }
     const descriptor = listSessionPlugins().find((p) => p.id === theme && p.theme);
     if (!descriptor?.theme) {
-      devLog("capability", `theme fallback: ${theme} not found → dark`, { requested: theme, reason: "descriptor-missing" });
-      setTheme("dark");
+      devLog("capability", `theme fallback: ${theme} not found → dark (transient, not persisted)`, { requested: theme, reason: "descriptor-missing" });
+      setThemeTransient("dark");
       return;
     }
     const decl = descriptor.theme;
@@ -99,8 +109,8 @@ export function usePluginTheme(): void {
         if (cancelled) return;
         const enabled = (list.plugins ?? []).some((p) => p.id === theme && p.enabled);
         if (!enabled) {
-          devLog("capability", `theme fallback: ${theme} disabled → dark`, { requested: theme, reason: "disabled" });
-          setTheme("dark");
+          devLog("capability", `theme fallback: ${theme} disabled → dark (transient, not persisted)`, { requested: theme, reason: "disabled" });
+          setThemeTransient("dark");
           return;
         }
         const r = await invokeCommand<{ path: string; content: string }>(
@@ -120,15 +130,18 @@ export function usePluginTheme(): void {
         // 基座属性（base 归一化非空，engine 缺省 dark）。
         document.documentElement.setAttribute("data-theme", decl.base);
         devLog("capability", `theme activated: ${theme} (base=${decl.base}, css=${r.content.length}B)`, { themeId: theme, base: decl.base });
+        // v0.9.6 需求7 F3：激活成功幂等回写——自愈历史暗伤（state.theme 曾被
+        // 竞态回落写成 dark，load 水合又不回写；此处同值 save 无副作用）。
+        setTheme(theme);
       } catch (e) {
         if (!cancelled) {
-          devLog("capability", `theme load failed: ${theme} → dark`, { requested: theme, error: String(e).slice(0, 120) });
-          setTheme("dark");
+          devLog("capability", `theme load failed: ${theme} → dark (transient, not persisted)`, { requested: theme, error: String(e).slice(0, 120) });
+          setThemeTransient("dark");
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [theme, setTheme, version]);
+  }, [theme, setTheme, setThemeTransient, version]);
 }
