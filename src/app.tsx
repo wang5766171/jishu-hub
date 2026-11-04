@@ -261,12 +261,14 @@ function TitleBar({
       {/* v0.9.6 需求4 补充①：左区 240px 内含 pl-3（根去 pl）——tab 区精确始于侧栏线 240px——首个
           项目标签与侧栏分界线对齐；按钮精简为 管理/外观（字体并入外观页——
           v0.9.5 主题自定义器已含字号滑杆）。 */}
+      {/* 补充⑧修复：左区容器回归 drag（logo 与按钮后空白可拖动窗口），按钮
+          由内层 no-drag 包裹（drag 区上的点击元素必须显式 no-drag）。 */}
       <div
         className="flex h-full w-[240px] shrink-0 items-center gap-1 pl-3"
-        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         onDoubleClick={toggleMaximizeWindow}
       >
         <img src={logo} alt="" draggable={false} className="pointer-events-none ml-1 h-6 w-6 shrink-0 rounded-md shadow-sm" />
+        <div className="flex items-center gap-1" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
         <button
           onClick={disabled ? undefined : () => onNavigate(currentPage === "chat" ? "manage" : "chat")}
           className={cn(
@@ -288,8 +290,15 @@ function TitleBar({
           <Palette className="h-3.5 w-3.5 text-[var(--icon-theme)]" />
           <span>外观</span>
         </button>
+        </div>
       </div>
-      <div className="flex min-w-8 flex-1 self-stretch items-stretch" onDoubleClick={toggleMaximizeWindow}>
+      {/* 补充⑧修复：中间容器显式 drag——tab 区（no-drag）按内容收缩后，
+         此处剩余空白是主要拖拽区（此前 tab 区 flex-1 占满致窗口无法拖动）。 */}
+      <div
+        className="flex min-w-8 flex-1 self-stretch items-stretch"
+        style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+        onDoubleClick={toggleMaximizeWindow}
+      >
         {/* v0.9.6 需求4：项目标签条（类浏览器 tab）——组件内部交互区已设
             no-drag，其余空白保留窗口拖拽 + 双击最大化。 */}
         {tabs}

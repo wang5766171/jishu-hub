@@ -69,9 +69,11 @@ export function ProjectTabs({
 
   if (visible.length === 0) return null;
 
+  // 补充⑧修复（2026-11-04）：根不再 flex-1 占满——按内容宽度收缩，右侧
+  // 剩余区域留给外层 drag 拖拽区（占满导致窗口无法拖动，用户实测 BUG）。
   return (
     <div
-      className="flex h-full min-w-0 flex-1 items-end gap-0.5 overflow-x-auto pr-2"
+      className="flex h-full w-fit min-w-0 max-w-full items-end gap-0.5 overflow-x-auto pr-2"
       style={{ WebkitAppRegion: "no-drag", scrollbarWidth: "none" } as React.CSSProperties}
     >
       {visible.map(({ enc, project, isCurrent, light, last }) =>
