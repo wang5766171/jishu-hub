@@ -947,6 +947,32 @@ async fn pi_rpc_connection_loop(
                     Some(AcpCommand::RespondToInput { id, value, response }) => {
                         // Respond to a Pi extension_ui_request (planning-phase
                         // pause-resume). Pi is blocked waiting for this response.
+                        //
+                        // v0.9.6 需求8 F1：提交前权威校验——id 既不是当前 pending
+                        // 交互、也不在审批表中的「陈旧卡」（回合已被终结/进程重拉
+                        // 后残留的前端卡）直接报错，不再写 stdin：pi 对未知 id 的
+                        // extension_ui_response 静默丢弃（rpc-mode get 未命中即
+                        // return），写出去会让 hub 误报 Ok、卡消失而 agent 永远
+                        // 收不到——用户观感「提交了没反应」。报错让前端撤卡并提示。
+                        let is_current = pending_interaction_id.as_deref() == Some(id.as_str());
+                        let is_approval = pending_tool_approvals.contains_key(&id);
+                        if !is_current && !is_approval {
+                            log::warn!(
+                                "Pi RPC respond_to_input stale id={} (current={:?}) — rejecting",
+                                id,
+                                pending_interaction_id
+                            );
+                            devlog(
+                                "error",
+                                "交互提交被拒绝：该问题已过期（回合已结束或会话重启）——卡片将自动撤除",
+                                &session_id,
+                                json!({ "stale_id": id }),
+                            );
+                            let _ = response.send(Err(
+                                "该交互已过期（回合已结束或会话重启），请重新触发提问".to_string(),
+                            ));
+                            return Ok(());
+                        }
                         let result = send_pi_command(&stdin_arc, &json!({
                             "type": "extension_ui_response",
                             "id": id,
@@ -1501,6 +1527,18 @@ async fn pi_rpc_connection_loop(
                                 if matches!(event, NormalizedEvent::InteractionRequest { .. }) {
                                     if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
                                         pending_interaction_id = Some(id.to_string());
+                                        // v0.9.6 需求8 F3：交互到达即刷新回合看门狗——
+                                        // 用户思考/作答时间本应无界，UI 请求分支在
+                                        // 统一刷新点之前 continue，问题挂起 >InTurn 窗
+                                        // 曾被看门狗误杀（合成 Aborted→Idle→600s 后进程
+                                        // 回收→提交必报 No active ACP session）。
+                                        if let Some((phase, deadline)) = turn_watchdog.as_mut() {
+                                            let next = tokio::time::Instant::now()
+                                                + turn_watchdog_window(*phase, in_compaction);
+                                            if next > *deadline {
+                                                *deadline = next;
+                                            }
+                                        }
                                     }
                                 }
                                 // PhaseDivider arrives during agent_end and belongs at
@@ -1922,6 +1960,22 @@ async fn pi_rpc_connection_loop(
                     true
                 } else if let Some((phase, deadline)) = turn_watchdog {
                     if tokio::time::Instant::now() >= deadline {
+                        // v0.9.6 需求8 F3：有交互（问答/审批卡）在等待用户时豁免
+                        // InTurn 看门狗——用户思考无界，事件流「静默」是等待作答
+                        // 的正常形态；顺延 deadline 而非终结回合（终结会让 pi 侧
+                        // 问卷作废+进程最终回收，提交必然失败）。
+                        if pending_interaction_id.is_some()
+                            && matches!(phase, WatchdogPhase::InTurn { .. })
+                        {
+                            if let Some((_, dl)) = turn_watchdog.as_mut() {
+                                *dl = tokio::time::Instant::now()
+                                    + turn_watchdog_window(phase, in_compaction);
+                            }
+                            log::info!(
+                                "[watchdog] InTurn deferred: interaction pending (session {session_id}) — user thinking"
+                            );
+                            continue;
+                        }
                         // v0.9.6 需求6 F2：回合分级看门狗触发——按相位给出
                         // 面向用户的差异化原因（秒数不写死在文案里，窗口常量
                         // 可独立调整；窗口值进 devlog 取证）。

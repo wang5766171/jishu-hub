@@ -396,6 +396,22 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           continue;
         }
 
+        // v0.9.6 需求8 F2：回合终结撤卡——turn_complete（完成/中止/错误）意味着
+        // mid-turn 交互（问答/确认卡）在 pi 侧必然已收口或作废；此前不清队列，
+        // 陈旧卡占据队头会让后续新问答提交到已作废的 request_id（pi 静默丢，
+        // 用户观感「提交了没反应」）。FollowUp 交付（delivery_hint 非 MidTurn）
+        // 的卡不受影响——它们的设计语义就是回合结束后等用户补答转新消息。
+        if (chunk.data.kind === "turn_complete") {
+          deps.setPendingInteractions(current => {
+            const resolvedKey = streamStore.getState(cid)?.resolvedId ?? cid;
+            const kept = current.filter((item) => {
+              if (item.sessionId !== cid && item.sessionId !== resolvedKey) return true;
+              const hint = item.request.deliveryHint;
+              return hint !== undefined && hint !== "mid_turn";
+            });
+            return kept.length === current.length ? current : kept;
+          });
+        }
         if (chunk.data.kind === "turn_complete") {
           // v0.9.4 需求6 v2：回合完成后触发 AI 标题生成（一次/会话；后端幂等
           // ——已有 session_info 即跳过，用户重命名不覆盖；失败静默回落规则
