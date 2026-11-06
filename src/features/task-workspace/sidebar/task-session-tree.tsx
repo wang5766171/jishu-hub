@@ -21,7 +21,7 @@
  */
 import { memo, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight, MessageSquare, Pencil, X, Network } from "lucide-react";
+import { ChevronDown, ChevronRight, Pencil, X, Network } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   ContextMenu,
@@ -103,7 +103,9 @@ const TaskRow = memo(function TaskRow({
                 : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
             )}
           >
-            <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
+            {/* 补充⑪（2026-11-06 用户裁决）：去掉气泡图标——固定占位与常规
+                会话行一致（状态灯更突出、行宽不跳、对齐不变）。 */}
+            <span className="flex h-3.5 w-3 shrink-0 items-center justify-center" />
             <span className="min-w-0 flex-1 truncate text-left leading-none pt-[1px]">
               {task.title}
             </span>
