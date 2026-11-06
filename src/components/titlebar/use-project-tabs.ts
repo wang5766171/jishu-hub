@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { subscribeSessionSignals } from "@/features/session-kernel/signals";
+import {
+  clearUnread,
+  setUnread,
+  useSessionUnread,
+} from "@/features/session-kernel/session-unread";
 import type { Project } from "@/types";
 
 /**
@@ -80,12 +85,7 @@ export function useProjectTabs(): ProjectTabsState {
       localStorage.setItem(PINS_KEY, JSON.stringify(next));
       return next;
     });
-    setLights(prev => {
-      if (!(encoded in prev)) return prev;
-      const next = { ...prev };
-      delete next[encoded];
-      return next;
-    });
+    // v0.9.6 补充⑨：解除固定不清未读（绿/红保留直到查看）。
   }, []);
 
   const reorderPins = useCallback((from: string, to: string) => {
@@ -113,12 +113,11 @@ export function useProjectTabs(): ProjectTabsState {
   }, [pinProject]);
 
   const clearLight = useCallback((encoded: string) => {
-    setLights(prev => {
-      if (!(encoded in prev)) return prev;
-      const next = { ...prev };
-      delete next[encoded];
-      return next;
-    });
+    // v0.9.6 补充⑨：查看=已读——清该项目最近会话的未读（绿/红跨重启亦不再
+    // 出现）；running 蓝不受影响（仍在进行中）。
+    const last = lastRef.current[encoded];
+    if (last) clearUnread(last.sessionId);
+    // v0.9.6 补充⑨：解除固定不清未读（绿/红保留直到查看）。
   }, []);
 
   // 活跃回合轮询：running 灯 + 最近会话记录
@@ -191,16 +190,19 @@ export function useProjectTabs(): ProjectTabsState {
     const unsub = subscribeSessionSignals(signal => {
       if (signal.type !== "turn-complete") return;
       const { sessionId, error } = signal as { type: "turn-complete"; sessionId: string; error?: boolean };
+      // v0.9.6 补充⑨：完成/失败 → 未读标记（持久 store，跨重启保留直到查看）。
+      const kind = error ? "failed" : "done";
+      setUnread(sessionId, kind);
       for (const [enc, info] of activeRef.current) {
         if (info.sessionId === sessionId) {
-          setLights(prev => ({ ...prev, [enc]: error ? "failed" : "done" }));
+          setLights(prev => ({ ...prev, [enc]: kind }));
           return;
         }
       }
       // 活跃快照已过期（回合结束后轮询间隙）→ 用 lastSession 反查兜底
       for (const [enc, info] of Object.entries(lastRef.current)) {
         if (info.sessionId === sessionId) {
-          setLights(prev => ({ ...prev, [enc]: error ? "failed" : "done" }));
+          setLights(prev => ({ ...prev, [enc]: kind }));
           return;
         }
       }
@@ -208,5 +210,17 @@ export function useProjectTabs(): ProjectTabsState {
     return unsub;
   }, []);
 
-  return { pins, lights, lastSession, pinProject, unpinProject, reorderPins, noteLeave, clearLight, suppressPinOnce };
+  // v0.9.6 补充⑨：done/failed 从未读 store 派生（跨重启持久）——store 键为
+  // sessionId（会话列表直用），标签消费按项目键：经 lastSession 映射
+  //（项目最近会话的未读即该标签的未读）；running 由轮询内存层提供（实时）。
+  const unread = useSessionUnread();
+  const mergedLights: Record<string, TabLight> = {};
+  for (const [enc, info] of Object.entries(lastSession)) {
+    const u = unread[info.sessionId];
+    if (u) mergedLights[enc] = u;
+  }
+  for (const [enc, light] of Object.entries(lights)) {
+    if (light === "running") mergedLights[enc] = "running";
+  }
+  return { pins, lights: mergedLights, lastSession, pinProject, unpinProject, reorderPins, noteLeave, clearLight, suppressPinOnce };
 }

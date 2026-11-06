@@ -36,7 +36,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { ActivitySpinner } from "@/components/ui/activity-spinner";
+import { useSessionUnread } from "@/features/session-kernel/session-unread";
 import { TaskSessionTree } from "@/features/task-workspace/sidebar/task-session-tree";
 import { formatRelativeTime, TerminalIcon } from "./chat-page-utils";
 import type { ConfirmDialogOptions } from "@/components/ui/confirm-dialog";
@@ -94,6 +94,8 @@ export interface ChatSidebarProps {
 }
 
 export function ChatSidebar(props: ChatSidebarProps) {
+  // v0.9.6 补充⑨：会话未读快照（绿/红点）——选中会话即已读清除。
+  const sessionUnread = useSessionUnread();
   const {
     currentProject,
     projectDisplayName,
@@ -392,11 +394,21 @@ export function ChatSidebar(props: ChatSidebarProps) {
                       {rowRefreshing ? (
                         <RotateCw className="h-3 w-3 shrink-0 animate-spin text-[var(--icon-action)]" />
                       ) : rowStreaming ? (
-                        <ActivitySpinner className="h-3.5 w-3.5 text-[var(--icon-action)]" />
+                        /* v0.9.6 补充⑨：进行中=蓝色呼吸点（原加载动效改统一灯语言） */
+                        <span className="flex h-3.5 w-3 shrink-0 items-center justify-center">
+                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+                        </span>
                       ) : (
                         <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
                       )}
                       <span className="truncate flex-1 text-left min-w-0 leading-none pt-[1px]">{name}</span>
+                      {/* 补充⑨：未读结果点——绿=完成未读 / 红=失败未读（查看后消失，
+                          跨重启保留）；仅非当前选中且非流式时显示 */}
+                      {!rowStreaming && !isActive && sessionUnread[session.id] && (
+                        <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center" title={sessionUnread[session.id] === "failed" ? "有失败结果未读" : "有完成结果未读"}>
+                          <span className={cn("h-1.5 w-1.5 rounded-full", sessionUnread[session.id] === "failed" ? "bg-red-500" : "bg-emerald-500")} />
+                        </span>
+                      )}
                       {searchHit ? (
                         <span className="shrink-0 rounded-full bg-primary/20 text-primary px-1.5 py-0.5 text-[9px] font-medium leading-none">
                           {searchHit.matchCount}

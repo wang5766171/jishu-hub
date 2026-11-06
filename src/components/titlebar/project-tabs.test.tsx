@@ -71,8 +71,8 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
     );
     fireEvent.click(screen.getByText("other-work"));
     expect(onSwitch).toHaveBeenCalledWith(PROJECT_B, "s-b", "codex");
-    // 补充⑤：点击不清灯（灯常驻随状态流转）
-    expect(tabs.clearLight).not.toHaveBeenCalled();
+    // 补充⑨：点击=已读——清未读（绿/红消失）
+    expect(tabs.clearLight).toHaveBeenCalledWith("enc-b");
   });
 
   it("灯色 class：running 蓝 / done 绿 / failed 红映射正确", () => {
@@ -98,11 +98,15 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
     }
   });
 
-  it("补充⑤灯常驻：空闲固定标签显示灰点（无灯不消失）", () => {
+  it("补充⑨空闲无点：不渲染圆点但占位保留（标签宽度不变）", () => {
     render(
       <ProjectTabs currentProject={PROJECT_A} projects={[PROJECT_A, PROJECT_B]} tabs={makeTabs({ pins: ["enc-b"] })} onSwitchToProject={vi.fn()} onCloseCurrentProject={vi.fn()} />,
     );
-    expect(document.querySelector("span[class*='bg-muted-foreground']")).not.toBeNull();
+    // 无任何彩色圆点
+    expect(document.querySelector("span.rounded-full")).toBeNull();
+    // 占位 span 在（h-2 w-2 固定尺寸——宽度不随有无点变化）
+    const tab = screen.getByText("other-work").closest("div[class*='rounded-t-md']");
+    expect(tab?.querySelector("span.flex.h-2.w-2")).not.toBeNull();
   });
 
   it("关闭标签（=取消固定）：按钮点击触发 unpinProject 且不触发切换", () => {

@@ -87,16 +87,18 @@ export function ProjectTabs({
             )}
             title={project!.path}
           >
-            {/* 补充⑥（2026-11-03 用户裁决）：当前项目标签同样常驻状态灯——
-                选中后圆点不消失（此前当前分支无灯=「选中后灯消失」的观感）。 */}
+            {/* 补充⑨：当前标签灯——蓝(呼吸)=本会话进行中；绿/红不会出现
+                （正在查看不产生未读）；空闲无点占位保留（宽度不变）。 */}
             <span className="flex h-2 w-2 shrink-0 items-center justify-center">
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full",
-                  light ? LIGHT_CLASS[light] : "bg-muted-foreground/40",
-                  light === "running" && "animate-pulse",
-                )}
-              />
+              {light && (
+                <span
+                  className={cn(
+                    "h-1.5 w-1.5 rounded-full",
+                    LIGHT_CLASS[light],
+                    light === "running" && "animate-pulse",
+                  )}
+                />
+              )}
             </span>
             <span className="truncate text-xs font-medium">{project!.name}</span>
             <button
@@ -134,19 +136,24 @@ export function ProjectTabs({
             )}
             title={project!.path}
             onClick={() => {
+              // 补充⑨：查看=已读——清该项目绿/红未读（running 蓝保留）。
+              tabs.clearLight(enc);
               onSwitchToProject(project!, last?.sessionId ?? null, last?.agentId ?? null);
             }}
           >
-            {/* 会话状态灯（补充⑤常驻四态）：灰=空闲 / 蓝(呼吸)=进行中 /
-                绿=完成 / 红=失败——点击查看不清灯（灯随状态自然流转）。 */}
+            {/* 状态灯（补充⑨）：蓝(呼吸)=进行中 / 绿=完成未读 / 红=失败未读
+                ——未读在查看（点击切换）后消失；空闲无点但占位保留（标签宽度
+                不随有无点变化）。 */}
             <span className="flex h-2 w-2 shrink-0 items-center justify-center">
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full",
-                  light ? LIGHT_CLASS[light] : "bg-muted-foreground/40",
-                  light === "running" && "animate-pulse",
-                )}
-              />
+              {light && (
+                <span
+                  className={cn(
+                    "h-1.5 w-1.5 rounded-full",
+                    LIGHT_CLASS[light],
+                    light === "running" && "animate-pulse",
+                  )}
+                />
+              )}
             </span>
             <span className="truncate">{project!.name}</span>
             {/* 关闭标签=取消固定（用户裁决 2026-11-03：出现即默认固定，无需独立
