@@ -344,49 +344,34 @@ enum WatchdogPhase {
     /// response(started) 已到，等首个回合事件。started→agent_start/turn_start
     /// 之间无 I/O（仅扩展微任务链，MCP 重连秒级）→ 紧凑窗。
     AwaitTurnStart,
-    /// 回合事件已到。正常静默的两硬上限：请求建立期（undici headersTimeout
-    /// 300s）与流分块间隙（bodyTimeout 300s），超时 pi 必发 error 事件 →
-    /// 兜底窗略高于锚点；compaction 括号内（turn 间压缩）summarize 无界 → 宽窗。
-    InTurn,
 }
 
 /// v0.9.6 需求6 F2：各相位窗口（依据见 WatchdogPhase 注释；触发均出
 /// recoverable Error 引导重发，devlog 留证可调窗）。
 const WATCHDOG_AWAIT_RESPONSE: Duration = Duration::from_secs(300);
 const WATCHDOG_AWAIT_TURN_START: Duration = Duration::from_secs(15);
-const WATCHDOG_IN_TURN: Duration = Duration::from_secs(360);
-const WATCHDOG_IN_COMPACTION: Duration = Duration::from_secs(900);
 
 /// v0.9.6 需求6 F2：窗口选择（纯函数，供单测）。
 fn turn_watchdog_window(phase: WatchdogPhase, in_compaction: bool) -> Duration {
     match phase {
         WatchdogPhase::AwaitResponse => WATCHDOG_AWAIT_RESPONSE,
         WatchdogPhase::AwaitTurnStart => WATCHDOG_AWAIT_TURN_START,
-        WatchdogPhase::InTurn => {
-            if in_compaction {
-                WATCHDOG_IN_COMPACTION
-            } else {
-                WATCHDOG_IN_TURN
-            }
-        }
+
     }
 }
 
 /// v0.9.6 需求6 F2：事件驱动的相位转移（纯函数，供单测）。
 /// 回合生命周期事件 → InTurn；compaction 括号事件保持当前相位（宽窄由
 /// in_compaction 标记控制）；其余事件（extension_ui_request 等）仅刷新不改相。
-fn watchdog_phase_on_event(phase: WatchdogPhase, event_type: &str) -> WatchdogPhase {
-    match event_type {
-        "agent_start"
-        | "turn_start"
-        | "message_start"
-        | "message_end"
-        | "tool_execution_start"
-        | "tool_execution_end"
-        | "agent_end"
-        | "agent_settled" => WatchdogPhase::InTurn,
-        _ => phase,
-    }
+/// v0.9.6 需求9 用户哲学裁决（2026-11-06）：「当时永远思考中不是 pi 死了，
+/// 更像是消息没到 pi……坚决的相信 pi 没问题」。看门狗职责收窄为**投递确认**
+/// ——回合一旦启动（首个回合事件到达）= 投递成功铁证，解除看门狗，此后
+/// 无条件信任 pi 直到收口（agent_settled/turn_complete）或进程退出（EOF）。
+/// 回合内的长静默（LLM 思考/工具执行/等待作答）全部是 pi 的正常形态，
+/// hub 不再猜测、不再判死（InTurn 相位废除——它按「pi 可能挂死」的假设
+/// 设计，实际病根在 hub 投递链路，且已两度误杀：等待作答/长构建）。
+fn watchdog_phase_on_event(_phase: WatchdogPhase, _event_type: &str) -> Option<WatchdogPhase> {
+    None // 调用点据此解除看门狗（见事件处理处）
 }
 
 /// CancelPending（abort 后）收尾 watchdog——pi 滞留时 agent_settled 永不到
@@ -624,10 +609,6 @@ async fn pi_rpc_connection_loop(
     //   的判定线——杀进程终结（pi 滞留时 turn_end(Aborted) 永不到）。
     let mut turn_watchdog: Option<(WatchdogPhase, tokio::time::Instant)> = None;
     let mut in_compaction = false;
-    // v0.9.6 需求9 F1：工具执行括号态——bash/构建类长命令执行期 pi 无事件
-    //（stdout 静默到 end，时长无上限），InTurn 看门狗误杀即「长任务轮询自动
-    // 断」根因（2ba831c 回归）。括号内豁免（顺延）。
-    let mut in_tool_execution = false;
     let mut cancel_settle_at: Option<tokio::time::Instant> = None;
 
     // 3. Send first prompt. v0.8.0 需求1 A5：resume-fork 形态传 None——不发
@@ -1074,14 +1055,10 @@ async fn pi_rpc_connection_loop(
                                                     in_compaction,
                                                 ),
                                         )),
-                                        "queued" => Some((
-                                            WatchdogPhase::InTurn,
-                                            tokio::time::Instant::now()
-                                                + turn_watchdog_window(
-                                                    WatchdogPhase::InTurn,
-                                                    in_compaction,
-                                                ),
-                                        )),
+                                        // queued：pi 原生排队（合流进当前回合）——
+                                        // pi 语义保证回合事件流会继续，信任 pi 不设
+                                        // 看门狗（v0.9.6 需求9 哲学修正，原 InTurn）。
+                                        "queued" => None,
                                         _ => None, // handled / n/a：无回合将启动
                                     };
                                 } else if success
@@ -1114,7 +1091,6 @@ async fn pi_rpc_connection_loop(
                                                         "disposition": if disposition.is_empty() { "n/a" } else { disposition },
                                                         "watchdog": match turn_watchdog {
                                                             Some((WatchdogPhase::AwaitTurnStart, _)) => "AwaitTurnStart",
-                                                            Some((WatchdogPhase::InTurn, _)) => "InTurn",
                                                             Some((WatchdogPhase::AwaitResponse, _)) => "AwaitResponse",
                                                             None => "disarmed",
                                                         },
@@ -1668,29 +1644,32 @@ async fn pi_rpc_connection_loop(
                             _ => {}
                         }
                         if let Some((phase, _)) = turn_watchdog {
-                            let next_phase = watchdog_phase_on_event(phase, event_type);
-                            turn_watchdog = Some((
-                                next_phase,
-                                tokio::time::Instant::now()
-                                    + turn_watchdog_window(next_phase, in_compaction),
-                            ));
+                            // v0.9.6 需求9 哲学修正：回合事件=投递成功铁证 → 解除
+                            // 看门狗（此前升 InTurn 相位持续武装——对 pi 的无据
+                            // 不信任，已两度误杀等待作答/长构建场景）。
+                            match watchdog_phase_on_event(phase, event_type) {
+                                Some(next_phase) => {
+                                    turn_watchdog = Some((
+                                        next_phase,
+                                        tokio::time::Instant::now()
+                                            + turn_watchdog_window(next_phase, in_compaction),
+                                    ));
+                                }
+                                None => turn_watchdog = None,
+                            }
                         }
                         if matches!(event_type, "agent_start" | "turn_start")
                             && !matches!(state, LoopState::CancelPending { .. })
                         {
                             // v0.9.5 需求2 测试期：settle 后晚到的 agent_start 会把
-                            // Idle 翻回 Prompting（01a0d868 事故「路径 A」的签名）——
-                            // v0.9.6 F2：翻转即武装 InTurn 看门狗（此前该路径是
-                            // 「翻转后无事件 = 看门狗盲区」，永停 Prompting）。
+                            // Idle 翻回 Prompting（01a0d868 事故「路径 A」的签名）。
+                            // v0.9.6 需求9 哲学修正：翻转只记日志不再武装看门狗
+                            //（回合事件已至=pi 在正常工作，后续静默是 pi 的形态；
+                            // 滞留翻转的极端场景由用户停止/重发的取消通道兜底）。
                             if matches!(state, LoopState::Idle) {
-                                turn_watchdog = Some((
-                                    WatchdogPhase::InTurn,
-                                    tokio::time::Instant::now()
-                                        + turn_watchdog_window(WatchdogPhase::InTurn, in_compaction),
-                                ));
                                 devlog(
                                     "info",
-                                    "回合启动（Idle→Prompting 翻转，InTurn 看门狗武装）",
+                                    "回合启动（Idle→Prompting 翻转，信任 pi 不设看门狗）",
                                     &session_id,
                                     json!({ "event": event_type }),
                                 );
@@ -1714,13 +1693,6 @@ async fn pi_rpc_connection_loop(
                             );
                         }
 
-                        // v0.9.6 需求9 F1：维护工具执行括号——长构建/轮询执行期
-                        // 是合法静默（时长无上限），看门狗据此豁免。
-                        match event_type {
-                            "tool_execution_start" => in_tool_execution = true,
-                            "tool_execution_end" => in_tool_execution = false,
-                            _ => {}
-                        }
                         // Track interaction tool call IDs: when tool_execution_start
                         // returns empty events for an interaction tool (request_user_input,
                         // ask_user, etc.), record the call_id so we can suppress the
@@ -2011,37 +1983,10 @@ async fn pi_rpc_connection_loop(
                     true
                 } else if let Some((phase, deadline)) = turn_watchdog {
                     if tokio::time::Instant::now() >= deadline {
-                        // v0.9.6 需求9 F1：工具执行括号内豁免——长构建/轮询执行
-                        // 期 pi 事件流静默是正常形态（时长无上限），顺延而非终结
-                        //（误杀即用户实测「长任务轮询自动断」，且终结并不取消 pi，
-                        // 造成 hub Idle/pi busy 失同步，后续「继续」必报
-                        // already processing）。
-                        if in_tool_execution && matches!(phase, WatchdogPhase::InTurn { .. }) {
-                            if let Some((_, dl)) = turn_watchdog.as_mut() {
-                                *dl = tokio::time::Instant::now()
-                                    + turn_watchdog_window(phase, in_compaction);
-                            }
-                            log::info!(
-                                "[watchdog] InTurn deferred: tool executing (session {session_id}) — long build/poll"
-                            );
-                            continue;
-                        }
-                        // v0.9.6 需求8 F3：有交互（问答/审批卡）在等待用户时豁免
-                        // InTurn 看门狗——用户思考无界，事件流「静默」是等待作答
-                        // 的正常形态；顺延 deadline 而非终结回合（终结会让 pi 侧
-                        // 问卷作废+进程最终回收，提交必然失败）。
-                        if pending_interaction_id.is_some()
-                            && matches!(phase, WatchdogPhase::InTurn { .. })
-                        {
-                            if let Some((_, dl)) = turn_watchdog.as_mut() {
-                                *dl = tokio::time::Instant::now()
-                                    + turn_watchdog_window(phase, in_compaction);
-                            }
-                            log::info!(
-                                "[watchdog] InTurn deferred: interaction pending (session {session_id}) — user thinking"
-                            );
-                            continue;
-                        }
+                        // v0.9.6 需求9 哲学修正：InTurn 相位已废除（回合启动即解除
+                        // 看门狗，无条件信任 pi）——此前的交互/工具执行豁免块
+                        // 随之移除（不可达死代码）。到达此处的仅剩投递确认相位
+                        //（AwaitResponse/AwaitTurnStart）的触发。
                         // v0.9.6 需求6 F2：回合分级看门狗触发——按相位给出
                         // 面向用户的差异化原因（秒数不写死在文案里，窗口常量
                         // 可独立调整；窗口值进 devlog 取证）。
@@ -2053,10 +1998,6 @@ async fn pi_rpc_connection_loop(
                             WatchdogPhase::AwaitTurnStart => (
                                 "智能体受理了消息但回合未能启动。请重新发送；若反复出现请重启会话。",
                                 "AwaitTurnStart：response started 后无回合事件（回合未开工）",
-                            ),
-                            WatchdogPhase::InTurn => (
-                                "对话事件流长时间中断（智能体无响应）。请重新发送；若反复出现请重启会话。",
-                                "InTurn：回合事件流中断（模型流挂死/静默超窗）",
                             ),
                         };
                         log::warn!(
@@ -3152,29 +3093,19 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
     // ---- v0.9.6 需求6 F2：回合分级看门狗纯函数 ----
 
     #[test]
-    fn watchdog_windows_ordered_by_risk() {
+    fn watchdog_windows_delivery_scope() {
         use super::*;
-        // 紧凑窗最小；压缩宽窗最大（AwaitResponse 300s 与 InTurn 360s 服务
-        // 不同相位语义，无大小关系约束）
+        // v0.9.6 需求9 哲学修正后看门狗只剩投递确认两相位：紧凑窗 < 宽窗。
         let ar = turn_watchdog_window(WatchdogPhase::AwaitResponse, false);
         let ats = turn_watchdog_window(WatchdogPhase::AwaitTurnStart, false);
-        let it = turn_watchdog_window(WatchdogPhase::InTurn, false);
-        let ic = turn_watchdog_window(WatchdogPhase::InTurn, true);
-        assert!(ats < it && ats < ar && ats < ic, "紧凑窗最小: {ats:?}");
-        assert!(ic > it && ic > ar, "压缩宽窗最大: {ic:?}");
-        // 压缩标记只影响 InTurn（AwaitResponse 本身已是最宽窗）
-        assert_eq!(turn_watchdog_window(WatchdogPhase::AwaitResponse, true), ar);
-        assert_eq!(
-            turn_watchdog_window(WatchdogPhase::AwaitTurnStart, true),
-            ats
-        );
+        assert!(ats < ar, "AwaitTurnStart 紧凑窗 < AwaitResponse 宽窗: {ats:?} < {ar:?}");
     }
 
     #[test]
-    fn watchdog_phase_promotes_on_turn_events_only() {
+    fn watchdog_disarms_on_turn_events() {
         use super::*;
-        // 回合生命周期事件把相位升到 InTurn（含从 AwaitResponse 直升——
-        // response 未回但回合事件已到 = pi 已开工）
+        // v0.9.6 需求9 哲学裁决：回合事件=投递成功铁证 → 解除看门狗（返回
+        // None），此后无条件信任 pi；非回合事件也不武装（None）。
         for ev in [
             "agent_start",
             "turn_start",
@@ -3184,34 +3115,16 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
             "tool_execution_end",
             "agent_end",
             "agent_settled",
-        ] {
-            assert_eq!(
-                watchdog_phase_on_event(WatchdogPhase::AwaitTurnStart, ev),
-                WatchdogPhase::InTurn,
-                "事件 {ev} 应升级到 InTurn"
-            );
-            assert_eq!(
-                watchdog_phase_on_event(WatchdogPhase::AwaitResponse, ev),
-                WatchdogPhase::InTurn
-            );
-        }
-        // 非回合事件（compaction 括号/交互请求/杂项）不改相位——仅刷新计时
-        for ev in [
             "compaction_start",
-            "compaction_end",
             "extension_ui_request",
             "thinking_level_changed",
-            "auto_retry_scheduled",
         ] {
             assert_eq!(
                 watchdog_phase_on_event(WatchdogPhase::AwaitTurnStart, ev),
-                WatchdogPhase::AwaitTurnStart,
-                "事件 {ev} 不应改相位"
-            );
-            assert_eq!(
-                watchdog_phase_on_event(WatchdogPhase::InTurn, ev),
-                WatchdogPhase::InTurn
+                None,
+                "事件 {ev} 应解除看门狗（信任 pi）"
             );
         }
     }
+
 }
