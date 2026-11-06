@@ -624,6 +624,10 @@ async fn pi_rpc_connection_loop(
     //   的判定线——杀进程终结（pi 滞留时 turn_end(Aborted) 永不到）。
     let mut turn_watchdog: Option<(WatchdogPhase, tokio::time::Instant)> = None;
     let mut in_compaction = false;
+    // v0.9.6 需求9 F1：工具执行括号态——bash/构建类长命令执行期 pi 无事件
+    //（stdout 静默到 end，时长无上限），InTurn 看门狗误杀即「长任务轮询自动
+    // 断」根因（2ba831c 回归）。括号内豁免（顺延）。
+    let mut in_tool_execution = false;
     let mut cancel_settle_at: Option<tokio::time::Instant> = None;
 
     // 3. Send first prompt. v0.8.0 需求1 A5：resume-fork 形态传 None——不发
@@ -1123,6 +1127,46 @@ async fn pi_rpc_connection_loop(
                                                 .get("error")
                                                 .and_then(|v| v.as_str())
                                                 .unwrap_or("Unknown prompt error");
+
+                                            // v0.9.6 需求9 F3：already processing 对账——
+                                            // 该错误说明 hub 状态机与 pi 实际态失同步
+                                            //（hub 以为空闲直发，pi 回合仍在跑）。此前
+                                            // 仅把 pi 的英文错误透传给用户且不做任何恢
+                                            // 复——pi 一直 busy 则每次发送都报错。现识别
+                                            // 后自动 abort pi（真取消滞留回合）转
+                                            // CancelPending 收口，提示用户重发即可成功。
+                                            if err_msg.contains("already processing") {
+                                                log::warn!(
+                                                    "Pi RPC prompt rejected (already processing) — state desync detected, aborting stale turn (session {session_id})"
+                                                );
+                                                devlog(
+                                                    "error",
+                                                    "检测到状态失同步（智能体仍在执行上一任务）：已自动取消滞留回合，请重新发送本条消息",
+                                                    &session_id,
+                                                    json!({ "pi_error": err_msg }),
+                                                );
+                                                buf.push(NormalizedEvent::Error {
+                                                    message: "智能体仍在执行上一任务（状态失同步），已自动取消滞留回合——请重新发送这条消息。".to_string(),
+                                                    recoverable: true,
+                                                });
+                                                buf.push(NormalizedEvent::TurnComplete {
+                                                    reason: TurnEndReason::Aborted,
+                                                    usage: None,
+                                                });
+                                                flush_buf(&emit, &session_id, &mut buf);
+                                                let _ = send_pi_command(&stdin_arc, &json!({
+                                                    "type": "clear_queue"
+                                                })).await;
+                                                let _ = send_pi_command(&stdin_arc, &json!({
+                                                    "type": "abort"
+                                                })).await;
+                                                pending_turn_complete = None;
+                                                turn_watchdog = None;
+                                                state = LoopState::CancelPending { pending_prompt: None };
+                                                cancel_settle_at =
+                                                    Some(tokio::time::Instant::now() + CANCEL_SETTLE_TIMEOUT);
+                                                continue;
+                                            }
 
                                             buf.push(NormalizedEvent::Error {
                                                 message: err_msg.to_string(),
@@ -1670,6 +1714,13 @@ async fn pi_rpc_connection_loop(
                             );
                         }
 
+                        // v0.9.6 需求9 F1：维护工具执行括号——长构建/轮询执行期
+                        // 是合法静默（时长无上限），看门狗据此豁免。
+                        match event_type {
+                            "tool_execution_start" => in_tool_execution = true,
+                            "tool_execution_end" => in_tool_execution = false,
+                            _ => {}
+                        }
                         // Track interaction tool call IDs: when tool_execution_start
                         // returns empty events for an interaction tool (request_user_input,
                         // ask_user, etc.), record the call_id so we can suppress the
@@ -1960,6 +2011,21 @@ async fn pi_rpc_connection_loop(
                     true
                 } else if let Some((phase, deadline)) = turn_watchdog {
                     if tokio::time::Instant::now() >= deadline {
+                        // v0.9.6 需求9 F1：工具执行括号内豁免——长构建/轮询执行
+                        // 期 pi 事件流静默是正常形态（时长无上限），顺延而非终结
+                        //（误杀即用户实测「长任务轮询自动断」，且终结并不取消 pi，
+                        // 造成 hub Idle/pi busy 失同步，后续「继续」必报
+                        // already processing）。
+                        if in_tool_execution && matches!(phase, WatchdogPhase::InTurn { .. }) {
+                            if let Some((_, dl)) = turn_watchdog.as_mut() {
+                                *dl = tokio::time::Instant::now()
+                                    + turn_watchdog_window(phase, in_compaction);
+                            }
+                            log::info!(
+                                "[watchdog] InTurn deferred: tool executing (session {session_id}) — long build/poll"
+                            );
+                            continue;
+                        }
                         // v0.9.6 需求8 F3：有交互（问答/审批卡）在等待用户时豁免
                         // InTurn 看门狗——用户思考无界，事件流「静默」是等待作答
                         // 的正常形态；顺延 deadline 而非终结回合（终结会让 pi 侧
@@ -2017,8 +2083,34 @@ async fn pi_rpc_connection_loop(
                             ],
                             &session_id,
                         );
+                        // v0.9.6 需求9 F2：真取消 pi——此前只合成事件置 Idle，pi
+                        // 侧回合/工具仍在跑（busy），hub Idle 与 pi busy 失同步：
+                        // 用户随后发「继续」走 Idle 直发（无 steer/followUp），pi
+                        // v1.2.0 busy 语义直接拒绝（"Agent is already processing…"），
+                        // 且构建不结束就一直报错。现改为 clear_queue+abort 真取消，
+                        // 转 CancelPending 收口（settle 到达回 Idle；15s 不 settle
+                        // 杀树兜底）——状态机与 pi 恢复同步，「继续」可正常重发。
+                        if let Some(id) = pending_interaction_id.take() {
+                            let _ = send_pi_command(&stdin_arc, &json!({
+                                "type": "extension_ui_response",
+                                "id": id,
+                                "cancelled": true
+                            })).await;
+                        }
+                        let _ = send_pi_command(&stdin_arc, &json!({
+                            "type": "clear_queue"
+                        })).await;
+                        let _ = send_pi_command(&stdin_arc, &json!({
+                            "type": "abort"
+                        })).await;
+                        log::info!(
+                            "[watchdog] abort sent to pi after synthetic termination (session {session_id}) — syncing state"
+                        );
+                        pending_turn_complete = None; // TurnComplete 已合成发出，防 settle 双发
                         turn_watchdog = None;
-                        state = LoopState::Idle;
+                        state = LoopState::CancelPending { pending_prompt: None };
+                        cancel_settle_at =
+                            Some(tokio::time::Instant::now() + CANCEL_SETTLE_TIMEOUT);
                         false
                     } else {
                         false
