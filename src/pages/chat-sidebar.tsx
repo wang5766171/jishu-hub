@@ -12,7 +12,6 @@ import {
   ClipboardList,
   FolderOpen,
   GitBranch,
-  MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -399,7 +398,9 @@ export function ChatSidebar(props: ChatSidebarProps) {
                           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
                         </span>
                       ) : (
-                        <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
+                        /* 补充⑩（2026-11-06 用户裁决）：空闲态去掉气泡图标——
+                           保留固定占位（与呼吸点同尺寸），状态圆点更突出且行宽不跳 */
+                        <span className="flex h-3.5 w-3 shrink-0 items-center justify-center" />
                       )}
                       <span className="truncate flex-1 text-left min-w-0 leading-none pt-[1px]">{name}</span>
                       {/* 补充⑨：未读结果点——绿=完成未读 / 红=失败未读（查看后消失，
