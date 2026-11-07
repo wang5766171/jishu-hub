@@ -44,6 +44,11 @@ const pkgsToUpdate = [
   "packages/protocol/package.json",
   "packages/telemetry/package.json",
   "packages/evals/package.json",
+  // v1.4.0-14 补：durable/env 同为 workspace 包统一版本号（其内部互相
+  // 引用 pi-codemode/pi-durable 等，遗漏会导致 npm install 去 registry
+  // 解析不存在的 @earendil-works 预发布版而 ETARGET）。
+  "packages/durable/package.json",
+  "packages/env/package.json",
 ];
 
 for (const pkgPath of pkgsToUpdate) {
@@ -69,6 +74,10 @@ for (const pkgPath of pkgsToUpdate) {
       "@earendil-works/pi-client",
       "@earendil-works/pi-protocol",
       "@earendil-works/pi-telemetry",
+      // v1.4.0-14 补：运行时闭包新增包与 workspace 互引（同上遗漏后果）。
+      "@earendil-works/pi-codemode",
+      "@earendil-works/pi-mcp",
+      "@earendil-works/pi-durable",
     ];
     for (const depType of ["dependencies", "devDependencies", "peerDependencies"]) {
       if (json[depType]) {

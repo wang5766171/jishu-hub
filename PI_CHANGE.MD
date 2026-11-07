@@ -55,9 +55,9 @@
 |------|-----|
 | 上游仓库 | `https://github.com/earendil-works/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支 | `release_v1.4.0-13` |
+| 当前维护分支 | `release_v1.4.0-14` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `release_v1.4.0-13` |
+| `.gitmodules` branch | `release_v1.4.0-14` |
 
 ## 1.5 日常源码变动流程
 
@@ -120,6 +120,8 @@
 # 第二部分：改动记录
 
 ## 2026-11-07 | 去 fork 退役：getSetting 单键 API 与 api.context 桥（jishu-hub v0.9.6 补充⑫）
+
+**版本**：自研尾号递增 `1.4.0-13` → **`1.4.0-14`**，分支 `release_v1.4.0-14`（提交 `caa2d1846` 改动 + `02249a30b` 版本载体）。主仓配套 `upgrade-version.mjs` 修复：internalDeps 补 `pi-codemode`/`pi-mcp`/`pi-durable`、pkgsToUpdate 补 `durable`/`env`（原清单遗漏致 npm install 去 registry 解析不存在的预发布版而 ETARGET）。
 
 **背景**：v1.4.0 合并后的 fork vs 上游差异审计发现两项历史自研已无必要——①审批扩展零 fork 化（0.85.0-13 迁主仓部署形态后直接读盘）使 `getSetting` 单键 API 零消费者；②上游 v1.4.0 事件处理器第二参数即 `ctx: ExtensionContext`（types.ts:1587，含 `ui`）、工具 `execute` 第 5 参即 `ctx: ExtensionToolContext`（extends ExtensionContext），fork 的 `ExtensionAPI.get context()` 桥存在完全等价的上游通道。两项残留均为死代码，清理后 fork 核心源码差异从 16 文件缩至 12 文件，缩小下次合并 v1.5+ 的冲突面。
 
