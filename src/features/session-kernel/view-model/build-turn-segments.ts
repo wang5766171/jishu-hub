@@ -39,7 +39,16 @@ function isWorkItem(item: RenderItem): boolean {
   if (item.kind === "tool-group" || item.kind === "interaction") return true;
   if (item.kind === "block") {
     const t = item.block.type;
-    return t === "thinking" || t === "phase_divider" || t === "tool_result";
+    if (t === "phase_divider") {
+      // v0.9.6 需求1 完善修复③（用户实测回归）：compaction / error 分隔线
+      // 归正文区直出——三段式重组（v0.9.5 需求4 P2）曾把它归折叠区，而折叠
+      // 区默认收起：实时链走流式气泡可见、回放链走 MessageView 被折叠吞掉
+      // =「当次能看到、重启后消失」的完整根因。任务阶段 divider（discuss/
+      // plan/execute）保持折叠区（任务模式语义：阶段由专门 UI 呈现）。
+      const phase = (item.block as { phase?: string }).phase ?? "";
+      return !(phase === "compaction" || phase === "error");
+    }
+    return t === "thinking" || t === "tool_result";
   }
   return false;
 }
