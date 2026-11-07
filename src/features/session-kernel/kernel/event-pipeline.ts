@@ -275,11 +275,20 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               if (divider) {
                 const base = getCachedSessionMessages(finalKey)
                   ?? getCachedSessionMessages(cid) ?? [];
-                setCachedSessionMessages(finalKey, [...base, {
+                const updated = [...base, {
                   role: "assistant" as const,
                   content: [divider],
                   timestamp: Date.now(),
-                }]);
+                }];
+                setCachedSessionMessages(finalKey, updated);
+                // v0.9.6 需求1 完善修复②：当前查看的会话即时反映完成分隔线
+                //（此前只写缓存不更新视图 state——流 drop 后界面回到旧消息
+                // 列表，用户观感「压缩完成分隔线消失了」；JSONL 回放本就含
+                // divider，重载会话可见，此处补齐当次会话的即时呈现）。
+                const viewed = deps.selectedSessionRef.current;
+                if (viewed === cid || viewed === finalKey) {
+                  deps.setSessionMessages(updated);
+                }
               }
               streamStore.drop(finalKey);
               devLog("pipeline", "压缩结束：终结纯压缩流（divider 已提交缓存）", { session: finalKey });

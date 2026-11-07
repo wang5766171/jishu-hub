@@ -188,6 +188,35 @@ describe("v0.9.4 需求13：手动压缩流终结", () => {
     );
   });
 
+
+  // ── v0.9.6 需求1 完善修复②：完成 divider 同步当前视图（修「分隔线消失」） ──
+  it("完善②：压缩完成时正在查看该会话 → setSessionMessages 同步完成分隔线", () => {
+    // 起纯压缩流 → 终态 divider → status(false)
+    emit(dividerChunk("上下文压缩中…"));
+    emit(dividerChunk("上下文已压缩"));
+    emit({ agent_id: "jishu-self", session_id: "s1", data: { kind: "compaction_status", active: false, reason: "manual" } });
+    // selectedSessionRef 指向 s1（makeDeps 默认 selectedSessionRef.current = "s1"）
+    expect(deps.setSessionMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          content: [expect.objectContaining({ type: "phase_divider", phase: "compaction", title: "上下文已压缩" })],
+        }),
+      ]),
+    );
+    expect(streamStore.getState("s1")).toBeNull();
+  });
+
+  it("完善②：查看的是别的会话 → 不动当前视图（只写缓存）", () => {
+    const otherDeps = { ...deps, selectedSessionRef: { current: "s2" } } as never;
+    stop?.();
+    stop = startAgentEventPipeline(otherDeps);
+    emit(dividerChunk("上下文压缩中…"));
+    emit(dividerChunk("上下文已压缩"));
+    emit({ agent_id: "jishu-self", session_id: "s1", data: { kind: "compaction_status", active: false, reason: "manual" } });
+    expect((otherDeps as { setSessionMessages: ReturnType<typeof vi.fn> }).setSessionMessages).not.toHaveBeenCalled();
+  });
+
   it("防御层：终态 divider 在无流状态下不自动起流（堵「复活出无人终结的流」）", () => {
     // 流不存在时直接到达终态 divider（异常残余路径）——不得起流
     emit(dividerChunk("上下文已压缩"));
