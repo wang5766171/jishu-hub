@@ -352,7 +352,9 @@ const WATCHDOG_AWAIT_RESPONSE: Duration = Duration::from_secs(300);
 const WATCHDOG_AWAIT_TURN_START: Duration = Duration::from_secs(15);
 
 /// v0.9.6 需求6 F2：窗口选择（纯函数，供单测）。
-fn turn_watchdog_window(phase: WatchdogPhase, in_compaction: bool) -> Duration {
+/// v0.9.6 需求9 哲学修正（2026-11-07 评审 P2-1 清理）：原 in_compaction
+/// 宽窄窗参数随 InTurn 相位废除而失去消费者——删除死参数，窗口仅由相位决定。
+fn turn_watchdog_window(phase: WatchdogPhase) -> Duration {
     match phase {
         WatchdogPhase::AwaitResponse => WATCHDOG_AWAIT_RESPONSE,
         WatchdogPhase::AwaitTurnStart => WATCHDOG_AWAIT_TURN_START,
@@ -361,8 +363,7 @@ fn turn_watchdog_window(phase: WatchdogPhase, in_compaction: bool) -> Duration {
 }
 
 /// v0.9.6 需求6 F2：事件驱动的相位转移（纯函数，供单测）。
-/// 回合生命周期事件 → InTurn；compaction 括号事件保持当前相位（宽窄由
-/// in_compaction 标记控制）；其余事件（extension_ui_request 等）仅刷新不改相。
+/// （需求9 哲学修正前的旧语义「升 InTurn/宽窄窗」已废除——见下方裁决注释。）
 /// v0.9.6 需求9 用户哲学裁决（2026-11-06）：「当时永远思考中不是 pi 死了，
 /// 更像是消息没到 pi……坚决的相信 pi 没问题」。看门狗职责收窄为**投递确认**
 /// ——回合一旦启动（首个回合事件到达）= 投递成功铁证，解除看门狗，此后
@@ -631,7 +632,7 @@ async fn pi_rpc_connection_loop(
         crate::pending_messages::record(&session_id, &agent_id, &first_message);
         turn_watchdog = Some((
             WatchdogPhase::AwaitResponse,
-            tokio::time::Instant::now() + turn_watchdog_window(WatchdogPhase::AwaitResponse, false),
+            tokio::time::Instant::now() + turn_watchdog_window(WatchdogPhase::AwaitResponse),
         ));
         state = LoopState::Prompting;
     }
@@ -720,7 +721,7 @@ async fn pi_rpc_connection_loop(
                                 turn_watchdog = Some((
                                     WatchdogPhase::AwaitResponse,
                                     tokio::time::Instant::now()
-                                        + turn_watchdog_window(WatchdogPhase::AwaitResponse, false),
+                                        + turn_watchdog_window(WatchdogPhase::AwaitResponse),
                                 ));
                                 state = LoopState::Prompting;
                                 devlog(
@@ -1050,10 +1051,7 @@ async fn pi_rpc_connection_loop(
                                         "started" => Some((
                                             WatchdogPhase::AwaitTurnStart,
                                             tokio::time::Instant::now()
-                                                + turn_watchdog_window(
-                                                    WatchdogPhase::AwaitTurnStart,
-                                                    in_compaction,
-                                                ),
+                                                + turn_watchdog_window(WatchdogPhase::AwaitTurnStart),
                                         )),
                                         // queued：pi 原生排队（合流进当前回合）——
                                         // pi 语义保证回合事件流会继续，信任 pi 不设
@@ -1068,7 +1066,7 @@ async fn pi_rpc_connection_loop(
                                         turn_watchdog = Some((
                                             phase,
                                             tokio::time::Instant::now()
-                                                + turn_watchdog_window(phase, in_compaction),
+                                                + turn_watchdog_window(phase),
                                         ));
                                     }
                                 } else {
@@ -1554,7 +1552,7 @@ async fn pi_rpc_connection_loop(
                                         // 回收→提交必报 No active ACP session）。
                                         if let Some((phase, deadline)) = turn_watchdog.as_mut() {
                                             let next = tokio::time::Instant::now()
-                                                + turn_watchdog_window(*phase, in_compaction);
+                                                + turn_watchdog_window(*phase);
                                             if next > *deadline {
                                                 *deadline = next;
                                             }
@@ -1652,7 +1650,7 @@ async fn pi_rpc_connection_loop(
                                     turn_watchdog = Some((
                                         next_phase,
                                         tokio::time::Instant::now()
-                                            + turn_watchdog_window(next_phase, in_compaction),
+                                            + turn_watchdog_window(next_phase),
                                     ));
                                 }
                                 None => turn_watchdog = None,
@@ -1851,10 +1849,7 @@ async fn pi_rpc_connection_loop(
                                     turn_watchdog = Some((
                                         WatchdogPhase::AwaitResponse,
                                         tokio::time::Instant::now()
-                                            + turn_watchdog_window(
-                                                WatchdogPhase::AwaitResponse,
-                                                false,
-                                            ),
+                                            + turn_watchdog_window(WatchdogPhase::AwaitResponse),
                                     ));
                                     resent_buffered = true;
                                     LoopState::Prompting
@@ -2010,7 +2005,7 @@ async fn pi_rpc_connection_loop(
                             json!({
                                 "phase": format!("{phase:?}"),
                                 "in_compaction": in_compaction,
-                                "window_secs": turn_watchdog_window(phase, in_compaction).as_secs(),
+                                "window_secs": turn_watchdog_window(phase).as_secs(),
                             }),
                         );
                         flush_buf(&emit, &session_id, &mut buf);
@@ -3096,8 +3091,8 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
     fn watchdog_windows_delivery_scope() {
         use super::*;
         // v0.9.6 需求9 哲学修正后看门狗只剩投递确认两相位：紧凑窗 < 宽窗。
-        let ar = turn_watchdog_window(WatchdogPhase::AwaitResponse, false);
-        let ats = turn_watchdog_window(WatchdogPhase::AwaitTurnStart, false);
+        let ar = turn_watchdog_window(WatchdogPhase::AwaitResponse);
+        let ats = turn_watchdog_window(WatchdogPhase::AwaitTurnStart);
         assert!(ats < ar, "AwaitTurnStart 紧凑窗 < AwaitResponse 宽窗: {ats:?} < {ar:?}");
     }
 
