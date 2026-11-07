@@ -397,19 +397,19 @@ export function ChatSidebar(props: ChatSidebarProps) {
                         <span className="flex h-3.5 w-3 shrink-0 items-center justify-center">
                           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
                         </span>
+                      ) : !isActive && sessionUnread[session.id] ? (
+                        /* 补充⑫（2026-11-07 用户裁决）：未读绿/红点统一移到行首
+                           （原在标题后，与进行中蓝点位置不一致）；行首三态互斥——
+                           流式蓝呼吸 / 未读绿红 / 空闲占位，宽度恒定。 */
+                        <span className="flex h-3.5 w-3 shrink-0 items-center justify-center" title={sessionUnread[session.id] === "failed" ? "有失败结果未读" : "有完成结果未读"}>
+                          <span className={cn("h-1.5 w-1.5 rounded-full", sessionUnread[session.id] === "failed" ? "bg-red-500" : "bg-emerald-500")} />
+                        </span>
                       ) : (
                         /* 补充⑩（2026-11-06 用户裁决）：空闲态去掉气泡图标——
                            保留固定占位（与呼吸点同尺寸），状态圆点更突出且行宽不跳 */
                         <span className="flex h-3.5 w-3 shrink-0 items-center justify-center" />
                       )}
                       <span className="truncate flex-1 text-left min-w-0 leading-none pt-[1px]">{name}</span>
-                      {/* 补充⑨：未读结果点——绿=完成未读 / 红=失败未读（查看后消失，
-                          跨重启保留）；仅非当前选中且非流式时显示 */}
-                      {!rowStreaming && !isActive && sessionUnread[session.id] && (
-                        <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center" title={sessionUnread[session.id] === "failed" ? "有失败结果未读" : "有完成结果未读"}>
-                          <span className={cn("h-1.5 w-1.5 rounded-full", sessionUnread[session.id] === "failed" ? "bg-red-500" : "bg-emerald-500")} />
-                        </span>
-                      )}
                       {searchHit ? (
                         <span className="shrink-0 rounded-full bg-primary/20 text-primary px-1.5 py-0.5 text-[9px] font-medium leading-none">
                           {searchHit.matchCount}
