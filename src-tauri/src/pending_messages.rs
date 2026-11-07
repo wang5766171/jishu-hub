@@ -85,9 +85,12 @@ pub fn record(session_id: &str, agent_id: &str, content: &str) {
     // 失败仅意味着「保底记录缺失」——主链路（pi 落盘）不受影响，不向上抛。
 }
 
-/// pi `message_end(role=user)` 到达（pi 已真实落盘）——按内容匹配删除。
+/// pi `message_end(role=user)` 到达（pi 已真实落盘）——按内容匹配删除**最早一条**。
 /// 内容即发送文本（record 在注入应用后记录，两侧一致）；不匹配（steer
-/// 回显等非本条消息）则不动。
+/// 回显等非本条消息）则不动。只删最早一条是 FIFO 语义：同会话先发的内容
+/// 先被 pi 处理落盘——若全量删除（v0.9.6 评审 P2-4），前条销账会把后条
+/// 同文本 pending（挂死后重发同内容场景）连带撕掉，后条再出事时保险
+/// 已丢（重启后消息真丢）。
 pub fn ack_persisted(session_id: &str, pi_text: &str) {
     if pi_text.is_empty() {
         return;
@@ -95,7 +98,11 @@ pub fn ack_persisted(session_id: &str, pi_text: &str) {
     let _ = with_conn(|conn| {
         conn.execute(
             "DELETE FROM pending_user_messages
-             WHERE session_id = ?1 AND content = ?2",
+             WHERE rowid = (
+                 SELECT rowid FROM pending_user_messages
+                 WHERE session_id = ?1 AND content = ?2
+                 ORDER BY sent_at ASC, rowid ASC LIMIT 1
+             )",
             rusqlite::params![session_id, pi_text],
         )
     });
@@ -219,5 +226,27 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].content, "首条消息");
         drop_session("real-id");
+    }
+
+    #[test]
+    fn ack_fifo_when_duplicate_content() {
+        // v0.9.6 评审 P2-4：同文本两条 pending（挂死→重发同内容），前条销账
+        // 只删最早一条（FIFO），后条保险不丢——全量删除会把后条连带撕掉。
+        let _g = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        record("s-fifo", "jishu-self", "继续");
+        // 隔开 sent_at（now_ms 毫秒粒度，同刻插入会被主键覆盖语义吞掉）
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        record("s-fifo", "jishu-self", "继续");
+        assert_eq!(load("s-fifo").unwrap().len(), 2, "前置：两条同文本 pending");
+        // 第一条被 pi 落盘销账 → 只删最早一条
+        ack_persisted("s-fifo", "继续");
+        let rows = load("s-fifo").unwrap();
+        assert_eq!(rows.len(), 1, "同内容只销最早一条，后条保留");
+        // 第二条也落盘 → 清零
+        ack_persisted("s-fifo", "继续");
+        assert_eq!(load("s-fifo").unwrap().len(), 0);
+        drop_session("s-fifo");
     }
 }
