@@ -324,6 +324,9 @@ export function ChatPage({
   // scrollTop=scrollHeight 偏上（底部离开回来停在倒数第 6 条）。恢复 bottom
   // 后置 true：内容变化持续贴底；用户上翻（awayFromBottom）即刻解除。
   const bottomFollowRef = useRef(false);
+  // v0.9.6 需求11：贴底跟随定时器——由 scrollAction 消费点直接启动（见
+  // 消费 effect 内注释），跨 effect ref 触发不可靠。
+  const bottomFollowTimerRef = useRef<number | null>(null);
   const activeIdRef = useRef<string | null>(activeId);
   const taskLaunchOpenRef = useRef(taskLaunchOpen);
   const taskLaunchPhaseRef = useRef<TaskLaunchPhase>(taskLaunchPhase);
@@ -843,6 +846,29 @@ export function ChatPage({
     devLog("session", "scrollAction 消费", { type: action.type, top: action.type === "restore" ? action.top : undefined });
     if (action.type === "bottom") {
       messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
+      // v0.9.6 需求11：贴底跟随由消费点直接启动——原独立 effect 挂在
+      // [selectedSession] 上，而消息异步晚于 selectedSession 到达：轮询
+      // effect 执行时 bottomFollowRef 尚为 false 直接 return「死亡」，消息
+      // 到达置 true 后无人再触发轮询——长会话 markdown/代码高亮/图片后置
+      // 撑高无人跟随，首次进入停在中间（用户实测：长会话首访不到底、无明
+      // 显规律——取决于内容撑高的量与时序；短会话撑高小故看似正常）。
+      // 200ms × 10s：覆盖一切撑高来源；用户上翻即刻解除（onScroll 置
+      // bottomFollowRef=false）。
+      if (bottomFollowTimerRef.current !== null) {
+        window.clearInterval(bottomFollowTimerRef.current);
+      }
+      const t0 = Date.now();
+      bottomFollowTimerRef.current = window.setInterval(() => {
+        if (!bottomFollowRef.current || isAwayFromBottomRef.current || Date.now() - t0 > 10_000) {
+          if (bottomFollowTimerRef.current !== null) {
+            window.clearInterval(bottomFollowTimerRef.current);
+            bottomFollowTimerRef.current = null;
+          }
+          return;
+        }
+        const el = messageAreaRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      }, 200);
     } else {
       const el = messageAreaRef.current;
       el.scrollTop = action.top;
@@ -867,19 +893,14 @@ export function ChatPage({
   // 短轮询（200ms × 10s）覆盖一切高度变化来源（length 依赖盖不住纯撑高）；
   // 用户上翻即刻解除（onScroll 置 bottomFollowRef=false），超时自动停。
   // turn-rail 高亮被动跟随滚动事件，滚动位置修准后其自准。
-  useEffect(() => {
-    if (!bottomFollowRef.current) return;
-    const start = Date.now();
-    const timer = window.setInterval(() => {
-      if (!bottomFollowRef.current || isAwayFromBottomRef.current || Date.now() - start > 10_000) {
-        window.clearInterval(timer);
-        return;
-      }
-      const el = messageAreaRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
-    }, 200);
-    return () => window.clearInterval(timer);
-  }, [selectedSession]);
+  // （v0.9.6 需求11：贴底跟随已移入 scrollAction 消费 effect 内联启动——
+  // 见消费点注释；本 effect 原挂在 [selectedSession] 的时序缺陷已删除。）
+  // v0.9.6 需求11：卸载清理贴底跟随定时器（防泄漏）。
+  useEffect(() => () => {
+    if (bottomFollowTimerRef.current !== null) {
+      window.clearInterval(bottomFollowTimerRef.current);
+    }
+  }, []);
 
   // v0.9.1 需求5：轮次摘要（每轮用户问题 + agent 前几句回答）——横杠导航轨
   // 的数据源；划分语义与 MessageView user 行对齐（详见 turn-rail.tsx）。
