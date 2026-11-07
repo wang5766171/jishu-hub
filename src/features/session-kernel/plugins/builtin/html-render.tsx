@@ -131,7 +131,7 @@ function HtmlZoomOverlay({ code, onClose }: { code: string; onClose: () => void 
 
   return createPortal(
     <div className="fixed inset-0 z-[60]" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/50" />
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
       {/* 滚动兜底层：卡片高度已被 iframe 封顶不超视口，此层仅作超小窗口等
           边界兜底；点击空白区关闭（命中滚动容器本身才关，卡片冒泡不关）。 */}
       <div
