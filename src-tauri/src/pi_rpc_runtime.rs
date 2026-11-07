@@ -358,7 +358,6 @@ fn turn_watchdog_window(phase: WatchdogPhase) -> Duration {
     match phase {
         WatchdogPhase::AwaitResponse => WATCHDOG_AWAIT_RESPONSE,
         WatchdogPhase::AwaitTurnStart => WATCHDOG_AWAIT_TURN_START,
-
     }
 }
 
@@ -3093,7 +3092,10 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         // v0.9.6 需求9 哲学修正后看门狗只剩投递确认两相位：紧凑窗 < 宽窗。
         let ar = turn_watchdog_window(WatchdogPhase::AwaitResponse);
         let ats = turn_watchdog_window(WatchdogPhase::AwaitTurnStart);
-        assert!(ats < ar, "AwaitTurnStart 紧凑窗 < AwaitResponse 宽窗: {ats:?} < {ar:?}");
+        assert!(
+            ats < ar,
+            "AwaitTurnStart 紧凑窗 < AwaitResponse 宽窗: {ats:?} < {ar:?}"
+        );
     }
 
     #[test]
@@ -3121,5 +3123,4 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
             );
         }
     }
-
 }
