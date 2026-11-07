@@ -119,6 +119,21 @@
 
 # 第二部分：改动记录
 
+## 2026-11-07 | 去 fork 退役：getSetting 单键 API 与 api.context 桥（jishu-hub v0.9.6 补充⑫）
+
+**背景**：v1.4.0 合并后的 fork vs 上游差异审计发现两项历史自研已无必要——①审批扩展零 fork 化（0.85.0-13 迁主仓部署形态后直接读盘）使 `getSetting` 单键 API 零消费者；②上游 v1.4.0 事件处理器第二参数即 `ctx: ExtensionContext`（types.ts:1587，含 `ui`）、工具 `execute` 第 5 参即 `ctx: ExtensionToolContext`（extends ExtensionContext），fork 的 `ExtensionAPI.get context()` 桥存在完全等价的上游通道。两项残留均为死代码，清理后 fork 核心源码差异从 16 文件缩至 12 文件，缩小下次合并 v1.5+ 的冲突面。
+
+| 位置 | 改动 | 说明 |
+|---|---|---|
+| `extensions/types.ts` | 删 `getSetting` 孤儿注释、`ExtensionAPI.get context()`、`ExtensionRuntime.context` 字段 | multiSelect（上游无等价、rpiv-ask-user-question 生态消费中）与 thresholdPercent（上游仍 reserveTokens 绝对值）不受影响，全部保留 |
+| `extensions/loader.ts` | 删 runtime `context` 占位与 `get context()` 访问器 | runner 绑定流程回到上游原样 |
+| `extensions/runner.ts` | 删 `this.runtime.context = ctx` 写入与孤儿注释 | `createContext()` 本体不变（上游机制） |
+| `agent-session.ts` | 删孤儿注释一行 | 零行为变化 |
+| 主仓 `jishu-tool-approval.ts` | `pi.context.ui.confirm` → 事件第二参 `ctx.ui.confirm` | 与 conductor/html-preview 形态统一 |
+| 主仓 `plugin-invoke.ts` | `pi.context.ui.select` → execute 第 5 参 `ctx.ui.select`，execute 改上游 5 参签名 | **顺带修复潜伏 bug**：原 `(args)` 单参签名实收 toolCallId（wrapper 按 `(toolCallId, params, signal, onUpdate, ctx)` 直调），插件工具入参从未真正传到 hub（v0.9.5 需求1 6b 引入，未见于线上报错） |
+
+**验证（2026-11-07）**：coding-agent 包 `tsc -p tsconfig.build.json --noEmit` 0 error；定向 vitest 85 用例全过（dynamic-tools 55 + runtime/model-extension 30）；主仓 `cargo test --lib` 691 全绿。残留扫描（`pi.context`/`getSetting`）零命中。注：plugin-invoke 修复后的真实插件工具调用链建议在 v0.9.7 需求或发版冒烟中补一次端到端验证（本轮未起 dev 实例）。
+
 ## 2026-11-02 | 合并上游 v1.4.0（release_v1.4.0-13）——jishu-hub v0.9.6 需求 5
 
 **版本**：上游从 `v1.1.0` 跨越 `v1.2.0`/`v1.3.0` 到 `v1.4.0`（3 个 minor tag、225 commits、906 files、+73831/-42639）。按版本规则（§1.3），Pi 版本升至 `1.4.0`、自研尾号保持 `-13`，完整版本号 `1.4.0-13`，分支 `release_v1.4.0-13`。合并提交 `e876342c6` + 适配提交 `488db7d39`。**fork 分支已推送远端**。（上游已有 v1.5.0 tag——308 commits/1578 files 含 chord 子系统大改，未经 D1 评估不合并，留后续版本候选。）

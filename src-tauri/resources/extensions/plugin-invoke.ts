@@ -57,7 +57,11 @@ export default function pluginInvokeExtension(pi: ExtensionAPI): void {
       parameters: (entry.parameters as never) ?? Type.Object({}),
       // 需求11：exposure 透传（pi 1.1.0 registerTool 可选参数；缺省 direct）。
       ...(entry.exposure === "deferred" ? { exposure: "deferred" as const } : {}),
-      execute: async (args: Record<string, unknown>) => {
+      // v0.9.6 补充⑫（去 fork）：execute 改上游 5 参签名（第 5 参 ctx 含
+      // ui）——替代原 fork pi.context 桥，并修复原 `(args)` 单参错位 bug
+      //（wrapper 按 (toolCallId, params, signal, onUpdate, ctx) 直调，原
+      // args 实收 toolCallId 字符串，入参从未真正传到 hub）。
+      execute: async (_toolCallId, args, _signal, _onUpdate, ctx) => {
         // hub_invoke 桥（与 html-preview 同机制）：select 标题携带
         // {command, params} JSON——Rust 识别直达后端，响应 value 为
         // {success, data} JSON 字符串。
@@ -67,7 +71,7 @@ export default function pluginInvokeExtension(pi: ExtensionAPI): void {
         });
         let ok = false;
         try {
-          const result = await pi.context.ui.select(`\x00hub_invoke:${payload}`, ["\x00ok"]);
+          const result = await ctx.ui.select(`\x00hub_invoke:${payload}`, ["\x00ok"]);
           if (result) {
             const parsed = JSON.parse(result) as { success?: boolean };
             ok = parsed?.success === true;

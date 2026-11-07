@@ -55,7 +55,7 @@ function readApprovalMode(): string {
 }
 
 const jishuToolApproval: ExtensionFactory = (pi) => {
-  pi.on("tool_call", async (event) => {
+  pi.on("tool_call", async (event, ctx) => {
     const mode = readApprovalMode();
     if (mode === "off") {
       return undefined;
@@ -65,7 +65,9 @@ const jishuToolApproval: ExtensionFactory = (pi) => {
     const title = `${TOOL_APPROVAL_TITLE_PREFIX}${mode}|${event.toolName}`;
     const message = summary || `执行工具 ${event.toolName}`;
 
-    const approved = await pi.context.ui.confirm(title, message, { timeout: 120_000 });
+    // v0.9.6 补充⑫（去 fork）：事件处理器第二参数即上游 ctx（ExtensionContext，
+    // 含 ui）——替代原 fork pi.context 桥，与 conductor/html-preview 形态统一。
+    const approved = await ctx.ui.confirm(title, message, { timeout: 120_000 });
     if (approved) {
       return undefined;
     }
