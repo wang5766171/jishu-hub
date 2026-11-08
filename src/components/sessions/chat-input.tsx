@@ -834,6 +834,9 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         }));
         const saved = await invokeCommand<SavedFile[]>("save_session_files", {
           projectPath,
+          // v0.9.7 需求5 E5：默认空间上传按会话分目录（新会话首传为 null，
+          // 后端沿平铺——首条消息带附件先于会话创建）。
+          sessionId: sessionId ?? null,
           files: payload,
         });
         for (const sv of saved) {
@@ -842,7 +845,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       }
       return allFileLines;
     },
-    [projectPath],
+    [projectPath, sessionId],
   );
 
   const composeOutgoing = useCallback(

@@ -16,6 +16,101 @@ pub(crate) struct TextFilePreview {
     size: usize,
 }
 
+/// canonicalize 并剥 Windows verbatim 前缀（`\\?\C:\…` → `C:\…`、
+/// `\\?\UNC\…` → `\\…`）——verbatim 形态会被 validate_path 误判 UNC 拒绝。
+/// v0.9.7 需求6 F3：从 hub_invoke plugin_preview_html 抽出共用（原注释
+/// 留痕：Windows canonicalize() 前缀问题系用户实测「UNC paths are not
+/// allowed」教训）。
+pub(crate) fn canonicalize_stripped(path: &std::path::Path) -> String {
+    let s = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
+    s.strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"))
+        .or_else(|| s.strip_prefix(r"\\?\").map(|rest| rest.to_string()))
+        .unwrap_or(s)
+}
+
+/// v0.9.7 需求6 F3：会话内产物引用的点击校验（P1-5：project_root 由前端
+/// 显式传入——不依赖进程表反查，刷新/重启后回放链接依然可校验）。
+/// 前缀限定 ∈ {project_root, project_root/.jishu-hub/tasks}（越界拒绝），
+/// 大小上限（图片 10MB / 文本类 2MB），按扩展名返回面板渲染器类别。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PreviewFileKind {
+    Html,
+    Image,
+    Markdown,
+    Text,
+    Unsupported,
+}
+
+const IMAGE_PREVIEW_MAX_BYTES: u64 = 10 * 1024 * 1024;
+const ARTIFACT_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+fn preview_kind_for_ext(ext: &str) -> PreviewFileKind {
+    match ext {
+        "html" | "htm" => PreviewFileKind::Html,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" | "ico" => PreviewFileKind::Image,
+        "md" => PreviewFileKind::Markdown,
+        // 文本类与既有 text_file_preview 的口径对齐（image.rs mime 表同族）。
+        "txt" | "log" | "json" | "xml" | "yaml" | "yml" | "toml" | "csv" | "ts" | "tsx" | "js"
+        | "mjs" | "py" | "rs" | "go" | "java" | "c" | "h" | "cpp" | "cs" | "sh" => {
+            PreviewFileKind::Text
+        }
+        _ => PreviewFileKind::Unsupported,
+    }
+}
+
+#[tauri::command]
+pub(crate) fn validate_preview_file(
+    path: String,
+    project_root: String,
+    session_id: Option<String>,
+) -> Result<PreviewFileKind, String> {
+    let _ = session_id; // 预留：校验语义目前与会话无关（基准=project_root）
+    let file = std::path::PathBuf::from(&path);
+    if !file.is_file() {
+        return Err(format!("文件不存在: {path}"));
+    }
+    let canonical_file = canonicalize_stripped(&file);
+    // 基准目录：项目根 + 任务产物区（任务卡「打开」的产物在 .jishu-hub/tasks 下）。
+    let root = std::path::PathBuf::from(&project_root);
+    if !root.is_dir() {
+        return Err(format!("项目目录不存在: {project_root}"));
+    }
+    let canonical_root = canonicalize_stripped(&root);
+    let canonical_tasks = canonicalize_stripped(&root.join(".jishu-hub").join("tasks"));
+    let in_bounds = [canonical_root, canonical_tasks].iter().any(|base| {
+        let f = canonical_file.to_lowercase().replace('/', "\\");
+        let b = base.to_lowercase().replace('/', "\\");
+        f == b || f.starts_with(&format!("{b}\\"))
+    });
+    if !in_bounds {
+        return Err(format!("引用超出项目范围，已拦截: {path}"));
+    }
+    let ext = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    let kind = preview_kind_for_ext(&ext);
+    let size = std::fs::metadata(&file).map_err(|e| e.to_string())?.len();
+    let limit = match kind {
+        PreviewFileKind::Image => IMAGE_PREVIEW_MAX_BYTES,
+        PreviewFileKind::Html | PreviewFileKind::Markdown | PreviewFileKind::Text => {
+            ARTIFACT_TEXT_PREVIEW_MAX_BYTES
+        }
+        PreviewFileKind::Unsupported => u64::MAX, // 大小不拦，面板给新窗口按钮
+    };
+    if size > limit {
+        return Err(format!("文件 {size} 字节超过预览上限（{limit} 字节）"));
+    }
+    Ok(kind)
+}
+
 #[tauri::command]
 pub(crate) async fn list_sessions(
     state: tauri::State<'_, Mutex<AppState>>,
@@ -387,6 +482,71 @@ pub(crate) fn export_binary_file(path: String, base64_data: String) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    use super::PreviewFileKind;
+
+    /// v0.9.7 需求6 F3：引用校验——项目内按扩展名返回类别；越界（项目外
+    /// /逃逸路径）拒绝；任务产物区放行。
+    #[test]
+    fn validate_preview_file_bounds_and_kind() {
+        let root = std::env::temp_dir().join(format!("jishu-preview-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::create_dir_all(root.join(".jishu-hub/tasks/t1/artifacts")).unwrap();
+        std::fs::write(root.join("docs/design.html"), "<html></html>").unwrap();
+        std::fs::write(root.join(".jishu-hub/tasks/t1/artifacts/out.md"), "# ok").unwrap();
+        std::fs::write(root.join("docs/shot.png"), b"png").unwrap();
+
+        let html = super::validate_preview_file(
+            root.join("docs/design.html").to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(html, PreviewFileKind::Html));
+
+        let md = super::validate_preview_file(
+            root.join(".jishu-hub/tasks/t1/artifacts/out.md")
+                .to_string_lossy()
+                .into_owned(),
+            root.to_string_lossy().into_owned(),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(md, PreviewFileKind::Markdown));
+
+        let png = super::validate_preview_file(
+            root.join("docs/shot.png").to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(png, PreviewFileKind::Image));
+
+        // 项目外文件：拒绝。
+        let outside =
+            std::env::temp_dir().join(format!("jishu-preview-out-{}.html", uuid::Uuid::new_v4()));
+        std::fs::write(&outside, "<html></html>").unwrap();
+        let err = super::validate_preview_file(
+            outside.to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("超出项目范围"), "unexpected: {err}");
+
+        // 不存在的文件：拒绝。
+        assert!(super::validate_preview_file(
+            root.join("docs/missing.html")
+                .to_string_lossy()
+                .into_owned(),
+            root.to_string_lossy().into_owned(),
+            None,
+        )
+        .is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&outside);
+    }
+
     #[test]
     fn exports_binary_file_roundtrip() {
         // v0.9.2 测试期（mermaid PNG 导出）：base64 解码落盘往返。

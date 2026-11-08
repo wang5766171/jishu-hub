@@ -8,6 +8,9 @@ import rehypeHighlight from "rehype-highlight";
 import { useSessionStream } from "@/hooks/use-stream-store";
 import { InlineImages, stripImagePrompt } from "./inline-image";
 import { EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
+// v0.9.7 需求6 F2：产物引用链接（jishu-artifact://）——Q14：仅助手消息两处接入。
+import { jishuUrlTransform } from "@/lib/markdown-url";
+import { ArtifactLink } from "./artifact-link";
 import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
@@ -374,6 +377,8 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                                 <ReactMarkdown
                                   remarkPlugins={REMARK_PLUGINS}
                                   rehypePlugins={isComplete ? REHYPE_PLUGINS_COMPLETE : undefined}
+                                  urlTransform={jishuUrlTransform}
+                                  components={{ a: ArtifactLink }}
                                 >
                                   {item.block.text}
                                 </ReactMarkdown>

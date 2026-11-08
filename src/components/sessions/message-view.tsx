@@ -10,6 +10,9 @@ import { Check, Copy, Bot } from "lucide-react";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
 import { extractCodeText } from "./code-block-text";
+// v0.9.7 需求6 F2：产物引用链接（jishu-artifact://）——Q14：仅助手消息两处接入。
+import { jishuUrlTransform } from "@/lib/markdown-url";
+import { ArtifactLink } from "./artifact-link";
 import { EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
 import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
@@ -183,7 +186,8 @@ const TextBlock = memo(function TextBlock({
       <ReactMarkdown
         remarkPlugins={REMARK_PLUGINS}
         rehypePlugins={REHYPE_PLUGINS}
-        components={{ pre: MarkdownPreWithRenderers }}
+        urlTransform={jishuUrlTransform}
+        components={{ pre: MarkdownPreWithRenderers, a: ArtifactLink }}
       >
         {text}
       </ReactMarkdown>
