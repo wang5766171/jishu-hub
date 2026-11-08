@@ -19,6 +19,7 @@
 
 mod agent_tools;
 mod composed;
+pub mod market;
 
 // 子模块项经根重导出：外部 `crate::agent::plugin::X` 路径保持拆分前形态
 //（§12：原 pub 项经根 pub use 重导出）。allow：部分名字的消费面是
@@ -31,9 +32,9 @@ pub use agent_tools::{
 pub use composed::{
     clear_pending_confirm_marker, composed_pipeline_by_id, composed_plugins_dir,
     composed_session_manifests, composed_session_plugin_specs, delete_composed_plugin,
-    ensure_builtin_composed_manifests, is_builtin_composed, pending_confirm_extras,
-    pending_confirm_list, resolve_pipeline_stages, save_composed_manifest, PendingAssetInfo,
-    PendingHybridPlugin,
+    ensure_builtin_composed_manifests, is_builtin_composed, materialize_builtin_composed,
+    pending_confirm_extras, pending_confirm_list, resolve_pipeline_stages, save_composed_manifest,
+    PendingAssetInfo, PendingHybridPlugin,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -459,10 +460,17 @@ pub fn session_plugin_descriptors(disabled: &HashSet<String>) -> Vec<PluginDescr
 }
 
 /// 设置插件启停并落盘。core 插件拒绝；未知 id 拒绝（配置漂移防写入）。
+/// v0.9.7 需求3 C3.3：curated `required` 件（默认安装 19 件）拒绝禁用
+///（数据驱动读 curated.json，不引入第二套白名单——单一真源）。
 pub fn set_plugin_enabled(id: &str, enabled: bool) -> Result<PluginConfig, String> {
     if CORE_PLUGIN_IDS.contains(&id) {
         return Err(format!(
             "Plugin {id} is the core engine and cannot be disabled"
+        ));
+    }
+    if !enabled && market::is_required_plugin(id) {
+        return Err(format!(
+            "Plugin {id} 为系统内置（默认安装集），不可禁用——可在插件市场查看"
         ));
     }
     let known = known_plugin_ids();
@@ -757,6 +765,11 @@ pub fn ensure_builtin_adaptive_plugins() {
         }
     }
     let statics = builtin_adaptive_plugins();
+    // v0.9.7 需求3 C3.4：只物化 curated required 集（agents/pi-package 形态）。
+    // 非必需件（task-requirements/task-plan/pi-lens 等推荐件）默认不落盘
+    // = 不在 plugin_list = 市场可见可装；已物化的不覆盖（尊重改造）。
+    let required_ids = market::required_agent_ids();
+    let required_pi = market::required_pi_package_ids();
     for (id, toml) in statics
         .into_iter()
         .map(|(id, t)| (id.to_string(), t.to_string()))
@@ -769,7 +782,15 @@ pub fn ensure_builtin_adaptive_plugins() {
             skill_resolver_plugin_toml(),
         )))
     {
+        let is_required = required_ids.contains(&id.as_str())
+            || required_pi.contains(&id.as_str())
+            || id == "mcp-resolver"
+            || id == "skill-resolver";
         let target = dir.join(format!("{id}.toml"));
+        if !is_required {
+            // 非必需且未物化 → 跳过；已物化 → 原样保留（不覆盖不删除）。
+            continue;
+        }
         let needs_write = match std::fs::read_to_string(&target) {
             Ok(existing) => existing != toml,
             Err(_) => true,
@@ -882,7 +903,11 @@ pub fn assemble(
                 let dir = path.parent()?;
                 let is_dir_form = path.file_name()?.to_string_lossy() == "plugin.toml"
                     && dir.file_name()?.to_string_lossy() == id;
-                if is_dir_form { Some(dir.to_path_buf()) } else { None }
+                if is_dir_form {
+                    Some(dir.to_path_buf())
+                } else {
+                    None
+                }
             })();
             agents.insert(
                 id.clone(),
@@ -993,9 +1018,10 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
 mod tests {
     use super::*;
 
+    /// v0.9.7 需求2 砍除#8：phase.* 模板段退役——引用即报错；纯自定义段
+    /// 正常展开（key 缺省 stage-N、声明覆盖 gate）。
     #[test]
-    fn resolve_pipeline_stages_expands_video_maker_shape() {
-        // video-maker 清单形状：discuss 模板段（模板默认展开）+ 自定义段。
+    fn resolve_pipeline_stages_custom_shape_and_retired_template() {
         let manifest: serde_json::Value = toml::from_str(
             r#"
             [plugin]
@@ -1017,39 +1043,47 @@ mod tests {
             "#,
         )
         .unwrap();
-        let stages = resolve_pipeline_stages(&manifest).unwrap();
-        assert_eq!(stages.len(), 3);
-        // 模板段：key 取模板短键，name/prompt 取模板默认，tools 含 lock_requirement。
+        let err = resolve_pipeline_stages(&manifest).unwrap_err();
+        assert!(err.contains("已退役的阶段模板"), "{err}");
+
+        let custom_only: serde_json::Value = toml::from_str(
+            r#"
+            [plugin]
+            id = "session.video-maker"
+            name = "视频生成助手"
+            kind = "session-composed"
+
+            [[pipeline.stages]]
+            name = "分镜设计"
+            prompt = "依据需求文档产出分镜表。"
+
+            [[pipeline.stages]]
+            name = "视频生成"
+            prompt = "渲染合成。"
+            gate = "confirm"
+            "#,
+        )
+        .unwrap();
+        let stages = resolve_pipeline_stages(&custom_only).unwrap();
+        assert_eq!(stages.len(), 2);
         let first = &stages[0];
-        assert_eq!(first["key"], "discuss");
-        assert_eq!(first["name"], "需求讨论");
-        assert!(first["prompt"].as_str().unwrap().contains("澄清目标"));
-        assert!(first["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|t| t == "lock_requirement"));
-        assert_eq!(first["gate"], "confirm");
-        // 自定义段：key 缺省 stage-N，声明覆盖 gate。
-        let second = &stages[1];
-        assert_eq!(second["key"], "stage-2");
-        assert_eq!(second["name"], "分镜设计");
-        assert_eq!(second["prompt"], "依据需求文档产出分镜表。");
-        assert_eq!(second["gate"], "none");
-        assert_eq!(second["tools"].as_array().unwrap().len(), 0);
-        let third = &stages[2];
-        assert_eq!(third["gate"], "confirm");
+        assert_eq!(first["key"], "stage-1");
+        assert_eq!(first["name"], "分镜设计");
+        assert_eq!(first["prompt"], "依据需求文档产出分镜表。");
+        assert_eq!(first["gate"], "none");
+        assert_eq!(first["tools"].as_array().unwrap().len(), 0);
+        assert_eq!(stages[1]["gate"], "confirm");
     }
 
     #[test]
     fn resolve_pipeline_stages_rejects_missing_or_unknown_template() {
         let no_pipeline: serde_json::Value = serde_json::json!({ "plugin": { "id": "x" } });
         assert!(resolve_pipeline_stages(&no_pipeline).is_err());
-        let bad_template: serde_json::Value = serde_json::json!({
-            "pipeline": { "stages": [ { "template": "phase.nope" } ] }
+        let retired: serde_json::Value = serde_json::json!({
+            "pipeline": { "stages": [ { "template": "phase.discuss" } ] }
         });
-        let err = resolve_pipeline_stages(&bad_template).unwrap_err();
-        assert!(err.contains("未知模板"));
+        let err = resolve_pipeline_stages(&retired).unwrap_err();
+        assert!(err.contains("已退役"));
         let empty: serde_json::Value = serde_json::json!({ "pipeline": { "stages": [] } });
         assert!(resolve_pipeline_stages(&empty).is_err());
     }
@@ -1356,14 +1390,27 @@ mod tests {
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
         ensure_builtin_adaptive_plugins();
         let dir = super::super::manifest::manifest_dir();
-        for id in SYSTEM_PLUGIN_IDS {
+        // v0.9.7 需求3 C3.4：收敛后只物化 curated required 集——
+        // task-requirements/task-plan/pi-lens（编程推荐件）默认不落盘。
+        let deployed: Vec<&str> = SYSTEM_PLUGIN_IDS
+            .iter()
+            .copied()
+            .filter(|id| !matches!(*id, "task-requirements" | "task-plan" | "pi-lens"))
+            .collect();
+        for id in &deployed {
             assert!(
                 dir.join(format!("{id}.toml")).exists(),
                 "{id} should be deployed"
             );
         }
-        // 全部系统 manifest 解析且校验合法；指南插件为 [skill] 声明形态。
-        for id in SYSTEM_PLUGIN_IDS {
+        for id in ["task-requirements", "task-plan", "pi-lens"] {
+            assert!(
+                !dir.join(format!("{id}.toml")).exists(),
+                "{id} should NOT be deployed by default (market/recommendation item)"
+            );
+        }
+        // 全部已部署系统 manifest 解析且校验合法；指南插件为 [skill] 声明形态。
+        for id in &deployed {
             let toml_src = std::fs::read_to_string(dir.join(format!("{id}.toml"))).unwrap();
             let file: super::super::manifest::schema::AgentManifestFile =
                 toml::from_str(&toml_src).unwrap();

@@ -37,7 +37,8 @@ export type CreateEntryChoice =
   | { kind: "pipeline-guide" } // 流水线向导（V2 3c）
   | { kind: "hybrid-guide"; face?: SessionPluginFace } // 混合代码向导（V2 3b，face→presetMount）
   | { kind: "theme-wizard" } // 主题向导（需求14 补齐）
-  | { kind: "describe" }; // 描述功能 → 会话对话创建指引
+  // v0.9.7 需求3 C1：描述需求 → 真链路（跳会话页预填创作指令，agent 按创作指南实现）。
+  | { kind: "describe"; text: string };
 
 const PIPELINE_TEMPLATE = `[plugin]
 id = "session.my-flow"
@@ -358,14 +359,36 @@ export function PluginCreateEntry({
         <div className="mt-3 rounded-lg border border-dashed border-border px-4 py-2.5">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Lightbulb className="h-4 w-4 shrink-0 text-amber-500" />
-            {t("plugins.entryDescribe", "不确定？描述你想要的功能，我来推荐类型")}
+            {t("plugins.entryDescribeV2", "描述需求（推荐）——AI 帮你把插件做出来")}
           </div>
           <input
             className="mt-2 h-7 w-full rounded-md border border-border/70 bg-transparent px-2 text-xs outline-none focus:border-primary/60"
             value={describeText}
             onChange={(e) => setDescribeText(e.target.value)}
-            placeholder="如：每轮结束在输入框旁显示花销 / 让 AI 能搜索网页"
+            placeholder="如：帮我做个倒计时挂件 / 每轮结束在输入框旁显示花销 / 让 AI 能搜索网页"
           />
+          {/* v0.9.7 需求3 C1：主按钮 = 真链路跳会话（agent 按创作指南实现）；
+              类型推荐降级为「形态建议」次入口。 */}
+          <div className="mt-2 flex items-center justify-end">
+            <button
+              type="button"
+              disabled={!describeText.trim()}
+              onClick={() => {
+                const text = describeText.trim();
+                if (!text) return;
+                onOpenChange(false);
+                onChoose({ kind: "describe", text });
+              }}
+              className={cn(
+                "rounded-md px-3 py-1.5 text-[11px] font-medium transition-colors",
+                describeText.trim()
+                  ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                  : "cursor-not-allowed bg-muted text-muted-foreground/50"
+              )}
+            >
+              {t("plugins.entryGoChat", "去会话创建")}
+            </button>
+          </div>
           {(() => {
             const rec = recommendIntent(describeText);
             if (!rec) return null;
@@ -378,24 +401,22 @@ export function PluginCreateEntry({
               else onChoose({ kind: "agent-tool" });
             };
             return (
-              <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-1.5">
+              <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-border/50 bg-muted/30 px-3 py-1.5">
                 <span className="min-w-0 text-[11px] text-muted-foreground">
+                  {t("plugins.entrySuggestPrefix", "想自己配？推荐类型：")}
                   <span className="font-medium text-foreground">{intentLabel(rec.intent)}</span>
                   <span className="ml-1.5">{rec.reason}</span>
                 </span>
                 <button
                   type="button"
                   onClick={jump}
-                  className="shrink-0 rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
+                  className="shrink-0 rounded-md border border-border/60 px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-accent"
                 >
                   {t("plugins.entryGo", "去创建")}
                 </button>
               </div>
             );
           })()}
-          <div className="mt-1.5 text-[10px] text-muted-foreground/70">
-            也可以直接在会话中告诉 agent——它会按插件创作指南（jishu-plugin-authoring）产出并安装。
-          </div>
         </div>
       </div>
     </UniModal>

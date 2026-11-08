@@ -119,8 +119,9 @@ fn add_agent_dir(dir_path: &str, ctx: &ExecutionContext) -> Result<(), CliError>
     let id = parsed.info.id.clone();
     let name = parsed.info.display_name.clone();
     let target_dir = agent::plugin::composed_plugins_dir().join(&id);
-    std::fs::create_dir_all(&target_dir)
-        .map_err(|e| CliError::InvalidArg(format!("cannot create {}: {e}", target_dir.display())))?;
+    std::fs::create_dir_all(&target_dir).map_err(|e| {
+        CliError::InvalidArg(format!("cannot create {}: {e}", target_dir.display()))
+    })?;
     // 浅层常规文件整体复制（plugin.toml + bridge.js 等；与 _files/资产纪律
     // 同口径——附带文件必须平铺）。
     let mut bridges: Vec<String> = Vec::new();
@@ -138,10 +139,13 @@ fn add_agent_dir(dir_path: &str, ctx: &ExecutionContext) -> Result<(), CliError>
             continue;
         };
         let dest = target_dir.join(&file_name);
-        crate::util::atomic_write(&dest, &bytes).map_err(|e| {
-            CliError::InvalidArg(format!("cannot write {}: {e}", dest.display()))
-        })?;
-        let ext = file_name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        crate::util::atomic_write(&dest, &bytes)
+            .map_err(|e| CliError::InvalidArg(format!("cannot write {}: {e}", dest.display())))?;
+        let ext = file_name
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
         if file_name != "plugin.toml" && EXECUTABLE_EXTS.contains(&ext.as_str()) {
             bridges.push(file_name);
         }
@@ -190,7 +194,10 @@ fn add_agent_dir(dir_path: &str, ctx: &ExecutionContext) -> Result<(), CliError>
     } else {
         println!("Installed agent plugin {id} ({})", target_dir.display());
         if !bridges.is_empty() {
-            println!("WARNING: this plugin ships executables ({}) — review before enabling.", bridges.join(", "));
+            println!(
+                "WARNING: this plugin ships executables ({}) — review before enabling.",
+                bridges.join(", ")
+            );
         }
         println!("Disabled by default; enable it via the hub GUI confirmation card.");
     }
@@ -387,9 +394,8 @@ fn add_hybrid(dir_path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
         let Ok(bytes) = std::fs::read(entry.path()) else {
             continue;
         };
-        crate::util::atomic_write(&target_dir.join(&name), &bytes).map_err(|e| {
-            CliError::InvalidArg(format!("cannot write asset {name}: {e}"))
-        })?;
+        crate::util::atomic_write(&target_dir.join(&name), &bytes)
+            .map_err(|e| CliError::InvalidArg(format!("cannot write asset {name}: {e}")))?;
     }
 
     // 默认禁用 + 确认标记 + 输出（1b：与 add 组合臂共用公共尾部）。
@@ -446,9 +452,14 @@ fn get(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
         );
     } else {
         print!("{content}");
-        println!("
-# --- 状态 ---");
-        println!("# enabled: {enabled}{}", if enabled { "" } else { "（已禁用）" });
+        println!(
+            "
+# --- 状态 ---"
+        );
+        println!(
+            "# enabled: {enabled}{}",
+            if enabled { "" } else { "（已禁用）" }
+        );
         if pending {
             println!("# pending-confirm: 待确认安装（hub 确认卡启用）");
         }
@@ -472,7 +483,9 @@ fn get(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
 fn edit(id: &str, fields: &[String], open: bool, ctx: &ExecutionContext) -> Result<(), CliError> {
     // 双落点寻址（同 update/get）：agents/ 单文件优先，plugins/<id>/ 次之。
     let single = agent::manifest::manifest_dir().join(format!("{id}.toml"));
-    let dir_toml = agent::plugin::composed_plugins_dir().join(id).join("plugin.toml");
+    let dir_toml = agent::plugin::composed_plugins_dir()
+        .join(id)
+        .join("plugin.toml");
     let path = if single.is_file() {
         single
     } else if dir_toml.is_file() {
@@ -488,9 +501,15 @@ fn edit(id: &str, fields: &[String], open: bool, ctx: &ExecutionContext) -> Resu
         crate::os_adapter::file_reveal::reveal_in_file_manager(&path.to_string_lossy())
             .map_err(|e| CliError::InvalidArg(format!("cannot open {}: {e}", path.display())))?;
         if ctx.json {
-            println!("{}", serde_json::json!({"opened": true, "id": id, "path": path.to_string_lossy()}));
+            println!(
+                "{}",
+                serde_json::json!({"opened": true, "id": id, "path": path.to_string_lossy()})
+            );
         } else {
-            println!("Opened {} — apply changes via `plugins update {id} <toml>`.", path.display());
+            println!(
+                "Opened {} — apply changes via `plugins update {id} <toml>`.",
+                path.display()
+            );
         }
         return Ok(());
     }
@@ -514,7 +533,9 @@ fn edit(id: &str, fields: &[String], open: bool, ctx: &ExecutionContext) -> Resu
             .filter(|s| !s.is_empty())
             .collect();
         if segs.is_empty() {
-            return Err(CliError::InvalidArg(format!("--field empty key path in {spec:?}")));
+            return Err(CliError::InvalidArg(format!(
+                "--field empty key path in {spec:?}"
+            )));
         }
         // 数组下标形态（languages[0]）不支持——fail loud 而非当普通键插入
         // 静默产生垃圾段。
@@ -566,7 +587,10 @@ fn edit(id: &str, fields: &[String], open: bool, ctx: &ExecutionContext) -> Resu
             serde_json::json!({"edited": true, "id": id, "path": path.to_string_lossy(), "fields": fields})
         );
     } else {
-        println!("Edited {id} ({}) — reload the GUI (or its plugin page's Reload) to apply.", path.display());
+        println!(
+            "Edited {id} ({}) — reload the GUI (or its plugin page's Reload) to apply.",
+            path.display()
+        );
         println!("Note: the manifest was re-serialized (comments not preserved).");
     }
     Ok(())
@@ -740,10 +764,15 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
         // agents/ 落点）→ 删除 plugins/<id>/ 目录。需求14 M4：组合件描述符
         // source_path 已改为插件目录（Some）——判别加 composed 旗标，旧
         // source_path None 路径（内置 TS 会话件）保持原语义。
-        (Some(p), _) if p.kind == agent::plugin::PluginKind::Session
-            && (p.source_path.is_none() || p.composed) =>
+        (Some(p), _)
+            if p.kind == agent::plugin::PluginKind::Session
+                && (p.source_path.is_none() || p.composed) =>
         {
-            if agent::plugin::is_builtin_composed(id) {
+            // v0.9.7 需求3 C3.2：内置组合件仅 curated required（默认安装集）
+            // 拒绝卸载；非必需内置件允许卸载 = 还原未部署态（市场可重装）。
+            if agent::plugin::is_builtin_composed(id)
+                && agent::plugin::market::is_required_plugin(id)
+            {
                 return Err(CliError::InvalidArg(format!(
                     "plugin {id} is a built-in composed plugin and cannot be removed"
                 )));
@@ -806,15 +835,23 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
     // 需求14 测试期修复（T14R）：目录形态（plugins/<id>/plugin.toml）只删清单
     // 会孤儿残留附带文件（bridge.js 等）——判目录形态删整个目录（与组合件
     // 同纪律；单文件形态 agents/<id>.toml 维持删文件）。
-    let is_dir_form = source.file_name().map(|n| n == "plugin.toml").unwrap_or(false)
-        && source.parent().and_then(|p| p.file_name()).map(|n| n == id).unwrap_or(false);
+    let is_dir_form = source
+        .file_name()
+        .map(|n| n == "plugin.toml")
+        .unwrap_or(false)
+        && source
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n == id)
+            .unwrap_or(false);
     if is_dir_form {
         let dir = source.parent().expect("plugin.toml has parent");
         std::fs::remove_dir_all(dir)
             .map_err(|e| CliError::InvalidArg(format!("cannot remove {}: {e}", dir.display())))?;
     } else {
-        std::fs::remove_file(&source)
-            .map_err(|e| CliError::InvalidArg(format!("cannot remove {}: {e}", source.display())))?;
+        std::fs::remove_file(&source).map_err(|e| {
+            CliError::InvalidArg(format!("cannot remove {}: {e}", source.display()))
+        })?;
     }
     agent::plugin::forget_plugin_disabled(id); // 清 disabled 引用（T16：id 已离 known 集时 set_enabled 静默失败残留死键）
 
@@ -1251,14 +1288,22 @@ mount = "dock-panel"
         let _guard = lock_env();
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
-        // 内置（随包）组合插件不可卸载——先部署内置清单使 registry 可见。
+        // v0.9.7 需求3 C3：收敛后 ensure 只物化 required 件——required 内置
+        // 件（mermaid）拒绝卸载；非必需内置件（video-maker）物化后可卸载
+        //（还原未部署态）。
         agent::plugin::ensure_builtin_composed_manifests();
-        let err = remove("session.video-maker", &ctx()).unwrap_err();
+        let err = remove("session.mermaid-render", &ctx()).unwrap_err();
         let msg = match err {
             CliError::InvalidArg(m) => m,
             other => format!("{other:?}"),
         };
         assert!(msg.contains("cannot be removed"), "got: {msg}");
+
+        agent::plugin::materialize_builtin_composed("session.video-maker").unwrap();
+        remove("session.video-maker", &ctx()).expect("non-required builtin removable");
+        assert!(!agent::plugin::composed_plugins_dir()
+            .join("session.video-maker")
+            .exists());
         std::env::remove_var("JISHU_HUB_HOME");
     }
 
@@ -1286,15 +1331,15 @@ key = 1
         std::env::remove_var("JISHU_HUB_HOME");
     }
 
-/// 需求14 M4（R9）：edit --field 定点编辑——dotted path 赋值 + 值 TOML 化；
-/// 与 update 同守卫（组合件经 save_composed_manifest）；非法路径/未知插件拒绝。
-#[test]
-fn edit_field_targets_composed_manifest() {
-    let _guard = lock_env();
-    let tmp = tempfile::tempdir().unwrap();
-    std::env::set_var("JISHU_HUB_HOME", tmp.path());
-    // 语言封闭集清单（code-block）——改 name 顶层 [plugin] 段字段。
-    let toml_src = r#"[plugin]
+    /// 需求14 M4（R9）：edit --field 定点编辑——dotted path 赋值 + 值 TOML 化；
+    /// 与 update 同守卫（组合件经 save_composed_manifest）；非法路径/未知插件拒绝。
+    #[test]
+    fn edit_field_targets_composed_manifest() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        // 语言封闭集清单（code-block）——改 name 顶层 [plugin] 段字段。
+        let toml_src = r#"[plugin]
 id = "session.edit-me"
 name = "旧名"
 kind = "session-composed"
@@ -1305,31 +1350,51 @@ languages = ["echarts"]
 component = "render.mono-text"
 mount = "block-renderer"
 "#;
-    agent::plugin::save_composed_manifest("session.edit-me", toml_src).unwrap();
-    edit(
-        "session.edit-me",
-        &["plugin.name=新名字".to_string(), "render.fallback=\"render.mono-text\"".to_string()],
-        false,
-        &ctx(),
-    )
-    .expect("edit ok");
-    let updated = std::fs::read_to_string(composed_dir("session.edit-me").join("plugin.toml")).unwrap();
-    assert!(updated.contains("新名字"), "got: {updated}");
-    assert!(updated.contains("render.mono-text"));
-    // 守卫仍生效：id 不可变（改 id → save_composed_manifest 拒绝清单 id 不一致）。
-    let err = edit("session.edit-me", &["plugin.id=session.other".to_string()], false, &ctx())
+        agent::plugin::save_composed_manifest("session.edit-me", toml_src).unwrap();
+        edit(
+            "session.edit-me",
+            &[
+                "plugin.name=新名字".to_string(),
+                "render.fallback=\"render.mono-text\"".to_string(),
+            ],
+            false,
+            &ctx(),
+        )
+        .expect("edit ok");
+        let updated =
+            std::fs::read_to_string(composed_dir("session.edit-me").join("plugin.toml")).unwrap();
+        assert!(updated.contains("新名字"), "got: {updated}");
+        assert!(updated.contains("render.mono-text"));
+        // 守卫仍生效：id 不可变（改 id → save_composed_manifest 拒绝清单 id 不一致）。
+        let err = edit(
+            "session.edit-me",
+            &["plugin.id=session.other".to_string()],
+            false,
+            &ctx(),
+        )
         .expect_err("id change must be rejected");
-    assert!(format!("{err:?}").contains("不一致") || format!("{err:?}").contains("cannot change"), "got: {err:?}");
-    // 非法 dotted path（数组元素）拒绝。
-    let err = edit("session.edit-me", &["source.languages[0]=x".to_string()], false, &ctx())
+        assert!(
+            format!("{err:?}").contains("不一致") || format!("{err:?}").contains("cannot change"),
+            "got: {err:?}"
+        );
+        // 非法 dotted path（数组元素）拒绝。
+        let err = edit(
+            "session.edit-me",
+            &["source.languages[0]=x".to_string()],
+            false,
+            &ctx(),
+        )
         .expect_err("array item must be rejected");
-    assert!(format!("{err:?}").contains("--field"), "got: {err:?}");
-    // 未知插件拒绝。
-    let err = edit("session.no-such", &["a.b=1".to_string()], false, &ctx())
-        .expect_err("unknown id must be rejected");
-    assert!(format!("{err:?}").contains("plugin not found"), "got: {err:?}");
-    std::env::remove_var("JISHU_HUB_HOME");
-}
+        assert!(format!("{err:?}").contains("--field"), "got: {err:?}");
+        // 未知插件拒绝。
+        let err = edit("session.no-such", &["a.b=1".to_string()], false, &ctx())
+            .expect_err("unknown id must be rejected");
+        assert!(
+            format!("{err:?}").contains("plugin not found"),
+            "got: {err:?}"
+        );
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
 
     /// 需求14 M2：add-hybrid 主题形态——无 component.js 但有 theme.css 时
     /// 放行（渲染体是 css），目标目录不落空 component.js，资产随装。
@@ -1362,22 +1427,25 @@ mount = "app-theme"
         add_hybrid(src.path().to_str().unwrap(), &ctx()).expect("theme form installs");
         let target = agent::plugin::composed_plugins_dir().join("session.theme-cli");
         assert!(target.join("theme.css").is_file(), "theme.css 随装");
-        assert!(!target.join("component.js").exists(), "主题形态不落空 component.js");
+        assert!(
+            !target.join("component.js").exists(),
+            "主题形态不落空 component.js"
+        );
         assert!(target.join(".pending-confirm").is_file(), "确认标记就位");
         std::env::remove_var("JISHU_HUB_HOME");
     }
 
-/// 需求14 M3（B4）：add 目录形态——智能体桥插件整体落 plugins/<id>/，
-/// 可执行体进确认标记（最高警示），组合家族目录指引 add-hybrid。
-#[test]
-fn add_agent_directory_installs_with_bridge_warning() {
-    let _guard = lock_env();
-    let tmp = tempfile::tempdir().unwrap();
-    std::env::set_var("JISHU_HUB_HOME", tmp.path());
-    let src = tempfile::tempdir().unwrap();
-    std::fs::write(
-        src.path().join("plugin.toml"),
-        r#"schema = 1
+    /// 需求14 M3（B4）：add 目录形态——智能体桥插件整体落 plugins/<id>/，
+    /// 可执行体进确认标记（最高警示），组合家族目录指引 add-hybrid。
+    #[test]
+    fn add_agent_directory_installs_with_bridge_warning() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(
+            src.path().join("plugin.toml"),
+            r#"schema = 1
 kind = "agent"
 [info]
 id = "zcode-test"
@@ -1386,34 +1454,36 @@ display_name = "zcode test"
 kind = "acp"
 acp_command = ["node", "{plugin_dir}/bridge.js", "--stdio"]
 "#,
-    )
-    .unwrap();
-    std::fs::write(src.path().join("bridge.js"), "/* bridge */").unwrap();
-    add(src.path().to_str().unwrap(), &ctx()).expect("dir add installs");
-    let target = agent::plugin::composed_plugins_dir().join("zcode-test");
-    assert!(target.join("plugin.toml").is_file(), "清单落目录形态");
-    assert!(target.join("bridge.js").is_file(), "桥脚本随装");
-    assert!(!agent::manifest::manifest_dir().join("zcode-test.toml").exists());
-    // 默认禁用（确认卡安全阀）。
-    assert!(agent::plugin::load_plugin_config()
-        .disabled
-        .iter()
-        .any(|x| x == "zcode-test"));
-    // 标记：bridges 最高警示 + ACP 接管摘要。
-    let marker = std::fs::read_to_string(target.join(".pending-confirm")).unwrap();
-    assert!(marker.contains("bridge.js"), "bridges in marker: {marker}");
-    assert!(marker.contains("ACP"), "takeover in marker: {marker}");
-    // 组合家族目录 → 指引 add-hybrid。
-    let comp = tempfile::tempdir().unwrap();
-    std::fs::write(
-        comp.path().join("plugin.toml"),
-        "[plugin]\nid = \"session.x\"\nname = \"x\"\nkind = \"session-composed\"\n",
-    )
-    .unwrap();
-    let err = add(comp.path().to_str().unwrap(), &ctx()).expect_err("composed dir rejected");
-    assert!(format!("{err:?}").contains("add-hybrid"), "got: {err:?}");
-    std::env::remove_var("JISHU_HUB_HOME");
-}
+        )
+        .unwrap();
+        std::fs::write(src.path().join("bridge.js"), "/* bridge */").unwrap();
+        add(src.path().to_str().unwrap(), &ctx()).expect("dir add installs");
+        let target = agent::plugin::composed_plugins_dir().join("zcode-test");
+        assert!(target.join("plugin.toml").is_file(), "清单落目录形态");
+        assert!(target.join("bridge.js").is_file(), "桥脚本随装");
+        assert!(!agent::manifest::manifest_dir()
+            .join("zcode-test.toml")
+            .exists());
+        // 默认禁用（确认卡安全阀）。
+        assert!(agent::plugin::load_plugin_config()
+            .disabled
+            .iter()
+            .any(|x| x == "zcode-test"));
+        // 标记：bridges 最高警示 + ACP 接管摘要。
+        let marker = std::fs::read_to_string(target.join(".pending-confirm")).unwrap();
+        assert!(marker.contains("bridge.js"), "bridges in marker: {marker}");
+        assert!(marker.contains("ACP"), "takeover in marker: {marker}");
+        // 组合家族目录 → 指引 add-hybrid。
+        let comp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            comp.path().join("plugin.toml"),
+            "[plugin]\nid = \"session.x\"\nname = \"x\"\nkind = \"session-composed\"\n",
+        )
+        .unwrap();
+        let err = add(comp.path().to_str().unwrap(), &ctx()).expect_err("composed dir rejected");
+        assert!(format!("{err:?}").contains("add-hybrid"), "got: {err:?}");
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
 
     /// 需求14 M5（B10）：get 输出增强数据源——extras（资产指纹+接管摘要）与
     /// get 同源计算；agent 自验回路（skill 第 7 步）依赖该结构。
@@ -1444,7 +1514,9 @@ mount = \"block-renderer\"
         let value: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         let (assets, takeover) =
             agent::plugin::pending_confirm_extras(path.parent().unwrap(), &value);
-        assert!(assets.iter().any(|a| a.name == "component.js" && a.sha8.len() == 8 && a.size > 0));
+        assert!(assets
+            .iter()
+            .any(|a| a.name == "component.js" && a.sha8.len() == 8 && a.size > 0));
         assert_eq!(takeover.as_deref(), Some("将接管 echarts 语言代码块渲染"));
         // 启用态：未禁用。
         assert!(!agent::plugin::load_plugin_config()

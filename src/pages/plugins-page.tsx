@@ -22,6 +22,8 @@ import { PluginPipelineWizard } from "./plugin-pipeline-wizard";
 import { PluginThemeWizard } from "./plugin-theme-wizard";
 // 3a-1（v0.9.5 需求1，原需求26）：统一创建入口——类型选择卡片页分流。
 import { PluginCreateEntry } from "./plugin-create-entry";
+// v0.9.7 需求3 C2：插件市场面板（精选/扩展生态/技能市场三源一套交互）。
+import { PluginMarketPanel } from "./plugin-market";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
 import { composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
 import { Info, Settings2, FileCode2, LayoutGrid, Pin, Bell, MousePointerClick, Palette, Layers, Rocket, Wrench } from "lucide-react";
@@ -183,7 +185,15 @@ const PLUGIN_CATEGORIES: Array<{ key: PluginCategory; labelKey: string; fallback
   { key: "appearance", labelKey: "plugins.catAppearance", fallback: "外观" },
 ];
 
-export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId: string, name: string) => void } = {}) {
+export function PluginsPage({
+  onLaunchPipeline,
+  onLaunchDescribe,
+}: {
+  onLaunchPipeline?: (pluginId: string, name: string) => void;
+  /** v0.9.7 需求3 C1：描述需求 → 跳会话页预填创作指令（app 层经
+   * pluginCreateLaunch state 承接，pipelineLaunch 同款模式）。 */
+  onLaunchDescribe?: (text: string) => void;
+} = {}) {
   const { t } = useTranslation();
   const { alert: alertDialog, confirm: confirmDialog, dialogNode } = useConfirmDialog();
   // v0.9.3 需求13：组合清单异步装载完成后重算卡片（⚙ 设置钮/描述依赖前端描述符）。
@@ -418,6 +428,8 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
   // 需求14 M4（G8 搜索）：跨分类搜索（id/名称/描述/路径/接管语言集命中）；
   // 非空时网格展示全库命中项（忽略当前 tab），实现维度筛选仍叠加。
   const [search, setSearch] = useState("");
+  // v0.9.7 需求3 C2：插件中心顶部二级页签「已安装 | 插件市场」。
+  const [view, setView] = useState<"installed" | "market">("installed");
   // 需求14 M4（R7）：待确认安装页内一等分区（app 级确认模态保留——本区
   // 是「插件中心能自己发现」的补充入口，轮询同一 plugin_confirm_pending）。
   const [pendingInstalls, setPendingInstalls] = useState<Array<{
@@ -443,6 +455,24 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
     };
   }, []);
   const pendingIds = useMemo(() => new Set(pendingInstalls.map((p) => p.id)), [pendingInstalls]);
+  // v0.9.7 需求3 C1 回跳聚光：确认卡启用成功 → openManagePage("plugins") +
+  // spotlight 事件 → 本页滚动到位 + ring 高亮 2s（P2-7：事件通道而非直设 tab）。
+  const [spotlightId, setSpotlightId] = useState<string | null>(null);
+  useEffect(() => {
+    const onSpotlight = (e: Event) => {
+      const id = (e as CustomEvent<{ id: string }>).detail?.id;
+      if (!id) return;
+      setSpotlightId(id);
+      window.setTimeout(() => {
+        document
+          .querySelector(`[data-plugin-card="${id}"]`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 120);
+      window.setTimeout(() => setSpotlightId(null), 2200);
+    };
+    window.addEventListener("jishu:plugin-spotlight", onSpotlight);
+    return () => window.removeEventListener("jishu:plugin-spotlight", onSpotlight);
+  }, []);
   /** 搜索命中：id/显示名/描述/来源路径 +（会话插件）块渲染器接管语言集。 */
   const matchesSearch = useCallback((p: PluginDescriptor) => {
     const q = search.trim().toLowerCase();
@@ -481,7 +511,11 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
         return (
           <div
             key={plugin.id}
-            className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3 transition-colors hover:border-border"
+            data-plugin-card={plugin.id}
+            className={cn(
+              "flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3 transition-colors hover:border-border",
+              spotlightId === plugin.id && "ring-2 ring-primary animate-pulse"
+            )}
           >
             {/* 首行：图标 + 名称 + 开关（workbuddy 卡头形态）。 */}
             <div className="flex items-center gap-2">
@@ -759,13 +793,8 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
               setThemeWizardOpen(true);
               break;
             case "describe":
-              void alertDialog({
-                title: tr("plugins.entryDescribeTitle", "去会话中创建"),
-                description: tr(
-                  "plugins.entryDescribeBody",
-                  "切到任意会话，直接告诉 agent 你想要的插件（如“每轮结束在输入框旁显示花销”），它会按插件创作指南产出、校验并安装，安装后在本页确认卡启用。",
-                ),
-              });
+              // v0.9.7 需求3 C1：真链路——跳会话页预填创作指令（原 alert 死分支）。
+              onLaunchDescribe?.(choice.text);
               break;
             default:
               break; // pipeline/hybrid 指引卡在入口组件内消化
@@ -828,6 +857,37 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
         </div>
       </div>
 
+      {/* v0.9.7 需求3 C2：插件中心二级页签——已安装（原管理面）| 插件市场。 */}
+      <div className="flex items-center gap-1.5 border-b border-border/40 pb-2">
+        <button
+          type="button"
+          onClick={() => setView("installed")}
+          className={cn(
+            "rounded-full px-3 py-1 text-xs font-medium transition-colors",
+            view === "installed"
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+          )}
+        >
+          {tr("market.tabInstalled", "已安装")}
+        </button>
+        <button
+          type="button"
+          onClick={() => setView("market")}
+          className={cn(
+            "rounded-full px-3 py-1 text-xs font-medium transition-colors",
+            view === "market"
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+          )}
+        >
+          {tr("market.tabMarket", "插件市场")}
+        </button>
+      </div>
+
+      {view === "market" && <PluginMarketPanel onChanged={refresh} />}
+
+      {view === "installed" && (<>
       {result && result.manifest_errors.length > 0 && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3">
           <div className="flex items-center gap-2 text-sm font-medium text-destructive">
@@ -997,6 +1057,7 @@ export function PluginsPage({ onLaunchPipeline }: { onLaunchPipeline?: (pluginId
       <p className="text-xs text-muted-foreground">
         {tr("plugins.hint", "")}
       </p>
+      </>)}
 
       {/* v0.9.0 需求8：声明式面板（list 只读模板）——逐项执行声明命令并展示输出。 */}
       <Dialog open={!!panelTarget} onOpenChange={(open) => { if (!open) setPanelTarget(null); }}>

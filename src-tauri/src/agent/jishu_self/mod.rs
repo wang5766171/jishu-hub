@@ -198,7 +198,11 @@ impl JishuSelfAgent {
         Ok(changed)
     }
 
-    async fn run_pi_package_command(action: &str, source: &str) -> Result<String, String> {
+    /// v0.9.7 需求3 C2-②：市场安装通道复用（原仅启动自愈用，改 pub(crate)）。
+    pub(crate) async fn run_pi_package_command(
+        action: &str,
+        source: &str,
+    ) -> Result<String, String> {
         let runtime = pi_runtime::resolve_pi_runtime()
             .map_err(|e| format!("Failed to resolve Pi runtime: {e}"))?;
 
@@ -847,7 +851,20 @@ impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
 /// docs/windows.md 的对比用法；`!`/`!!` 编辑器命令仍走 bash）。编译期平台
 /// 隔离，非 Windows 产物不含该工具名。
 fn template_default_tools(extra: &[&'static str]) -> Vec<&'static str> {
-    let mut tools: Vec<&'static str> = vec!["read", "bash", "edit", "write"];
+    let mut tools: Vec<&'static str> = vec![
+        "read",
+        "bash",
+        "edit",
+        "write",
+        // v0.9.7 需求2（R1 生产实测 issue #4）：任务执行器（jishu-task-runner
+        // 扩展）registerTool 注册的三工具——pi 的 --tools 是硬白名单，不进
+        // 名单则 agent 不可见（实测复现）。runner 是任务模式底座，与
+        // read/bash 同级常驻，不挂任何插件 toml 声明（task-plan 需求3 后
+        // 可能未物化，不能依赖它）。
+        "update_steps",
+        "ask_user",
+        "dispatch_to_node",
+    ];
     tools.extend_from_slice(extra);
     if cfg!(windows) {
         tools.push("powershell");
@@ -898,6 +915,13 @@ fn ensure_default_tools_arg(
             .filter_map(|v| v.as_str().map(str::to_string))
             .collect();
         for tool in pi_extension_tools {
+            if !names.iter().any(|n| n == tool) {
+                names.push(tool.to_string());
+            }
+        }
+        // v0.9.7 需求2（issue #4）：已配置路径同样保证 runner 三工具在场
+        //（底座能力不依赖用户配置清单）。
+        for tool in ["update_steps", "ask_user", "dispatch_to_node"] {
             if !names.iter().any(|n| n == tool) {
                 names.push(tool.to_string());
             }
@@ -987,12 +1011,18 @@ mod mcp_tests {
         for tool in &ext {
             assert!(args[3].split(',').any(|t| t == tool), "missing {tool}");
         }
+        // v0.9.7 需求2（issue #4）：runner 三工具底座常驻（两条路径都在场）
+        for tool in ["update_steps", "ask_user", "dispatch_to_node"] {
+            assert!(args[3].split(',').any(|t| t == tool), "missing {tool}");
+        }
 
         let mut args2 = vec!["--mode".to_string(), "rpc".to_string()];
         super::ensure_default_tools_arg(&mut args2, &Ok(json!({"defaultTools": ["read"]})), &ext);
-        // 已配置清单照常生效，追加已启用扩展工具 + MCP 通配（需求11 三轮）
-        assert_eq!(args2[2], "--tools");
-        assert_eq!(args2[3], "read,request_user_input,lock_requirement,mcp__*");
+        // 已配置清单照常生效，追加已启用扩展工具 + runner 底座三工具 + MCP 通配
+        assert_eq!(
+            args2[3],
+            "read,request_user_input,lock_requirement,update_steps,ask_user,dispatch_to_node,mcp__*"
+        );
 
         let mut args3 = vec![];
         super::ensure_default_tools_arg(&mut args3, &Err("io".into()), &ext);

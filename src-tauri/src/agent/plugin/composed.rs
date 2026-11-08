@@ -88,11 +88,25 @@ const BUILTIN_THEME_PLUGINS: &[(&str, &str, &str)] = &[(
 )];
 
 /// 幂等部署内置组合清单（lib.rs 启动调用）。
+/// v0.9.7 需求3 C3：**只物化 curated required 集**（默认安装 19 件中的
+/// composed 形态）——非必需件不落盘 = 不在 plugin_list = 市场可见可装；
+/// 用户已物化的非必需件**不覆盖**（尊重改造）、不删除；必需件保留覆写
+/// 自愈（系统语义）。phase-divider 随需求2 去阶段化退出默认集（已物化
+/// 用户侧残留不删——市场不再提供，重启后由 plugin_list 照常呈现）。
 pub fn ensure_builtin_composed_manifests() {
+    let required = market::required_composed_ids();
     for (id, toml) in BUILTIN_COMPOSED_MANIFESTS {
         let dir = composed_plugins_root().join(id);
-        let _ = std::fs::create_dir_all(&dir);
         let target = dir.join("plugin.toml");
+        // 非必需件且未物化 → 跳过（不落盘）；已物化 → 不覆盖（用户可能改造）。
+        let is_required = required.contains(id);
+        if !is_required && !target.is_file() {
+            continue;
+        }
+        if !is_required {
+            continue; // 已存在的非必需件：原样保留
+        }
+        let _ = std::fs::create_dir_all(&dir);
         if let Ok(existing) = std::fs::read_to_string(&target) {
             if existing == *toml {
                 continue;
@@ -102,11 +116,19 @@ pub fn ensure_builtin_composed_manifests() {
             log::warn!("[composition] deploy {id} failed: {e}");
         }
     }
-    // 内置主题插件：清单 + theme.css 成对部署（幂等同判）。
+    // 内置主题插件：清单 + theme.css 成对部署（幂等同判；同样按 required
+    // 收敛——午夜蓝主题 v0.9.7 起进市场，默认不物化）。
     for (id, toml, css) in BUILTIN_THEME_PLUGINS {
         let dir = composed_plugins_root().join(id);
-        let _ = std::fs::create_dir_all(&dir);
         let target = dir.join("plugin.toml");
+        let is_required = required.contains(id);
+        if !is_required && !target.is_file() {
+            continue;
+        }
+        if !is_required {
+            continue;
+        }
+        let _ = std::fs::create_dir_all(&dir);
         let needs_toml = match std::fs::read_to_string(&target) {
             Ok(existing) => existing != *toml,
             Err(_) => true,
@@ -127,6 +149,30 @@ pub fn ensure_builtin_composed_manifests() {
             }
         }
     }
+}
+
+/// v0.9.7 需求3 C2-①：市场安装——从内置清单物化单件（composed/composed-theme）。
+pub fn materialize_builtin_composed(id: &str) -> Result<(), String> {
+    if let Some((_, toml)) = BUILTIN_COMPOSED_MANIFESTS
+        .iter()
+        .find(|(bid, _)| *bid == id)
+    {
+        let dir = composed_plugins_root().join(id);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create {id}: {e}"))?;
+        crate::util::atomic_write(&dir.join("plugin.toml"), toml.as_bytes())
+            .map_err(|e| format!("write {id}: {e}"))?;
+        return Ok(());
+    }
+    if let Some((_, toml, css)) = BUILTIN_THEME_PLUGINS.iter().find(|(bid, _, _)| *bid == id) {
+        let dir = composed_plugins_root().join(id);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create {id}: {e}"))?;
+        crate::util::atomic_write(&dir.join("plugin.toml"), toml.as_bytes())
+            .map_err(|e| format!("write {id}: {e}"))?;
+        crate::util::atomic_write(&dir.join("theme.css"), css.as_bytes())
+            .map_err(|e| format!("write {id} theme.css: {e}"))?;
+        return Ok(());
+    }
+    Err(format!("builtin composed manifest not found: {id}"))
 }
 
 /// 扫描组合式清单（kind=session-composed），toml → JSON 透传（前端引擎装配）。
@@ -373,7 +419,9 @@ pub fn save_composed_manifest(id: &str, toml: &str) -> Result<(), String> {
     if id.trim().is_empty() || !id.starts_with("session.") {
         return Err("组合插件 id 须以 session. 开头".to_string());
     }
-    if BUILTIN_COMPOSED_MANIFESTS.iter().any(|(bid, _)| *bid == id) {
+    // v0.9.7 需求3 C3.2：覆盖拒绝仅对 curated required 内置件保留；
+    // 非必需内置件（如午夜蓝主题）允许被用户另存覆盖（市场可还原）。
+    if is_builtin_composed(id) && market::is_required_plugin(id) {
         return Err(format!("内置组合插件 {id} 不可覆盖（可另存新 id）"));
     }
     let value: toml::Value = toml.parse().map_err(|e| format!("TOML 解析失败: {e}"))?;
@@ -450,64 +498,33 @@ pub fn save_composed_manifest(id: &str, toml: &str) -> Result<(), String> {
         .map_err(|e| format!("写入清单失败: {e}"))
 }
 
-/// 删除用户组合插件（内置清单拒绝）；目录整体移除（启停记录随 plugins.json
-/// 清理由既有 rebuild 语义覆盖）。
+/// 删除用户组合插件；目录整体移除（启停记录随 plugins.json 清理由既有
+/// rebuild 语义覆盖）。
+/// v0.9.7 需求3 C3.2：守卫放宽——curated required 内置件拒绝删除（默认
+/// 安装集不可拆）；**非必需内置件允许删除**（= 还原未部署态，市场恢复
+/// 「安装」），并 forget 启停记录。
 pub fn delete_composed_plugin(id: &str) -> Result<(), String> {
-    if BUILTIN_COMPOSED_MANIFESTS.iter().any(|(bid, _)| *bid == id) {
-        return Err(format!("内置组合插件 {id} 不可删除"));
+    if is_builtin_composed(id) && market::is_required_plugin(id) {
+        return Err(format!(
+            "内置组合插件 {id} 为系统内置，不可删除（可在市场查看）"
+        ));
     }
     let dir = composed_plugins_root().join(id);
     if !dir.join("plugin.toml").is_file() {
         return Err(format!("组合插件 {id} 不存在"));
     }
-    std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())
+    std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    forget_plugin_disabled(id);
+    Ok(())
 }
 
 // ── 声明驱动阶段流水线（v0.9.3 需求13 C4-slice2） ──────────────────────────
 // 模板展开与前端 capabilities/pipeline/contracts.ts 的 STAGE_TEMPLATES/
 // resolveStages 同义（两处小而稳定，改模板时同步）。
+// v0.9.7 需求2 砍除#8：内置 phase.* 阶段模板随三阶段概念退役——引用即报错
+//（存量 pipeline 插件的自定义 prompt 段不受影响）。
 
-/// 内置阶段模板（Rust 复刻；键与前端 StageTemplateKey 一致）。
-fn stage_template(key: &str) -> Option<serde_json::Value> {
-    let value = match key {
-        "phase.discuss" => serde_json::json!({
-            "name": "需求讨论",
-            "prompt": "与用户澄清目标/范围/约束，收敛为可执行的需求文档；未澄清前不进入下一阶段。",
-            "skills": ["jishu-conductor-dev:discuss"],
-            "tools": ["read", "grep", "find", "ls", "lock_requirement", "request_user_input"],
-            "gate": "confirm",
-            "outputs": [{ "kind": "document" }],
-        }),
-        "phase.plan" => serde_json::json!({
-            "name": "流程规划",
-            "prompt": "将需求拆分为有依赖关系的执行节点，产出 flow-plan；简单任务建议直接执行。",
-            "skills": ["jishu-conductor-dev:plan"],
-            "tools": ["read", "grep", "find", "ls", "commit_plan", "request_user_input"],
-            "gate": "confirm",
-            "outputs": [{ "kind": "plan" }],
-        }),
-        "phase.execute" => serde_json::json!({
-            "name": "执行",
-            "prompt": "按既定方案执行节点；阻塞/失败按重试与跳过策略处理，方案变更走修订。",
-            "skills": ["jishu-conductor-dev:execute"],
-            "tools": ["read", "bash", "edit", "write", "grep", "find", "ls", "commit_plan", "dispatch_to_node"],
-            "gate": "none",
-            "outputs": [{ "kind": "artifact" }],
-        }),
-        "phase.review" => serde_json::json!({
-            "name": "评审确认",
-            "prompt": "汇总产出请用户评审；通过则收尾，打回则回到指定阶段。",
-            "skills": [],
-            "tools": ["read", "grep", "find", "ls", "request_user_input"],
-            "gate": "confirm",
-            "outputs": [],
-        }),
-        _ => return None,
-    };
-    Some(value)
-}
-
-/// manifest 阶段声明展开（模板默认 ⨯ 声明覆盖）→ 阶段数组（运行时统一形状）。
+/// manifest 阶段声明展开 → 阶段数组（运行时统一形状）。
 pub fn resolve_pipeline_stages(
     manifest: &serde_json::Value,
 ) -> Result<Vec<serde_json::Value>, String> {
@@ -521,59 +538,37 @@ pub fn resolve_pipeline_stages(
     }
     let mut out = Vec::with_capacity(stages.len());
     for (index, stage) in stages.iter().enumerate() {
-        let template_key = stage
-            .get("template")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-        let template = match template_key.as_deref() {
-            Some(key) => Some(
-                stage_template(key)
-                    .ok_or_else(|| format!("阶段 {} 引用了未知模板: {key}", index + 1))?,
-            ),
-            None => None,
-        };
-        let t = |field: &str| template.as_ref().and_then(|t| t.get(field).cloned());
-        // key 缺省取模板短键（phase.discuss→discuss 等——与 legacy 阶段名一致，
-        // 扩展侧深语义（lock_requirement/commit_plan 流）按 phase 名绑定）。
+        if let Some(key) = stage.get("template").and_then(|v| v.as_str()) {
+            return Err(format!(
+                "阶段 {} 引用了已退役的阶段模板 {key}（v0.9.7 任务模式去阶段化）——请改为自定义 prompt 段",
+                index + 1
+            ));
+        }
         let key = stage
             .get("key")
             .and_then(|v| v.as_str())
             .map(str::to_string)
-            .or_else(|| {
-                template_key
-                    .as_deref()
-                    .and_then(|t| t.strip_prefix("phase."))
-                    .map(str::to_string)
-            })
             .unwrap_or_else(|| format!("stage-{}", index + 1));
         let name = stage
             .get("name")
             .and_then(|v| v.as_str())
             .map(str::to_string)
-            .or_else(|| t("name").and_then(|v| v.as_str().map(str::to_string)))
             .unwrap_or_else(|| format!("阶段 {}", index + 1));
-        let declared_prompt = stage.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-        let template_prompt = t("prompt")
-            .and_then(|v| v.as_str().map(str::to_string))
-            .unwrap_or_default();
-        let prompt = [template_prompt, declared_prompt.to_string()]
-            .iter()
-            .filter(|p| !p.is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n");
+        let prompt = stage
+            .get("prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
         let pick_list = |field: &str| -> Option<Vec<serde_json::Value>> {
-            let declared = stage.get(field).and_then(|v| v.as_array());
-            match (declared, t(field).and_then(|v| v.as_array().cloned())) {
-                (Some(values), _) if !values.is_empty() => Some(values.clone()),
-                (None, Some(default)) => Some(default),
-                _ => None,
-            }
+            stage
+                .get(field)
+                .and_then(|v| v.as_array())
+                .filter(|values| !values.is_empty())
+                .map(|values| values.clone())
         };
         let stage_json = serde_json::json!({
             "key": key,
             "name": name,
-            "template": template_key,
             "prompt": prompt,
             "skills": pick_list("skills").unwrap_or_default(),
             "tools": pick_list("tools").unwrap_or_default(),
@@ -581,7 +576,6 @@ pub fn resolve_pipeline_stages(
                 .get("gate")
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
-                .or_else(|| t("gate").and_then(|v| v.as_str().map(str::to_string)))
                 .unwrap_or_else(|| "none".into()),
             "outputs": pick_list("outputs").unwrap_or_default(),
         });
@@ -704,8 +698,11 @@ mount = "block-renderer"
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
 
         // 先装 A（echarts）→ 成功。
-        save_composed_manifest("session.a-charts", &code_block_toml("session.a-charts", &["echarts"]))
-            .expect("first install ok");
+        save_composed_manifest(
+            "session.a-charts",
+            &code_block_toml("session.a-charts", &["echarts"]),
+        )
+        .expect("first install ok");
 
         // B 同语言 → 拒绝并指认 A。
         let err = save_composed_manifest(
@@ -717,8 +714,11 @@ mount = "block-renderer"
         assert!(err.contains("session.a-charts"), "got: {err}");
 
         // B 改不相交语言 → 成功。
-        save_composed_manifest("session.b-charts", &code_block_toml("session.b-charts", &["chart"]))
-            .expect("disjoint languages ok");
+        save_composed_manifest(
+            "session.b-charts",
+            &code_block_toml("session.b-charts", &["chart"]),
+        )
+        .expect("disjoint languages ok");
 
         // 与内置组合件（mermaid）相交 = 遮蔽，允许。
         std::fs::create_dir_all(composed_plugins_root().join("session.mermaid-render")).unwrap();
@@ -797,13 +797,19 @@ mount = "block-renderer"
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("session.echarts-render");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("plugin.toml"), code_block_toml("session.echarts-render", &["echarts", "chart"])).unwrap();
+        std::fs::write(
+            dir.join("plugin.toml"),
+            code_block_toml("session.echarts-render", &["echarts", "chart"]),
+        )
+        .unwrap();
         std::fs::write(dir.join("component.js"), "JishuPlugin.register(...)").unwrap();
         std::fs::write(dir.join("echarts.min.js"), "fake-lib-bytes").unwrap();
         std::fs::write(dir.join(".pending-confirm"), "{}").unwrap();
 
         let manifest: toml::Value =
-            code_block_toml("session.echarts-render", &["echarts", "chart"]).parse().unwrap();
+            code_block_toml("session.echarts-render", &["echarts", "chart"])
+                .parse()
+                .unwrap();
         let (assets, takeover) = pending_confirm_extras(&dir, &manifest);
         let names: Vec<&str> = assets.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, vec!["component.js", "echarts.min.js"]);
@@ -824,7 +830,8 @@ type = "messages"
 component = "render.list"
 mount = "dock-panel"
 "#;
-        let (_, takeover_none) = pending_confirm_extras(&dir, &panel.parse::<toml::Value>().unwrap());
+        let (_, takeover_none) =
+            pending_confirm_extras(&dir, &panel.parse::<toml::Value>().unwrap());
         assert!(takeover_none.is_none());
     }
 }
@@ -894,7 +901,10 @@ mod read_and_edit_tests {
                 bad.to_string(),
             )
             .expect_err(bad);
-            assert!(err.contains("非法文件名") || err.contains("文件不存在"), "{bad}: {err}");
+            assert!(
+                err.contains("非法文件名") || err.contains("文件不存在"),
+                "{bad}: {err}"
+            );
         }
         let err = crate::commands::agents::plugin_read_file(
             "read-tool".to_string(),
@@ -948,7 +958,9 @@ mount = "app-theme"
         );
         // 落盘后消除。
         std::fs::write(
-            composed_plugins_root().join("session.theme-missing").join("theme.css"),
+            composed_plugins_root()
+                .join("session.theme-missing")
+                .join("theme.css"),
             "[data-jishu-theme=\"session.theme-missing\"]{}",
         )
         .unwrap();

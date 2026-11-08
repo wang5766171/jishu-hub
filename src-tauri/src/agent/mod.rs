@@ -31,7 +31,9 @@ pub mod skill_deploy;
 pub mod pi_deploy;
 // v0.9.5 重构：内部提示词统一管理（标记对 + 话术版本登记 + 回放剥离单源）。
 pub mod internal_prompts;
+// v0.9.7 需求3 C2-③：技能市场（腾讯 SkillHub 对接）。
 pub mod plugin;
+pub mod skillhub;
 pub mod tool_plugin;
 pub mod traits;
 

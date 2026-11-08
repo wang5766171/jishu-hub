@@ -185,7 +185,10 @@ pub(crate) fn plugin_remove(
     // 需求14 测试期修复（T14R，同 CLI remove）：目录形态删整目录防附带文件
     //（bridge.js 等）孤儿残留；单文件形态维持删文件。
     let source = std::path::Path::new(&source_path);
-    let is_dir_form = source.file_name().map(|n| n == "plugin.toml").unwrap_or(false)
+    let is_dir_form = source
+        .file_name()
+        .map(|n| n == "plugin.toml")
+        .unwrap_or(false)
         && source
             .parent()
             .and_then(|p| p.file_name())
@@ -193,7 +196,8 @@ pub(crate) fn plugin_remove(
             .unwrap_or(false);
     if is_dir_form {
         let dir = source.parent().expect("plugin.toml has parent");
-        std::fs::remove_dir_all(dir).map_err(|e| format!("Cannot remove {}: {e}", dir.display()))?;
+        std::fs::remove_dir_all(dir)
+            .map_err(|e| format!("Cannot remove {}: {e}", dir.display()))?;
     } else {
         std::fs::remove_file(source).map_err(|e| format!("Cannot remove {source_path}: {e}"))?;
     }
@@ -552,15 +556,23 @@ pub(crate) fn plugin_save_theme_asset(
         return Err(format!("plugin directory not found: {}", dir.display()));
     }
     // 安全校验：仅允许常见图片扩展名，拒绝路径分隔。
-    let ext = file_name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = file_name
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     if !["jpg", "jpeg", "png", "webp", "gif", "svg"].contains(&ext.as_str()) {
-        return Err(format!("unsupported asset type: .{ext} (allowed: jpg/png/webp/gif/svg)"));
+        return Err(format!(
+            "unsupported asset type: .{ext} (allowed: jpg/png/webp/gif/svg)"
+        ));
     }
     if file_name.contains('/') || file_name.contains('\\') || file_name.contains("..") {
         return Err("invalid file name".to_string());
     }
     use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(&base64).map_err(|e| format!("base64 decode: {e}"))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&base64)
+        .map_err(|e| format!("base64 decode: {e}"))?;
     if bytes.len() > 10 * 1024 * 1024 {
         return Err("asset too large (max 10MB)".to_string());
     }
@@ -596,10 +608,7 @@ pub(crate) fn plugin_write_theme_css(
 /// 形态 agents/<id>.toml 仅接受虚拟名 "plugin.toml"。安全边界：file 只允许
 /// 浅层普通文件名（拒绝路径分隔/父目录段/点开头），不越出插件自身目录。
 #[tauri::command]
-pub(crate) fn plugin_read_file(
-    plugin_id: String,
-    file: String,
-) -> Result<PluginReadFile, String> {
+pub(crate) fn plugin_read_file(plugin_id: String, file: String) -> Result<PluginReadFile, String> {
     if file.is_empty()
         || file.contains('/')
         || file.contains('\\')
@@ -617,7 +626,9 @@ pub(crate) fn plugin_read_file(
         })
     };
     // 目录形态（组合/混合/目录式 A 家族）：plugins/<id>/<file>。
-    let composed = agent::plugin::composed_plugins_dir().join(&plugin_id).join(&file);
+    let composed = agent::plugin::composed_plugins_dir()
+        .join(&plugin_id)
+        .join(&file);
     if composed.is_file() {
         return read(composed);
     }
@@ -1029,4 +1040,115 @@ pub(crate) fn pi_extension_enable(file_name: String) -> Result<(), String> {
 #[tauri::command]
 pub(crate) fn pi_extension_ignore(file_name: String) -> Result<(), String> {
     agent::pi_extension_import::ignore_pi_extension(&file_name)
+}
+
+// ── v0.9.7 需求3 C2：插件市场三源 IPC ─────────────────────────────────────
+
+/// C2-① 精选（内置市场化）：curated.json 单一真源（19 件 required + 可选件
+/// + scenes）。`scene` 过滤（None=全量）。
+#[tauri::command]
+pub(crate) fn market_list_curated(
+    scene: Option<String>,
+) -> Result<Vec<agent::plugin::market::MarketEntry>, String> {
+    Ok(agent::plugin::market::market_list_curated(scene.as_deref()))
+}
+
+/// C2-① 安装（幂等；pi-package 形态含 npm 包安装）。
+#[tauri::command]
+pub(crate) async fn market_install(plugin_id: String) -> Result<String, String> {
+    agent::plugin::market::market_install(&plugin_id).await
+}
+
+/// C2-① 卸载（还原未部署态；required 拒绝）。
+#[tauri::command]
+pub(crate) async fn market_uninstall(plugin_id: String) -> Result<String, String> {
+    agent::plugin::market::market_uninstall(&plugin_id).await
+}
+
+/// C2-② 扩展生态：pi npm 扩展包目录（首批 = 钉版 5 包静态清单；在线
+/// registry 检索二期评估）。
+#[derive(serde::Serialize)]
+pub(crate) struct PiPackageEntry {
+    pub plugin_id: String,
+    pub name: String,
+    pub source: String,
+    pub version: String,
+    pub description: String,
+    pub installed: bool,
+}
+
+#[tauri::command]
+pub(crate) fn pi_package_catalog() -> Result<Vec<PiPackageEntry>, String> {
+    fn describe(pkg: &str) -> &'static str {
+        match pkg {
+            "pi-subagents" => "子代理委派工具的底层包（subagent/bg_wait）",
+            "@juicesharp/rpiv-ask-user-question" => "选项式提问工具包（ask_user_question）",
+            "@juicesharp/rpiv-todo" => "待办清单工具包（todo）",
+            "pi-lens" => "写后诊断工具包（lens_diagnostics/ast_grep 等 13 工具）",
+            "pi-web-access" => "联网搜索抓取工具包（web_search/fetch_content 等）",
+            _ => "pi 扩展包",
+        }
+    }
+    let base = agent::jishu_self::pi_config_dir()
+        .map(|d| std::path::PathBuf::from(d).join("npm").join("node_modules"))
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for (plugin_id, pkg) in agent::plugin::PI_PACKAGE_PLUGIN_MAP {
+        let Some(source) = agent::jishu_self::JishuSelfAgent::pinned_source_for_package(pkg) else {
+            continue;
+        };
+        let version = source.rsplit('@').next().unwrap_or_default().to_string();
+        out.push(PiPackageEntry {
+            plugin_id: plugin_id.to_string(),
+            name: pkg.to_string(),
+            source: source.to_string(),
+            version,
+            description: describe(pkg).to_string(),
+            installed: base.join(pkg).is_dir(),
+        });
+    }
+    Ok(out)
+}
+
+/// C2-③ 技能市场：列表（场景分组/搜索/分页）。
+#[tauri::command]
+pub(crate) async fn skillhub_list(
+    scene: Option<String>,
+    keyword: Option<String>,
+    page: Option<u32>,
+    page_size: Option<u32>,
+) -> Result<agent::skillhub::SkillhubListResult, String> {
+    agent::skillhub::skillhub_list(
+        scene.as_deref(),
+        keyword.as_deref(),
+        page.unwrap_or(1),
+        page_size.unwrap_or(20),
+    )
+    .await
+}
+
+/// C2-③ 技能市场：详情。
+#[tauri::command]
+pub(crate) async fn skillhub_detail(
+    slug: String,
+) -> Result<agent::skillhub::SkillhubEntry, String> {
+    agent::skillhub::skillhub_detail(&slug).await
+}
+
+/// C2-③ 技能市场：安装台账（市场「已安装」态）。
+#[tauri::command]
+pub(crate) fn skillhub_installed() -> Result<std::collections::BTreeMap<String, String>, String> {
+    Ok(agent::skillhub::skillhub_installed())
+}
+
+/// C2-③ 技能市场：安装（下载→校验→落各 agent 技能目录→记台账）。
+#[tauri::command]
+pub(crate) async fn skillhub_install(slug: String) -> Result<String, String> {
+    agent::skillhub::skillhub_install(&slug).await
+}
+
+/// C2-③ 技能市场：卸载。
+#[tauri::command]
+pub(crate) fn skillhub_uninstall(slug: String) -> Result<String, String> {
+    agent::skillhub::skillhub_uninstall(&slug)
 }

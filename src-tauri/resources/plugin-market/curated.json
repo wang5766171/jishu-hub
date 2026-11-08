@@ -1,0 +1,41 @@
+{
+  "_meta": {
+    "comment": "v0.9.7 需求3 C2-①/C3/C4 单一真源：默认安装集（required=19）+ 市场精选 + 场景推荐。场景 id 与前端 src/lib/plugin-scenes.ts 共用（programming/office/education/video/data/content）。名单依据 docs/v0.9.7/插件清单-待决策.md §2（用户 2026-11-08 勾选定案）。",
+    "scenes": ["programming", "office", "education", "video", "data", "content", "custom"]
+  },
+  "entries": [
+    { "id": "jishu-self", "kind": "agent", "title": "内置智能体", "description": "hub 自带的主智能体，任务流程编排的中枢；核心引擎，恒装不可关", "category": "core", "scenes": [], "required": true },
+    { "id": "mcp-resolver", "kind": "agent", "title": "MCP 解析器", "description": "所有 MCP 服务的总入口，面板显示服务状态；关闭等于关闭整个 MCP 能力", "category": "foundation", "scenes": [], "required": true },
+    { "id": "skill-resolver", "kind": "agent", "title": "技能解析器", "description": "技能分发的总开关，管理内置能力指南与自建技能的分发", "category": "foundation", "scenes": [], "required": true },
+    { "id": "jishu-cli-guide", "kind": "agent", "title": "命令行插件管理指南", "description": "教 agent 用命令行把插件 / MCP / 技能注册进 hub、查询和管理状态", "category": "foundation", "scenes": [], "required": true },
+    { "id": "skill-create-tool", "kind": "agent", "title": "插件创建工具", "description": "教 agent 把可复用流程固化成技能并注册，之后自动分发到各智能体", "category": "foundation", "scenes": [], "required": true },
+    { "id": "mcp-create-tool", "kind": "agent", "title": "MCP 创建工具", "description": "教 agent 写配置把 MCP 服务注册进 hub，注册后各智能体共用", "category": "foundation", "scenes": [], "required": true },
+    { "id": "jishu-subagent", "kind": "pi-package", "title": "子代理委派", "description": "让主智能体派生子代理并行干活、等待后台结果", "category": "foundation", "scenes": [], "required": true },
+    { "id": "pi-todo", "kind": "pi-package", "title": "待办清单", "description": "给 agent 一个待办工具，由模型自己维护任务进度（含右上角待办看板）", "category": "foundation", "scenes": [], "required": true },
+    { "id": "pi-web-access", "kind": "pi-package", "title": "联网搜索抓取", "description": "给 agent 联网搜索和抓网页的能力", "category": "foundation", "scenes": [], "required": true },
+    { "id": "interactive-qa", "kind": "pi-package", "title": "交互问答", "description": "让 agent 用选项式提问向用户确认，走确认卡交互", "category": "foundation", "scenes": [], "required": true },
+    { "id": "html-preview", "kind": "agent", "title": "HTML 页面预览", "description": "让 agent 主动预览 HTML 页面产物（preview_html 工具）", "category": "foundation", "scenes": [], "required": true },
+    { "id": "session.artifacts", "kind": "builtin-ts", "title": "产物中心", "description": "侧边栏预览会话产物（网页/图片/Markdown/文本）；会话内产物引用的落点", "category": "session", "scenes": [], "required": true },
+    { "id": "session.search", "kind": "builtin-ts", "title": "消息搜索", "description": "搜索当前会话消息并跳转定位", "category": "session", "scenes": [], "required": true },
+    { "id": "session.export", "kind": "builtin-ts", "title": "会话导出", "description": "当前会话一键导出为 Markdown 文件", "category": "session", "scenes": [], "required": true },
+    { "id": "session.context-ring", "kind": "builtin-ts", "title": "上下文水位环", "description": "模型选择器旁的上下文水位指示，可点开看详情与控制压缩", "category": "session", "scenes": [], "required": true },
+    { "id": "session.stream-status", "kind": "builtin-ts", "title": "流式状态挂件", "description": "输入行的生成活动指示（流式/重试/错误，空闲时不可见）", "category": "session", "scenes": [], "required": true },
+    { "id": "session.mermaid-render", "kind": "composed", "title": "Mermaid 图表渲染", "description": "流程图/时序图等代码块渲染为图形，可缩放、导出 PNG/SVG", "category": "render", "scenes": [], "required": true },
+    { "id": "session.html-render", "kind": "composed", "title": "HTML 实时渲染", "description": "消息中的 HTML（完整文档与卡片片段）按内容高度直接渲染", "category": "render", "scenes": [], "required": true },
+    { "id": "session.image-dispatch", "kind": "composed", "title": "图片识图路由", "description": "主模型不支持识图时，把图片委派给识图工具或子代理；都失败会如实告知", "category": "tool", "scenes": [], "required": true },
+
+    { "id": "task-requirements", "kind": "agent", "title": "需求讨论", "description": "复杂/模糊需求先聊清楚，产出结构化需求文档（对话内能力，编程场景推荐）", "category": "foundation", "scenes": ["programming"], "required": false },
+    { "id": "task-plan", "kind": "agent", "title": "流程规划", "description": "多步骤任务先拆成有依赖的执行计划（对话内能力，编程场景推荐）", "category": "foundation", "scenes": ["programming"], "required": false },
+    { "id": "pi-lens", "kind": "pi-package", "title": "写后诊断", "description": "写完代码自动体检（语法/类型/引用问题）、按符号找代码（编程场景推荐）", "category": "foundation", "scenes": ["programming"], "required": false },
+
+    { "id": "session.theme-midnight", "kind": "composed-theme", "title": "午夜蓝主题", "description": "官方示范主题（深蓝夜色配色），可禁用、可复制派生", "category": "theme", "scenes": [], "required": false },
+    { "id": "session.video-maker", "kind": "composed", "title": "视频生成助手", "description": "视频创作流水线样例（需求讨论 → 分镜 → 素材 → 生成）", "category": "sample", "scenes": ["video"], "required": false },
+    { "id": "session.outline", "kind": "composed", "title": "会话大纲", "description": "面板列出每轮问答大纲，点击跳转", "category": "session", "scenes": [], "required": false },
+    { "id": "session.navigation", "kind": "composed", "title": "会话导航列", "description": "左缘快速跳转到每轮提问位置", "category": "session", "scenes": [], "required": false },
+    { "id": "session.tool-stats", "kind": "composed", "title": "工具统计", "description": "统计本会话工具调用总数、失败数与分布", "category": "session", "scenes": [], "required": false },
+    { "id": "session.desktop-notify", "kind": "composed", "title": "桌面通知", "description": "回合完成、需审批、任务失败时发系统通知（窗口失焦时也通知）", "category": "session", "scenes": [], "required": false },
+    { "id": "session.task-board", "kind": "composed", "title": "任务看板", "description": "任务节点实时状态、点击钻入子任务会话、画布与取消流程", "category": "session", "scenes": [], "required": false },
+    { "id": "session.interaction-render", "kind": "composed", "title": "交互问答卡", "description": "把交互问答块渲染成统一样式的卡片，含选项与已选高亮", "category": "render", "scenes": [], "required": false },
+    { "id": "session.usage", "kind": "builtin-ts", "title": "用量成本面板", "description": "显示 token、成本、会话排行与趋势", "category": "session", "scenes": [], "required": false }
+  ]
+}

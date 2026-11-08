@@ -17,6 +17,8 @@ import { UniModal } from "@/components/ui/uni-modal";
 // 测试通知，复用既有面板激活性与动作命令链。
 import { requestPanelActivation } from "@/features/session-kernel/shell/panel-activation";
 import { requestInstallSpotlight } from "@/features/session-kernel/shell/install-spotlight";
+// v0.9.7 需求3 C1：会话创建链路的回跳闭环（openManagePage 事件通道）。
+import { openManagePage } from "@/lib/app-nav";
 
 interface PendingAssetInfo {
   /** 资产文件名（平铺于插件根目录）。 */
@@ -121,6 +123,22 @@ export function HybridInstallConfirmation() {
       await invokeCommand("plugin_set_enabled", { pluginId: id, enabled });
       setPending(prev => prev.filter(p => p.id !== id));
       if (enabled) {
+        // v0.9.7 需求3 C1 回跳闭环：会话创建链路发起时留了标记——启用成功
+        // 跳回插件中心（事件通道切 tab，P2-7）+ 新插件聚光，替代默认展示。
+        let createReturn = false;
+        try {
+          createReturn = sessionStorage.getItem("jishu-plugin-create-return") === "1";
+          if (createReturn) sessionStorage.removeItem("jishu-plugin-create-return");
+        } catch {
+          /* sessionStorage 不可用——走默认展示 */
+        }
+        if (createReturn) {
+          openManagePage("plugins");
+          window.dispatchEvent(
+            new CustomEvent("jishu:plugin-spotlight", { detail: { id } }),
+          );
+          return;
+        }
         // 5a：装好了在哪用？——按挂载形态自动展示（不用去能力中心找）。
         const item = pending.find(p => p.id === id);
         if (item) afterEnableShowcase(item);
