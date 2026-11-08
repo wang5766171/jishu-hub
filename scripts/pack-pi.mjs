@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, rmSync, existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { cpSync, rmSync, existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync, createWriteStream } from "node:fs";
 import { resolve, join } from "node:path";
+import archiver from "archiver";
 import { fixShebang, readRuntimeDeps } from "./lib/pi-common.mjs";
 
 const root = resolve(process.cwd());
@@ -180,4 +181,37 @@ if (missing.length > 0) {
 }
 console.log(`All ${Object.keys(runtimeDeps).length} runtime dependencies present.`);
 
+// 8. v0.9.7 需求1 T1：压成单文件 pi-runtime.zip（NSIS 解 2 万文件 → 解 1 个 zip；
+//    首启由 Rust ensure_agent_runtime 解压安装）。zip 根 = pi-bundle 内容本身
+//    （packages/ bin/ node_modules/ package.json …），排除构建标记。
+console.log("Packing pi-runtime.zip...");
+const piRuntimeZip = resolve(root, "third_party", "pi-runtime.zip");
+await packRuntimeZip(piBundle, piRuntimeZip);
+console.log(`pi-runtime.zip ready: ${statSync(piRuntimeZip).size} bytes`);
+
 console.log("pi-bundle preparation complete!");
+
+// v0.9.7 需求1 T1：pi-bundle → pi-runtime.zip（deflate；排除 .pi-build-stamp）。
+// 失败必须大声失败（同 runStep 纪律）。
+async function packRuntimeZip(bundleDir, zipPath) {
+  if (existsSync(zipPath)) rmSync(zipPath, { force: true });
+  const output = createWriteStream(zipPath);
+  const archive = archiver("zip", { zlib: { level: 9 } });
+  const fail = new Promise((_, reject) => {
+    output.on("error", reject);
+    archive.on("error", reject);
+  });
+  archive.pipe(output);
+  // dot: true 确保 .bin/.npmrc 等隐藏项入包；ignore 排除构建标记。
+  archive.glob("**/*", {
+    cwd: bundleDir,
+    dot: true,
+    ignore: [".pi-build-stamp", "**/.pi-build-stamp"],
+  });
+  const done = new Promise((resolveDone, reject) => {
+    output.on("close", resolveDone);
+    output.on("error", reject);
+  });
+  await archive.finalize();
+  await Promise.race([done, fail]);
+}

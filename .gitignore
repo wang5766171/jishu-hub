@@ -74,6 +74,8 @@ run-kiro.ps1
 .workbuddy/
 .superpowers/
 third_party/pi-bundle/
+# v0.9.7 需求1 T1：pack-pi 产出的单文件运行时（随打包生成，不入库）
+third_party/pi-runtime.zip
 /.github/prompts/
 nsis_macro_test.exe
 

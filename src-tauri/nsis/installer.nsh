@@ -236,26 +236,12 @@ Section -AddToPath
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 SectionEnd
 
-; === 关键修复（v0.7.2 需求 5 反复失败的根因）===
-; 之前把 agent 安装写成裸 `Section -InstallJishuAgent`，而 installer.nsh 在脚本最顶部被
-; !include，裸 Section 声明顺序排在 Tauri 的 `Section Install`（真正解压 jishu-hub.exe 与
-; pi-bundle 的段）之前，导致 ExecWait 运行时 exe 尚未解压到 $INSTDIR，CreateProcess 失败，
-; $0 保持上一段残留的 PATH 值，agent-install.log 从不生成（与"ExecWait 不支持带引号路径"
-; 无关——引号写法本身是对的）。
-; 正确做法：放进 NSIS_HOOK_POSTINSTALL。Tauri 在生成的 installer.nsi 中于 `Section Install`
-; 内部、所有 File 解压完成后才 !insertmacro 本宏，此时 jishu-hub.exe 必定已存在。
-!macro NSIS_HOOK_POSTINSTALL
-  DetailPrint "Installing Jishu Agent runtime..."
-  ; 用 hub.exe --install-agent（Rust copy_dir_recursive 复制 pi-bundle，手动验证成功）。
-  ; 引号写法：外层单引号给 NSIS，内层双引号保护含空格的 $INSTDIR 路径。
-  ExecWait '"$INSTDIR\jishu-hub.exe" --install-agent' $0
-  ; jishu.cmd shim
-  FileOpen $1 "$INSTDIR\jishu.cmd" w
-  FileWrite $1 '@echo off$\r$\n'
-  FileWrite $1 'set PI_SKIP_VERSION_CHECK=1$\r$\n'
-  FileWrite $1 'node "%USERPROFILE%\.jishu-agent\packages\coding-agent\dist\cli.js" %*$\r$\n'
-  FileClose $1
-!macroend
+; === v0.9.7 需求1 T2：POSTINSTALL 整段删除 ===
+; 原宏 ExecWait hub.exe --install-agent（逐文件复制 2 万文件到 ~/.jishu-agent）
+; + 手写 jishu.cmd shim。zip 化后：安装器只带一个 pi-runtime.zip，agent 运行时
+; 由 Rust 侧 lib.rs .setup 的 ensure_agent_runtime 在首启解压安装（P0-2 收口：
+; 触发点唯一化）；jishu CLI shim 由 Rust register_jishu_cli_shim 在初始化时写。
+; 升级/卸载不再触碰 ~/.jishu-agent（见 POSTUNINSTALL 注释）。
 
 Section -un.RemoveFromPath
   ; Remove from PATH on uninstall
@@ -302,15 +288,13 @@ SectionEnd
   Delete "$INSTDIR\jishu.cmd"
   RMDir "$INSTDIR"
 
-  ; 【hub 管理的本体（可随重装恢复，未勾选也可清）】
-  ;   $PROFILE\.jishu-agent\packages      pi runtime 本体（POSTINSTALL --install-agent 复制）
-  ;   $PROFILE\.jishu-agent\node_modules  pi-bundle 依赖树（同上）
+  ; 【v0.9.7 需求1 T2：~/.jishu-agent 完全归 hub 运行时自管】
+  ;   升级/卸载一律不动 $PROFILE\.jishu-agent（packages/node_modules 本体与
+  ;   agent\ 用户数据都留在原地）。原「未勾选也清 packages/node_modules」
+  ;   与「勾选后整删 .jishu-agent」两条路径均已删除——卸载后重装，Rust 侧
+  ;   ensure_agent_runtime 按 agent-runtime.json 记录判断就绪或重装一次。
   ;
   ; 【用户数据目录（仅勾选「删除应用数据」才清；未勾选时严禁触碰）】
-  ;   $PROFILE\.jishu-agent\agent\       Pi 运行数据：settings.json / models.json /
-  ;                                     mcp.json / auth.json / sessions\ / skills\（用户与
-  ;                                     分发 skill）/ extensions\（用户导入扩展）/ backups\ /
-  ;                                     npm\（官方扩展，重装自愈）/ missions\ / run-history
   ;   $PROFILE\.jishu-hub\               hub 数据根：agents\（清单）/ plugins\（目录形式
   ;                                     插件与 skill 源）/ plugins.json / plugins-config.json /
   ;                                     agent-tools.json / session-tools.json /
@@ -318,18 +302,9 @@ SectionEnd
   ;                                     agent-sessions\ / memory.db / approval.db
   ;   $APPDATA\jishu-hub, $LOCALAPPDATA\jishu-hub   任务会话库 taskstore.db 等
   ;   $APPDATA\com.jishu-hub.app 等标识符目录   Tauri 模板在勾选时自清（非本 hook）
-  ${If} $UpdateMode <> 1
-    ; 仅本体：hub 安装器写入、可重装恢复的 runtime 目录。
-    RMDir /r "$PROFILE\.jishu-agent\packages"
-    RMDir /r "$PROFILE\.jishu-agent\node_modules"
-    ; 注意：不删 $PROFILE\.jishu-agent\agent ——其中的 skills\/extensions\/
-    ; sessions\ 等均为用户数据（历史版本曾因插件加载链 bug 导致分发 skill
-    ; 被回收误删，已在校验/加载侧修复；卸载器不碰用户目录）。
-  ${EndIf}
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
     RMDir /r "$PROFILE\.jishu-hub"
-    RMDir /r "$PROFILE\.jishu-agent"
     RMDir /r "$APPDATA\jishu-hub"
     RMDir /r "$LOCALAPPDATA\jishu-hub"
   ${EndIf}

@@ -64,6 +64,17 @@ pub(crate) fn save_last_project(encoded_name: String) -> Result<(), String> {
     hub::save_last_project(&encoded_name).map_err(|e| e.to_string())
 }
 
+// v0.9.7 需求4：首启引导完成标志（state.json 权威）。
+#[tauri::command]
+pub(crate) fn get_onboarded() -> Result<bool, String> {
+    Ok(hub::get_onboarded())
+}
+
+#[tauri::command]
+pub(crate) fn set_onboarded(value: bool) -> Result<(), String> {
+    hub::set_onboarded(value)
+}
+
 #[tauri::command]
 pub(crate) fn load_font_sizes() -> Result<(Option<String>, Option<String>), String> {
     hub::load_font_sizes().map_err(|e| e.to_string())

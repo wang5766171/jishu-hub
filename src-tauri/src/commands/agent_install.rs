@@ -73,6 +73,40 @@ pub(crate) async fn install_agent_command(
     Ok(output)
 }
 
+// ── v0.9.7 需求1 T4：agent 运行时状态/初始化 IPC（引导页门控与版本横幅消费）──
+
+/// 状态查询（无副作用）：`{state: ready|init_running|mismatch, recorded, expected}`。
+/// `init-running` 表示启动钩子（或一键更新）正在跑。
+#[tauri::command]
+pub(crate) fn agent_runtime_status() -> Result<serde_json::Value, String> {
+    let mut value = serde_json::to_value(crate::agent_runtime_init::current_state())
+        .map_err(|e| e.to_string())?;
+    if let serde_json::Value::Object(map) = &mut value {
+        map.insert(
+            "expected".to_string(),
+            serde_json::json!(crate::agent::jishu_self::PI_AGENT_VERSION),
+        );
+    }
+    Ok(value)
+}
+
+/// 手动触发/失败重试（幂等；内部 ensure_agent_runtime——启动钩子在跑时返回
+/// init-running 语义而非并发重入）。进度走 `agent-runtime-progress` 事件。
+#[tauri::command]
+pub(crate) async fn agent_runtime_init(app: tauri::AppHandle) -> Result<String, String> {
+    let state = crate::agent_runtime_init::ensure_agent_runtime(&app).await?;
+    match state {
+        crate::agent_runtime_init::AgentRuntimeState::Ready => Ok("ready".to_string()),
+        crate::agent_runtime_init::AgentRuntimeState::InitRunning { .. } => {
+            Ok("init-running".to_string())
+        }
+        crate::agent_runtime_init::AgentRuntimeState::Mismatch { .. } => {
+            // 安装序列刚完成（记录已写入）；下一次 status 查询即 ready。
+            Ok("installed".to_string())
+        }
+    }
+}
+
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     if !dst.exists() {
         std::fs::create_dir_all(dst)?;
@@ -135,16 +169,13 @@ fn restore_managed_pi_runtime(
 }
 
 async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, String> {
-    use tauri::Manager;
-    let res_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("Failed to resolve resource directory: {}", e))?;
-    let mut source = res_dir.join("third_party").join("pi-bundle");
-    if !source.exists() {
-        source = res_dir.join("_up_").join("third_party").join("pi-bundle");
-    }
-    let output = install_pi_bundle_from(&source)?;
+    // v0.9.7 需求1 T3（P0-2 附带修复）：手动安装改走 zip 解压入口，与启动钩子
+    // 共用 extract——原硬编码散目录（res/third_party/pi-bundle）在 resources
+    // 单 zip 化后必然报「bundled pi-bundle not found」。
+    let temp_bundle = crate::agent_runtime_init::extract_bundled_runtime_for_manual_install(&app)?;
+    let output = install_pi_bundle_from(&temp_bundle);
+    let _ = std::fs::remove_dir_all(&temp_bundle);
+    let output = output?;
     // v0.9.5 需求11（pi 1.1.0）：MCP 接入改为 pi 原生 mcp.json 条目自愈
     //（幂等；失败不阻断——启动自愈与环境检测页手动安装兜底）。adapter
     // 扩展已退役，残留清理一并在 ensure 内完成。
@@ -163,14 +194,27 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
         Ok(_) => {}
         Err(e) => summary = format!("{summary}\npi extensions install skipped: {e}"),
     }
+    // v0.9.7 需求1：手动安装成功即写版本记录（状态命令立刻 Ready）。
+    if let Some(record) = crate::agent_runtime_init::runtime_record_path() {
+        if let Err(e) = std::fs::write(
+            &record,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "version": crate::agent::jishu_self::PI_AGENT_VERSION
+            }))
+            .unwrap_or_default(),
+        ) {
+            summary = format!("{summary}\nwrite runtime record failed: {e}");
+        }
+    }
     Ok(summary)
 }
 
-/// 核心：把 pi-bundle 源目录安装到 ~/.jishu-agent（备份+覆盖+回滚）。
-/// v0.7.2 需求 5：GUI（install_internal_jishu_agent）与 CLI（run_install_agent_cli，
-/// 由 NSIS 安装器在 POSTINSTALL 调用）共用此内核，确保安装/更新 hub 时 agent 一致地
-/// 落到用户目录。需求 4 已移除 lite 的 npm 在线回退，pi-bundle 不存在即报错。
-fn install_pi_bundle_from(source: &std::path::Path) -> Result<String, String> {
+/// 核心：把 pi-bundle 源目录（散目录形态——zip 已先行解压到临时目录）安装到
+/// ~/.jishu-agent（备份+覆盖+回滚）。
+/// v0.7.2 需求 5 起 GUI 与 CLI 共用此内核；v0.9.7 需求1 起三方共用（启动钩子
+/// ensure_agent_runtime / 环境检测页手动安装 / --install-agent CLI），保证安装
+/// /更新 hub 时 agent 一致地落到用户目录。
+pub(crate) fn install_pi_bundle_from(source: &std::path::Path) -> Result<String, String> {
     let target = crate::agent::jishu_self::pi_agent_dir().ok_or("Failed to get target dir")?;
     if !source.exists() {
         return Err(format!(
@@ -236,9 +280,9 @@ fn register_jishu_cli_shim(agent_dir: &std::path::Path) {
     }
 }
 
-/// CLI 模式入口（v0.7.2 需求 5）：`Jishu Hub --install-agent`，由 NSIS 安装器在
-/// POSTINSTALL 阶段调用，把内嵌 pi-bundle 装到 ~/.jishu-agent。用 current_exe 推导
-/// 源路径，安装后返回退出码，不启动 GUI（windows_subsystem=windows 下不弹窗）。
+/// CLI 模式入口（v0.7.2 需求 5）：`Jishu Hub --install-agent`。v0.9.7 需求1 T2 起
+/// NSIS POSTINSTALL 已删除，本入口保留为手动/边缘兜底；源改为 exe 旁的
+/// pi-runtime.zip（与启动钩子同一资源形态），解压→安装→确保→写记录。
 pub fn run_install_agent_cli() -> i32 {
     let exe = match std::env::current_exe() {
         Ok(e) => e,
@@ -248,15 +292,30 @@ pub fn run_install_agent_cli() -> i32 {
         }
     };
     let exe_dir = exe.parent().unwrap_or(std::path::Path::new("."));
-    let mut source = exe_dir.join("third_party").join("pi-bundle");
-    if !source.exists() {
-        source = exe_dir.join("_up_").join("third_party").join("pi-bundle");
-    }
-    match install_pi_bundle_from(&source) {
+    let zip_candidates = [
+        exe_dir.join("third_party").join("pi-runtime.zip"),
+        exe_dir
+            .join("_up_")
+            .join("third_party")
+            .join("pi-runtime.zip"),
+    ];
+    let Some(zip_path) = zip_candidates.into_iter().find(|p| p.exists()) else {
+        eprintln!("[install-agent] FAILED: pi-runtime.zip not found next to exe");
+        return 1;
+    };
+    let temp_bundle = match crate::agent_runtime_init::extract_zip_to_temp(&zip_path) {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("[install-agent] FAILED: {e}");
+            return 1;
+        }
+    };
+    let result = install_pi_bundle_from(&temp_bundle);
+    let _ = std::fs::remove_dir_all(&temp_bundle);
+    match result {
         Ok(_) => {
-            // v0.9.5 需求11：POSTINSTALL 阶段确保 pi 原生 mcp.json 条目 +
-            // 清理退役 adapter 残留（幂等；失败仅告警、不影响安装器退出码
-            //——首启后台自愈与环境检测页手动安装兜底）。
+            // v0.9.5 需求11：确保 pi 原生 mcp.json 条目（幂等；失败仅告警——
+            // 首启后台与环境检测页手动安装兜底）。
             match tauri::async_runtime::block_on(
                 crate::agent::jishu_self::JishuSelfAgent::ensure_native_mcp_entry(),
             ) {
@@ -274,6 +333,16 @@ pub fn run_install_agent_cli() -> i32 {
                 }
                 Ok(_) => {}
                 Err(e) => eprintln!("[install-agent] pi extensions install skipped: {e}"),
+            }
+            // v0.9.7 需求1：写版本记录（与 GUI 链路一致）。
+            if let Some(record) = crate::agent_runtime_init::runtime_record_path() {
+                let _ = std::fs::write(
+                    &record,
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "version": crate::agent::jishu_self::PI_AGENT_VERSION
+                    }))
+                    .unwrap_or_default(),
+                );
             }
             0
         }

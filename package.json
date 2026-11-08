@@ -64,6 +64,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.4.0",
+    "archiver": "^7.0.1",
     "concurrently": "^10.0.3",
     "jsdom": "^29.1.1",
     "kill-port": "^2.0.1",

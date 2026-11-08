@@ -47,7 +47,7 @@
       "target/release/jishu-cli"
     ],
     "resources": [
-      "../third_party/pi-bundle/**/*"
+      "../third_party/pi-runtime.zip"
     ],
     "icon": [
       "icons/32x32.png",
