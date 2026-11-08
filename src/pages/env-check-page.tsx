@@ -118,7 +118,14 @@ function StatusIndicator({
   );
 }
 
-export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
+export function EnvCheckPage({
+  onComplete,
+  onBackToWizard,
+}: {
+  onComplete?: () => void;
+  /** v0.9.7 需求4：引导页步骤①「高级检测」内嵌形态——返回向导的入口。 */
+  onBackToWizard?: () => void;
+}) {
   const { t } = useTranslation();
   const { alert: alertDialog, confirm: confirmDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const [env, setEnv] = useState<EnvData | null>(null);
@@ -677,10 +684,15 @@ export function EnvCheckPage({ onComplete }: { onComplete?: () => void }) {
       </div>
 
       {/* Bottom action */}
-      <div className="mt-6 shrink-0">
+      <div className="mt-6 shrink-0 space-y-2">
         {onComplete && (
           <Button className="w-full" size="lg" onClick={onComplete}>
             {t("env.enterWorkspace")}
+          </Button>
+        )}
+        {onBackToWizard && (
+          <Button className="w-full" size="sm" variant="ghost" onClick={onBackToWizard}>
+            {t("onboarding.backToWizard", "返回引导")}
           </Button>
         )}
       </div>
