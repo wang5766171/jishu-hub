@@ -2,6 +2,7 @@ mod acp;
 mod acp_runtime;
 mod agent;
 mod agent_runtime;
+mod agent_runtime_init;
 mod chat;
 #[cfg(test)]
 mod chat_tests;
@@ -126,13 +127,20 @@ pub fn run() {
         .setup(|app| {
             let __setup_t0 = std::time::Instant::now();
             let _ = hub::migrate_v0_5_0();
-            // Phase 1: 自动注册 Conductor 扩展 + skill pack + 删除旧 skill
-            task_plan::ensure_conductor_extension();
+            // Phase 1: 任务执行器扩展（v0.9.7 需求2 取代 conductor——去阶段化）
+            task_plan::ensure_task_runner_extension();
             // v0.9.3 需求13 C1：内置组合式插件清单幂等部署。
             agent::plugin::ensure_builtin_composed_manifests();
             // v0.8.1 需求9/10：内置自适应插件（任务需求/流程规划）随包分发，
             // 首启落 ~/.jishu-hub/agents/（幂等）。
             agent::plugin::ensure_builtin_adaptive_plugins();
+            // v0.9.7 需求5：默认工作空间（~\.jishu-hub\JishuProjects）幂等就绪
+            //（建目录 + manual 注册 + 预置「默认空间」名；hide 尊重语义见
+            // project.rs——已注册则不重复 unhide）。失败不阻断启动（前端
+            // get_default_workspace / E2 兜底换算可自愈）。
+            if let Err(e) = project::ensure_default_workspace() {
+                log::warn!("[startup] default workspace ensure deferred: {e}");
+            }
             // v0.9.1 需求13 测试期：重试默认固化（pi 未配置原生回退 3 次，
             // hub 默认 10 需落盘触达；幂等——已有任何显式值不覆盖）。
             agent::jishu_self::config::ensure_default_retry_settings();
@@ -183,26 +191,29 @@ pub fn run() {
             // v0.9.0 需求20：skill 分发同步（skill-resolver 门控；单目标失败
             // 不影响启动）。
             let _ = agent::skill_deploy::sync_skill_deployments(false);
-            // v0.9.5 需求11（pi 1.1.0）：MCP 接入自愈改为 pi 原生 mcp.json 条目
-            // 确保 + 退役 adapter 残留清理（幂等；后台执行不阻塞启动，失败仅
-            // 告警；环境检测页手动安装保留为最终兜底）。
-            // 需求5：4 个 pi 扩展包（pi-subagents / rpiv-ask-user-question /
-            // rpiv-todo / pi-lens）同款自愈 + 装后 packages 注册对齐。
-            tauri::async_runtime::spawn(async {
-                match agent::jishu_self::JishuSelfAgent::ensure_native_mcp_entry().await {
-                    Ok(_) => log::info!("[startup] native MCP entry ensured"),
-                    Err(e) => log::warn!("[startup] native MCP entry ensure deferred: {e}"),
-                }
-                match agent::jishu_self::JishuSelfAgent::ensure_pi_extensions_installed().await {
-                    Ok(installed) if !installed.is_empty() => {
-                        log::info!("[startup] pi extensions installed: {:?}", installed);
-                        task_plan::ensure_subagents_runtime_config();
-                        agent::plugin::sync_pi_packages_with_plugins();
+            // v0.9.7 需求1 T3（P0-2 收口）：**初始化触发点唯一化**——启动侧
+            // 无条件 ensure_agent_runtime。旧的两项启动自愈（v0.9.5 需求11
+            // MCP 条目 + 需求5 四个 pi 扩展包）收编进安装序列（Ready 路径
+            // 零动作——「按需初始化」语义；用户侧误删运行时由 pi 版本变更
+            // 或环境检测页手动安装兜底）。进度走 `agent-runtime-progress`
+            // 事件，引导页（需求4）只消费不触发。
+            {
+                let runtime_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    match agent_runtime_init::ensure_agent_runtime(&runtime_app).await {
+                        Ok(agent_runtime_init::AgentRuntimeState::Ready) => {
+                            log::info!(
+                                "[startup] agent runtime ready (record matches {})",
+                                agent::jishu_self::PI_AGENT_VERSION
+                            );
+                        }
+                        Ok(_) => log::info!("[startup] agent runtime installed"),
+                        Err(e) => log::warn!(
+                            "[startup] agent runtime init deferred: {e}（环境检测页手动安装兜底）"
+                        ),
                     }
-                    Ok(_) => {}
-                    Err(e) => log::warn!("[startup] pi extensions install deferred: {e}"),
-                }
-            });
+                });
+            }
             // v0.7.0：全局 active agent 已移除（需求一：智能体切换去全局化）。
             // 各模块按自身作用域选择 agent，通过 agent_id 入参显式指定；
             // 会话与智能体在 Session 层绑定。启动时不再加载/设置全局 active。
@@ -384,7 +395,10 @@ pub fn run() {
             commands::settings::open_url,
             commands::sessions::open_html_external,
             commands::sessions::desktop_notify_send,
+            commands::sessions::validate_preview_file,
             commands::settings::save_last_project,
+            commands::settings::get_onboarded,
+            commands::settings::set_onboarded,
             commands::settings::load_font_sizes,
             commands::settings::save_font_sizes,
             commands::custom_commands::list_custom_commands,
@@ -397,6 +411,8 @@ pub fn run() {
             commands::terminal::focus_session_terminal,
             commands::terminal::cleanup_dead_sessions,
             commands::projects::init_project,
+            commands::projects::get_default_workspace,
+            commands::projects::is_default_workspace,
             commands::terminal::run_in_terminal,
             commands::projects::load_project_settings,
             commands::projects::load_project_settings_local,
@@ -426,6 +442,8 @@ pub fn run() {
             commands::env_check::check_prerequisite,
             commands::agent_install::install_agent_command,
             commands::agent_install::install_command_needs_elevation,
+            commands::agent_install::agent_runtime_status,
+            commands::agent_install::agent_runtime_init,
             commands::env_check::check_environment,
             commands::agents::check_transport_bridge,
             commands::agents::install_transport_bridge,
@@ -455,6 +473,15 @@ pub fn run() {
             commands::agents::plugin_confirm_pending,
             commands::agents::cli_validate_poll,
             commands::agents::cli_validate_submit,
+            commands::agents::market_list_curated,
+            commands::agents::market_install,
+            commands::agents::market_uninstall,
+            commands::agents::pi_package_catalog,
+            commands::agents::skillhub_list,
+            commands::agents::skillhub_detail,
+            commands::agents::skillhub_installed,
+            commands::agents::skillhub_install,
+            commands::agents::skillhub_uninstall,
             commands::agents::hybrid_preview_write,
             commands::agents::hybrid_preview_dir,
             commands::agents::hybrid_plugin_save,
@@ -573,17 +600,15 @@ pub fn run() {
             commands::orchestrator::orchestrator_attach_repair,
             commands::task::task_launch_list_sessions,
             commands::task::task_launch_mark_session,
-            commands::task::task_requirement_finalize,
             commands::task::task_launch_start_run,
             commands::task::task_launch_attach_graph,
             commands::task::task_launch_sync_run_status,
             commands::task::task_launch_get_instance,
-            commands::task::task_planning_instruction,
             commands::task::task_launch_create_from_existing_graph,
             commands::task::task_launch_rename_task,
             commands::task::task_launch_delete_task,
-            commands::task::conductor_sync_phase,
-            commands::task::conductor_load_task_state,
+            commands::task::runner_load_task_state,
+            commands::task::runner_update_steps,
             commands::native_mcp::native_mcp_list,
             commands::native_mcp::native_mcp_upsert,
             commands::native_mcp::native_mcp_remove,

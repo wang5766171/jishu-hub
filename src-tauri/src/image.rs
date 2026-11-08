@@ -55,6 +55,22 @@ fn session_files_dir(project_path: &str) -> PathBuf {
         .join("session_files")
 }
 
+/// v0.9.7 需求5 E5：默认空间的上传按会话分目录（`session_files/<session_id>/`，
+/// 同空间各会话不混）；真实项目维持现状（按批次平铺）。新会话首传尚无
+/// session_id（None）→ 沿用平铺（边界：首条消息带附件先于会话创建）。
+fn session_batch_dir(project_path: &str, session_id: Option<&str>) -> PathBuf {
+    let base = session_files_dir(project_path);
+    match session_id {
+        Some(sid)
+            if !sid.is_empty()
+                && crate::project::is_default_workspace(std::path::Path::new(project_path)) =>
+        {
+            base.join(sid)
+        }
+        _ => base,
+    }
+}
+
 fn mime_for_ext(ext: &str) -> &'static str {
     match ext.to_ascii_lowercase().as_str() {
         // Images
@@ -107,10 +123,14 @@ fn mime_for_ext(ext: &str) -> &'static str {
 #[tauri::command]
 pub async fn save_session_files(
     project_path: String,
+    session_id: Option<String>,
     files: Vec<InputFile>,
 ) -> Result<Vec<SavedFile>, String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间）。
+    let project_path = crate::project::resolve_project_root_or_default(&project_path);
     let batch_id = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let dir = session_files_dir(&project_path).join(&batch_id);
+    // v0.9.7 需求5 E5：默认空间下批次目录落到该会话名下。
+    let dir = session_batch_dir(&project_path, session_id.as_deref()).join(&batch_id);
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {}", e))?;
 
     let mut saved = Vec::new();

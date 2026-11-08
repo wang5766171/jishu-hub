@@ -165,6 +165,9 @@
     "selectProject": "Select a project",
     "switchProject": "Switch",
     "noProject": "Select a project",
+    "artifactLinkHint": "Open in artifacts panel",
+    "artifactLinkFailed": "Cannot open this reference (outside project or not previewable)",
+    "defaultWorkspaceBadge": "Default",
     "title": "Sessions",
     "msgCount": "{{count}} msg",
     "user": "User",
@@ -603,7 +606,10 @@
       "apiRegisterLabel": "Register",
       "livePreview": "Live preview (mock data, not sandboxed)",
       "tomlPreview": "Generated preview (plugin.toml + saved under plugins/{{id}}/)"
-    }
+    },
+    "entryDescribeV2": "Describe what you want (recommended) — the AI builds it for you",
+    "entryGoChat": "Create in chat",
+    "entrySuggestPrefix": "Prefer DIY? Suggested type: "
   },
   "config": {
     "title": "Configuration",
@@ -1597,5 +1603,79 @@
     "rescan": "Rescan (manual refresh — on-demand directory scan, no background polling)",
     "enableFailed": "Enable failed: {{err}}",
     "ignoreFailed": "Ignore failed: {{err}}"
+  },
+  "agentRuntime": {
+    "bannerText": "A new agent engine version ({{expected}}) is available",
+    "updateNow": "Update now",
+    "updating": "Updating…",
+    "initializing": "Initializing agent engine…",
+    "stageExtract": "Extracting runtime…",
+    "stageInstall": "Copying runtime files…",
+    "stageExtensions": "Configuring extensions…",
+    "updatedToast": "Updated to {{expected}} — new sessions use it"
+  },
+  "scenes": {
+    "programming": "Programming",
+    "office": "Office",
+    "education": "Education",
+    "video": "Video production",
+    "data": "Data analysis",
+    "content": "Content creation",
+    "custom": "Custom"
+  },
+  "chat": {
+    "pluginCreatePrefill": "I want to create a plugin: {{text}}\nPlease read the jishu-plugin-authoring skill first, confirm key design points with me, then start implementing."
+  },
+  "market": {
+    "tabInstalled": "Installed",
+    "tabMarket": "Market",
+    "sourceCurated": "Curated",
+    "sourceExtensions": "Extensions",
+    "sourceSkills": "Skills",
+    "sceneAll": "All",
+    "skillSearch": "Search skills…",
+    "skillNetworkError": "Skill market unavailable (network)",
+    "retry": "Retry",
+    "requiredBadge": "Built-in",
+    "installed": "Installed",
+    "install": "Install",
+    "uninstall": "Uninstall",
+    "curatedEmpty": "No curated entries for this scene",
+    "skillConfirmTitle": "Install skill: {{name}}",
+    "skillSource": "Source",
+    "skillVersion": "Version",
+    "skillPublisher": "Publisher",
+    "skillApiKey": "Requires API key",
+    "skillRiskNote": "Skills are third-party prompt packages the agent can read after install; validated to contain SKILL.md and reject path traversal.",
+    "verified": "Verified publisher",
+    "needsApiKey": "Requires API key",
+    "prevPage": "Prev",
+    "nextPage": "Next"
+  },
+  "onboarding": {
+    "initTitle": "Preparing your agent",
+    "initHint": "First setup takes a moment (extract & configure); the app opens when it's done",
+    "initFailed": "Setup did not finish — retry, or open advanced checks",
+    "retry": "Retry",
+    "advanced": "Advanced checks",
+    "sceneTitle": "What will you use it for?",
+    "sceneHint": "Pick one or more — we'll set up recommended tools",
+    "customSkip": "Custom (skip recommendations)",
+    "next": "Next",
+    "recommendTitle": "Set up your toolkit",
+    "recommendHint": "Check what to install — you can manage them later in the market",
+    "recPlugins": "Plugins",
+    "recSkills": "Skills",
+    "skillOffline": "Skill market unavailable (network) — install later from the market",
+    "skillLoading": "Loading recommended skills…",
+    "needsKey": "Requires API key",
+    "installSelected": "Install selected",
+    "start": "Start using",
+    "back": "Back",
+    "backToWizard": "Back to setup"
+  },
+  "taskSteps": {
+    "title": "Task steps",
+    "awaitingAnswer": "Waiting for your decision"
   }
 }

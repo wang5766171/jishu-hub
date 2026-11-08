@@ -389,6 +389,100 @@ pub fn add_project(path: &str) -> Option<Project> {
     build_project_from_path(path)
 }
 
+// --- v0.9.7 需求5：默认工作空间（~\.jishu-hub\JishuProjects，Q10 已裁决） ---
+
+/// 默认工作空间根目录：hub_home()/JishuProjects（不新增第三个显式目录）。
+pub fn default_workspace_root() -> PathBuf {
+    crate::agent::manifest::hub_home().join("JishuProjects")
+}
+
+/// 是否默认工作空间（前端「默认」徽标与会话子目录判定共用）。
+/// Windows 下路径大小写不敏感比对，避免大小写漂移误判。
+pub fn is_default_workspace(path: &Path) -> bool {
+    let expected = default_workspace_root();
+    #[cfg(windows)]
+    {
+        path.to_string_lossy()
+            .eq_ignore_ascii_case(&expected.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        path == expected.as_path()
+    }
+}
+
+/// 幂等确保默认工作空间就绪：建目录 + manual 注册 + 预置 custom_name「默认空间」。
+///
+/// hide 尊重语义（E3）：仅在「首次注册」（manual_projects 尚无此路径）时走
+/// `add_project`（其内含 unhide）；此后启动发现已注册则不再 unhide——用户
+/// 手动隐藏默认空间后，重启不会被悄悄翻回来（列表不显示，但兜底换算照发）。
+pub fn ensure_default_workspace() -> Result<Project, String> {
+    let root = default_workspace_root();
+    std::fs::create_dir_all(&root).map_err(|e| format!("create default workspace: {e}"))?;
+    let root_str = root.to_string_lossy().to_string();
+
+    let registered = crate::hub::load_manual_projects()
+        .map(|paths| paths.iter().any(|p| p == &root_str))
+        .unwrap_or(false);
+    if !registered {
+        add_project(&root_str).ok_or_else(|| "register default workspace failed".to_string())?;
+    }
+
+    // 预置 custom_name「默认空间」：仅当从未设置过（用户改名后不覆盖）；
+    // 保留既有 tags/notes。
+    let encoded = encode_project_path(&root_str);
+    if let Ok(metas) = crate::hub::load_project_metas() {
+        let needs_preset = match metas.get(&encoded) {
+            Some(meta) => meta.custom_name.is_none(),
+            None => true,
+        };
+        if needs_preset {
+            let existing = metas.get(&encoded).cloned().unwrap_or_default();
+            let _ = crate::hub::save_project_meta(
+                &encoded,
+                crate::hub::ProjectMeta {
+                    custom_name: Some("默认空间".to_string()),
+                    ..existing
+                },
+            );
+        }
+    }
+
+    build_project_from_path(&root_str).ok_or_else(|| "build default workspace project".to_string())
+}
+
+/// project_root 兜底换算统一入口（E2）：空/空白 → 默认空间目录；否则原样。
+pub fn resolve_project_root_or_default(input: &str) -> String {
+    if input.trim().is_empty() {
+        default_workspace_root().to_string_lossy().to_string()
+    } else {
+        input.to_string()
+    }
+}
+
+/// 会话子目录（E5 落位 B）：仅默认工作空间有——`<默认空间>/sessions/<session_id>/`。
+/// 非默认项目返回 project_root 本身（真实项目本就有项目根，不搞这套）。
+/// 注意 cwd 仍是默认空间根（否则 scan_pi_projects 会把子目录识别成独立空间）；
+/// 子目录只是该会话的文件/产物区。
+pub fn session_workspace_dir(project_root: &Path, session_id: &str) -> PathBuf {
+    if is_default_workspace(project_root) {
+        project_root.join("sessions").join(session_id)
+    } else {
+        project_root.to_path_buf()
+    }
+}
+
+/// 幂等确保会话子目录存在（send_message 拿到真实 session_id 后调用）。
+/// 非默认空间返回 None（无需会话子目录）。
+pub fn ensure_session_workspace(project_root: &Path, session_id: &str) -> Option<PathBuf> {
+    if !is_default_workspace(project_root) {
+        return None;
+    }
+    let dir = session_workspace_dir(project_root, session_id);
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
 fn count_sessions(dir: &Path) -> usize {
     std::fs::read_dir(dir)
         .map(|entries| {
@@ -427,6 +521,67 @@ fn get_last_active(dir: &Path) -> Option<String> {
 mod tests {
     use super::*;
     use std::fs;
+
+    // v0.9.7 需求5：默认工作空间纯函数面（ensure_default_workspace 集成面
+    // 涉 manual_projects/project_meta 真实落盘，留 A7 GUI/CLI 实测）。
+    #[test]
+    fn test_default_workspace_root_under_hub_home() {
+        let root = default_workspace_root();
+        assert_eq!(
+            root,
+            crate::agent::manifest::hub_home().join("JishuProjects")
+        );
+    }
+
+    #[test]
+    fn test_is_default_workspace_matches_root_and_case() {
+        let root = default_workspace_root();
+        assert!(is_default_workspace(&root));
+        // Windows 大小写不敏感；其他平台按原样比较。
+        #[cfg(windows)]
+        assert!(is_default_workspace(Path::new(
+            &root.to_string_lossy().to_uppercase()
+        )));
+        assert!(!is_default_workspace(Path::new("D:\\SomeOther\\Project")));
+        assert!(!is_default_workspace(
+            &root.parent().unwrap().join("JishuProjects2")
+        ));
+    }
+
+    #[test]
+    fn test_resolve_project_root_or_default() {
+        let expected = default_workspace_root().to_string_lossy().to_string();
+        assert_eq!(resolve_project_root_or_default(""), expected);
+        assert_eq!(resolve_project_root_or_default("   \t "), expected);
+        assert_eq!(
+            resolve_project_root_or_default("D:\\real\\project"),
+            "D:\\real\\project"
+        );
+    }
+
+    #[test]
+    fn test_session_workspace_dir_only_for_default() {
+        let root = default_workspace_root();
+        // 默认空间：会话子目录；非默认项目：返回项目根本身。
+        assert_eq!(
+            session_workspace_dir(&root, "ses-abc"),
+            root.join("sessions").join("ses-abc")
+        );
+        let real = Path::new("D:\\real\\project");
+        assert_eq!(session_workspace_dir(real, "ses-abc"), real.to_path_buf());
+    }
+
+    #[test]
+    fn test_ensure_session_workspace_creates_only_for_default() {
+        let root = default_workspace_root();
+        let dir = ensure_session_workspace(&root, "ses-xyz").expect("default workspace ensure");
+        assert!(dir.is_dir());
+        assert_eq!(dir, root.join("sessions").join("ses-xyz"));
+        // 幂等：再次调用不报错。
+        assert!(ensure_session_workspace(&root, "ses-xyz").is_some());
+        // 真实项目 no-op。
+        assert!(ensure_session_workspace(Path::new("D:\\real\\project"), "s").is_none());
+    }
 
     #[test]
     fn test_get_level1_dir() {

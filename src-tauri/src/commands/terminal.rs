@@ -11,6 +11,8 @@ pub(crate) fn open_in_terminal(
     project_path: String,
     resume_session_id: Option<String>,
 ) -> Result<u32, String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间）。
+    let project_path = crate::project::resolve_project_root_or_default(&project_path);
     if let Some(sid) = resume_session_id.as_deref() {
         if !agent::command_config::is_safe_session_id(sid) {
             return Err("Invalid session id".to_string());
@@ -34,6 +36,8 @@ pub(crate) fn register_terminal_session(
     agent_id: String,
 ) -> Result<(), String> {
     // v0.7.0：agent_id 改为必填入参（前端从会话作用域传入），不再从全局 active 兜底。
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间）。
+    let project_path = crate::project::resolve_project_root_or_default(&project_path);
     let window_id = agent::command_config::terminal_window_id(&agent_id, &session_id);
     hub::register_terminal_session(session_id, pid, project_path, agent_id, window_id)
         .map_err(|e| e.to_string())

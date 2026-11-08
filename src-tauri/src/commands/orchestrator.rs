@@ -78,6 +78,8 @@ pub(crate) fn orchestrator_get_latest_graph_for_project(
         .task_service
         .lock()
         .map_err(|e| task_ipc_internal(e.to_string()))?;
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间）。
+    let project_root = crate::project::resolve_project_root_or_default(&project_root);
     task_service
         .latest_graph_for_project(std::path::Path::new(&project_root))
         .map_err(Into::into)
@@ -97,6 +99,8 @@ pub(crate) fn orchestrator_list_graphs_for_project(
         .task_service
         .lock()
         .map_err(|e| task_ipc_internal(e.to_string()))?;
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间）。
+    let project_root = crate::project::resolve_project_root_or_default(&project_root);
     task_service
         .list_graphs_for_project(std::path::Path::new(&project_root))
         .map_err(Into::into)

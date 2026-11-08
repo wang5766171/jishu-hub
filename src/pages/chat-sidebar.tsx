@@ -22,7 +22,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { RefObject } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { streamStore } from "@/hooks/use-stream-store";
 import { cn } from "@/lib/utils";
@@ -40,7 +40,7 @@ import { TaskSessionTree } from "@/features/task-workspace/sidebar/task-session-
 import { formatRelativeTime, TerminalIcon } from "./chat-page-utils";
 import type { ConfirmDialogOptions } from "@/components/ui/confirm-dialog";
 import type { Project, Session, SessionSearchResult } from "@/types";
-import type { TaskLaunchInstanceSummary, TaskPhase } from "@/features/task-instance/types";
+import type { TaskLaunchInstanceSummary } from "@/features/task-instance/types";
 
 export interface ChatSidebarProps {
   currentProject: Project | null;
@@ -74,7 +74,7 @@ export interface ChatSidebarProps {
   activeTaskInstanceId: string | null;
   activeTaskInstanceIdRef: RefObject<string | null>;
   findTaskInstance: (taskId: string) => TaskLaunchInstanceSummary | null;
-  openTaskPhaseWorkspace: (task: TaskLaunchInstanceSummary, phase: TaskPhase, readOnly?: boolean) => void;
+  openTaskSession: (task: TaskLaunchInstanceSummary, readOnly?: boolean) => void;
   handleTaskCancelRun: () => void;
   setTaskLaunchSessions: (fn: (current: TaskLaunchInstanceSummary[]) => TaskLaunchInstanceSummary[]) => void;
   confirmDialog: (options: ConfirmDialogOptions) => Promise<boolean>;
@@ -124,7 +124,7 @@ export function ChatSidebar(props: ChatSidebarProps) {
     activeTaskInstanceId,
     activeTaskInstanceIdRef,
     findTaskInstance,
-    openTaskPhaseWorkspace,
+    openTaskSession,
     handleTaskCancelRun,
     setTaskLaunchSessions,
     confirmDialog,
@@ -141,6 +141,27 @@ export function ChatSidebar(props: ChatSidebarProps) {
     setRenameTaskTarget,
   } = props;
   const { t } = useTranslation();
+  // v0.9.7 需求5 E3（Q12）：当前空间是默认工作空间时，左上角空间名旁展示
+  // 「默认」徽标（判定单源在后端 is_default_workspace——与 E5 会话子目录共用）。
+  const [isDefaultWorkspace, setIsDefaultWorkspace] = useState(false);
+  const projectPathForBadge = currentProject?.path ?? null;
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectPathForBadge) {
+      setIsDefaultWorkspace(false);
+      return;
+    }
+    invokeCommand<boolean>("is_default_workspace", { path: projectPathForBadge })
+      .then((result) => {
+        if (!cancelled) setIsDefaultWorkspace(Boolean(result));
+      })
+      .catch(() => {
+        if (!cancelled) setIsDefaultWorkspace(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectPathForBadge]);
   return (
     <>
       {/* Left sidebar */}
@@ -159,6 +180,14 @@ export function ChatSidebar(props: ChatSidebarProps) {
             <span className={cn("truncate text-sm font-semibold flex-1 min-w-0 leading-none pt-[1px]", currentProject ? "text-foreground" : "text-muted-foreground")} title={currentProject ? projectDisplayName : undefined}>
               {currentProject ? projectDisplayName : t("sessions.noProject")}
             </span>
+            {isDefaultWorkspace && (
+              <span
+                className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground"
+                title={t("sessions.defaultWorkspaceBadge")}
+              >
+                {t("sessions.defaultWorkspaceBadge")}
+              </span>
+            )}
           </div>
           {/* Actions */}
           <div className="flex items-center gap-1.5 px-3 h-11 pt-2 pb-1">
@@ -302,16 +331,10 @@ export function ChatSidebar(props: ChatSidebarProps) {
             activeTaskId={activeTaskInstanceId}
             onSelectTask={(task) => {
               // 树的 TaskSessionTreeTask 是 TaskLaunchInstanceSummary 的结构子集，
-              // 回传时按 task_id 反查完整实例（openTaskPhaseWorkspace 需要 project_root 等字段）。
+              // 回传时按 task_id 反查完整实例（openTaskSession 需要 project_root 等字段）。
               const instance = findTaskInstance(task.task_id);
               if (!instance) return;
-              const phase: TaskPhase =
-                instance.current_phase === "planning"
-                  ? "planning"
-                  : instance.current_phase === "execution" || instance.current_phase === "graph"
-                    ? "execution"
-                    : "requirements";
-              openTaskPhaseWorkspace(instance, phase);
+              openTaskSession(instance);
             }}
             onRenameTask={(task) => setRenameTaskTarget(findTaskInstance(task.task_id))}
             onCancelTask={(task) => {

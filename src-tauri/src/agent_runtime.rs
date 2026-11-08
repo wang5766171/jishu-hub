@@ -192,6 +192,12 @@ pub fn prepare_gui_turn(
     registry: &AgentRegistry,
     request: AgentTurnRequest,
 ) -> Result<PreparedGuiTurn, String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（双保险——send_message IPC 入口
+    // 已换算；此处覆盖其余构造 AgentTurnRequest 的调用方）。
+    let request = AgentTurnRequest {
+        project_path: crate::project::resolve_project_root_or_default(&request.project_path),
+        ..request
+    };
     let agent = registry
         .get(&request.agent_id)
         .ok_or_else(|| format!("Agent not found: {}", request.agent_id))?;

@@ -31,6 +31,7 @@ import {
 } from "@/features/session-kernel/shell/session-sidebar";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { HybridInstallConfirmation } from "@/components/hybrid-install-confirmation";
+import { AgentRuntimeBanner } from "@/components/agent-runtime-banner";
 // 5d（v0.9.5 需求1）：选中文本右键菜单（发送到插件）。
 import { SelectionContextMenu } from "@/components/selection-context-menu";
 // 7a/7b（v0.9.5 需求1）：pi 扩展发现卡（启动扫描一次 + 安全摘要两栏）。
@@ -484,6 +485,28 @@ useEffect(() => {
     return () => { cancelled = true; };
   }, [projects, initialProjectRestored]);
 
+  // v0.9.7 需求5 E3 + 需求4 E6：启动兜底——无 last_project 可恢复时落默认
+  // 工作空间并写 last_project（Q11：引导完成落点与「进入」等权——之后重启
+  // 直接回默认空间）。幂等守卫防循环。
+  const defaultWorkspaceFallbackRef = useRef(false);
+  useEffect(() => {
+    if (!initialProjectRestored || currentProject) return;
+    if (defaultWorkspaceFallbackRef.current) return;
+    defaultWorkspaceFallbackRef.current = true;
+    let cancelled = false;
+    invokeCommand<Project>("get_default_workspace")
+      .then((defaultWorkspace) => {
+        if (cancelled || !defaultWorkspace) return;
+        setProjectSessionsLoading(true);
+        setCurrentProject(defaultWorkspace);
+        invokeCommand("save_last_project", {
+          encodedName: defaultWorkspace.encoded_name,
+        }).catch(console.error);
+      })
+      .catch(console.error);
+    return () => { cancelled = true; };
+  }, [initialProjectRestored, currentProject]);
+
   // Refresh handler: directly await refetch Promises in the event handler
   const handleRefresh = useCallback(async (): Promise<number> => {
     const newProjects = await refetchProjects();
@@ -527,6 +550,21 @@ useEffect(() => {
   const handleLaunchPipeline = useCallback((pluginId: string, name: string) => {
     setChatAgent("jishu-self");
     setPipelineLaunch({ key: Date.now(), pluginId, name });
+    setCurrentPage("chat");
+  }, [setChatAgent]);
+
+  // v0.9.7 需求3 C1：描述需求创建插件——跳会话页新会话预填创作指令
+  //（pipelineLaunch 同款 key 防重复模式）；留 sessionStorage 标记，agent
+  // 产出经确认卡启用成功后回跳插件中心聚光（闭环）。
+  const [pluginCreateLaunch, setPluginCreateLaunch] = useState<{ key: number; text: string } | null>(null);
+  const handleLaunchPluginDescribe = useCallback((text: string) => {
+    setChatAgent("jishu-self");
+    try {
+      sessionStorage.setItem("jishu-plugin-create-return", "1");
+    } catch {
+      /* 存储不可用则回跳闭环降级为默认展示 */
+    }
+    setPluginCreateLaunch({ key: Date.now(), text });
     setCurrentPage("chat");
   }, [setChatAgent]);
 
@@ -693,16 +731,19 @@ useEffect(() => {
             />
           }
         />
+        {/* v0.9.7 需求1 T5：pi 版本变更横幅（软提示、无关闭按钮、不拦截会话） */}
+        <AgentRuntimeBanner />
       <ViewerPushRow>
         <Suspense fallback={<LoadingOverlay />}>
           {currentPage === "chat"
-            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} onNavigateAgentModels={handleNavigateAgentModels} pipelineLaunch={pipelineLaunch} />
+            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} onNavigateAgentModels={handleNavigateAgentModels} pipelineLaunch={pipelineLaunch} pluginCreateLaunch={pluginCreateLaunch} />
             : <ManagePage
                 onBack={() => setCurrentPage("chat")}
                 onEnterProject={handleEnterProject}
                 navigateToProjects={manageNavKey}
                 navigateToAgentModels={agentModelsNavKey}
                 onLaunchPipeline={handleLaunchPipeline}
+                onLaunchDescribe={handleLaunchPluginDescribe}
                 projects={projects}
                 projectMetas={projectMetas}
                 refetchProjects={refetchProjects}
@@ -801,20 +842,42 @@ function ViewerPushRow({ children }: { children: ReactNode }) {
   );
 }
 
-import { EnvCheckPage } from "@/pages/env-check-page";
+// v0.9.7 需求4：首启三步引导（初始化门控 + 场景卡 + 场景推荐）。
+import { OnboardingWizard } from "@/pages/onboarding-wizard";
 
 function AppContentWrapper() {
-  const [envChecked, setEnvChecked] = useState(!!localStorage.getItem("jishu-hub-env-checked"));
+  // v0.9.7 需求4：首启门控迁移 onboarded（state.json 权威，三步引导）。
+  // null = 查询中；false = 走引导；true = 直接主界面。旧 localStorage 键
+  // 不迁移（全局裁决：首次运行 0.9.7 统一走一遍引导），检测到即删除。
+  const [onboarded, setOnboarded] = useState<boolean | null>(null);
   // 需求14 M2（S3）：主题插件装载器——App 根部消费（ThemeProvider 内），
   // 订阅组合清单版本实现主题热更；env-check 首屏阶段同样生效。
   usePluginTheme();
 
-  if (!envChecked) {
+  useEffect(() => {
+    if (localStorage.getItem("jishu-hub-env-checked")) {
+      localStorage.removeItem("jishu-hub-env-checked");
+    }
+    invokeCommand<boolean>("get_onboarded")
+      .then((done) => setOnboarded(done))
+      .catch(() => setOnboarded(false));
+  }, []);
+
+  if (onboarded === null) {
+    return null;
+  }
+
+  if (!onboarded) {
     return (
       <div className="flex flex-col h-screen w-screen bg-background text-foreground relative">
         <TitleBar currentPage={"chat"} onNavigate={() => {}} disabled={true} />
         <div className="flex-1 overflow-hidden bg-background">
-          <EnvCheckPage onComplete={() => { localStorage.setItem("jishu-hub-env-checked", "1"); setEnvChecked(true); }} />
+          <OnboardingWizard
+            onComplete={() => {
+              invokeCommand("set_onboarded", { value: true }).catch(console.error);
+              setOnboarded(true);
+            }}
+          />
         </div>
       </div>
     );

@@ -430,6 +430,16 @@ pub async fn send_message(
     message: String,
     model_override: Option<(String, String)>,
 ) -> Result<ChatSession, String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间；正常路径不受影响）。
+    let project_path = crate::project::resolve_project_root_or_default(&project_path);
+    // v0.9.7 需求5 E5：恢复既有会话（真实 id 直传）→ 幂等确保会话子目录
+    //（默认空间专属；非默认空间 no-op）。
+    if let Some(ref sid) = session_id {
+        if !crate::agent::command_config::is_transient_session_id(sid) {
+            let _ =
+                crate::project::ensure_session_workspace(std::path::Path::new(&project_path), sid);
+        }
+    }
     // v0.9.6 需求4：项目编码先缓存（project_path 随后 move 进 turn 请求，
     // 进程表条目需要它做项目归属）。
     let spawn_project_encoded = crate::project::encode_project_path(&project_path);
@@ -517,6 +527,10 @@ pub async fn send_message(
     // 不注入——边界：工具插件是 GUI 会话能力）。
     let message = compose_tool_message(&state, &pending_session_id, message);
 
+    // v0.9.7 需求5 E5：新会话真实 id 解析回调里确保会话子目录（project_path
+    // 稍后 move 进 AgentTurnRequest，先克隆）。
+    let project_path_for_resolve = project_path.clone();
+
     let prepared = {
         let s = state
             .lock()
@@ -569,6 +583,12 @@ pub async fn send_message(
             // v0.9.6 需求6 F3：pending 消息记录同点迁移（首条消息以临时 id
             // 记录，ack/加载按真实 id 对账）。
             crate::pending_messages::rename_session(&sid_for_resolve, real_id);
+            // v0.9.7 需求5 E5：默认空间会话子目录随真实 id 就位（幂等；
+            // 上传/agent 产物的按会话分目录依赖它存在）。
+            let _ = crate::project::ensure_session_workspace(
+                std::path::Path::new(&project_path_for_resolve),
+                real_id,
+            );
         },
     )
     .await?;
@@ -905,6 +925,8 @@ pub async fn compact_agent_session(
     session_id: String,
     instructions: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（历史会话静默拉起时要用 cwd）。
+    let project_path = crate::project::resolve_project_root_or_default(&project_path);
     let (acp, agent_id) = match existing_chat_process(&app, &session_id, &agent_id) {
         Some(process) => (
             process
@@ -950,6 +972,8 @@ pub async fn fork_agent_session(
     project_path: String,
     session_id: String,
 ) -> Result<serde_json::Value, String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（历史会话静默拉起时要用 cwd）。
+    let project_path = crate::project::resolve_project_root_or_default(&project_path);
     {
         let app_state = app.state::<Mutex<crate::AppState>>();
         let s = app_state

@@ -1,30 +1,32 @@
 use crate::task_launch;
 use tauri::Emitter;
 
+// v0.9.7 需求5 E2：任务命令 project_root 兜底换算统一入口——空 → 默认空间
+//（不选项目直接发起任务，实例/图库/产物/节点会话 cwd 全归默认空间名下，E4）。
+fn resolve_root(project_root: &str) -> String {
+    crate::project::resolve_project_root_or_default(project_root)
+}
+
 #[tauri::command]
 pub(crate) fn task_launch_list_sessions(
     project_root: String,
 ) -> Result<Vec<task_launch::TaskLaunchInstance>, String> {
+    let project_root = resolve_root(&project_root);
     task_launch::list_task_instances(&project_root)
 }
 
-/// v0.9.2 需求6：任务实例创建/阶段推进后向 webview 广播，前端即时刷新任务
+/// v0.9.2 需求6：任务实例创建/更新后向 webview 广播，前端即时刷新任务
 /// 列表并在会话模式下关联当前会话的任务实例（替代 4.8s 一次性发现窗口）。
-fn emit_task_instance_changed(
-    app: &tauri::AppHandle,
-    project_root: &str,
-    instance: &task_launch::TaskLaunchInstance,
-) {
+fn emit_task_instance_changed(app: &tauri::AppHandle, project_root: &str) {
     let _ = app.emit(
         "task-instance-changed",
         serde_json::json!({
             "project_root": project_root,
-            "task_id": instance.task_id,
-            "current_phase": instance.current_phase,
         }),
     );
 }
 
+/// v0.9.7 需求2 C2：标记任务主会话（无 phase——单对话流）。
 #[tauri::command]
 pub(crate) fn task_launch_mark_session(
     app: tauri::AppHandle,
@@ -32,33 +34,29 @@ pub(crate) fn task_launch_mark_session(
     task_id: Option<String>,
     session_id: String,
     skill_id: String,
-    phase: Option<String>,
     title: Option<String>,
 ) -> Result<task_launch::TaskLaunchInstance, String> {
-    let instance = task_launch::mark_task_stage_session(
+    let project_root = resolve_root(&project_root);
+    let instance = task_launch::mark_task_session(
         &project_root,
         task_id.as_deref(),
         &session_id,
         &skill_id,
-        phase.as_deref().unwrap_or("requirements"),
         title.as_deref(),
     )?;
-    emit_task_instance_changed(&app, &project_root, &instance);
+    emit_task_instance_changed(&app, &project_root);
     Ok(instance)
-}
-
-#[tauri::command]
-pub(crate) fn task_requirement_finalize(
-    project_root: String,
-    request: task_launch::RequirementFinalizeRequest,
-) -> Result<task_launch::TaskRequirementFinalized, String> {
-    task_launch::finalize_requirement(&project_root, request)
 }
 
 #[tauri::command]
 pub(crate) fn task_launch_start_run(
     request: task_launch::TaskLaunchStartRunRequest,
 ) -> Result<task_launch::StartRunFromRevisionResult, String> {
+    // v0.9.7 需求5 E2：request 结构在解析后换算（设计订正：首参是 request）。
+    let request = task_launch::TaskLaunchStartRunRequest {
+        project_root: resolve_root(&request.project_root),
+        ..request
+    };
     task_launch::task_launch_start_run(request)
 }
 
@@ -68,6 +66,7 @@ pub(crate) fn task_launch_attach_graph(
     task_id: String,
     graph_id: String,
 ) -> Result<task_launch::TaskLaunchInstance, String> {
+    let project_root = resolve_root(&project_root);
     task_launch::attach_graph(&project_root, &task_id, &graph_id)
 }
 
@@ -78,6 +77,7 @@ pub(crate) fn task_launch_sync_run_status(
     run_id: String,
     run_status: String,
 ) -> Result<task_launch::TaskLaunchInstance, String> {
+    let project_root = resolve_root(&project_root);
     task_launch::sync_run_status(&project_root, &task_id, &run_id, &run_status)
 }
 
@@ -86,15 +86,8 @@ pub(crate) fn task_launch_get_instance(
     project_root: String,
     task_id: String,
 ) -> Result<Option<task_launch::TaskLaunchInstance>, String> {
+    let project_root = resolve_root(&project_root);
     task_launch::get_task_instance(&project_root, &task_id)
-}
-
-#[tauri::command]
-pub(crate) fn task_planning_instruction(
-    project_root: String,
-    task_id: String,
-) -> Result<String, String> {
-    task_launch::planning_instruction_for_instance(&project_root, &task_id)
 }
 
 #[tauri::command]
@@ -104,6 +97,7 @@ pub(crate) fn task_launch_create_from_existing_graph(
     title: String,
     skill_id: String,
 ) -> Result<task_launch::TaskLaunchInstance, String> {
+    let project_root = resolve_root(&project_root);
     task_launch::create_from_existing_graph(&project_root, &graph_id, &title, &skill_id)
 }
 
@@ -113,60 +107,37 @@ pub(crate) fn task_launch_rename_task(
     task_id: String,
     title: String,
 ) -> Result<task_launch::TaskLaunchInstance, String> {
+    let project_root = resolve_root(&project_root);
     task_launch::rename_task(&project_root, &task_id, &title)
 }
 
 #[tauri::command]
 pub(crate) fn task_launch_delete_task(project_root: String, task_id: String) -> Result<(), String> {
+    let project_root = resolve_root(&project_root);
     task_launch::delete_task(&project_root, &task_id)
 }
 
+/// v0.9.7 需求2 C2：runner 步骤清单上报（任务卡数据源）。成功广播事件。
 #[tauri::command]
-pub(crate) fn conductor_sync_phase(
+pub(crate) fn runner_update_steps(
     app: tauri::AppHandle,
-    request: task_launch::ConductorSyncPhaseRequest,
-) -> Result<task_launch::ConductorSyncPhaseResult, String> {
-    // v0.9.2 需求7：任务模式防呆——阶段强依赖的工具插件被禁用时明确报错到
-    // 会话（防"工具静默缺失 → 流程停摆"的不可诊断形态；白名单闸门见
-    // jishu_self::ensure_default_tools_arg 的插件聚合注入）。
-    if matches!(request.phase.as_str(), "discuss" | "plan") {
-        let required = if request.phase == "discuss" {
-            "task-requirements"
-        } else {
-            "task-plan"
-        };
-        use tauri::Manager;
-        let enabled = app
-            .state::<std::sync::Mutex<crate::AppState>>()
-            .lock()
-            .ok()
-            .and_then(|state| {
-                state
-                    .registry
-                    .list_plugins()
-                    .into_iter()
-                    .find(|plugin| plugin.id == required)
-                    .map(|plugin| plugin.enabled)
-            })
-            .unwrap_or(false);
-        if !enabled {
-            return Err(format!(
-                "任务流程依赖的插件「{required}」已被禁用，请在「插件管理」中启用后重试。"
-            ));
-        }
-    }
-    let project_root = request.project_root.clone();
-    let result = task_launch::conductor_sync_phase(request)?;
-    if result.success {
-        emit_task_instance_changed(&app, &project_root, &result.instance);
-    }
-    Ok(result)
+    project_root: String,
+    task_id: String,
+    steps_json: String,
+) -> Result<task_launch::TaskLaunchInstance, String> {
+    let project_root = resolve_root(&project_root);
+    let instance = task_launch::runner_update_steps(&project_root, &task_id, &steps_json)?;
+    emit_task_instance_changed(&app, &project_root);
+    Ok(instance)
 }
 
+/// v0.9.7 需求2 C2：runner 状态加载（session_start 权威恢复；原
+/// conductor_load_task_state 改名）。
 #[tauri::command]
-pub(crate) fn conductor_load_task_state(
+pub(crate) fn runner_load_task_state(
     project_root: String,
     task_id: String,
 ) -> Result<task_launch::ConductorLoadStateResult, String> {
-    task_launch::conductor_load_task_state(&project_root, &task_id)
+    let project_root = resolve_root(&project_root);
+    task_launch::runner_load_task_state(&project_root, &task_id)
 }
