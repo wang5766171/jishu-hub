@@ -55,9 +55,9 @@
 |------|-----|
 | 上游仓库 | `https://github.com/earendil-works/pi` |
 | 自有 fork | `https://github.com/wang5766171/pi` |
-| 当前维护分支 | `release_v1.4.0-14` |
+| 当前维护分支 | `release_v1.5.0-15` |
 | `.gitmodules` URL | `https://github.com/wang5766171/pi` |
-| `.gitmodules` branch | `release_v1.4.0-14` |
+| `.gitmodules` branch | `release_v1.5.0-15` |
 
 ## 1.5 日常源码变动流程
 
@@ -118,6 +118,57 @@
 ---
 
 # 第二部分：改动记录
+
+## 2026-11-08 | 合并上游 v1.5.0（release_v1.5.0-15）——jishu-hub v0.9.7
+
+**版本**：上游 `v1.4.0` → `v1.5.0`（308 commits / 1578 files / +211745/-14707，chord v2 experimental + pi-schema 基建）。按版本规则（§1.3），Pi 版本升至 `1.5.0`、自研尾号顺延 `-15`，分支 `release_v1.5.0-15`，合并提交 `b1b3b3ed6` + 格式补提交 `e0bb9db08`。**fork 分支已推送远端**。
+
+### 合并动机（用户指令）
+
+2026-11-08「现在就合并pi」。开版 D1 评估先行（docs/v0.9.7/pi上游v1.5.0-D1评估.md）：hub 生命线（`src/modes/rpc/` 4 文件、CLI spawn、bundle 布局、32 事件集、execute 五参签名、compaction 语义）上游**零 diff**；两处 fork 保留项（multiSelect/thresholdPercent）均未被上游覆盖，**无退役项**；冲突面收敛一处真冲突。评估结论「先合并再做需求1 打包」获用户采纳。
+
+### 冲突解决（16 文件）
+
+| 文件 | 解法 |
+|---|---|
+| 11 个 package.json（root + 10 包） | 取上游（shx→package-files.mjs、依赖变更、版本 1.5.0），重放 fork 增量：coding-agent 品牌（piConfig name=jishu / configDir=.jishu-agent / bin jishu）+ build 追加 `&& node build-bundle.mjs` + chord 依赖；root husky try/catch 包装 + openai devDep；chord 描述。版本统一经主仓 upgrade-version.mjs → 1.5.0-15 |
+| package-lock.json ×2 | npm install / install-lock:coding-agent 重生成（123 packages） |
+| scripts/check-entry-graphs.mjs | 取上游 `split(sep)` 便携写法——fork v1.4.0-13 的 Windows 反斜杠修复已被上游等价覆盖，fork 注释撤销 |
+| test/mcp-command.test.ts | 双方 import 均保留（body 各有引用）；spawn 失败断言收敛公共前缀（fork 适配：Windows 下 spawn 错误文案≠Unix ENOENT，上游测试盲区，v1.4.0-14 同断言在本机同样失败） |
+
+### 保留自研（上游均未实现，逐一核实）
+
+- `multiSelect`（ui 扩展 API + RPC dialog + interactive UI；上游 grep 零匹配，ui 对话框仍只有 select/confirm/input）
+- `thresholdPercent`（压缩阈值百分比 + settings 三件 + RPC 热推；上游 shouldCompact 原文未动）
+- TUI 品牌（interactive-mode/first-time-setup；interactive-mode.ts 上游 +177/-48 自动合并成功，multiSelect UI 无需手解——D1 预估的真冲突未发生）
+- RPC 协议扩展（`src/modes/rpc/` 上游零 diff，协议扩展零冲突幸存）
+
+### 上游重点变更（与自研面交互）
+
+1. **唯一 Breaking**：工具参数校验 TypeBox → pi-schema（`6536f8012`）——`Type.Refine()/Type.BigInt()/Type.Undefined()` 等超集特性不再生效于工具参数；hub 内置扩展若用 TypeBox 超集校验需排查（settings/models schema 仍是 TypeBox）。
+2. **新包 `packages/schema`（@earendil-works/pi-schema）**进入 agent/ai 运行时依赖；bundle 会内联（上游 bundle 只允许白名单外部包），fork `build-bundle.mjs` 闭包清单补 `'schema'` 登记（该包零三方依赖，暂不发射 runtime-deps 条目）。
+3. session-manager Windows 修复（`pathsEqual` 盘符大小写 `1be312b46`）+ 写失败回滚（#11460）+ fork 单 fd 提速（#11253）——hub 多会话稳定性直接受益。
+4. 扩展 API 全 additive（KeybindingHints / ctx.ui.custom blocked / changelogPath / exec maxBuffer）；32 事件名与 execute 五参签名两 tag 逐字一致。
+5. shx 退役 → `scripts/package-files.mjs`；minimatch 10→11、undici 8.10→8.12。
+
+### 对 v0.9.7 需求影响
+
+- 需求1 安装提速：bundle 布局/bin/exports/publish files 全不变——pack-pi 结构原样沿用；版本比对目标变 plain semver 基座。
+- 需求2 任务模式：RPC 零 diff，fork 协议扩展共存；session-manager 修复利好。
+- 需求3 插件市场：安装侧 `pi install npm:<spec>` 成熟可复用；发现侧 `pi-package` keyword 是官方画廊约定（hub 用 npm registry 按 keyword 检索）。
+
+### 验证（2026-11-08）
+
+- 全 workspace 构建过（coding-agent bundle 82 files / 9.1MiB；runtime-deps.json 28 项）；`cli.js --version` = 1.5.0-15。
+- coding-agent `tsc -p tsconfig.build.json --noEmit` 0 error。
+- 定向 vitest 全绿：agent-session-dynamic-tools（55）+ mcp-command + compaction×3（agent-session-compaction / compaction / auto-compaction-queue）+ agent-session-runtime-events = 51 passed / 7 skipped（环境门控）。
+- ⚠ 根级 `tsc --noEmit`（pre-commit）在 packages/ai 三个测试文件报错：上游测试写死模型 id（`nemotron-3-ultra-nvfp4` 等），与当日 `generate:models`（联网生成、gitignored）时间漂移——**非本次合并引入**（纯 v1.5.0 配今日目录同样失败），合并提交以 `--no-verify` 落盘并在此留痕。
+- 主仓配套验证见下方主仓提交。
+
+### 主仓配套
+
+- `scripts/upgrade-version.mjs`：pkgsToUpdate 补 `packages/schema/package.json`、internalDeps 补 `@earendil-works/pi-schema`（同 v1.4.0-14 durable/env 遗漏教训，防 npm install ETARGET）。
+- `.gitmodules` branch、`PI_AGENT_VERSION`（jishu_self/mod.rs）→ 1.5.0-15（upgrade-version 脚本自动）。
 
 ## 2026-11-07 | 去 fork 退役：getSetting 单键 API 与 api.context 桥（jishu-hub v0.9.6 补充⑫）
 

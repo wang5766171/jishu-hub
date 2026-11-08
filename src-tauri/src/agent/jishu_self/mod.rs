@@ -366,7 +366,7 @@ use crate::agent::traits::{
     TransportAdapter,
 };
 // JISHU_AGENT_VERSION_START (auto-updated by upgrade-version.mjs)
-pub const PI_AGENT_VERSION: &str = "1.4.0-14";
+pub const PI_AGENT_VERSION: &str = "1.5.0-15";
 // JISHU_AGENT_VERSION_END
 
 impl AgentManifest for JishuSelfAgent {

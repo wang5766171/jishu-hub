@@ -49,6 +49,10 @@ const pkgsToUpdate = [
   // 解析不存在的 @earendil-works 预发布版而 ETARGET）。
   "packages/durable/package.json",
   "packages/env/package.json",
+  // v1.5.0-15 合并补：上游新增 packages/schema（@earendil-works/pi-schema，
+  // 工具参数校验从 TypeBox 迁移），进入 agent/ai 运行时依赖——同上遗漏
+  // 后果（ETARGET）。
+  "packages/schema/package.json",
 ];
 
 for (const pkgPath of pkgsToUpdate) {
@@ -78,6 +82,8 @@ for (const pkgPath of pkgsToUpdate) {
       "@earendil-works/pi-codemode",
       "@earendil-works/pi-mcp",
       "@earendil-works/pi-durable",
+      // v1.5.0-15 合并补：pi-schema（同上）。
+      "@earendil-works/pi-schema",
     ];
     for (const depType of ["dependencies", "devDependencies", "peerDependencies"]) {
       if (json[depType]) {
