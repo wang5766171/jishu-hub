@@ -28,6 +28,7 @@ import { steerCoordinator } from "@/features/session-kernel/kernel/steer-coordin
 import { devLog } from "@/lib/dev-log";
 import { useSyncExternalStore } from "react";
 import { MessageView } from "@/components/sessions/message-view";
+import { SessionArtifactContext } from "@/components/sessions/artifact-link";
 import { buildTurnSummaries } from "@/components/sessions/turn-rail";
 import { SessionPanelLayer } from "@/features/session-kernel/plugins/mounts/session-panel-layer";
 import { SessionSidebarLayer } from "@/features/session-kernel/plugins/mounts/session-sidebar-layer";
@@ -44,7 +45,7 @@ import { runPluginQuickAction } from "@/lib/plugin-quick-run";
 import { FlowBoardOverlay } from "@/features/task-workspace/board/flow-board-overlay";
 import { useTaskInstance } from "@/features/task-instance/use-task-instance";
 import { useNodeSession } from "@/features/task-instance/use-node-session";
-import { normalizeAgentId } from "@/features/task-instance/types";
+import { normalizeAgentId, parseRunnerCard } from "@/features/task-instance/types";
 import { useEnabledSessionPlugins } from "@/features/session-kernel/plugins/registry";
 import { emitSessionSignal, subscribeSessionSignals } from "@/features/session-kernel/signals";
 import { SessionDataHub } from "@/features/session-kernel/kernel/data-hub";
@@ -70,6 +71,7 @@ import { PhaseDivider } from "@/components/sessions/conversation-content";
 import {
   TaskPlanCard,
   TaskNodeCards,
+  TaskStepsCard,
   TaskSummaryCard,
   type FlowNodeStatus,
   type PlanNodeInfo,
@@ -116,13 +118,12 @@ import { useMessageSearch } from "@/features/chat-core/use-message-search";
 import { ThinkingLevelSelect } from "@/components/sessions/thinking-level-select";
 import {
   buildAssistantContentFromStreamState,
-  PHASE_LAUNCH_RANK,
   filterInvisibleUserMessages,
   TerminalIcon,
   uniqueSessionsById,
   type TaskLaunchPhase,
 } from "./chat-page-utils";
-import { type TaskPhase, type TaskLaunchInstanceSummary } from "@/features/task-instance/types";
+import { type TaskLaunchInstanceSummary } from "@/features/task-instance/types";
 import type {
   Message,
   Project,
@@ -143,6 +144,7 @@ export function ChatPage({
   navigateToSession,
   onNavigateAgentModels,
   pipelineLaunch,
+  pluginCreateLaunch,
 }: {
   currentProject: Project | null;
   currentProjectMeta?: ProjectMeta;
@@ -158,6 +160,9 @@ export function ChatPage({
   /** v0.9.3 需求13 C4-slice2c：pipeline 插件「作为任务启动」（App 层已切
    * jishu agent 与会话页）；key 变化时预填 /jishu-pipeline 命令并聚焦。 */
   pipelineLaunch?: { key: number; pluginId: string; name: string } | null;
+  /** v0.9.7 需求3 C1：描述需求创建插件（App 层已切 jishu agent 与会话页）；
+   * key 变化时开新会话并预填创作指令（草稿态可改）。 */
+  pluginCreateLaunch?: { key: number; text: string } | null;
 }) {
   const { t } = useTranslation();
   // v0.7.0 需求一：会话作用域状态（chatAgentId 替代全局 activeId）。
@@ -333,7 +338,6 @@ export function ChatPage({
   // 阶段标签自动跟随：跟踪上次 current_phase（数据源为 refreshTaskLaunchSessions 的 3s
   // 轮询）。follow effect 据此前进检测；守卫 taskLaunchPhase===prev 同时防跨任务误跟随
   // 与打断手动回看。
-  const prevCurrentPhaseRef = useRef<string | null>(null);
   const activeTaskInstanceIdRef = useRef<string | null>(activeTaskInstanceId);
   // v0.7.0：记录当前选中的节点 id，用于短路重复点击（同一节点再点不触发任何逻辑）。
   const taskSelectedNodeIdRef = useRef<string | null>(taskSelectedNodeId);
@@ -516,10 +520,11 @@ export function ChatPage({
     lastRealSessionIdRef,
     discoverConductorTaskRef,
     activeTaskResolved: useCallback((record: TaskLaunchInstanceSummary) => {
-      activeTaskRequirementFileRef.current = record.requirement_file ?? null;
       setActiveTaskInstanceId(record.task_id);
-      setActiveTaskRequirementFile(record.requirement_file ?? null);
       lastKnownStatusRef.current = record.status;
+      // v0.9.7 需求2（R2 修复）：旧阶段跟随效应退役后 taskModeActive 失去
+      // 置位触发器——任务实例绑定成功即激活任务模式（执行段/步骤卡的渲染门）。
+      setTaskModeActive(true);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []),
   });
@@ -544,10 +549,7 @@ export function ChatPage({
   const taskLaunchSessionIds = useMemo(
     () => new Set(
       [
-        ...taskLaunchSessions.flatMap((item) => [
-          item.requirement_session_id,
-          item.planning_session_id,
-        ]),
+        ...taskLaunchSessions.flatMap((item) => [item.task_session_id]),
         ...nodeSessionIds,
       ].filter((value): value is string => Boolean(value)),
     ),
@@ -1321,6 +1323,25 @@ export function ChatPage({
     }
   }, [activeId, projectId, sessions, sessionNames, confirmDialog, alertDialog, t, selectedSession]);
 
+  // v0.9.7 需求3 C1：描述需求创建插件——App 层已切 jishu agent 与会话页；
+  // 此处按 key 开新会话并预填创作指令（草稿态可改；restoreTexts 延迟一拍
+  // 等新会话输入框挂载，pipelineLaunch 同款 key 防重复）。
+  const pluginCreateLaunchRef = useRef(0);
+  useEffect(() => {
+    if (!pluginCreateLaunch || pluginCreateLaunch.key === pluginCreateLaunchRef.current) return;
+    pluginCreateLaunchRef.current = pluginCreateLaunch.key;
+    void handleNewSession();
+    const prefill = t("chat.pluginCreatePrefill", {
+      defaultValue:
+        "我想创建一个插件：{{text}}\n请先阅读 jishu-plugin-authoring 技能，与我确认关键设计点后开始实现。",
+      text: pluginCreateLaunch.text,
+    });
+    window.setTimeout(() => {
+      chatInputRef.current?.restoreTexts([prefill]);
+      chatInputRef.current?.focus();
+    }, 200);
+  }, [pluginCreateLaunch, handleNewSession, t]);
+
   // v0.8.0 需求5：刷新会话（右键菜单与会话头部按钮统一入口，作用于指定
   // 会话）。反馈三层：refreshingSessionId 驱动头部按钮/被刷新行的旋转动画、
   // 最短 400ms 呈现（快于视觉阈值时不再“无感”）、失败经 alertDialog 弹窗。
@@ -1391,12 +1412,11 @@ export function ChatPage({
           "task_launch_list_sessions",
           { projectRoot },
         );
-        const found = items.find((item) => item.requirement_session_id === sessionId);
+        const found = items.find((item) => item.task_session_id === sessionId);
         if (found) {
           logTaskPhaseDebug("conductor-task:discovered", {
             taskId: found.task_id,
             sessionId,
-            currentPhase: found.current_phase,
           });
           // 仅关联任务实例（供 follow effect 监听 current_phase），不切换 UI：需求/规划讨论
           // 继续留在 taskLaunch 界面，由 follow effect 在阶段推进时按阶段切标签/工作台
@@ -1480,8 +1500,7 @@ export function ChatPage({
   useEffect(() => {
     if (
       taskModeActive &&
-      activeTaskLaunchInstance?.current_phase === "execution" &&
-      activeTaskLaunchInstance.graph_id &&
+      activeTaskLaunchInstance?.graph_id &&
       activeTaskLaunchInstance.graph_id !== taskGraphRef.current.graph?.graph_id
     ) {
       taskGraphRef.current
@@ -1489,7 +1508,7 @@ export function ChatPage({
         .catch(console.error);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskModeActive, activeTaskLaunchInstance?.current_phase, activeTaskLaunchInstance?.graph_id]);
+  }, [taskModeActive, activeTaskLaunchInstance?.graph_id]);
   // v0.9.3 需求1 P2-2：useNodeSession 只消费 node_run_id/node_id/status/
   // attempt_count 四字段（NodeRunLookupSource 最小形状），内部 NodeRun 状态
   // 结构满足，不再双重 cast 伪装完整 RunProjection（原先其余字段在 hook 内
@@ -1638,7 +1657,7 @@ export function ChatPage({
   const {
     handleOpenTaskConversation,
     handleWorkModeChange,
-    openTaskPhaseWorkspace,
+    openTaskSession,
     handleTaskSelectNode,
     handleTaskNodeSessionChange,
     taskPanelCtx,
@@ -1951,9 +1970,7 @@ export function ChatPage({
       },
       resolveSessionInfo: (sessionId: string) => {
         const taskSession = taskLaunchSessions.find(
-          (item) =>
-            item.requirement_session_id === sessionId ||
-            item.planning_session_id === sessionId,
+          (item) => item.task_session_id === sessionId,
         );
         if (taskSession) return { title: taskSession.title, kind: "task" };
         if (nodeSessionIds.includes(sessionId)) {
@@ -2012,8 +2029,18 @@ export function ChatPage({
   // 任务模式 + 执行阶段 + 未选节点 = 三段合流视图：
   // conductor 会话（需求 + 规划）→「流程执行」分隔线 →（未启动：确认卡 / 已启动：run 事件流）。
   // T8-P1：这里**不再**替换主区，只是在会话流末尾追加执行段，输入框保持可用。
+  // v0.9.7 需求2：执行段呈现条件放宽——有图任务走 run 卡；无图单对话流任务
+  // 走 runner 步骤卡（stages_json 数据源）。
+  const taskRunnerCard = useMemo(
+    () => parseRunnerCard(activeTaskLaunchInstance?.stages_json),
+    [activeTaskLaunchInstance?.stages_json],
+  );
   const taskExecutionMode =
-    taskModeActive && !taskSelectedNodeId && activeTaskLaunchInstance?.current_phase === "execution";
+    taskModeActive &&
+    !taskSelectedNodeId &&
+    (Boolean(activeTaskLaunchInstance?.graph_id) ||
+      taskRunnerCard.steps.length > 0 ||
+      Boolean(taskRunnerCard.pendingQuestion));
   // 已完成 / 已存在但终态的 run 重进时，restoreLatestRun 把 activeRunId 置 null、只保留
   // displayedRunId（= activeRunId ?? lastRunId）。必须用 displayedRunId 兜底，否则：
   // - 重进已完成任务 → 回退成「是否开始执行」卡，且分隔线下的执行内容被挡住不显示；
@@ -2355,70 +2382,6 @@ export function ChatPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTaskLaunchInstance, taskGraph.revision?.revision_id, taskGraph.loadGraph, currentProject?.path, t]);
 
-  // taskLaunch 阶段标签自动跟随：refreshTaskLaunchSessions 的 3s 轮询持续刷新
-  // taskLaunchSessions，activeTaskLaunchInstance.current_phase 会自动跟上后端。此 effect
-  // 监听其前进：仅当用户仍停在上一阶段（taskLaunchPhaseRef===prev，未手动挪开）才跟随切 tab
-  // ——requirements→planning 切规划会话，planning→execution 切执行工作台（与手动点 tab 同走
-  // openTaskPhaseWorkspace，行为一致）。不依赖 turn_complete 或 session-id 匹配，数据源即
-  // 既有轮询；守卫 taskLaunchPhase===prev 兼防跨任务误跟随与打断手动回看（M3）。
-  const taskLaunchCurrentPhase = activeTaskLaunchInstance?.current_phase ?? null;
-  useEffect(() => {
-    const prev = prevCurrentPhaseRef.current;
-    const next = taskLaunchCurrentPhase;
-    const advanced = !!next && !!prev && PHASE_LAUNCH_RANK[next] > PHASE_LAUNCH_RANK[prev];
-    if (advanced) {
-      // 结论性诊断：每次检测到 current_phase 前进都记录守卫值。无此日志=轮询没拿到新
-      // phase（后端）；userOnPrev:false=用户已手动挪开（守卫拦截，符合预期）；true 才跟随。
-      const userOnPrev = taskLaunchPhaseRef.current === prev;
-      const launchOpen = taskLaunchOpenRef.current;
-      logTaskPhaseDebug("launch-follow:detected", {
-        taskId: activeTaskLaunchInstance?.task_id,
-        prev,
-        next,
-        userOnPrev,
-        launchOpen,
-      });
-      if (userOnPrev && launchOpen && activeTaskLaunchInstance) {
-        const targetPhase: TaskPhase = (
-          next === "execution" || next === "graph" ? "execution" : next) as TaskPhase;
-        logTaskPhaseDebug("launch-follow:advance", {
-          taskId: activeTaskLaunchInstance.task_id,
-          prev,
-          next,
-          targetPhase,
-        });
-        openTaskPhaseWorkspace(activeTaskLaunchInstance, targetPhase);
-      } else if (!launchOpen && activeTaskLaunchInstance) {
-        // v0.9.2 需求6：会话模式（发起器未打开）下的自动跟随。原守卫要求
-        // launchOpen=true 且用户停在上一阶段标签——会话模式下二者永不满足，
-        // 阶段推进到 execution 时无人切换视图（需手动到列表底部找任务树）。
-        // 条件改为「正查看该任务的会话」：正在 conductor 会话里对话的用户
-        // 随阶段推进自动进入对应工作台；浏览其他会话的用户不被强行拽走。
-        const taskSessionIds = [
-          activeTaskLaunchInstance.requirement_session_id,
-          activeTaskLaunchInstance.planning_session_id,
-        ].filter((value): value is string => Boolean(value));
-        const currentConversationId =
-          selectedSessionRef.current === "new"
-            ? lastRealSessionIdRef.current
-            : selectedSessionRef.current;
-        const viewingTaskConversation =
-          !!currentConversationId && taskSessionIds.includes(currentConversationId);
-        logTaskPhaseDebug("launch-follow:session-mode", {
-          taskId: activeTaskLaunchInstance.task_id,
-          prev,
-          next,
-          viewingTaskConversation,
-        });
-        if (viewingTaskConversation) {
-          const targetPhase: TaskPhase = (
-            next === "execution" || next === "graph" ? "execution" : next) as TaskPhase;
-          openTaskPhaseWorkspace(activeTaskLaunchInstance, targetPhase);
-        }
-      }
-    }
-    prevCurrentPhaseRef.current = next;
-  }, [taskLaunchCurrentPhase, activeTaskLaunchInstance, openTaskPhaseWorkspace]);
 
   // taskLaunch 切标签时的阶段锚点定位：discuss/plan 同一 conductor 会话，切标签需滚到
   // 对应 PhaseDivider（data-phase），而非总会话顶部。仅在 taskLaunchPhase 变化时定位，
@@ -2678,7 +2641,7 @@ export function ChatPage({
         activeTaskInstanceId={activeTaskInstanceId}
         activeTaskInstanceIdRef={activeTaskInstanceIdRef}
         findTaskInstance={findTaskInstance}
-        openTaskPhaseWorkspace={openTaskPhaseWorkspace}
+        openTaskSession={openTaskSession}
         handleTaskCancelRun={handleTaskCancelRun}
         setTaskLaunchSessions={setTaskLaunchSessions}
         confirmDialog={confirmDialog}
@@ -2822,6 +2785,12 @@ export function ChatPage({
                 {/* v0.9.2 测试期：侧边栏面板宿主（sidebar-panel 挂载形态，挤压式
                     布局；与悬浮宿主平行，由能力中心统一调度）。 */}
                 <SessionSidebarLayer ctx={sessionKernelCtx} />
+                {/* v0.9.7 需求6 F2（P2-15）：产物引用上下文——校验基准
+                    project_root 来自 currentProject（不依赖进程表），sessionId
+                    用 selectedSession；projectPath 判空（null 时仅绝对路径可点）。 */}
+                <SessionArtifactContext.Provider
+                  value={{ projectPath: currentProject?.path ?? null, sessionId: selectedSession }}
+                >
                 <div ref={messageAreaRef} className="h-full overflow-y-auto">
                 {taskSelectedNodeNotStarted ? (
                   // 选中的步骤还没执行过——直接说明，而不是把上一段会话继续摆在这里。
@@ -2860,6 +2829,15 @@ export function ChatPage({
                     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4">
                       <PhaseDivider phase="execute" title={t("task.phase.execution", "流程执行")} />
                     </div>
+                    {/* v0.9.7 需求2：runner 步骤卡——无图单对话流任务的主任务卡
+                        （灯语言 + ask_user 待决策高亮）；有图任务未启动 run 时
+                        与方案卡并存靠下（以方案卡为先）。 */}
+                    {!activeTaskLaunchInstance?.graph_id && !taskRunStarted && (
+                      <TaskStepsCard
+                        steps={taskRunnerCard.steps}
+                        pendingQuestion={taskRunnerCard.pendingQuestion}
+                      />
+                    )}
                     {taskRunStarted ? (
                       /* v0.9.2 测试期修复（终态渲染两遍流程）：run 终态时节点卡列表
                          与汇总卡的节点行重复展示同一套流程（用户实测「显示两遍」）。
@@ -3007,6 +2985,7 @@ export function ChatPage({
                 );
               })()}
                 </div>
+                </SessionArtifactContext.Provider>
               </div>
           </>
         )}

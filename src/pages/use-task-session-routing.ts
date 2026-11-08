@@ -13,14 +13,14 @@ import type { AlertDialogOptions, ConfirmDialogOptions } from "@/components/ui/c
 import type { Message } from "@/types";
 import type { ChatInputHandle } from "@/components/sessions/chat-input";
 import type { GraphSnapshot } from "@/features/task-instance/graph/use-task-graph";
-import type { TaskLaunchInstanceSummary, TaskPhase } from "@/features/task-instance/types";
+import type { TaskLaunchInstanceSummary } from "@/features/task-instance/types";
 import type {
   TaskPanelContext,
   TaskPanelNode,
   TaskNodeSession,
 } from "@/features/session-kernel/plugins/types";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
-import { orderExecutableNodes, resolvePhaseSessionId } from "./chat-page-layout";
+import { orderExecutableNodes } from "./chat-page-layout";
 import type { TaskLaunchPhase } from "./chat-page-utils";
 
 /** 任务图切片（面板 ctx 派生所需的最小面）。 */
@@ -189,17 +189,15 @@ export function useTaskSessionRouting(deps: TaskSessionRoutingDeps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, taskModeAgentReady]);
 
-  /** 进入任务工作台（会话页 + 任务侧边栏形态）：主区指向任务阶段会话。 */
-  const openTaskPhaseWorkspace = useCallback((
+  /** v0.9.7 需求2：进入任务工作台（单对话流）——主区指向 task_session_id。 */
+  const openTaskSession = useCallback((
     taskSession: TaskLaunchInstanceSummary,
-    phase: TaskPhase,
     readOnly = false,
   ) => {
-    // 短路：已是同一任务同一阶段（且非只读切换），避免重复清空 selectedNodeId 引起
-    // 节点会话闪烁/竞态（v0.7.0 需求二-问题2：节点选中后再次点击变任务选中效果）。
+    // 短路：已是同一任务（且非只读切换），避免重复清空 selectedNodeId 引起
+    // 节点会话闪烁/竞态。
     if (
       activeTaskInstanceIdRef.current === taskSession.task_id &&
-      activeTaskLaunchInstance?.current_phase === taskSession.current_phase &&
       taskModeActive &&
       !readOnly
     ) {
@@ -207,34 +205,24 @@ export function useTaskSessionRouting(deps: TaskSessionRoutingDeps) {
     }
     logTaskPhaseDebug("workspace:open", {
       taskId: taskSession.task_id,
-      phase,
       readOnly,
       status: taskSession.status,
-      currentPhase: taskSession.current_phase,
-      requirementSessionId: taskSession.requirement_session_id,
-      planningSessionId: taskSession.planning_session_id,
       graphId: taskSession.graph_id,
     });
     setActiveTaskInstanceId(taskSession.task_id);
-    setActiveTaskRequirementFile(taskSession.requirement_file ?? null);
-    setSelectedTaskSkillId(taskSession.skill_id || "jishu-conductor-dev");
+    setSelectedTaskSkillId(taskSession.skill_id || "jishu-task-runner");
     activeTaskInstanceIdRef.current = taskSession.task_id;
-    activeTaskRequirementFileRef.current = taskSession.requirement_file ?? null;
     lastKnownStatusRef.current = taskSession.status;
     setTaskModeActive(true);
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
-    // 减法重构：不再进独立 TaskWorkspace 页面。直接把主会话区指向任务的阶段会话，
-    // 复用 chat-page 既有 MessageView/ChatInput。
-    // T8-P1：执行阶段不再置 null（此前导致会话区纯白、需求/规划内容全丢），
-    // 而是沿用 conductor 会话，在其下方合流「流程执行」分隔线 + run 事件流（需求六）。
-    const phaseSession = resolvePhaseSessionId(taskSession, phase);
-    setSelectedSession(phaseSession ?? null);
-    selectedSessionRef.current = phaseSession ?? null;
+    // 单对话流：主区指向任务主会话；节点视图经 handleTaskSelectNode 切换。
+    setSelectedSession(taskSession.task_session_id ?? null);
+    selectedSessionRef.current = taskSession.task_session_id ?? null;
     setTaskSelectedNodeId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTaskLaunchInstance?.current_phase, taskModeActive]);
+  }, [taskModeActive]);
 
   /** 任务侧边栏节点选择 → 同步主区会话 + 步骤栏高亮。 */
   const handleTaskSelectNode = useCallback((nodeId: string | null) => {
@@ -247,10 +235,7 @@ export function useTaskSessionRouting(deps: TaskSessionRoutingDeps) {
     if (!nodeId) {
       // 取消节点选择：清空节点会话 agent_id，主区恢复阶段会话
       setTaskNodeSessionAgentId(null);
-      const sess = resolvePhaseSessionId(
-        activeTaskLaunchInstance,
-        activeTaskLaunchInstance?.current_phase,
-      );
+      const sess = activeTaskLaunchInstance?.task_session_id ?? null;
       setSelectedSession(sess);
       selectedSessionRef.current = sess;
     } else {
@@ -293,7 +278,7 @@ export function useTaskSessionRouting(deps: TaskSessionRoutingDeps) {
       return {
         taskId: activeTaskLaunchInstance.task_id,
         title: activeTaskLaunchInstance.title,
-        phase: activeTaskLaunchInstance.current_phase,
+        phase: "run",
         runStatus: taskGraph.runStatus ?? null,
         completed: 0,
         total: 0,
@@ -335,7 +320,7 @@ export function useTaskSessionRouting(deps: TaskSessionRoutingDeps) {
     return {
       taskId: activeTaskLaunchInstance.task_id,
       title: activeTaskLaunchInstance.title,
-      phase: activeTaskLaunchInstance.current_phase,
+      phase: "run",
       runStatus: taskGraph.runStatus ?? null,
       completed,
       total: nodes.length,
@@ -352,7 +337,7 @@ export function useTaskSessionRouting(deps: TaskSessionRoutingDeps) {
   return {
     handleOpenTaskConversation,
     handleWorkModeChange,
-    openTaskPhaseWorkspace,
+    openTaskSession,
     handleTaskSelectNode,
     handleTaskNodeSessionChange,
     taskPanelCtx,

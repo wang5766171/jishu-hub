@@ -321,21 +321,19 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               console.warn("deps.discoverConductorTask failed:", e),
             );
           }
-          // R2: 仅当已关联真任务（activeTaskInstanceId 非空）时才 mark。为空说明
-          // Conductor 建的真任务尚未被 deps.discoverConductorTask 发现，此时 mark 会让后端
-          // mark_task_stage_session 的 unwrap_or_else 生成 uuid 占位任务（title="新任务"、
-          // 无图），导致会话列表出现两条数据。跳过 mark，交由 deps.discoverConductorTask 按
-          // requirement_session_id 关联真任务；会话 id 由 Conductor 扩展 conductor_sync_phase
-          // 权威写入，不依赖此处 mark。
-          if (deps.taskLaunchOpenRef.current && deps.activeTaskInstanceIdRef.current) {
+          // v0.9.7 需求2（R1 生产实测 issue #3 修复）：conductor 退役后任务
+          // 实例的唯一创建者是这里的 mark（后端 mark_task_session
+          // unwrap_or_else 建实例）——守卫放宽为「任务模式发消息」即可，
+          // taskId 为空 = 新建。旧「占位任务双建」顾虑不适用：runner 不建
+          // 任务，mark 是唯一创建者。
+          if (deps.taskLaunchOpenRef.current) {
             const projectRoot = deps.projectPathRef.current;
             if (projectRoot) {
               invokeCommand<TaskLaunchInstanceSummary>("task_launch_mark_session", {
                 projectRoot,
                 taskId: deps.activeTaskInstanceIdRef.current,
                 sessionId: realId,
-                skillId: deps.selectedTaskSkillIdRef.current,
-                phase: deps.taskLaunchPhaseRef.current,
+                skillId: deps.selectedTaskSkillIdRef.current || "jishu-task-runner",
                 title: null,
               })
                 .then((record) => {

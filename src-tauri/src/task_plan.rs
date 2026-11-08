@@ -127,14 +127,10 @@ fn builtin_skills_for_dir(dir: &Path) -> Result<Vec<BuiltinTaskPlanSkill>, Strin
 }
 
 // ── Pi 扩展自动注册（Hub setup hook 每次启动幂等确保）── // FORCE COMPILER TO RE-READ STATIC EMBEDDED FILE CHANGES V12
-const CONDUCTOR_EXTENSION_TS: &str =
-    include_str!("../resources/extensions/jishu-task-conductor.ts");
-const CONDUCTOR_DISCUSS_SKILL: &str =
-    include_str!("../resources/task-plan/jishu-conductor-dev/discuss.SKILL.md");
-const CONDUCTOR_PLAN_SKILL: &str =
-    include_str!("../resources/task-plan/jishu-conductor-dev/plan.SKILL.md");
-const CONDUCTOR_EXECUTE_SKILL: &str =
-    include_str!("../resources/task-plan/jishu-conductor-dev/execute.SKILL.md");
+// v0.9.7 需求2：任务执行器扩展（取代 conductor 三阶段状态机——去阶段化）。
+const TASK_RUNNER_EXTENSION_TS: &str = include_str!("../resources/extensions/jishu-task-runner.ts");
+const TASK_RUNNER_SKILL: &str =
+    include_str!("../resources/task-plan/jishu-conductor-dev/runner.SKILL.md");
 const JISHU_TOOL_APPROVAL_EXTENSION_TS: &str =
     include_str!("../resources/extensions/jishu-tool-approval.ts");
 const JISHU_BATCH_GUARD_EXTENSION_TS: &str =
@@ -189,32 +185,42 @@ pub(crate) fn register_extension_in_settings(agent_dir: &Path, rel_path: &str) {
     }
 }
 
-/// 自动注册 Conductor 扩展 + skill pack + settings.json extensions + 删除旧 skill。
-/// 在 Hub setup hook 调用，每次启动自动确保。
-pub fn ensure_conductor_extension() {
+/// v0.9.7 需求2：部署任务执行器扩展（jishu-task-runner，取代三阶段
+/// conductor——去阶段化）+ runner 技能包；退役 conductor 扩展与三份
+/// 阶段技能（文件删除 + settings 摘注册）。幂等。
+pub fn ensure_task_runner_extension() {
     let Ok(agent_dir) = jishu_agent_dir() else {
         return;
     };
-    ensure_conductor_extension_in(&agent_dir);
+    ensure_task_runner_extension_in(&agent_dir);
 }
 
-fn ensure_conductor_extension_in(agent_dir: &Path) {
-    const CONDUCTOR_EXT_REL: &str = "extensions/jishu-task-conductor.ts";
+fn ensure_task_runner_extension_in(agent_dir: &Path) {
+    const RUNNER_EXT_REL: &str = "extensions/jishu-task-runner.ts";
+    const RETIRED_CONDUCTOR_REL: &str = "extensions/jishu-task-conductor.ts";
 
-    // 1. 写扩展文件
-    deploy_extension_file(agent_dir, CONDUCTOR_EXT_REL, CONDUCTOR_EXTENSION_TS);
-
-    // 2. 写 skill pack
+    // 1. 写 runner 扩展 + 技能包（唯一正确位置：Pi 原生 agent 目录）。
+    deploy_extension_file(agent_dir, RUNNER_EXT_REL, TASK_RUNNER_EXTENSION_TS);
     let skill_dir = agent_dir.join("skills").join("jishu-conductor-dev");
     let _ = std::fs::create_dir_all(&skill_dir);
-    let _ = std::fs::write(skill_dir.join("discuss.SKILL.md"), CONDUCTOR_DISCUSS_SKILL);
-    let _ = std::fs::write(skill_dir.join("plan.SKILL.md"), CONDUCTOR_PLAN_SKILL);
-    let _ = std::fs::write(skill_dir.join("execute.SKILL.md"), CONDUCTOR_EXECUTE_SKILL);
+    let _ = std::fs::write(skill_dir.join("runner.SKILL.md"), TASK_RUNNER_SKILL);
 
-    // 2b. v0.9.2 测试期修复（用户裁决：不做双写兼容，收敛唯一正确目录）：
-    // 技能包唯一位置 = Pi 原生 agent 目录（上文第 2 步）；扩展侧 SKILLS_DIR
-    // 已改为按 Pi getAgentDir() 同规则解析（<根>/agent/skills）。此处清理
-    // 历史错误位置（<根>/skills 下的 conductor 技能包）的残留。
+    // 2. 注册 settings.json extensions（幂等）
+    register_extension_in_settings(agent_dir, RUNNER_EXT_REL);
+
+    // 3. 退役 conductor（v0.9.7 需求2 砍除#1/#2/#8）：扩展文件、settings
+    //    条目、三份阶段技能一并清除；历史残留位置同步清理。
+    let retired_ext = agent_dir.join(RETIRED_CONDUCTOR_REL);
+    if retired_ext.exists() {
+        let _ = std::fs::remove_file(&retired_ext);
+    }
+    unregister_extension_from_settings(agent_dir, RETIRED_CONDUCTOR_REL);
+    for stale_skill in ["discuss.SKILL.md", "plan.SKILL.md", "execute.SKILL.md"] {
+        let path = skill_dir.join(stale_skill);
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
     if let Some(root) = agent_dir.parent() {
         for stale in ["jishu-conductor-dev", "jishu-task-planner"] {
             let stale_dir = root.join("skills").join(stale);
@@ -223,11 +229,6 @@ fn ensure_conductor_extension_in(agent_dir: &Path) {
             }
         }
     }
-
-    // 3. 注册 settings.json extensions（幂等）
-    register_extension_in_settings(agent_dir, CONDUCTOR_EXT_REL);
-
-    // 4. 删除旧 skill（避免 agent 读旧 jishu-task-planner 干扰 Conductor）
     let old_skill = agent_dir.join("skills").join("jishu-task-planner");
     if old_skill.exists() {
         let _ = std::fs::remove_dir_all(&old_skill);
@@ -774,16 +775,32 @@ description: demo
     #[test]
     fn ensure_both_extensions_deploy_and_register() {
         let dir = ext_test_dir("both");
-        ensure_conductor_extension_in(&dir);
-        // conductor .ts 扩展文件已部署
-        assert!(dir.join("extensions/jishu-task-conductor.ts").is_file());
-        // conductor skill pack 仍在
+        ensure_task_runner_extension_in(&dir);
+        // runner .ts 扩展文件已部署
+        assert!(dir.join("extensions/jishu-task-runner.ts").is_file());
+        // runner skill pack 已部署
         assert!(dir
-            .join("skills/jishu-conductor-dev/discuss.SKILL.md")
+            .join("skills/jishu-conductor-dev/runner.SKILL.md")
             .is_file());
-        // settings.json 含 conductor 扩展
+        // settings.json 含 runner 扩展
         let arr = settings_extensions(&dir);
-        assert!(arr.contains(&"extensions/jishu-task-conductor.ts".into()));
+        assert!(arr.contains(&"extensions/jishu-task-runner.ts".into()));
+        // conductor 退役：预置旧扩展文件 + settings 条目后重跑，应被清除。
+        std::fs::write(dir.join("extensions/jishu-task-conductor.ts"), "// retired").unwrap();
+        let settings = serde_json::json!({
+            "extensions": [
+                "extensions/jishu-task-runner.ts",
+                "extensions/jishu-task-conductor.ts",
+            ],
+        });
+        std::fs::write(
+            dir.join("settings.json"),
+            serde_json::to_string_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+        ensure_task_runner_extension_in(&dir);
+        assert!(!dir.join("extensions/jishu-task-conductor.ts").exists());
+        assert!(!settings_extensions(&dir).contains(&"extensions/jishu-task-conductor.ts".into()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -853,25 +870,24 @@ description: demo
 
     /// v0.9.2 测试期修复回归（用户裁决：唯一正确目录，无双写）：skill pack
     /// 只写 Pi 原生 agent 目录；历史错误位置（<根>/skills）的残留被清理。
+    /// v0.9.7 需求2：runner 技能单份；旧三份阶段技能属退役清理面。
     #[test]
     fn conductor_skill_pack_single_location_and_stale_root_cleaned() {
         let root = ext_test_dir("root-skills");
         let agent_dir = root.join("agent");
         std::fs::create_dir_all(&agent_dir).unwrap();
-        // 预置历史错误位置的残留
+        // 预置历史错误位置的残留 + 旧阶段技能（退役对象）
         let stale = root.join("skills").join("jishu-conductor-dev");
         std::fs::create_dir_all(&stale).unwrap();
         std::fs::write(stale.join("discuss.SKILL.md"), "stale").unwrap();
+        let skills_dir = agent_dir.join("skills").join("jishu-conductor-dev");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("plan.SKILL.md"), "retired").unwrap();
 
-        ensure_conductor_extension_in(&agent_dir);
+        ensure_task_runner_extension_in(&agent_dir);
 
-        for phase in ["discuss", "plan", "execute"] {
-            assert!(agent_dir
-                .join("skills")
-                .join("jishu-conductor-dev")
-                .join(format!("{phase}.SKILL.md"))
-                .is_file());
-        }
+        assert!(skills_dir.join("runner.SKILL.md").is_file());
+        assert!(!skills_dir.join("plan.SKILL.md").exists());
         // 错误位置残留被清理（skills 目录本身若空也不强删——只清 conductor 相关）
         assert!(!stale.exists());
         let _ = std::fs::remove_dir_all(&root);

@@ -35,10 +35,7 @@ export interface TaskSessionTreeTask {
   title: string;
   skill_id: string;
   status: string;
-  current_phase: string;
-  requirement_file?: string | null;
-  requirement_session_id?: string | null;
-  planning_session_id?: string | null;
+  task_session_id?: string | null;
   graph_id?: string | null;
   active_run_id?: string | null;
   last_run_id?: string | null;
@@ -70,12 +67,6 @@ interface TaskRowProps {
   onDeleteTask: (task: TaskSessionTreeTask) => void;
 }
 
-const phaseLabel: Record<string, string> = {
-  requirements: "需求",
-  planning: "规划",
-  graph: "流程",
-  execution: "执行",
-};
 
 const TaskRow = memo(function TaskRow({
   task,
@@ -86,7 +77,7 @@ const TaskRow = memo(function TaskRow({
   onCancelTask,
 }: TaskRowProps) {
   const { t } = useTranslation();
-  const phase = phaseLabel[task.current_phase] ?? task.current_phase;
+  const phase = task.run_status ?? "";
 
   return (
     <ContextMenu>

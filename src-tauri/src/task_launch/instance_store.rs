@@ -33,32 +33,29 @@ impl TaskInstanceStore {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|e| e.to_string())?;
 
-        if current_version == 0 {
-            // v0（全新库）：drop 重建。
+        // v0.9.7 需求2 C2（P1-4b 修复）：DROP 条件从「仅全新库」扩为
+        // **版本不等即 DROP 重建**（对齐 orchestrator 侧语义；不做跨版本
+        // 迁移——B3 既定约定）。重建前 .bak 备份。
+        if current_version != TASK_INSTANCE_SCHEMA_VERSION {
+            let exists: bool = conn
+                .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_instance'")
+                .map_err(|e| e.to_string())?
+                .exists([])
+                .map_err(|e| e.to_string())?;
+            if exists && current_version > 0 {
+                // 与 orchestrator 同款：备份旧库文件由调用方 db_path 处理不可行
+                //（此处只有连接）——表级备份为 .bak 表，保底可追溯。
+                let backup = format!("task_instance_v{current_version}_bak");
+                conn.execute_batch(&format!(
+                    "DROP TABLE IF EXISTS {backup}; ALTER TABLE task_instance RENAME TO {backup};"
+                ))
+                .map_err(|e| e.to_string())?;
+                log::warn!(
+                    "[task-instance] schema v{current_version} → v{TASK_INSTANCE_SCHEMA_VERSION}：旧表保留为 {backup}"
+                );
+            }
             conn.execute_batch("DROP TABLE IF EXISTS task_instance;")
                 .map_err(|e| e.to_string())?;
-        } else {
-            // 增量迁移（v1→v2→v3，**按列存在性幂等**）：目标列缺失才补。
-            // 背景（v0.9.3 测试期用户实测）：新旧版本先后打开同一库时，旧版
-            // 会把 user_version 写回自己的低版本常量，形成「谎报 v2 但 v3 列
-            // 已存在」的态——按版本号盲 ALTER 触发 duplicate column 使整个
-            // store 打开失败（任务列表空、会话全部落常规列表、新任务启动链
-            // 全被挡）。列检查使该态自愈：无缺失列 → 跳过 → 版本写回 3。
-            let existing: std::collections::HashSet<String> = conn
-                .prepare("PRAGMA table_info(task_instance)")
-                .map_err(|e| e.to_string())?
-                .query_map([], |row| row.get::<_, String>(1))
-                .map_err(|e| e.to_string())?
-                .collect::<Result<_, _>>()
-                .map_err(|e| e.to_string())?;
-            if !existing.contains("last_launch_key") {
-                conn.execute_batch("ALTER TABLE task_instance ADD COLUMN last_launch_key TEXT;")
-                    .map_err(|e| e.to_string())?;
-            }
-            if !existing.contains("stages_json") {
-                conn.execute_batch("ALTER TABLE task_instance ADD COLUMN stages_json TEXT;")
-                    .map_err(|e| e.to_string())?;
-            }
         }
 
         conn.execute_batch(
@@ -69,11 +66,8 @@ impl TaskInstanceStore {
                 title                    TEXT NOT NULL DEFAULT '新任务',
                 skill_id                 TEXT NOT NULL,
                 planner_agent_id         TEXT NOT NULL DEFAULT 'jishu_agent',
-                status                   TEXT NOT NULL DEFAULT 'requirements_discussing',
-                current_phase            TEXT NOT NULL DEFAULT 'requirements',
-                requirement_file         TEXT,
-                requirement_session_id   TEXT,
-                planning_session_id      TEXT,
+                status                   TEXT NOT NULL DEFAULT 'active',
+                task_session_id          TEXT,
                 graph_id                 TEXT,
                 active_run_id            TEXT,
                 last_run_id              TEXT,
@@ -102,10 +96,7 @@ impl TaskInstanceStore {
             skill_id: row.get("skill_id")?,
             planner_agent_id: row.get("planner_agent_id")?,
             status: row.get("status")?,
-            current_phase: row.get("current_phase")?,
-            requirement_file: row.get("requirement_file")?,
-            requirement_session_id: row.get("requirement_session_id")?,
-            planning_session_id: row.get("planning_session_id")?,
+            task_session_id: row.get("task_session_id")?,
             graph_id: row.get("graph_id")?,
             active_run_id: row.get("active_run_id")?,
             last_run_id: row.get("last_run_id")?,
@@ -118,8 +109,7 @@ impl TaskInstanceStore {
     }
 
     const SELECT_COLUMNS: &'static str = "task_id, project_root, title, skill_id, planner_agent_id,
-                status, current_phase, requirement_file, requirement_session_id,
-                planning_session_id, graph_id, active_run_id, last_run_id, run_status,
+                status, task_session_id, graph_id, active_run_id, last_run_id, run_status,
                 last_launch_key, stages_json, created_at, updated_at";
 
     pub(super) fn list_by_project(
@@ -159,19 +149,15 @@ impl TaskInstanceStore {
         conn.execute(
             "INSERT INTO task_instance (
                 task_id, project_root, title, skill_id, planner_agent_id, status,
-                current_phase, requirement_file, requirement_session_id, planning_session_id,
-                graph_id, active_run_id, last_run_id, run_status, last_launch_key,
-                stages_json, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                task_session_id, graph_id, active_run_id, last_run_id, run_status,
+                last_launch_key, stages_json, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(task_id) DO UPDATE SET
                 title = excluded.title,
                 skill_id = excluded.skill_id,
                 planner_agent_id = excluded.planner_agent_id,
                 status = excluded.status,
-                current_phase = excluded.current_phase,
-                requirement_file = excluded.requirement_file,
-                requirement_session_id = excluded.requirement_session_id,
-                planning_session_id = excluded.planning_session_id,
+                task_session_id = excluded.task_session_id,
                 graph_id = excluded.graph_id,
                 active_run_id = excluded.active_run_id,
                 last_run_id = excluded.last_run_id,
@@ -186,10 +172,7 @@ impl TaskInstanceStore {
                 instance.skill_id,
                 instance.planner_agent_id,
                 instance.status,
-                instance.current_phase,
-                instance.requirement_file,
-                instance.requirement_session_id,
-                instance.planning_session_id,
+                instance.task_session_id,
                 instance.graph_id,
                 instance.active_run_id,
                 instance.last_run_id,
@@ -229,42 +212,18 @@ pub fn get_task_instance(
     store.get(task_id)
 }
 
-pub fn planning_instruction_for_instance(
-    project_root: &str,
-    task_id: &str,
-) -> Result<String, String> {
-    let store = open_store(project_root)?;
-    let instance = store
-        .get(task_id)?
-        .ok_or_else(|| format!("task instance not found: {task_id}"))?;
-    let requirement_file = instance
-        .requirement_file
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("task instance has no requirement file: {task_id}"))?;
-
-    build_planning_instruction_from_requirement(Path::new(requirement_file))
-}
-
-/// 标记某阶段的会话。阶段由 `phase` 参数决定（经 `normalize_phase` 归一化）。
-///
-/// 设计依据：`任务数据结构与生命周期设计_20260622.md` §3.1、§3.2、§1.3。
-/// - requirements 阶段：写 requirement_session_id + status=requirements_discussing
-/// - planning 阶段：写 planning_session_id + status=planning_discussing
-/// - execution 阶段：不绑定 session_id（执行阶段会话由 run/node 管理），只推进 current_phase
-pub fn mark_task_stage_session(
+/// v0.9.7 需求2 C2：标记任务主会话（原 requirement/planning 两列合并为
+/// task_session_id——单对话流）。无 phase 语义。
+pub fn mark_task_session(
     project_root: &str,
     task_id: Option<&str>,
     session_id: &str,
     skill_id: &str,
-    phase: &str,
     title: Option<&str>,
 ) -> Result<TaskLaunchInstance, String> {
     if session_id.trim().is_empty() {
         return Err("session_id is required".into());
     }
-    let phase = normalize_phase(phase);
     let store = open_store(project_root)?;
     let now = now_ms();
     let id = task_id
@@ -285,11 +244,8 @@ pub fn mark_task_stage_session(
             .to_string(),
         skill_id: skill_id.to_string(),
         planner_agent_id: "jishu_agent".into(),
-        status: STATUS_REQUIREMENTS_DISCUSSING.into(),
-        current_phase: phase.clone(),
-        requirement_file: None,
-        requirement_session_id: None,
-        planning_session_id: None,
+        status: STATUS_ACTIVE.into(),
+        task_session_id: None,
         graph_id: None,
         active_run_id: None,
         last_run_id: None,
@@ -305,32 +261,7 @@ pub fn mark_task_stage_session(
     if let Some(title) = title.map(str::trim).filter(|v| !v.is_empty()) {
         instance.title = title.to_string();
     }
-
-    match phase.as_str() {
-        "planning" => {
-            instance.planning_session_id = Some(session_id.to_string());
-            if instance.status != STATUS_GRAPH_CREATED {
-                instance.current_phase = "planning".into();
-                instance.status = STATUS_PLANNING_DISCUSSING.into();
-            }
-        }
-        "execution" => {
-            // 执行阶段不绑定 session_id（执行会话由 run/node 管理）。
-            // 仅当当前 status 还没到 graph_created 时才推进（避免覆盖已绑图的状态）。
-            instance.current_phase = "execution".into();
-            if instance.status != STATUS_GRAPH_CREATED {
-                instance.status = STATUS_GRAPH_CREATED.into();
-            }
-        }
-        _ => {
-            // requirements 阶段
-            instance.requirement_session_id = Some(session_id.to_string());
-            if instance.status == STATUS_REQUIREMENTS_DISCUSSING {
-                instance.current_phase = "requirements".into();
-                instance.status = STATUS_REQUIREMENTS_DISCUSSING.into();
-            }
-        }
-    }
+    instance.task_session_id = Some(session_id.to_string());
 
     store.upsert(&instance)?;
     Ok(instance)
@@ -343,110 +274,38 @@ pub fn find_by_session(
 ) -> Result<Option<TaskLaunchInstance>, String> {
     let store = open_store(project_root)?;
     let instances = store.list_by_project(project_root)?;
-    Ok(instances.into_iter().find(|inst| {
-        inst.requirement_session_id.as_deref() == Some(session_id)
-            || inst.planning_session_id.as_deref() == Some(session_id)
-    }))
+    Ok(instances
+        .into_iter()
+        .find(|inst| inst.task_session_id.as_deref() == Some(session_id)))
 }
 
-/// 需求定稿：落盘 requirement_markdown + 推进 status=requirements_finalized。
-///
-/// 设计依据：`任务数据结构与生命周期设计_20260622.md` §3.1。
-/// `requirement_markdown` 由调用方决定（Agent 按 skill 约束产出 / 直接模式原始描述），
-/// 后端只负责落盘 + 记元数据 + 生成规划指令。不再硬编码 render_requirement_markdown。
-pub fn finalize_requirement(
+/// v0.9.7 需求2 C2：runner 步骤清单上报（任务卡数据源，stages_json 列）。
+/// 成功后由调用方（IPC 层）emit `task-instance-changed`。
+pub fn runner_update_steps(
     project_root: &str,
-    request: RequirementFinalizeRequest,
-) -> Result<TaskRequirementFinalized, String> {
-    let RequirementFinalizeRequest {
-        task_id,
-        skill_id,
-        title,
-        requirement_markdown,
-        source_session_id,
-        creation_mode,
-    } = request;
-
-    if requirement_markdown.trim().is_empty() {
-        return Err("requirement_markdown is required".into());
+    task_id: &str,
+    steps_json: &str,
+) -> Result<TaskLaunchInstance, String> {
+    if steps_json.trim().is_empty() {
+        return Err("steps_json is required".into());
+    }
+    // 形状校验：必须可解析且含 steps 数组（拒绝任意 JSON 塞库）。
+    let parsed: serde_json::Value =
+        serde_json::from_str(steps_json).map_err(|e| format!("steps_json 解析失败: {e}"))?;
+    if !parsed.get("steps").is_some_and(|s| s.is_array()) {
+        return Err("steps_json 须为 {\"steps\":[…]} 形状".into());
     }
     let store = open_store(project_root)?;
-    let now = now_ms();
-    let id = task_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("task_{}", uuid::Uuid::new_v4().simple()));
-
-    let final_title = title
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
-        .or_else(|| derive_title_from_markdown(&requirement_markdown))
-        .unwrap_or_else(|| "新任务需求".to_string());
-
-    let requirement_dir = task_workspace_root(project_root)
-        .join(&id)
-        .join("requirements");
-    std::fs::create_dir_all(&requirement_dir).map_err(|err| err.to_string())?;
-    let requirement_file = requirement_dir.join("requirements.md");
-    let content = render_finalized_markdown(
-        &final_title,
-        &skill_id,
-        source_session_id.as_deref(),
-        creation_mode.as_str(),
-        &requirement_markdown,
-    );
-    crate::util::atomic_write(&requirement_file, content.as_bytes())
-        .map_err(|err| err.to_string())?;
-
-    let existing = store.get(&id)?;
-    let mut instance = existing.unwrap_or_else(|| TaskLaunchInstance {
-        task_id: id.clone(),
-        project_root: project_root.to_string(),
-        title: final_title.clone(),
-        skill_id: skill_id.clone(),
-        planner_agent_id: "jishu_agent".into(),
-        status: STATUS_REQUIREMENTS_FINALIZED.into(),
-        current_phase: "requirements".into(),
-        requirement_file: None,
-        requirement_session_id: None,
-        planning_session_id: None,
-        graph_id: None,
-        active_run_id: None,
-        last_run_id: None,
-        run_status: None,
-        last_launch_key: None,
-        stages_json: None,
-        created_at: now,
-        updated_at: now,
-    });
-    instance.title = final_title.clone();
-    instance.skill_id = skill_id.clone();
-    instance.status = STATUS_REQUIREMENTS_FINALIZED.into();
-    instance.current_phase = "requirements".into();
-    instance.requirement_file = Some(requirement_file.to_string_lossy().to_string());
-    if let Some(session_id) = source_session_id.filter(|v| !v.trim().is_empty()) {
-        instance.requirement_session_id = Some(session_id);
-    }
-    instance.updated_at = now;
+    let mut instance = store
+        .get(task_id)?
+        .ok_or_else(|| format!("task instance not found: {task_id}"))?;
+    instance.stages_json = Some(steps_json.to_string());
+    instance.updated_at = now_ms();
     store.upsert(&instance)?;
-
-    let planning_instruction = build_planning_instruction_from_requirement(&requirement_file)?;
-    Ok(TaskRequirementFinalized {
-        task_id: id,
-        title: final_title,
-        requirement_dir: requirement_dir.to_string_lossy().to_string(),
-        requirement_file: requirement_file.to_string_lossy().to_string(),
-        planning_instruction,
-    })
+    Ok(instance)
 }
 
-/// 将生成的 TaskGraph 绑定到任务实例，推进到执行阶段（status 终态）。
-///
-/// 设计依据：`任务数据结构与生命周期设计_20260622.md` §3.2、§2.1。
+/// 将生成的 TaskGraph 绑定到任务实例。
 pub fn attach_graph(
     project_root: &str,
     task_id: &str,
@@ -457,8 +316,6 @@ pub fn attach_graph(
         .get(task_id)?
         .ok_or_else(|| format!("task instance not found: {task_id}"))?;
     instance.graph_id = Some(graph_id.to_string());
-    instance.status = STATUS_GRAPH_CREATED.into();
-    instance.current_phase = "execution".into();
     instance.updated_at = now_ms();
     store.upsert(&instance)?;
     Ok(instance)
@@ -554,11 +411,8 @@ pub fn create_from_existing_graph(
         title: title.to_string(),
         skill_id: skill_id.to_string(),
         planner_agent_id: "jishu_agent".into(),
-        status: STATUS_GRAPH_CREATED.into(),
-        current_phase: "execution".into(),
-        requirement_file: None,
-        requirement_session_id: None,
-        planning_session_id: None,
+        status: STATUS_ACTIVE.into(),
+        task_session_id: None,
         graph_id: Some(graph_id.to_string()),
         active_run_id: None,
         last_run_id: None,
@@ -581,69 +435,4 @@ fn normalize_run_status(status: &str) -> String {
         "Cancelled" | "cancelled" => RUN_STATUS_CANCELLED.into(),
         _ => status.to_string(),
     }
-}
-
-fn build_planning_instruction_from_requirement(requirement_file: &Path) -> Result<String, String> {
-    let content = std::fs::read_to_string(requirement_file).map_err(|err| err.to_string())?;
-    Ok(format!(
-        "请读取以下需求终稿，并基于该需求与用户进行任务流程规划讨论。当前阶段不要直接执行任务，也不要要求用户去画布点击智能规划；请在会话中持续澄清流程节点、职责、依赖、验收与风险。当流程方案明确后，请发起交互式确认，询问用户是否生成任务流程图。\n\n需求终稿文件：{}\n\n--- 需求终稿开始 ---\n{}\n--- 需求终稿结束 ---",
-        requirement_file.display(),
-        content.trim(),
-    ))
-}
-
-/// 渲染最终落盘的 requirements.md。
-///
-/// 结构：元数据头 + 调用方提供的定稿内容。后端不解析/重组内容，
-/// 格式由调用方（Agent 按 skill 约束 / 直接模式原始描述）决定。
-fn render_finalized_markdown(
-    title: &str,
-    skill_id: &str,
-    session_id: Option<&str>,
-    creation_mode: &str,
-    body_markdown: &str,
-) -> String {
-    let mut output = String::new();
-    output.push_str("# ");
-    output.push_str(title.trim());
-    output.push_str("\n\n");
-    output.push_str("- 需求稿类型：任务流程生成终稿\n");
-    output.push_str("- 驱动技能：");
-    output.push_str(skill_id);
-    output.push('\n');
-    output.push_str("- 创建模式：");
-    output.push_str(creation_mode);
-    output.push('\n');
-    if let Some(session_id) = session_id {
-        output.push_str("- 来源阶段会话：");
-        output.push_str(session_id);
-        output.push('\n');
-    }
-    output.push_str("\n## 定稿内容\n\n");
-    output.push_str(body_markdown.trim());
-    output.push('\n');
-    output
-}
-
-fn derive_title_from_markdown(markdown: &str) -> Option<String> {
-    // 优先从 markdown 一级标题提取；否则取第一行非空文本。
-    for line in markdown.lines() {
-        let trimmed = line.trim();
-        if let Some(stripped) = trimmed.strip_prefix("# ") {
-            let title = stripped.trim();
-            if !title.is_empty() {
-                return Some(truncate_title(title));
-            }
-        }
-        if !trimmed.is_empty() && !trimmed.starts_with('-') {
-            return Some(truncate_title(trimmed));
-        }
-    }
-    None
-}
-
-fn truncate_title(value: &str) -> String {
-    let mut title = value.replace(['\r', '\n', '\t'], " ");
-    title.truncate(40);
-    title
 }

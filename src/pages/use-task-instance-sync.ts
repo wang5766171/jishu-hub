@@ -120,7 +120,6 @@ export function useTaskInstanceSync(deps: TaskInstanceSyncDeps) {
       taskId: record.task_id,
       isCurrentTask,
       status: record.status,
-      currentPhase: record.current_phase,
     });
 
     if (isCurrentTask) {
@@ -155,8 +154,7 @@ export function useTaskInstanceSync(deps: TaskInstanceSyncDeps) {
             // 落新 revision）时重载任务图——方案卡/子任务卡/全景即时反映修订。
             const changedInst = items.find((item) => item.task_id === event.payload.task_id);
             if (
-              changedInst?.current_phase === "execution" &&
-              changedInst.graph_id &&
+              changedInst?.graph_id &&
               changedInst.task_id === activeTaskInstanceIdRef.current
             ) {
               taskGraphRef.current.loadGraph(changedInst.graph_id).catch((e) =>

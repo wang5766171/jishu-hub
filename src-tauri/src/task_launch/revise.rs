@@ -32,12 +32,9 @@ pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult,
     };
     use crate::util::gen_id;
 
-    let mut instance = super::proposal::ti_instance(&req.project_root, &req.task_id)?
+    let instance = super::proposal::ti_instance(&req.project_root, &req.task_id)?
         .ok_or("task instance not found")?;
     let graph_id = instance.graph_id.clone().ok_or("task has no graph")?;
-    if instance.current_phase != "execution" {
-        return Err("仅执行阶段任务支持方案修订".to_string());
-    }
 
     // proposal 解析（与 validate 同 schema）
     let proposal_raw = std::fs::read_to_string(&req.proposal_path)
@@ -51,12 +48,20 @@ pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult,
         .get("nodes")
         .and_then(|v| v.as_array())
         .ok_or_else(|| "proposal missing 'nodes' array".to_string())?;
-    let requirement_path = instance.requirement_file.as_ref().map(|rel| {
-        PathBuf::from(&req.project_root)
-            .join(rel)
-            .to_string_lossy()
-            .into_owned()
-    });
+    // v0.9.7 需求2：需求文档按任务目录约定解析（requirement_file 列已退场）。
+    let requirement_path = {
+        let p = PathBuf::from(&req.project_root)
+            .join(".jishu-hub")
+            .join("tasks")
+            .join(&req.task_id)
+            .join("requirements")
+            .join("requirements.md");
+        if p.is_file() {
+            Some(p.to_string_lossy().into_owned())
+        } else {
+            None
+        }
+    };
 
     // 既有图：保留 Goal 节点，可执行集按 proposal 重建（同 id = 更新语义）
     let store = TaskStore::open(&default_db_path())
@@ -228,6 +233,7 @@ pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult,
         }
     }
 
+    let mut instance = instance;
     instance.updated_at = now_ms();
     open_store(&req.project_root)?.upsert(&instance)?;
 
@@ -441,7 +447,7 @@ fn rebuild_executable_node(
 mod tests {
     use super::*;
 
-    /// 非执行阶段任务拒绝修订（守护：修订通道仅执行期开放）。
+    /// 修订通道对不存在的任务拒绝（守护）。
     #[test]
     fn revise_rejects_non_execution_phase() {
         let project =
@@ -449,12 +455,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&project);
         std::fs::create_dir_all(&project).unwrap();
         let project_root = project.to_string_lossy().to_string();
-        mark_task_stage_session(
+        mark_task_session(
             &project_root,
             None,
             "requirements-session",
-            "jishu-conductor-dev",
-            "requirements",
+            "jishu-task-runner",
             Some("Demo"),
         )
         .unwrap();

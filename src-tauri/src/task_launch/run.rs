@@ -154,8 +154,6 @@ pub fn orchestrator_start_run_from_revision(
     updated.active_run_id = Some(run_id.clone());
     updated.last_run_id = Some(run_id.clone());
     updated.run_status = Some(RUN_STATUS_RUNNING.to_string());
-    updated.current_phase = "execution".to_string();
-    updated.status = STATUS_GRAPH_CREATED.to_string();
     updated.last_launch_key = Some(req.idempotency_key);
     updated.updated_at = now;
     ti_store.upsert(&updated)?;
@@ -346,8 +344,6 @@ pub fn task_launch_start_run(
     updated.active_run_id = Some(run_id.clone());
     updated.last_run_id = Some(run_id.clone());
     updated.run_status = Some(RUN_STATUS_RUNNING.to_string());
-    updated.current_phase = "execution".to_string();
-    updated.status = STATUS_GRAPH_CREATED.to_string();
     updated.last_launch_key = Some(req.idempotency_key);
     updated.updated_at = now;
     ti_store.upsert(&updated)?;

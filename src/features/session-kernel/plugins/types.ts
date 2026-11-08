@@ -217,6 +217,7 @@ export interface TaskNodeSession {
 export interface TaskPanelContext {
   taskId: string;
   title: string;
+  /** v0.9.7 需求2 去阶段化：恒 "run"（兼容面板插件旧字段，后续版本移除）。 */
   phase: string;
   runStatus: string | null;
   /** 执行进度（终态节点数 / 总数）。 */

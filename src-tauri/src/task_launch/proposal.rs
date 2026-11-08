@@ -58,18 +58,19 @@ pub fn orchestrator_validate_proposal(
         .and_then(|v| v.as_array())
         .ok_or_else(|| "proposal missing 'nodes' array".to_string())?;
 
-    // v0.9.2 需求5：提前取 TaskInstance——派发 prompt 需要需求文档上下文
-    // （requirement_file 在执行链路此前零引用，是"原始需求遗漏"的根因之一）。
+    // v0.9.2 需求5：提前取 TaskInstance——派发 prompt 需要需求文档上下文。
+    // v0.9.7 需求2：requirement_file 列退场，按任务目录约定解析。
     let instance = ti_instance(&req.project_root, &req.task_id)?;
-    let requirement_path = instance
-        .as_ref()
-        .and_then(|inst| inst.requirement_file.as_ref())
-        .map(|rel| {
-            PathBuf::from(&req.project_root)
-                .join(rel)
-                .to_string_lossy()
-                .into_owned()
-        });
+    let requirement_path = instance.as_ref().map(|inst| {
+        PathBuf::from(&req.project_root)
+            .join(".jishu-hub")
+            .join("tasks")
+            .join(&inst.task_id)
+            .join("requirements")
+            .join("requirements.md")
+            .to_string_lossy()
+            .into_owned()
+    });
 
     // 2. 构建 GraphSnapshot
     let mut snapshot_nodes: Vec<GraphNode> = Vec::new();

@@ -17,12 +17,67 @@ pub(crate) fn handle_hub_invoke(
     params: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     match command {
-        "conductor_sync_phase" => {
-            let request: crate::task_launch::ConductorSyncPhaseRequest =
-                serde_json::from_value(params.clone())
-                    .map_err(|e| format!("conductor_sync_phase 参数解析失败: {e}"))?;
-            let result = crate::task_launch::conductor_sync_phase(request)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
+        // v0.9.7 需求2 C2：runner 步骤上报（任务卡数据源）+ 能力插件探测。
+        // R2 生产实测 issue #5：新任务会话扩展侧 state.taskId 为空（无人告知）
+        // ——支持按 session_id 反查实例（session-context 同款真实 id 通道）。
+        "runner_update_steps" => {
+            let project_root = params
+                .get("project_root")
+                .or_else(|| params.get("projectRoot"))
+                .and_then(|v| v.as_str())
+                .ok_or("runner_update_steps: project_root is required")?;
+            let project_root =
+                crate::project::resolve_project_root_or_default(project_root);
+            let task_id = params
+                .get("task_id")
+                .or_else(|| params.get("taskId"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty());
+            let task_id = match task_id {
+                Some(tid) => tid.to_string(),
+                None => {
+                    let session_id = params
+                        .get("session_id")
+                        .or_else(|| params.get("sessionId"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.trim().is_empty())
+                        .ok_or("runner_update_steps: task_id or session_id is required")?;
+                    crate::task_launch::find_by_session(&project_root, session_id)?
+                        .ok_or_else(|| "runner_update_steps: task instance not found for session".to_string())?
+                        .task_id
+                }
+            };
+            let steps_json = params
+                .get("steps_json")
+                .or_else(|| params.get("stepsJson"))
+                .and_then(|v| v.as_str())
+                .ok_or("runner_update_steps: steps_json is required")?;
+            let instance = crate::task_launch::runner_update_steps(&project_root, &task_id, steps_json)?;
+            if let Some(app) = HUB_APP_HANDLE.get() {
+                use tauri::Emitter;
+                let _ = app.emit(
+                    "task-instance-changed",
+                    serde_json::json!({ "project_root": instance.project_root }),
+                );
+            }
+            // 返回带 task_id（扩展侧首次反查后写回 state 持久化，此后直达）。
+            serde_json::to_value(serde_json::json!({
+                "task_id": instance.task_id,
+                "title": instance.title,
+                "stages_json": instance.stages_json,
+            }))
+            .map_err(|e| e.to_string())
+        }
+        "runner_capability_plugins" => {
+            // 能力插件联动：task-requirements/task-plan 启用态（runner 扩展
+            // before_agent_start 据此注入「需求澄清/计划拆解」可用能力提示）。
+            let config = crate::agent::plugin::load_plugin_config();
+            let enabled = ["task-requirements", "task-plan"]
+                .into_iter()
+                .filter(|id| !config.disabled.contains(&id.to_string()))
+                .collect::<Vec<_>>();
+            serde_json::to_value(serde_json::json!({ "enabled": enabled }))
+                .map_err(|e| e.to_string())
         }
         // v0.9.3 需求13 C4-slice2：/jishu-pipeline 扩展命令按插件 id 取
         // 展开后的阶段声明（模板展开在 Rust 侧，扩展保持薄）。
@@ -40,8 +95,7 @@ pub(crate) fn handle_hub_invoke(
             let project_root = request.project_root.clone();
             let task_id = request.task_id.clone();
             let result = crate::task_launch::conductor_revise_plan(request)?;
-            // 前端刷新信号：桥接路径无 AppHandle 入参，经全局句柄广播
-            //（与 commands/task.rs 的 conductor_sync_phase 同一事件契约）。
+            // 前端刷新信号：桥接路径无 AppHandle 入参，经全局句柄广播。
             if let Some(app) = HUB_APP_HANDLE.get() {
                 use tauri::Emitter;
                 let _ = app.emit(
@@ -49,7 +103,6 @@ pub(crate) fn handle_hub_invoke(
                     serde_json::json!({
                         "project_root": project_root,
                         "task_id": task_id,
-                        "current_phase": "execution",
                     }),
                 );
             }
@@ -62,18 +115,23 @@ pub(crate) fn handle_hub_invoke(
             let result = crate::task_launch::conductor_dispatch_to_node(request)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
-        "conductor_load_task_state" => {
+        // v0.9.7 需求2：改名 runner_load_task_state（旧名保留别名一个版本
+        // 过渡期意义不大——runner 扩展同批落地，直接用新名）。
+        "runner_load_task_state" => {
             let project_root = params
                 .get("project_root")
                 .or_else(|| params.get("projectRoot"))
                 .and_then(|v| v.as_str())
-                .ok_or("conductor_load_task_state: project_root is required")?;
+                .ok_or("runner_load_task_state: project_root is required")?;
             let task_id = params
                 .get("task_id")
                 .or_else(|| params.get("taskId"))
                 .and_then(|v| v.as_str())
-                .ok_or("conductor_load_task_state: task_id is required")?;
-            let result = crate::task_launch::conductor_load_task_state(project_root, task_id)?;
+                .ok_or("runner_load_task_state: task_id is required")?;
+            let result = crate::task_launch::runner_load_task_state(
+                &crate::project::resolve_project_root_or_default(project_root),
+                task_id,
+            )?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "orchestrator_validate_proposal" => {
@@ -147,19 +205,9 @@ pub(crate) fn handle_hub_invoke(
             // Windows canonicalize() 产出 \\?\C:\... verbatim 前缀，会被
             // read_text_file 的 validate_path 当 UNC 路径拒绝（用户实测
             // 「UNC paths are not allowed」）——剥前缀还原普通盘符路径。
-            let canonical = {
-                let s = path
-                    .canonicalize()
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .into_owned();
-                let stripped = s
-                    .strip_prefix(r"\\?\UNC\")
-                    .map(|rest| format!(r"\\{rest}"))
-                    .or_else(|| s.strip_prefix(r"\\?\").map(|rest| rest.to_string()))
-                    .unwrap_or(s);
-                stripped
-            };
+            // v0.9.7 需求6 F3：抽公共 crate::commands::sessions::canonicalize_stripped。
+            let canonical =
+                crate::commands::sessions::canonicalize_stripped(std::path::Path::new(file));
             if let Some(app) = HUB_APP_HANDLE.get() {
                 use tauri::Emitter;
                 let _ = app.emit(

@@ -20,6 +20,7 @@ import {
   CircleAlert,
   Clock,
   Check,
+  ListChecks,
   Loader2,
   Map,
   MessageSquare,
@@ -55,6 +56,97 @@ export interface FlowNodeStatus {
   acceptance?: string | null;
   /** 失败原因（node run error；重试/跳过提示与失败行展示）。 */
   error?: string | null;
+}
+
+/** v0.9.7 需求2：runner 步骤（任务卡状态灯数据源，stages_json 解析形态）。 */
+export interface RunnerStepView {
+  id: string;
+  title: string;
+  status: "todo" | "running" | "done" | "failed";
+}
+
+/** runner 步骤卡状态视觉（灯语言：蓝呼吸=进行中/绿=完成/红=失败/灰=待开始）。 */
+function runnerStepVisual(status: RunnerStepView["status"]) {
+  switch (status) {
+    case "running":
+      return { cls: "text-blue-500 animate-pulse", label: "进行中" };
+    case "done":
+      return { cls: "text-emerald-500", label: "已完成" };
+    case "failed":
+      return { cls: "text-red-500", label: "失败" };
+    default:
+      return { cls: "text-muted-foreground/40", label: "待开始" };
+  }
+}
+
+/** v0.9.7 需求2 C3：runner 步骤卡（单对话流任务的状态呈现——无图任务的主
+ * 任务卡；有图任务与 run 卡并存时以 run 卡为主，本卡仅在未启动 run 时渲染）。
+ * pendingQuestion（agent ask_user 的待决策问题）高亮置顶。 */
+export function TaskStepsCard({
+  steps,
+  pendingQuestion,
+}: {
+  steps: RunnerStepView[];
+  pendingQuestion?: { question: string; options?: string[] } | null;
+}) {
+  const { t } = useTranslation();
+  if (steps.length === 0 && !pendingQuestion) return null;
+  return (
+    <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 py-2">
+      <div className="rounded-xl border border-border/60 bg-muted/30 p-3">
+        <div className="flex items-center gap-2 text-xs font-medium text-foreground/80">
+          <ListChecks className="h-3.5 w-3.5 text-primary/70" />
+          {t("taskSteps.title", "任务步骤")}
+          {steps.length > 0 && (
+            <span className="text-[10px] font-normal tabular-nums text-muted-foreground/60">
+              {steps.filter((s) => s.status === "done").length}/{steps.length}
+            </span>
+          )}
+        </div>
+        {pendingQuestion && (
+          <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-xs text-amber-700 dark:text-amber-400">
+            {t("taskSteps.awaitingAnswer", "等待你的决定")}：{pendingQuestion.question}
+          </div>
+        )}
+        <div className="mt-1.5 space-y-0.5">
+          {steps.map((step) => {
+            const visual = runnerStepVisual(step.status);
+            return (
+              <div
+                key={step.id}
+                className="flex items-center gap-2 rounded-md px-2 py-1 text-xs"
+              >
+                <span
+                  className={cn(
+                    "h-1.5 w-1.5 shrink-0 rounded-full",
+                    step.status === "running" ? visual.cls : visual.cls,
+                    step.status === "running" && "bg-blue-500",
+                    step.status === "done" && "bg-emerald-500",
+                    step.status === "failed" && "bg-red-500",
+                    step.status === "todo" && "bg-muted-foreground/40",
+                  )}
+                  title={visual.label}
+                />
+                <span
+                  className={cn(
+                    "min-w-0 flex-1 truncate",
+                    step.status === "done"
+                      ? "text-muted-foreground/70 line-through decoration-muted-foreground/30"
+                      : "text-foreground/90",
+                  )}
+                >
+                  {step.title}
+                </span>
+                <span className="shrink-0 text-[9px] text-muted-foreground/50">
+                  {visual.label}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /** 耗时格式化（s/m/h；执行中显示为至今的经过时长）。 */

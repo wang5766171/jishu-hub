@@ -1,36 +1,24 @@
 /**
- * useTaskInstance —— TaskInstance 状态管理 hook。
+ * useTaskInstance —— TaskInstance 状态管理 hook（v0.9.7 需求2 去阶段化）。
  *
- * 设计依据：`任务数据结构与生命周期设计_20260622.md` §6、§1.1、§2、§3.3.1。
- *           `任务入口与容器架构设计_20260622.md` §3.3、§4.6.1。
- *
- * 职责：任务实例列表、当前活跃任务/阶段、回溯只读、执行阶段视图与节点会话。
- * 消费：useChatSession（需求/规划阶段）、useTaskGraphExecution（执行阶段）。
+ * 职责：任务实例列表、当前活跃任务、步骤卡数据（stages_json）、执行视图
+ * 与节点会话（B2 保留清单）。单对话流：activeSessionId = task_session_id
+ *（或节点会话）；阶段 tab/phase 派生/需求定稿链路已随三阶段概念退役。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import {
-  deriveAllPhaseStates,
   isTaskCompleted,
   taskInstanceFromRaw,
   type ExecutionChatScope,
   type NodeSessionInfo,
-  type PhaseDisplayStates,
-  type RequirementFinalizeRequest,
+  type RunnerCard,
   type TaskInstance,
   type TaskInstanceRaw,
-  type TaskPhase,
-  type TaskRequirementFinalized,
 } from "./types";
+import { parseRunnerCard } from "./types";
 
 export type { NodeSessionInfo };
-
-// 三阶段顺序：用于「阶段标签自动跟随」判定 current_phase 是否前进。
-const PHASE_RANK: Record<TaskPhase, number> = {
-  requirements: 0,
-  planning: 1,
-  execution: 2,
-};
 
 export interface UseTaskInstanceOptions {
   projectRoot: string;
@@ -42,15 +30,15 @@ export interface UseTaskInstanceResult {
   instances: TaskInstance[];
   activeInstanceId: string | null;
   activeInstance: TaskInstance | null;
-  activePhase: TaskPhase;
   readOnly: boolean;
 
   // ── 派生 ──
-  phaseStates: PhaseDisplayStates;
-  /** 当前阶段的活跃 session_id（执行阶段由 chatScope 决定，可能为 null = 主任务会话）。 */
+  /** 任务卡（状态灯）数据：stages_json 解析。 */
+  runnerCard: RunnerCard;
+  /** 当前会话 id（节点视图取节点会话；主对话取 task_session_id）。 */
   activeSessionId: string | null;
 
-  // ── 执行阶段视图 ──
+  // ── 执行视图 ──
   chatScope: ExecutionChatScope;
   selectedNodeId: string | null;
   nodeSessionMap: Record<string, NodeSessionInfo>;
@@ -58,11 +46,7 @@ export interface UseTaskInstanceResult {
   // ── 动作 ──
   loadInstances: () => Promise<void>;
   openTask: (taskId: string) => void;
-  openPhase: (phase: TaskPhase, readOnly?: boolean) => void;
-  markSession: (sessionId: string, phase: TaskPhase, title?: string) => Promise<TaskInstance | null>;
-  finalizeRequirements: (
-    request: RequirementFinalizeRequest,
-  ) => Promise<TaskRequirementFinalized | null>;
+  markSession: (sessionId: string, title?: string) => Promise<TaskInstance | null>;
   syncRunStatus: (runId: string, runStatus: string) => Promise<TaskInstance | null>;
   renameTask: (title: string) => Promise<TaskInstance | null>;
   deleteTask: (taskId: string) => Promise<void>;
@@ -77,16 +61,11 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
 
   const [instances, setInstances] = useState<TaskInstance[]>([]);
   const [activeInstanceId, setActiveInstanceId] = useState<string | null>(initialTaskId ?? null);
-  const [activePhase, setActivePhase] = useState<TaskPhase>("requirements");
   const [readOnly, setReadOnly] = useState(false);
 
-  // 执行阶段视图状态
   const [chatScope, setChatScope] = useState<ExecutionChatScope>({ kind: "run" });
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [nodeSessionMap, setNodeSessionMap] = useState<Record<string, NodeSessionInfo>>({});
-
-  // skill id 保留（markSession 需要）。默认 conductor dev skill。
-  const skillIdRef = useRef<string>("jishu-conductor-dev");
 
   const loadInstances = useCallback(async () => {
     if (!projectRoot) {
@@ -105,7 +84,6 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
     }
   }, [projectRoot]);
 
-  // 初次加载 + projectRoot 变化时重载。
   useEffect(() => {
     loadInstances().catch(console.error);
   }, [loadInstances]);
@@ -115,48 +93,14 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
     [instances, activeInstanceId],
   );
 
-  // activeInstance 变化时同步 skillIdRef。
-  useEffect(() => {
-    if (activeInstance?.skill_id) {
-      skillIdRef.current = activeInstance.skill_id;
-    }
-  }, [activeInstance?.skill_id]);
-
-  const phaseStates = useMemo(() => deriveAllPhaseStates(activeInstance), [activeInstance]);
-
-  // B4+ 阶段标签自动跟随：current_phase 前进时自动切 tab。
-  // conductor 在 chat turn 内调 conductor_sync_phase 推进 current_phase，turn 结束后容器
-  // 调 loadInstances 刷新实例 → 此 effect 据此跟随。守卫：仅当用户仍停在刚完成的阶段
-  // （activePhase === prev）才切，避免覆盖手动回看（手动回看时 current_phase 不变，effect 不触发）。
-  const activePhaseRef = useRef(activePhase);
-  activePhaseRef.current = activePhase;
-  const prevCurrentPhaseRef = useRef<TaskPhase | null>(activeInstance?.current_phase ?? null);
-  useEffect(() => {
-    const next = activeInstance?.current_phase ?? null;
-    const prev = prevCurrentPhaseRef.current;
-    if (next && prev && PHASE_RANK[next] > PHASE_RANK[prev]) {
-      // 阶段前进：仅当用户仍停在上一阶段（未手动挪开）才跟随。
-      if (activePhaseRef.current === prev) {
-        setActivePhase(next);
-        if (next === "execution") {
-          setChatScope({ kind: "run" });
-        }
-      }
-    }
-    prevCurrentPhaseRef.current = next;
-  }, [activeInstance?.current_phase]);
+  const runnerCard = useMemo(() => parseRunnerCard(activeInstance?.stages_json), [activeInstance?.stages_json]);
 
   const activeSessionId = useMemo(() => {
-    if (!activeInstance) return null;
-    if (activePhase === "requirements") return activeInstance.requirement_session_id;
-    if (activePhase === "planning") return activeInstance.planning_session_id;
-    // execution: 取决于 chatScope
     if (chatScope.kind === "node") {
       return nodeSessionMap[chatScope.nodeId]?.session_id ?? null;
     }
-    // run（主任务会话）：无真实 session_id
-    return null;
-  }, [activeInstance, activePhase, chatScope, nodeSessionMap]);
+    return activeInstance?.task_session_id ?? null;
+  }, [activeInstance, chatScope, nodeSessionMap]);
 
   const upsertLocalInstance = useCallback((instance: TaskInstance) => {
     setInstances((prev) => {
@@ -172,42 +116,23 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
     (taskId: string) => {
       const inst = instances.find((i) => i.task_id === taskId);
       setActiveInstanceId(taskId);
-      // 完成态任务一律只读打开（设计 §11「已完成任务 phase=done 只读」）。
-      // 此前无条件 setReadOnly(false)，重开已完成任务仍可编辑。
+      // 完成态任务只读打开。
       setReadOnly(isTaskCompleted(inst ?? null));
-      if (inst) {
-        setActivePhase(inst.current_phase);
-        // 进入执行阶段默认主任务会话 + 分屏
-        if (inst.current_phase === "execution") {
-          setChatScope({ kind: "run" });
-        }
-      }
+      setChatScope({ kind: "run" });
     },
     [instances],
   );
 
-  const openPhase = useCallback(
-    (phase: TaskPhase, ro = false) => {
-      setActivePhase(phase);
-      // 完成态覆盖调用方意图：即便传 ro=false 也保持只读。
-      setReadOnly(ro || isTaskCompleted(activeInstance));
-      if (phase === "execution") {
-        setChatScope({ kind: "run" });
-      }
-    },
-    [activeInstance],
-  );
-
   const markSession = useCallback(
-    async (sessionId: string, phase: TaskPhase, title?: string): Promise<TaskInstance | null> => {
+    async (sessionId: string, title?: string): Promise<TaskInstance | null> => {
       if (!projectRoot) return null;
+      const skillId = activeInstance?.skill_id ?? "jishu-task-runner";
       try {
         const raw = await invokeCommand<TaskInstanceRaw>("task_launch_mark_session", {
           projectRoot,
           taskId: activeInstanceId,
           sessionId,
-          skillId: skillIdRef.current,
-          phase,
+          skillId,
           title: title ?? null,
         });
         const instance = taskInstanceFromRaw(raw);
@@ -219,31 +144,7 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
         return null;
       }
     },
-    [projectRoot, activeInstanceId, upsertLocalInstance],
-  );
-
-  const finalizeRequirements = useCallback(
-    async (
-      request: RequirementFinalizeRequest,
-    ): Promise<TaskRequirementFinalized | null> => {
-      if (!projectRoot) return null;
-      try {
-        const result = await invokeCommand<TaskRequirementFinalized>(
-          "task_requirement_finalize",
-          {
-            projectRoot,
-            request: { ...request, task_id: request.task_id ?? activeInstanceId },
-          },
-        );
-        // 终稿后刷新实例（status → requirements_finalized）
-        await loadInstances();
-        return result;
-      } catch (err) {
-        console.error("finalizeRequirements failed:", err);
-        return null;
-      }
-    },
-    [projectRoot, activeInstanceId, loadInstances],
+    [projectRoot, activeInstanceId, activeInstance?.skill_id, upsertLocalInstance],
   );
 
   const syncRunStatus = useCallback(
@@ -291,7 +192,6 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
     async (taskId: string): Promise<void> => {
       if (!projectRoot) return;
       try {
-        // 先尝试清理 orchestrator graph（若存在 graph_id）
         const inst = instances.find((i) => i.task_id === taskId);
         if (inst?.graph_id) {
           try {
@@ -315,7 +215,6 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
   const selectNode = useCallback((nodeId: string | null): void => {
     setSelectedNodeId(nodeId);
     if (nodeId) {
-      // 切到该节点的子代理会话（若有 session_id）；否则保持 run
       setChatScope((prev) => {
         if (prev.kind === "node" && prev.nodeId === nodeId) return prev;
         return { kind: "node", nodeId, attemptNumber: 0 };
@@ -325,7 +224,6 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
     }
   }, []);
 
-  // 更新节点会话缓存（由 useTaskGraphExecution 轮询后回填）。
   const updateNodeSession = useCallback((nodeId: string, info: NodeSessionInfo) => {
     setNodeSessionMap((prev) => ({ ...prev, [nodeId]: info }));
   }, []);
@@ -334,18 +232,15 @@ export function useTaskInstance(options: UseTaskInstanceOptions): UseTaskInstanc
     instances,
     activeInstanceId,
     activeInstance,
-    activePhase,
     readOnly,
-    phaseStates,
+    runnerCard,
     activeSessionId,
     chatScope,
     selectedNodeId,
     nodeSessionMap,
     loadInstances,
     openTask,
-    openPhase,
     markSession,
-    finalizeRequirements,
     syncRunStatus,
     renameTask,
     deleteTask,

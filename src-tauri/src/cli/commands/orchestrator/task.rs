@@ -50,7 +50,6 @@ fn run_find(session: &str, project: &str, ctx: &ExecutionContext) -> Result<(), 
             } else {
                 println!("task_id: {}", instance.task_id);
                 println!("status: {}", instance.status);
-                println!("phase: {}", instance.current_phase);
             }
             Ok(())
         }

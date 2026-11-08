@@ -6,14 +6,9 @@ use std::sync::Mutex;
 
 use crate::util::now_ms;
 
-/// 任务实例生命周期状态（4 值，持久化到 task_instance.status）。
-///
-/// 设计依据：`任务数据结构与生命周期设计_20260622.md` §2.2。
-/// status 止步于 `graph_created`（终态），后续执行态由 `run_status` 独立追踪。
-pub const STATUS_REQUIREMENTS_DISCUSSING: &str = "requirements_discussing";
-pub const STATUS_REQUIREMENTS_FINALIZED: &str = "requirements_finalized";
-pub const STATUS_PLANNING_DISCUSSING: &str = "planning_discussing";
-pub const STATUS_GRAPH_CREATED: &str = "graph_created";
+/// 任务实例生命周期状态（v0.9.7 需求2 去阶段化：收敛为 active|archived；
+/// 阶段语义 4 值退场，执行态由 `run_status` 独立追踪）。
+pub const STATUS_ACTIVE: &str = "active";
 
 /// 执行实例运行态（5 值，冗余到 task_instance.run_status）。
 ///
@@ -25,7 +20,11 @@ pub const RUN_STATUS_FAILED: &str = "failed";
 pub const RUN_STATUS_CANCELLED: &str = "cancelled";
 
 /// task_instance 表 schema 版本。升级表结构时递增，并在 `migrate_schema` 中处理迁移。
-const TASK_INSTANCE_SCHEMA_VERSION: i64 = 3;
+/// v0.9.7 需求2 C2：schema v4——去阶段化（列名沿用磁盘真名 stages_json，
+/// 语义改为 runner 步骤清单 JSON：`{steps:[{id,title,status}],pendingQuestion?}`；
+/// current_phase/requirement_file/requirement_session_id/planning_session_id
+/// 四列退场，合并为 task_session_id）。
+const TASK_INSTANCE_SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TaskLaunchInstance {
@@ -33,26 +32,22 @@ pub struct TaskLaunchInstance {
     pub project_root: String,
     pub title: String,
     pub skill_id: String,
-    /// 需求/规划阶段使用的 agent（默认 "jishu_agent"）。
     pub planner_agent_id: String,
-    /// TaskInstance 生命周期状态（4 值枚举）。
+    /// TaskInstance 生命周期状态（active|archived）。
     pub status: String,
-    /// 当前阶段："requirements" | "planning" | "execution"。
-    pub current_phase: String,
-    pub requirement_file: Option<String>,
-    pub requirement_session_id: Option<String>,
-    pub planning_session_id: Option<String>,
+    /// 任务主对话会话（原 requirement/planning 两列合并——单对话流）。
+    #[serde(default)]
+    pub task_session_id: Option<String>,
     pub graph_id: Option<String>,
     /// 当前活跃执行实例（逻辑外键 → orchestrator.db.graph_run）。
     pub active_run_id: Option<String>,
     /// 最近一次执行实例。
     pub last_run_id: Option<String>,
-    /// 执行状态冗余（5 值枚举，仅执行阶段有值）。
+    /// 执行状态冗余（5 值枚举，仅执行期有值）。
     pub run_status: Option<String>,
     /// 幂等启动键（防止 fork/resume 重复启动 run）。
     pub last_launch_key: Option<String>,
-    /// 声明驱动阶段序列（v0.9.3 需求13 C4-slice2）：展开后阶段数组 JSON。
-    /// None = legacy 三段式（discuss→plan→execute，既有硬编码路径零变化）。
+    /// runner 步骤清单 JSON（任务卡数据源；None = 尚未拆解）。
     #[serde(default)]
     pub stages_json: Option<String>,
     pub created_at: i64,
@@ -66,12 +61,8 @@ pub struct TaskRequirementMessage {
     pub content: String,
 }
 
-/// 需求定稿入参（统一接口，按 creation_mode 分流）。
-///
-/// 设计依据：`任务数据结构与生命周期设计_20260622.md` §3.1。
-/// `requirement_markdown` 由调用方（Agent 按 skill 约束产出 / 直接模式用户原始描述）决定，
-/// 后端只负责落盘 + 记元数据，不硬编码格式。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct RequirementFinalizeRequest {
     pub task_id: Option<String>,
     pub skill_id: String,
@@ -85,12 +76,12 @@ pub struct RequirementFinalizeRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct TaskRequirementFinalized {
     pub task_id: String,
     pub title: String,
     pub requirement_dir: String,
     pub requirement_file: String,
-    pub planning_instruction: String,
 }
 
 /// 任务会话索引项。一个任务实例下可查看的会话（1 需求 + 1 规划 + N 节点）。
@@ -127,17 +118,12 @@ mod run;
 
 use instance_store::TaskInstanceStore;
 
-pub use conductor::{
-    conductor_load_task_state, conductor_sync_phase, ConductorLoadStateResult,
-    ConductorSyncPhaseRequest, ConductorSyncPhaseResult,
-};
-// ConductorSyncArtifacts 仅测试构造使用（生产路径经 conductor 模块内部）。
-#[cfg(test)]
-pub use conductor::ConductorSyncArtifacts;
+// v0.9.7 需求2：conductor_sync_phase 及配套结构随三阶段概念退役；
+// conductor_load_task_state 改名 runner_load_task_state。
+pub use conductor::{runner_load_task_state, ConductorLoadStateResult};
 pub use instance_store::{
-    attach_graph, create_from_existing_graph, delete_task, finalize_requirement, find_by_session,
-    get_task_instance, list_task_instances, mark_task_stage_session,
-    planning_instruction_for_instance, rename_task, sync_run_status,
+    attach_graph, create_from_existing_graph, delete_task, find_by_session, get_task_instance,
+    list_task_instances, mark_task_session, rename_task, runner_update_steps, sync_run_status,
 };
 mod revise;
 
@@ -153,16 +139,6 @@ pub use run::{
 fn open_store(project_root: &str) -> Result<TaskInstanceStore, String> {
     let db_path = task_instances_db_path(&normalize_project_root(project_root));
     TaskInstanceStore::open(&db_path)
-}
-
-fn normalize_phase(phase: &str) -> String {
-    // 后端 canonical 统一为 "execution"（消除旧的 "graph" 别名）。
-    // 见 `任务数据结构与生命周期设计_20260622.md` §1.2、§8。
-    match phase {
-        "planning" => "planning".into(),
-        "execution" | "graph" => "execution".into(),
-        _ => "requirements".into(),
-    }
 }
 
 /// 将 `project_root` 规范化为稳定字符串，确保"db 路径 / 查询键 / 存储值"三者形式一致。
@@ -234,39 +210,71 @@ mod tests {
         dir
     }
 
+    /// v0.9.7 需求2：mark_task_session（无 phase）+ attach_graph 不降级语义。
     #[test]
-    fn mark_stage_session_does_not_downgrade_graph_created_instance() {
-        let project = temp_project("no-downgrade");
+    fn mark_session_and_attach_graph_roundtrip() {
+        let project = temp_project("mark-session");
         let project_root = project.to_string_lossy().to_string();
 
-        let instance = mark_task_stage_session(
+        let instance = mark_task_session(
             &project_root,
             None,
-            "requirements-session",
-            "jishu-conductor-dev",
-            "requirements",
+            "task-main-session",
+            "jishu-task-runner",
             Some("Demo task"),
         )
         .unwrap();
-        attach_graph(&project_root, &instance.task_id, "graph-1").unwrap();
+        assert_eq!(instance.status, STATUS_ACTIVE);
+        assert_eq!(
+            instance.task_session_id.as_deref(),
+            Some("task-main-session")
+        );
 
-        let updated = mark_task_stage_session(
+        attach_graph(&project_root, &instance.task_id, "graph-1").unwrap();
+        let updated = mark_task_session(
             &project_root,
             Some(&instance.task_id),
-            "planning-session",
-            "jishu-conductor-dev",
-            "planning",
+            "task-main-session-2",
+            "jishu-task-runner",
             None,
         )
         .unwrap();
+        assert_eq!(updated.graph_id.as_deref(), Some("graph-1"));
 
-        assert_eq!(updated.status, STATUS_GRAPH_CREATED);
-        assert_eq!(updated.current_phase, "execution");
-        assert_eq!(
-            updated.planning_session_id.as_deref(),
-            Some("planning-session")
-        );
+        let _ = std::fs::remove_dir_all(&project);
+    }
 
+    /// v0.9.7 需求2：runner_update_steps 形状校验 + 持久化 + runner 加载。
+    #[test]
+    fn runner_steps_roundtrip() {
+        let project = temp_project("runner-steps");
+        let project_root = project.to_string_lossy().to_string();
+        let instance = mark_task_session(
+            &project_root,
+            None,
+            "s1",
+            "jishu-task-runner",
+            Some("Steps task"),
+        )
+        .unwrap();
+
+        let steps = serde_json::json!({
+            "steps": [
+                { "id": "a", "title": "第一步", "status": "done" },
+                { "id": "b", "title": "第二步", "status": "running" },
+            ],
+            "pendingQuestion": null,
+        })
+        .to_string();
+        runner_update_steps(&project_root, &instance.task_id, &steps).unwrap();
+        // 拒绝非 steps 形状。
+        assert!(runner_update_steps(&project_root, &instance.task_id, "{\"x\":1}").is_err());
+
+        let loaded = runner_load_task_state(&project_root, &instance.task_id)
+            .unwrap()
+            .instance
+            .unwrap();
+        assert_eq!(loaded.stages_json.as_deref(), Some(steps.as_str()));
         let _ = std::fs::remove_dir_all(&project);
     }
 
@@ -286,17 +294,16 @@ mod tests {
     fn task_persists_and_lists_across_equivalent_path_forms() {
         // 回归守护：同一项目用不同路径形式（分隔符/trailing）创建与查询，必须查到任务。
         // normalize_project_root 统一了 project_root 形式，避免"创建存入形式 ≠ 加载查询形式
-        // → 任务查不到（丢失）→ 关联的 requirement/planning session 回归常规会话列表"。
+        // → 任务查不到（丢失）→ 关联任务会话回归常规会话列表"。
         let project = temp_project("path-forms");
         let root = project.to_string_lossy().to_string();
 
-        // 用规范路径形式创建任务（mark_task_stage_session 内部 upsert 会写入 project_root）。
-        let instance = mark_task_stage_session(
+        // 用规范路径形式创建任务（mark_task_session 内部 upsert 会写入 project_root）。
+        let instance = mark_task_session(
             &root,
             None,
             "requirements-session",
-            "jishu-conductor-dev",
-            "requirements",
+            "jishu-task-runner",
             Some("Path forms task"),
         )
         .unwrap();
@@ -310,94 +317,6 @@ mod tests {
             "等价路径形式应能查到任务（root={root}, alt={alt_root}）",
         );
 
-        let _ = std::fs::remove_dir_all(&project);
-    }
-
-    #[test]
-    fn conductor_sync_validates_transitions_and_artifact_content() {
-        let project = temp_project("conductor-sync");
-        let project_root = project.to_string_lossy().to_string();
-        let task_id = "task_conductor_sync";
-
-        let created = conductor_sync_phase(ConductorSyncPhaseRequest {
-            task_id: task_id.into(),
-            project_root: project_root.clone(),
-            phase: "discuss".into(),
-            domain: "dev".into(),
-            artifacts: None,
-            expected_phase: Some("idle".into()),
-            artifact_hash: None,
-            title: Some("Conductor sync".into()),
-            session_id: Some("session-1".into()),
-            stages: None,
-        })
-        .unwrap();
-        assert!(created.success);
-        assert_eq!(created.instance.current_phase, "requirements");
-
-        let requirements_dir = task_workspace_root(&project_root)
-            .join(task_id)
-            .join("artifacts")
-            .join("requirements");
-        std::fs::create_dir_all(&requirements_dir).unwrap();
-        let requirements_path = requirements_dir.join("REQUIREMENTS.md");
-        let requirements = b"# Requirements\n";
-        std::fs::write(&requirements_path, requirements).unwrap();
-        let requirements_hash = format!("sha256:{:x}", Sha256::digest(requirements));
-        std::fs::write(
-            requirements_dir.join("manifest.json"),
-            serde_json::json!({ "content_hash": requirements_hash }).to_string(),
-        )
-        .unwrap();
-
-        let planning = conductor_sync_phase(ConductorSyncPhaseRequest {
-            task_id: task_id.into(),
-            project_root: project_root.clone(),
-            phase: "plan".into(),
-            domain: "dev".into(),
-            artifacts: Some(ConductorSyncArtifacts {
-                requirements: Some(requirements_path.to_string_lossy().into_owned()),
-                flow_plan_json: None,
-                flow_plan_md: None,
-            }),
-            expected_phase: Some("discuss".into()),
-            artifact_hash: Some(requirements_hash),
-            title: None,
-            session_id: Some("session-1".into()),
-            stages: None,
-        })
-        .unwrap();
-        assert!(planning.success);
-        assert_eq!(planning.instance.current_phase, "planning");
-
-        let rejected = conductor_sync_phase(ConductorSyncPhaseRequest {
-            task_id: task_id.into(),
-            project_root: project_root.clone(),
-            phase: "execute".into(),
-            domain: "dev".into(),
-            artifacts: Some(ConductorSyncArtifacts {
-                requirements: None,
-                flow_plan_json: Some(
-                    project
-                        .join("outside-flow-plan-proposal.json")
-                        .to_string_lossy()
-                        .into_owned(),
-                ),
-                flow_plan_md: None,
-            }),
-            expected_phase: Some("plan".into()),
-            artifact_hash: Some("sha256:invalid".into()),
-            title: None,
-            session_id: None,
-            stages: None,
-        });
-        assert!(rejected.is_err());
-
-        let persisted = conductor_load_task_state(&project_root, task_id)
-            .unwrap()
-            .instance
-            .unwrap();
-        assert_eq!(persisted.current_phase, "planning");
         let _ = std::fs::remove_dir_all(&project);
     }
 }
