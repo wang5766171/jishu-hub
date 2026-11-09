@@ -1013,15 +1013,44 @@ fn spawn_transport(decl: &McpPluginDecl) -> Result<LivePlugin, String> {
     })
 }
 
+/// v0.9.7 需求8 修复B：两段式连接的 late 收留池 + in-flight 标记。
+/// 4s 截止保证 tools/list 响应上界（v0.9.4 需求9 A1 原语义不变）；到点
+/// 未归位的 spawn 线程**不再随 drop 被杀**——握手成功后连接入池，下一轮
+/// refresh 收割。这是公司网络下 npx 冷启动（下载 60-150s）的自愈通道：
+/// 下载进程活着才能把包写进 npm cache，被杀则每次从零、永远超时。
+/// inflight 标记防线程堆积：同一插件同时至多一个在途 spawn（慢握手线程
+/// 占位到聚合 server 进程退出为止，后果与旧版一致 = 该插件暂不可用）。
+#[derive(Default)]
+struct LateConnections {
+    /// late 线程连好待收割的连接（mspc send 失败后改投此处，不 drop——
+    /// drop 会 kill 子进程/掐断 npx 下载）。
+    pool: std::collections::HashMap<String, LivePlugin>,
+    /// 在途 spawn 的插件 id（本轮已派线程未归位）。
+    inflight: std::collections::HashSet<String>,
+}
+
+/// 收割判活：ping 一次——Ok 或 JSON-RPC error（子 server 未实现 ping，
+/// 文案特征 `plugin \`x\` error:`）都算活；io 类失败（write/read failed、
+/// 超时）= 子进程已死。死连接收编会永远占 Live 位（call_tool 对 Live 失败
+/// 不重连），必须在这里丢弃。
+fn connection_alive(t: &mut dyn PluginTransport) -> bool {
+    match t.request("ping", json!({})) {
+        Ok(_) => true,
+        Err(e) => !(e.contains("failed") || e.contains("timed out") || e.contains("超时")),
+    }
+}
+
 /// v0.9.4 需求9 A1：并行 spawn + 单后端截止。每个后端一**独立线程**
 /// `spawn_transport`（含握手），结果经 mpsc 回收；主线程等待至
 /// `deadline`，到点未归位的记超时 Err 并放弃等待（detached 线程不阻塞
-/// 返回——晚归线程 send 失败后连接随 drop 关闭：stdio 关 stdin 子进程
-/// 自然退出。不 join 逃逸线程，避免为 kill 而共享可变状态）。返回按
-/// plugin_id 归位，顺序与完成序元关。
+/// 返回）。v0.9.7 需求8 修复B：晚归线程 send 失败后**不再 drop 连接**
+/// （旧版随 drop 杀子进程，npx 冷启动下载被掐断、永无自愈）——成功连接
+/// 改投 `late` 收留池，等下一轮 refresh 收割。返回按 plugin_id 归位，
+/// 顺序与完成序无关。
 fn spawn_transports_parallel(
     decls: &[McpPluginDecl],
     deadline: Duration,
+    late: &std::sync::Arc<std::sync::Mutex<LateConnections>>,
 ) -> Vec<(String, Result<LivePlugin, String>)> {
     if decls.is_empty() {
         return Vec::new();
@@ -1030,9 +1059,26 @@ fn spawn_transports_parallel(
     for decl in decls {
         let tx = tx.clone();
         let decl = decl.clone();
+        let late = late.clone();
+        if let Ok(mut g) = late.lock() {
+            g.inflight.insert(decl.plugin_id().to_string());
+        }
         std::thread::spawn(move || {
             let plugin_id = decl.plugin_id().to_string();
-            let _ = tx.send((plugin_id, spawn_transport(&decl)));
+            let outcome = spawn_transport(&decl);
+            if let Err(send_err) = tx.send((plugin_id.clone(), outcome)) {
+                // 主线程已到点返回（该插件本轮已记超时）：成功连接改投
+                // 收留池保活；Err 无需保（失败原因已返回过）。
+                let (_, outcome) = send_err.0;
+                if let Ok(live) = outcome {
+                    if let Ok(mut g) = late.lock() {
+                        g.pool.insert(plugin_id.clone(), live);
+                    }
+                }
+            }
+            if let Ok(mut g) = late.lock() {
+                g.inflight.remove(&plugin_id);
+            }
         });
     }
     drop(tx);
@@ -1051,7 +1097,10 @@ fn spawn_transports_parallel(
                 for decl in pending.drain(..) {
                     out.push((
                         decl.plugin_id().to_string(),
-                        Err(format!("连接超时（>{}s，含握手）", deadline.as_secs())),
+                        Err(format!(
+                            "连接超时（>{}s，含握手；慢启动后台继续，稍后自动恢复）",
+                            deadline.as_secs()
+                        )),
                     ));
                 }
             }
@@ -1064,6 +1113,8 @@ pub struct McpServer {
     children: Vec<PluginChild>,
     /// 插件声明数据源（生产 = load_mcp_plugin_decls；测试可注入）。
     decl_source: Box<dyn Fn() -> Vec<McpPluginDecl> + Send>,
+    /// 需求8 修复B：late 连接收留池 + in-flight 标记（见 LateConnections）。
+    late: std::sync::Arc<std::sync::Mutex<LateConnections>>,
 }
 
 impl McpServer {
@@ -1071,6 +1122,7 @@ impl McpServer {
         McpServer {
             children: Vec::new(),
             decl_source: Box::new(load_mcp_plugin_decls),
+            late: std::sync::Arc::new(std::sync::Mutex::new(LateConnections::default())),
         }
     }
 
@@ -1080,6 +1132,7 @@ impl McpServer {
         McpServer {
             children: Vec::new(),
             decl_source: source,
+            late: std::sync::Arc::new(std::sync::Mutex::new(LateConnections::default())),
         }
     }
 
@@ -1104,10 +1157,38 @@ impl McpServer {
             }
             alive
         });
-        // 需要新建的后端（不存在，或 Failed 已过冷却期）。
+        // 需求8 修复B：收割 late 收留池——上一轮截止后仍在握手的线程若已
+        // 连好，连接在这里转正（替换该插件的 Failed 占位/冷却）。已禁用或
+        // 闲置期间已死（io 失败）的连接丢弃（drop = kill 子进程）；JSON-RPC
+        // 错误（如子 server 未实现 ping）不代表连接死，照常收编。
+        {
+            let late = self.late.clone();
+            let mut guard = late.lock().unwrap_or_else(|e| e.into_inner());
+            let pooled: Vec<(String, LivePlugin)> = guard.pool.drain().collect();
+            drop(guard);
+            for (plugin_id, mut live) in pooled {
+                let still_enabled = decls.iter().any(|d| d.plugin_id() == plugin_id);
+                let responsive = still_enabled && connection_alive(live.transport.as_mut());
+                if responsive {
+                    log::info!("[hub-mcp] late 连接收割：{plugin_id}");
+                    self.children.retain(|c| c.plugin_id() != plugin_id);
+                    self.children.push(PluginChild::Live(live));
+                } else {
+                    live.transport.kill();
+                }
+            }
+        }
+        // 需要新建的后端（不存在，或 Failed 已过冷却期）。需求8 修复B：
+        // in-flight 的插件跳过（上一轮派的慢握手线程还在途，重复派发只会
+        // 堆积线程——它连好后经收留池转正）。
+        let inflight: Vec<String> = {
+            let guard = self.late.lock().unwrap_or_else(|e| e.into_inner());
+            guard.inflight.iter().cloned().collect()
+        };
         let now = std::time::Instant::now();
         let to_spawn: Vec<McpPluginDecl> = decls
             .iter()
+            .filter(|decl| !inflight.iter().any(|id| id == decl.plugin_id()))
             .filter(|decl| {
                 match self
                     .children
@@ -1124,7 +1205,7 @@ impl McpServer {
             .cloned()
             .collect();
         if !to_spawn.is_empty() {
-            let results = spawn_transports_parallel(&to_spawn, SPAWN_DEADLINE);
+            let results = spawn_transports_parallel(&to_spawn, SPAWN_DEADLINE, &self.late);
             for (plugin_id, outcome) in results {
                 match outcome {
                     Ok(live) => {
@@ -1167,7 +1248,52 @@ impl McpServer {
                 }
             }
         }
+        // 需求8 修复B-T2：连接健康快照落盘（插件中心消费，见 IPC
+        // mcp_plugin_health）。聚合 server 是 per-pi-session 的 stdio 子
+        // 进程，hub 进程无法窥其连接池——经 hub_home 固定文件传递；多会话
+        // 实例相互覆盖，读侧按 updated 取最新即可。写失败降级告警不阻塞。
+        self.write_health_snapshot();
         tools
+    }
+
+    /// 健康快照写 `hub_home()/mcp-health.json`：`{pid, updated(unix secs),
+    /// plugins: [{plugin, status, error}]}`。
+    fn write_health_snapshot(&self) {
+        let dir = crate::agent::manifest::hub_home();
+        let plugins: Vec<Value> = self
+            .children
+            .iter()
+            .map(|c| match c {
+                PluginChild::Failed {
+                    plugin_id, error, ..
+                } => json!({ "plugin": plugin_id, "status": "unavailable", "error": error }),
+                PluginChild::Live(live) => {
+                    json!({ "plugin": live.plugin_id, "status": "connected", "error": null })
+                }
+            })
+            .collect();
+        let snapshot = json!({
+            "pid": std::process::id(),
+            "updated": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            "plugins": plugins,
+        });
+        let path = dir.join("mcp-health.json");
+        let write = serde_json::to_string(&snapshot)
+            .map_err(|e| e.to_string())
+            .and_then(|body| {
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| format!("create {}: {e}", dir.display()))
+                    .and_then(|_| {
+                        std::fs::write(&path, body)
+                            .map_err(|e| format!("write {}: {e}", path.display()))
+                    })
+            });
+        if let Err(e) = write {
+            log::warn!("[hub-mcp] health snapshot deferred: {e}");
+        }
     }
 
     /// tools/call 分发：内置直调；命名空间工具路由到下游连接并转发结果。
@@ -1666,6 +1792,92 @@ mod tests {
             .filter_map(|t| t["name"].as_str())
             .collect();
         assert!(names2.contains(&"slow__error"));
+    }
+
+    /// 需求8 修复B：两段式收留——慢启动后端（握手延迟 >4s 截止，但能连成）
+    /// 首轮 list 按截止返回超时占位；late 线程不被杀、握手完成后连接入池，
+    /// 下一轮 list 收割转正（工具出现），且不重新 spawn（冷却期内）。
+    /// 假 server = node 内联脚本：initialize 延迟 6s 应答，其余立即。
+    #[test]
+    fn slow_backend_late_connection_is_harvested_on_next_list() {
+        let script = r#"
+let buf = '';
+process.stdin.on('data', d => {
+  buf += d;
+  let i;
+  while ((i = buf.indexOf('\n')) >= 0) {
+    const line = buf.slice(0, i); buf = buf.slice(i + 1);
+    if (!line.trim()) continue;
+    const m = JSON.parse(line);
+    const reply = r => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result: r }) + '\n');
+    if (m.method === 'initialize') {
+      setTimeout(() => reply({ serverInfo: { name: 'slow-ok' } }), 6000);
+    } else if (m.method === 'tools/list') {
+      reply({ tools: [{ name: 'echo', description: 'd', inputSchema: { type: 'object' } }] });
+    } else if (m.method === 'ping') {
+      reply({});
+    }
+  }
+});
+"#;
+        // Windows spawn 经 cmd /C——-e 内联脚本的引号/换行/重定向符必被 cmd
+        // 吃掉，写临时 js 文件后以路径启动。
+        let script_path =
+            std::env::temp_dir().join(format!("jishu-slow-mcp-test-{}.js", uuid::Uuid::new_v4()));
+        std::fs::write(&script_path, script).unwrap();
+        let script_arg = script_path.to_string_lossy().to_string();
+        let slow_decl = McpPluginDecl::Stdio {
+            plugin_id: "slow-ok".into(),
+            command: "node".into(),
+            args: vec![script_arg],
+            env: vec![],
+        };
+        let mut s = McpServer::with_decl_source(Box::new(move || vec![slow_decl.clone()]));
+
+        // 第一轮：4s 截止返回超时占位（elapsed 显著小于 6s 握手延迟）。
+        let t0 = std::time::Instant::now();
+        let resp = request(&mut s, "tools/list", json!({}));
+        assert!(
+            t0.elapsed() < SPAWN_DEADLINE + Duration::from_secs(1),
+            "首轮 list 应在截止+余量内返回，实际 {:?}",
+            t0.elapsed()
+        );
+        let names: Vec<String> = resp["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            names.contains(&"slow-ok__error".to_string()),
+            "首轮应为超时占位: {names:?}"
+        );
+
+        // 等待 late 线程完成握手（6s 延迟 + 入池）。
+        std::thread::sleep(Duration::from_secs(5));
+
+        // 第二轮（冷却期内）：不重 spawn，收割 late 连接 → 工具出现。
+        let t1 = std::time::Instant::now();
+        let resp2 = request(&mut s, "tools/list", json!({}));
+        assert!(
+            t1.elapsed() < SPAWN_DEADLINE,
+            "第二轮应收割 late 连接而非重新等待 spawn，实际 {:?}",
+            t1.elapsed()
+        );
+        let names2: Vec<String> = resp2["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            names2.contains(&"slow-ok__echo".to_string()),
+            "第二轮应收割成功转正: {names2:?}"
+        );
+        assert!(
+            !names2.contains(&"slow-ok__error".to_string()),
+            "转正后占位应消失: {names2:?}"
+        );
     }
 
     /// v0.9.4 需求9 P1：hub_mcp_list 动态发现——无插件空数组；Failed 插件
