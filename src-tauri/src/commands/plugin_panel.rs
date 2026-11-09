@@ -82,3 +82,20 @@ pub(crate) async fn plugin_panel_run(
         ok: output.status.success(),
     })
 }
+
+/// v0.9.7 需求8 修复B-T2：MCP 插件连接健康快照（只读）。数据源 = 聚合
+/// server（per-pi-session stdio 子进程）每次 refresh 落盘的
+/// `hub_home/mcp-health.json`——多会话实例相互覆盖，本命令透传最新一份。
+/// 无快照（会话未跑过/尚无 MCP 插件）返回 `{available:false}`，前端不显
+/// 徽标，不构成错误。
+#[tauri::command]
+pub(crate) fn mcp_plugin_health() -> Result<serde_json::Value, String> {
+    let path = crate::agent::manifest::hub_home().join("mcp-health.json");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Ok(serde_json::json!({ "available": false }));
+    };
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(v) => Ok(v),
+        Err(_) => Ok(serde_json::json!({ "available": false })),
+    }
+}
