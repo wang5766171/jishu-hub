@@ -1,226 +1,119 @@
 /**
- * 统一插件创建入口（v0.9.5 需求1（原需求26）3a-1）：类型选择卡片页。
+ * 统一插件创建入口（v0.9.7 需求7 修1e/1f/1c 重构）。
  *
- * 设计原则（用户原话）：「不是所有的插件都一个样，挨个选，挨个点，是有
- * 明确引导，明确适配插件类型的友好操作」——第一个问题是「你要造什么
- * 类型的插件？」，之后每步按类型分流，不同类型走不同流程。
+ * 用户原话交互诉求：「用户自然操作应该就跳转到会话创建……逻辑上是我点选
+ * 分类之后，将我选择的内容带过去进行创建，手动创建反而得点选特殊按钮才行」：
+ * - 点分类卡 = 主路径——带模板描述跳会话创建（AI 代做）；
+ * - 不点选、直接输入描述 → 会话创建（保留）；
+ * - 手动向导（主题/组合/混合/流水线）= 次要特殊入口（折叠区）。
  *
- * V1 分流落点：智能体工具 → agents 创建向导（PluginCreateDialog）；
- * 会话界面插件 → 组合式向导（PluginComposeDialog）；任务流水线 / 混合
- * 代码插件 → 指引卡（模板 TOML/代码 + CLI 安装命令——专属可视化向导
- * 分别为 V2 3c/3b 交付）；「描述功能」入口 → 引导到会话对话创建
- * （agent 读 jishu-plugin-authoring skill 四层指南，V1-4a 已部署）。
+ * 分类与已安装列表统一（八类口径）：智能体/会话能力/MCP/skill 工具/CLI 工具/
+ * 自定义插件（含流水线）/外观；核心引擎不可新建（仅筛选）。
  */
 import { useTranslation } from "react-i18next";
 import { useState } from "react";
 import {
   Bot,
-  LayoutDashboard,
-  ListChecks,
   Code2,
+  FileCode2,
+  LayoutDashboard,
   Lightbulb,
-  Copy,
   Palette,
+  Terminal,
+  Wrench,
   X,
-  Activity,
-  Bell,
 } from "lucide-react";
 import { UniModal } from "@/components/ui/uni-modal";
 import { cn } from "@/lib/utils";
-// 3a-4：描述功能 → 实时推荐类型。
-import { recommendIntent, intentLabel } from "./plugin-intent-recommend";
 
 export type CreateEntryChoice =
-  | { kind: "agent-tool" } // → PluginCreateDialog（agents 流程）
-  // 批次6：face = 业务形态预填（面板/挂件/渲染/动作——向导预选挂载用）。
-  | { kind: "session-composed"; face?: SessionPluginFace } // → PluginComposeDialog（组合式向导）
-  | { kind: "pipeline-guide" } // 流水线向导（V2 3c）
-  | { kind: "hybrid-guide"; face?: SessionPluginFace } // 混合代码向导（V2 3b，face→presetMount）
-  | { kind: "theme-wizard" } // 主题向导（需求14 补齐）
-  // v0.9.7 需求3 C1：描述需求 → 真链路（跳会话页预填创作指令，agent 按创作指南实现）。
-  | { kind: "describe"; text: string };
-
-const PIPELINE_TEMPLATE = `[plugin]
-id = "session.my-flow"
-name = "我的流水线"
-description = "多阶段工作流"
-kind = "session-composed"
-
-[[pipeline.stages]]
-name = "需求讨论"
-template = "phase.discuss"
-
-[[pipeline.stages]]
-name = "执行"
-prompt = "按已确认的方案执行"
-gate = "confirm"`;
-
-const HYBRID_TOML = `[plugin]
-id = "session.my-hybrid"
-name = "我的混合插件"
-kind = "session-composed"
-
-[source]
-type = "messages"
-
-[render]
-component = "@file:component.js"
-mount = "dock-panel"`;
-
-const HYBRID_CODE = `JishuPlugin.register("session.my-hybrid", {
-  version: 1,
-  component: (api) => (props) =>
-    api.h("div", { className: "p-2 text-sm" },
-      "共 " + (props.payload.data?.length ?? 0) + " 条消息"),
-});`;
-
-// 批次6：多臂组合模板（流水线 + 渲染面板 + 动作自由组合——v3 双维度 X④）。
-const COMBO_TEMPLATE = `[plugin]
-id = "session.my-combo"
-name = "我的组合插件"
-description = "流水线+面板+动作多臂组合"
-kind = "session-composed"
-
-# 臂1：多阶段流水线（可整体删去）
-[[pipeline.stages]]
-name = "需求讨论"
-template = "phase.discuss"
-
-[[pipeline.stages]]
-name = "执行"
-prompt = "按已确认的方案执行"
-gate = "confirm"
-
-# 臂2：数据面板（可整体删去）
-[source]
-type = "messages"
-
-[render]
-component = "render.stats-list"
-mount = "dock-panel"
-
-# 臂3：回合事件动作（可整体删去）
-[[action]]
-type = "desktop-notify"`;
-
-function GuideCard({
-  title,
-  steps,
-  code,
-  cli,
-  onClose,
-}: {
-  title: string;
-  steps: string[];
-  code: string;
-  cli: string;
-  onClose: () => void;
-}) {
-  const { t } = useTranslation();
-  const [copied, setCopied] = useState<string | null>(null);
-  const copy = (text: string, key: string) => {
-    void navigator.clipboard.writeText(text).then(() => {
-      setCopied(key);
-      window.setTimeout(() => setCopied(null), 1500);
-    });
-  };
-  return (
-    <UniModal open onClose={onClose} className="w-[min(640px,92vw)]" label={title}>
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
-        <div className="flex items-center justify-between">
-          <div className="text-sm font-semibold text-foreground">{title}</div>
-          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <ol className="mt-3 list-decimal space-y-1.5 pl-5 text-xs leading-relaxed text-muted-foreground">
-          {steps.map((s) => (
-            <li key={s}>{s}</li>
-          ))}
-        </ol>
-        <div className="relative mt-3">
-          <pre className="max-h-56 overflow-auto rounded-md border border-border/60 bg-muted/40 p-3 text-[11px] leading-relaxed">{code}</pre>
-          <button
-            type="button"
-            onClick={() => copy(code, "code")}
-            className="absolute right-2 top-2 rounded-md border border-border/60 bg-background/80 p-1 text-muted-foreground hover:text-foreground"
-            title={t("common.copy", "复制")}
-          >
-            <Copy className="h-3.5 w-3.5" />
-          </button>
-        </div>
-        {copied === "code" && (
-          <div className="mt-1 text-[11px] text-emerald-600">✓ {t("common.copied", "已复制")}</div>
-        )}
-        <div className="mt-3 flex items-center gap-2 rounded-md border border-border/40 bg-muted/30 px-3 py-2">
-          <code className="min-w-0 flex-1 break-all font-mono text-[11px] text-foreground/80">{cli}</code>
-          <button
-            type="button"
-            onClick={() => copy(cli, "cli")}
-            className="shrink-0 rounded-md border border-border/60 p-1 text-muted-foreground hover:text-foreground"
-          >
-            <Copy className="h-3.5 w-3.5" />
-          </button>
-        </div>
-        <div className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
-          💡 也可以直接在会话中告诉 agent 你想要的插件——它会按
-          jishu-plugin-authoring 指南产出并安装（对话即创建）。
-        </div>
-      </div>
-    </UniModal>
-  );
-}
+  | { kind: "agent-tool" } // → 手动：agents 向导
+  | { kind: "session-composed"; face?: SessionPluginFace }
+  | { kind: "pipeline-guide" }
+  | { kind: "hybrid-guide"; face?: SessionPluginFace }
+  | { kind: "theme-wizard" }
+  | { kind: "describe"; text: string }; // 主路径：会话创建（分类模板或自由描述）
 
 export type SessionPluginFace = "panel" | "widget" | "render" | "action";
 
-type EntryFace = SessionPluginFace | "pipeline" | "tool" | "theme";
-
-type EntryImpl = "config" | "code" | "combo";
-
-/** 业务形态 × 可行实现（v3 双维度交叉矩阵的创建侧子集：✓向导直达 / guide=指引卡承接）。 */
-const FACE_IMPLS: Record<EntryFace, Array<{ impl: EntryImpl; route: "compose" | "hybrid" | "pipeline" | "guide" | "theme" }>> = {
-  panel: [
-    { impl: "config", route: "compose" },
-    { impl: "code", route: "hybrid" },
-    { impl: "combo", route: "guide" },
-  ],
-  widget: [
-    { impl: "config", route: "compose" },
-    { impl: "code", route: "hybrid" },
-    { impl: "combo", route: "guide" },
-  ],
-  render: [
-    { impl: "config", route: "compose" },
-    { impl: "code", route: "guide" },
-    { impl: "combo", route: "guide" },
-  ],
-  action: [
-    { impl: "config", route: "compose" },
-    { impl: "code", route: "guide" },
-    { impl: "combo", route: "guide" },
-  ],
-  pipeline: [
-    { impl: "config", route: "pipeline" },
-    { impl: "combo", route: "guide" },
-  ],
-  tool: [],
-  theme: [{ impl: "config" as EntryImpl, route: "theme" as const }], // 声明式定义——向导内配置，无实现选择
-};
-
-const FACES: Array<{ key: EntryFace; icon: typeof Bot; title: string; desc: string }> = [
-  { key: 'theme' as EntryFace, icon: Palette, title: '主题外观', desc: '自定义配色/聊天背景（可视化调色板，无需代码）' },
-  { key: "panel", icon: LayoutDashboard, title: "会话面板", desc: "悬浮/侧栏数据面板（会话大纲、统计类）" },
-  { key: "widget", icon: Activity, title: "会话挂件", desc: "边缘细条/输入区小挂件（常驻轻展示）" },
-  { key: "render", icon: Code2, title: "会话渲染", desc: "消息流内渲染（代码块/图表接管）" },
-  { key: "action", icon: Bell, title: "会话动作", desc: "头部轻动作/通知（点按即执行）" },
-  { key: "pipeline", icon: ListChecks, title: "流水线", desc: "多阶段工作流：讨论→设计→执行→审查" },
-  { key: "tool", icon: Bot, title: "智能体工具", desc: "给 AI 新能力：CLI/MCP/Skill/自建智能体" },
+/** 分类卡（与已安装八类对齐；核心引擎不在创建面）。 */
+const CATEGORY_CARDS: Array<{
+  key: string;
+  icon: typeof Bot;
+  titleKey: string;
+  titleFallback: string;
+  descFallback: string;
+  template: string;
+}> = [
+  {
+    key: "agent",
+    icon: Bot,
+    titleKey: "plugins.typeAgent",
+    titleFallback: "智能体",
+    descFallback: "接入新智能体 / 给 AI 新能力",
+    template: "我想创建一个智能体相关插件（接入新智能体或给 AI 新能力）。",
+  },
+  {
+    key: "session",
+    icon: LayoutDashboard,
+    titleKey: "plugins.catSession",
+    titleFallback: "会话能力",
+    descFallback: "面板 / 挂件 / 会话内渲染与交互",
+    template: "我想创建一个会话能力插件（面板/挂件/会话内渲染），需求是：",
+  },
+  {
+    key: "mcp",
+    icon: Terminal,
+    titleKey: "plugins.typeMcp",
+    titleFallback: "MCP",
+    descFallback: "注册 MCP 服务（结构化外部能力）",
+    template: "我想注册一个 MCP 服务插件（数据库/API/内部系统等结构化能力）。",
+  },
+  {
+    key: "skill",
+    icon: FileCode2,
+    titleKey: "plugins.typeSkill",
+    titleFallback: "skill 工具",
+    descFallback: "把可复用流程固化成技能",
+    template: "我想创建一个 skill 工具插件（把可复用流程固化成技能），流程是：",
+  },
+  {
+    key: "cli",
+    icon: Wrench,
+    titleKey: "plugins.typeCli",
+    titleFallback: "CLI 工具",
+    descFallback: "命令行能力单元",
+    template: "我想创建一个 CLI 工具插件（命令行能力），功能是：",
+  },
+  {
+    key: "custom",
+    icon: Code2,
+    titleKey: "plugins.catCustom",
+    titleFallback: "自定义插件",
+    descFallback: "自由形态（含流水线/菜单入口）",
+    template: "我想创建一个自定义插件（形态不限，可以是流水线或菜单入口），需求是：",
+  },
+  {
+    key: "appearance",
+    icon: Palette,
+    titleKey: "plugins.catAppearance",
+    titleFallback: "外观",
+    descFallback: "主题 / 配色 / 聊天背景",
+    template: "我想创建一个外观主题插件（配色/聊天背景）。",
+  },
 ];
 
-const IMPLS: Array<{ key: EntryImpl; title: string; desc: string }> = [
-  { key: "config", title: "纯配置", desc: "TOML 清单零代码，表单可改" },
-  { key: "code", title: "写代码", desc: "component.js 自定义 TS/JS，带校验" },
-  { key: "combo", title: "多臂组合", desc: "流水线+渲染+动作自由组合" },
+/** 手动向导快捷入口（次要——特殊按钮）。 */
+const MANUAL_WIZARDS: Array<{
+  kind: CreateEntryChoice["kind"];
+  label: string;
+  desc: string;
+}> = [
+  { kind: "theme-wizard", label: "主题向导", desc: "可视化调色板" },
+  { kind: "session-composed", label: "组合式向导", desc: "TOML 清单零代码" },
+  { kind: "hybrid-guide", label: "混合代码向导", desc: "component.js 自定义" },
+  { kind: "pipeline-guide", label: "流水线向导", desc: "多阶段编排" },
+  { kind: "agent-tool", label: "智能体向导", desc: "agents 清单" },
 ];
 
 export function PluginCreateEntry({
@@ -230,157 +123,82 @@ export function PluginCreateEntry({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** 选定类型后回调（父级打开对应向导；guide/describe 在本组件内消化）。 */
   onChoose: (choice: CreateEntryChoice) => void;
 }) {
   const { t } = useTranslation();
-  const [guide, setGuide] = useState<"pipeline" | "hybrid" | "combo" | null>(null);
   const [describeText, setDescribeText] = useState("");
-  // 批次6：两步正交——Step1 业务形态（做什么·在哪用）× Step2 实现方式
-  // （怎么造）——v3 双维度交叉矩阵的创建侧落地。
-  const [face, setFace] = useState<EntryFace | null>(null);
+  const [manualOpen, setManualOpen] = useState(false);
   if (!open) return null;
 
-  const faceImpls = face ? FACE_IMPLS[face] : [];
-
-  // 实现方式点击即分流（少一跳）：向导直达 / 指引卡组件内弹出。
-  const dispatchImpl = (impl: EntryImpl) => {
-    if (!face) return;
-    const route = faceImpls.find((x) => x.impl === impl)?.route;
-    if (!route) return;
+  const goChat = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
     onOpenChange(false);
-    if (route === "compose") {
-      onChoose({ kind: "session-composed", face: face as SessionPluginFace });
-    } else if (route === "hybrid") {
-      onChoose({ kind: "hybrid-guide", face: face as SessionPluginFace });
-    } else if (route === "theme") {
-      onChoose({ kind: "theme-wizard" });
-    } else if (route === "pipeline") {
-      onChoose({ kind: "pipeline-guide" });
-    } else {
-      // 组合/代码渲染：多臂 TOML 指引（V2 3b/3c 专属向导前落点）。
-      onOpenChange(true);
-      setGuide("combo");
-    }
+    onChoose({ kind: "describe", text: trimmed });
   };
 
   return (
-    <>
-    <UniModal open={open} onClose={() => onOpenChange(false)} className="w-[min(680px,92vw)]" label={t("plugins.entryTitle", "你想创建什么类型的插件？")}>
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
-        <div className="flex items-center justify-between">
-          <div className="text-sm font-semibold text-foreground">
-            {t("plugins.entryTitle", "你想创建什么类型的插件？")}
+    <UniModal
+      open={open}
+      onClose={() => onOpenChange(false)}
+      className="w-[min(880px,94vw)]"
+      label={t("plugins.entryTitleV2", "创建插件")}
+    >
+      <div className="min-h-0 flex-1 overflow-y-auto p-6">
+        <div className="flex items-start justify-between">
+          <div>
+            <div className="text-base font-semibold text-foreground">
+              {t("plugins.entryTitleV2", "创建插件")}
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {t("plugins.entryHintV2", "点选分类，AI 帮你把插件做出来（跳到会话继续）；也可以直接输入描述")}
+            </div>
           </div>
           <button type="button" onClick={() => onOpenChange(false)} className="text-muted-foreground hover:text-foreground">
             <X className="h-4 w-4" />
           </button>
         </div>
-        {/* 批次6：两步正交——左 Step1 业务形态（做什么·在哪用），右 Step2
-            实现方式（怎么造·按业务过滤可行性，点击即分流）。 */}
-        <div className="mt-4 grid grid-cols-2 gap-4">
-          {/* Step1 业务形态 */}
-          <div>
-            <div className="mb-2 text-[11px] font-medium text-muted-foreground">
-              ① {t("plugins.entryStepFace", "业务形态（做什么·在哪用）")}
-            </div>
-            <div className="space-y-2">
-              {FACES.map((f) => {
-                const active = face === f.key;
-                return (
-                  <button
-                    key={f.key}
-                    type="button"
-                    onClick={() => {
-                      setFace(f.key);
-                      // 智能体工具：声明式定义无实现选择，直达 agents 向导。
-                      if (f.key === "tool") {
-                        onOpenChange(false);
-                        onChoose({ kind: "agent-tool" });
-                      }
-                    }}
-                    className={cn(
-                      "flex w-full flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors",
-                      active
-                        ? "border-primary/60 bg-primary/5"
-                        : "border-border bg-muted/20 hover:border-primary/40 hover:bg-primary/5",
-                    )}
-                  >
-                    <div className="flex items-center gap-2">
-                      <f.icon className={cn("h-4 w-4", active ? "text-primary" : "text-primary/70")} />
-                      <span className="text-[13px] font-medium text-foreground">{f.title}</span>
-                    </div>
-                    <span className="text-[11px] leading-relaxed text-muted-foreground">{f.desc}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          {/* Step2 实现方式 */}
-          <div>
-            <div className="mb-2 text-[11px] font-medium text-muted-foreground">
-              ② {t("plugins.entryStepImpl", "实现方式（怎么造）")}
-            </div>
-            {!face || face === "tool" ? (
-              <div className="flex h-full min-h-[200px] items-center justify-center rounded-lg border border-dashed border-border/60 p-4 text-center text-[11px] text-muted-foreground/70">
-                {face === "tool"
-                  ? t("plugins.entryToolNoImpl", "智能体工具为声明式定义——已在左侧直达创建向导")
-                  : t("plugins.entryPickFaceFirst", "先在左侧选择业务形态，再选实现方式")}
+
+        {/* 分类卡（点选 = 带模板跳会话创建——自然主路径） */}
+        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          {CATEGORY_CARDS.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => goChat(c.template)}
+              className="flex flex-col items-start gap-1.5 rounded-xl border border-border bg-muted/20 p-3.5 text-left transition-colors hover:border-primary/50 hover:bg-primary/5"
+            >
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                <c.icon className="h-4.5 w-4.5 text-primary" />
               </div>
-            ) : (
-              <div className="space-y-2">
-                {IMPLS.filter((im) => faceImpls.some((fi) => fi.impl === im.key)).map((im) => {
-                  const route = faceImpls.find((fi) => fi.impl === im.key)?.route;
-                  return (
-                    <button
-                      key={im.key}
-                      type="button"
-                      onClick={() => dispatchImpl(im.key)}
-                      className="flex w-full flex-col items-start gap-1 rounded-lg border border-border bg-muted/20 p-3 text-left transition-colors hover:border-primary/50 hover:bg-primary/5"
-                    >
-                      <div className="flex w-full items-center justify-between gap-2">
-                        <span className="text-[13px] font-medium text-foreground">{im.title}</span>
-                        {route === "guide" ? (
-                          <span className="rounded-full border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                            {t("plugins.entryGuideMode", "指引模式")}
-                          </span>
-                        ) : (
-                          <span className="text-[10px] text-primary/70">{t("plugins.entryWizardMode", "向导直达")}</span>
-                        )}
-                      </div>
-                      <span className="text-[11px] leading-relaxed text-muted-foreground">{im.desc}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+              <span className="text-[13px] font-medium text-foreground">{t(c.titleKey, c.titleFallback)}</span>
+              <span className="text-[11px] leading-snug text-muted-foreground">{c.descFallback}</span>
+            </button>
+          ))}
         </div>
-        <div className="mt-3 rounded-lg border border-dashed border-border px-4 py-2.5">
+
+        {/* 自由描述（保留：不点选直接说） */}
+        <div className="mt-5 rounded-xl border border-dashed border-border px-4 py-3">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Lightbulb className="h-4 w-4 shrink-0 text-amber-500" />
-            {t("plugins.entryDescribeV2", "描述需求（推荐）——AI 帮你把插件做出来")}
+            {t("plugins.entryDescribeV2", "直接描述你想要的功能（可选）")}
           </div>
-          <input
-            className="mt-2 h-7 w-full rounded-md border border-border/70 bg-transparent px-2 text-xs outline-none focus:border-primary/60"
-            value={describeText}
-            onChange={(e) => setDescribeText(e.target.value)}
-            placeholder="如：帮我做个倒计时挂件 / 每轮结束在输入框旁显示花销 / 让 AI 能搜索网页"
-          />
-          {/* v0.9.7 需求3 C1：主按钮 = 真链路跳会话（agent 按创作指南实现）；
-              类型推荐降级为「形态建议」次入口。 */}
-          <div className="mt-2 flex items-center justify-end">
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              className="h-8 flex-1 rounded-md border border-border/70 bg-transparent px-2.5 text-xs outline-none focus:border-primary/60"
+              value={describeText}
+              onChange={(e) => setDescribeText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") goChat(describeText);
+              }}
+              placeholder="如：帮我做个倒计时挂件 / 每轮结束显示花销 / 接入我们的内部 API"
+            />
             <button
               type="button"
               disabled={!describeText.trim()}
-              onClick={() => {
-                const text = describeText.trim();
-                if (!text) return;
-                onOpenChange(false);
-                onChoose({ kind: "describe", text });
-              }}
+              onClick={() => goChat(describeText)}
               className={cn(
-                "rounded-md px-3 py-1.5 text-[11px] font-medium transition-colors",
+                "shrink-0 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
                 describeText.trim()
                   ? "bg-primary text-primary-foreground hover:bg-primary/90"
                   : "cursor-not-allowed bg-muted text-muted-foreground/50"
@@ -389,79 +207,39 @@ export function PluginCreateEntry({
               {t("plugins.entryGoChat", "去会话创建")}
             </button>
           </div>
-          {(() => {
-            const rec = recommendIntent(describeText);
-            if (!rec) return null;
-            const composed = rec.intent === "data-panel" || rec.intent === "notify" || rec.intent === "content-render" || rec.intent === "navigation";
-            const jump = () => {
-              onOpenChange(false);
-              if (composed) onChoose({ kind: "session-composed" });
-              else if (rec.intent === "pipeline") setGuide("pipeline");
-              else if (rec.intent === "hybrid") setGuide("hybrid");
-              else onChoose({ kind: "agent-tool" });
-            };
-            return (
-              <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-border/50 bg-muted/30 px-3 py-1.5">
-                <span className="min-w-0 text-[11px] text-muted-foreground">
-                  {t("plugins.entrySuggestPrefix", "想自己配？推荐类型：")}
-                  <span className="font-medium text-foreground">{intentLabel(rec.intent)}</span>
-                  <span className="ml-1.5">{rec.reason}</span>
-                </span>
+        </div>
+
+        {/* 手动向导（次要特殊入口） */}
+        <div className="mt-4">
+          <button
+            type="button"
+            onClick={() => setManualOpen((v) => !v)}
+            className="text-[11px] text-muted-foreground/70 underline decoration-dotted underline-offset-2 hover:text-foreground"
+          >
+            {manualOpen
+              ? t("plugins.entryManualCollapse", "收起手动向导")
+              : t("plugins.entryManualExpand", "想自己配？展开手动向导")}
+          </button>
+          {manualOpen && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {MANUAL_WIZARDS.map((w) => (
                 <button
+                  key={w.kind}
                   type="button"
-                  onClick={jump}
-                  className="shrink-0 rounded-md border border-border/60 px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-accent"
+                  onClick={() => {
+                    onOpenChange(false);
+                    onChoose({ kind: w.kind } as CreateEntryChoice);
+                  }}
+                  className="flex flex-col items-start rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-left transition-colors hover:border-primary/40"
                 >
-                  {t("plugins.entryGo", "去创建")}
+                  <span className="text-xs font-medium text-foreground">{w.label}</span>
+                  <span className="text-[10px] text-muted-foreground">{w.desc}</span>
                 </button>
-              </div>
-            );
-          })()}
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </UniModal>
-      {guide === "combo" && (
-        <GuideCard
-          title={t("plugins.comboGuideTitle", "多臂组合插件 · 创建指引")}
-          steps={[
-            "新建目录，创建 plugin.toml（下方模板可复制）——多臂 = 流水线/渲染面板/动作在同一清单声明，按需删减",
-            "每臂独立生效：流水线进插件中心「流水线」tab，面板经能力中心调出，动作在事件触发时执行",
-            "校验：jishu-cli plugins validate <目录>（hub 运行中为完整校验）",
-            "安装后热生效；详情页「设置」可调使用行为（归所/自动展开/作用域）",
-          ]}
-          code={COMBO_TEMPLATE}
-          cli="jishu-cli plugins add <目录或 toml 路径>"
-          onClose={() => setGuide(null)}
-        />
-      )}
-      {guide === "pipeline" && (
-        <GuideCard
-          title={t("plugins.pipelineGuideTitle", "任务流水线 · 创建指引")}
-          steps={[
-            "新建目录，创建 plugin.toml（下方模板可复制）——阶段优先用内置模板 phase.discuss / phase.plan / phase.execute / phase.review",
-            "自定义阶段写 prompt（对阶段的指令）与 gate = \"confirm\"（进下一阶段前需确认）",
-            "校验：jishu-cli plugins validate <目录>（hub 运行中为完整校验）",
-            "安装后到插件中心「流水线」tab 启用，详情页可「作为任务启动」",
-          ]}
-          code={PIPELINE_TEMPLATE}
-          cli="jishu-cli plugins add <目录或 toml 路径>"
-          onClose={() => setGuide(null)}
-        />
-      )}
-      {guide === "hybrid" && (
-        <GuideCard
-          title={t("plugins.hybridGuideTitle", "混合代码插件 · 创建指引")}
-          steps={[
-            "新建目录，放 plugin.toml 与 component.js（下方模板可复制）",
-            "component.js 必须含 JishuPlugin.register(\"<id>\", { version: 1, component })——两参数形态",
-            "校验：jishu-cli plugins validate <目录>（含代码契约检查）",
-            "安装后经确认卡启用（默认禁用是安全阀）；渲染崩溃会自动停用并提示",
-          ]}
-          code={`${HYBRID_TOML}\n\n# component.js（同目录）\n${HYBRID_CODE}`}
-          cli="jishu-cli plugins add-hybrid <目录>"
-          onClose={() => setGuide(null)}
-        />
-      )}
-    </>
   );
 }

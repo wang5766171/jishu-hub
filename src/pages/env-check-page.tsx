@@ -3,6 +3,7 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { AgentLogo, RuntimeLogo, useAgent } from "@/agents";
 import { Button } from "@/components/ui/button";
 import {
+  RotateCw,
   CheckCircle2,
   XCircle,
   Loader2,
@@ -555,6 +556,10 @@ export function EnvCheckPage({
           </div>
         )}
 
+        {/* 需求7 修4：智能体引擎状态区（引导功能并入——安装后二次进入可见
+            引擎版本/重装入口；与首启引导步骤①同一套状态源）。 */}
+        <EngineRuntimeSection />
+
         {/* Runtime section */}
         <div>
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
@@ -696,6 +701,96 @@ export function EnvCheckPage({
           </Button>
         )}
       </div>
+    </div>
+  );
+}
+
+/** 需求7 修4：引擎运行时状态区（环境检测页 × 首启引导合并）——展示
+ * agent-runtime 版本记录状态，支持「重新初始化」（mismatch/修复场景的
+ * 二次入口；进度复用 agent-runtime-progress 事件文案）。 */
+function EngineRuntimeSection() {
+  const { t } = useTranslation();
+  const [status, setStatus] = useState<{
+    state: "ready" | "init_running" | "mismatch";
+    recorded: string | null;
+    expected: string;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [doneMsg, setDoneMsg] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try {
+        const s = await invokeCommand<typeof status>("agent_runtime_status");
+        if (alive) setStatus(s);
+      } catch {
+        /* 静默 */
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 3000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const reinit = async () => {
+    setBusy(true);
+    try {
+      await invokeCommand("agent_runtime_init");
+      setDoneMsg(true);
+      window.setTimeout(() => setDoneMsg(false), 3000);
+    } catch {
+      /* 失败保持状态显示 */
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stateLabel =
+    status?.state === "ready"
+      ? t("env.engineReady", "已就绪")
+      : status?.state === "init_running"
+        ? t("env.engineInitializing", "初始化中…")
+        : status
+          ? t("env.engineMismatch", "版本待更新")
+          : "…";
+  const stateCls =
+    status?.state === "ready"
+      ? "text-emerald-600"
+      : status?.state === "mismatch"
+        ? "text-amber-600"
+        : "text-muted-foreground";
+
+  return (
+    <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium">{t("env.engineTitle", "智能体引擎")}</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">
+            {t("env.engineVersion", "版本")}：{status?.expected ?? "…"}
+            {status?.recorded ? `（${t("env.engineRecorded", "已装")} ${status.recorded}）` : ""}
+            <span className={`ml-2 font-medium ${stateCls}`}>{stateLabel}</span>
+          </div>
+        </div>
+        {status?.state === "mismatch" && (
+          <Button size="sm" onClick={() => void reinit()} disabled={busy}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
+            <span className="ml-1.5">{t("env.engineReinit", "重新初始化")}</span>
+          </Button>
+        )}
+        {status?.state === "ready" && (
+          <Button variant="outline" size="sm" onClick={() => void reinit()} disabled={busy}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
+            <span className="ml-1.5">{t("env.engineReinstall", "重装引擎")}</span>
+          </Button>
+        )}
+      </div>
+      {doneMsg && (
+        <div className="mt-2 text-xs text-emerald-600">{t("env.engineDone", "引擎已更新，新会话生效")}</div>
+      )}
     </div>
   );
 }

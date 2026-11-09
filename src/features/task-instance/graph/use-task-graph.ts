@@ -1006,3 +1006,7 @@ export function useTaskGraph() {
     cancelRun,
   };
 }
+
+// v0.9.7 需求2 补充（chat-page 简化簇C）：导出返回结构类型别名供执行段
+// hook 结构化引用（非侵入——原函数签名零变化）。
+export type UseTaskGraphReturn = ReturnType<typeof useTaskGraph>;

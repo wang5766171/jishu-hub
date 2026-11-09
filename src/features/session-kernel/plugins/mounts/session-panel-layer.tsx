@@ -23,7 +23,7 @@ import {
   openSessionSidebar,
   useSessionSidebar,
 } from "../../shell/session-sidebar";
-import { usePanelActivation } from "../../shell/panel-activation";
+import { usePanelActivation, consumePanelActivation } from "../../shell/panel-activation";
 // 批次5：能力中心常驻挂件定位（复用 5a spotlight 脉冲）与管理页导航。
 import { requestInstallSpotlight } from "../../shell/install-spotlight";
 import { openManagePage } from "@/lib/app-nav";
@@ -428,17 +428,23 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
   const activation = usePanelActivation();
   useEffect(() => {
     if (!activation) return;
-    if (activation.pluginId === "__close__") {
-      closeSessionSidebar();
-      hideAllDockPanels();
-      return;
-    }
-    if (isSidebarPlugin(activation.pluginId)) {
-      hideAllDockPanels();
-      openSessionSidebar(activation.pluginId);
-    } else {
-      closeSessionSidebar();
-      showPanel(activation.pluginId);
+    try {
+      if (activation.pluginId === "__close__") {
+        closeSessionSidebar();
+        hideAllDockPanels();
+        return;
+      }
+      if (isSidebarPlugin(activation.pluginId)) {
+        hideAllDockPanels();
+        openSessionSidebar(activation.pluginId);
+      } else {
+        closeSessionSidebar();
+        showPanel(activation.pluginId);
+      }
+    } finally {
+      // 需求7 修复（侧栏粘滞 BUG）：一次性消费——防宿主层卸载-重挂时
+      // 用陈旧请求重放（重开用户已收起的面板）。重复请求靠新的 seq。
+      consumePanelActivation();
     }
     // seq 驱动：同一插件重复请求（连续预览刷新）也重新激活。
     // eslint-disable-next-line react-hooks/exhaustive-deps

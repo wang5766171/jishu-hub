@@ -40,6 +40,16 @@ function getPanelActivation(): PanelActivation | null {
   return activation;
 }
 
+/** 需求7 修复（侧栏粘滞 BUG）：消费激活请求。activation 是全局单例且原本
+ * 永不过期——宿主层（SessionPanelLayer）因分支切换卸载-重挂时，effect
+ * 首跑会用陈旧请求重放（用户已手动收起的面板被再次打开——tab 切换的
+ * selectedSession 空窗即触发窗口）。改为一次性语义：生效即清空。 */
+export function consumePanelActivation(): void {
+  if (activation === null) return;
+  activation = null;
+  emit();
+}
+
 export function usePanelActivation(): PanelActivation | null {
   return useSyncExternalStore(
     (cb) => {

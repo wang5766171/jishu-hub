@@ -1152,3 +1152,155 @@ pub(crate) async fn skillhub_install(slug: String) -> Result<String, String> {
 pub(crate) fn skillhub_uninstall(slug: String) -> Result<String, String> {
     agent::skillhub::skillhub_uninstall(&slug)
 }
+
+// ── 需求7 修1a：扩展生态在线库（pi.dev 画廊同源约定 = npm registry
+//    `keywords:pi-package` 检索；安装走 pi install npm:<spec> 通道）──
+
+#[derive(serde::Serialize)]
+pub(crate) struct PiOnlinePackage {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub publisher: String,
+    pub date: String,
+}
+
+/// npm registry 检索 pi-package 关键字包（keyword 为空 = 全量按相关度）。
+#[tauri::command]
+pub(crate) async fn pi_package_search(
+    keyword: Option<String>,
+) -> Result<Vec<PiOnlinePackage>, String> {
+    let text = match keyword.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        Some(kw) => format!("keywords:pi-package {kw}"),
+        None => "keywords:pi-package".to_string(),
+    };
+    let url = format!(
+        "https://registry.npmjs.org/-/v1/search?text={}&size=30",
+        urlencode(&text)
+    );
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .user_agent("jishu-hub/0.9.7")
+        .build()
+        .map_err(|e| e.to_string())?
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("网络不可用: {e}"))?;
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("响应解析失败: {e}"))?;
+    let objects = body
+        .get("objects")
+        .and_then(|v| v.as_array())
+        .ok_or("npm registry 响应结构异常")?;
+    let mut out = Vec::new();
+    for obj in objects {
+        let pkg = match obj.get("package") {
+            Some(p) => p,
+            None => continue,
+        };
+        // 双保险：部分包描述词不全，只在 keywords 含 pi-package 时入选。
+        let keywords = pkg
+            .get("keywords")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|k| k.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !keywords.iter().any(|k| k == "pi-package") {
+            continue;
+        }
+        out.push(PiOnlinePackage {
+            name: pkg
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            version: pkg
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            description: pkg
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .chars()
+                .take(120)
+                .collect(),
+            publisher: pkg
+                .get("publisher")
+                .and_then(|p| p.get("username"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            date: obj
+                .get("date")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .chars()
+                .take(10)
+                .collect(),
+        });
+    }
+    out.sort_by(|a, b| b.date.cmp(&a.date));
+    Ok(out)
+}
+
+fn urlencode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// 当前 settings.json packages 数组（在线包「已安装」判定真源）。
+#[tauri::command]
+pub(crate) fn pi_package_installed_sources() -> Result<Vec<String>, String> {
+    let Ok(agent_dir) = agent::jishu_self::paths::agent_dir() else {
+        return Ok(Vec::new());
+    };
+    let content = std::fs::read_to_string(agent_dir.join("settings.json")).unwrap_or_default();
+    let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Ok(Vec::new());
+    };
+    Ok(settings
+        .get("packages")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// 在线包安装/卸载（npm 源直达；不走 curated 插件闸门——装的是 pi 扩展包
+/// 本体，非 hub 插件条目）。
+#[tauri::command]
+pub(crate) async fn pi_package_install_online(source: String) -> Result<String, String> {
+    let source = source.trim().to_string();
+    if !source.starts_with("npm:") {
+        return Err("仅支持 npm: 前缀源（如 npm:pi-fireworks@0.1.2）".to_string());
+    }
+    agent::jishu_self::JishuSelfAgent::run_pi_package_command("install", &source)
+        .await
+        .map(|_| format!("{source} 已安装"))
+}
+
+#[tauri::command]
+pub(crate) async fn pi_package_uninstall_online(name: String) -> Result<String, String> {
+    agent::jishu_self::JishuSelfAgent::run_pi_package_command("remove", &name)
+        .await
+        .map(|_| format!("{name} 已卸载"))
+}

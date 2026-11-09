@@ -45,7 +45,7 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
 
   it("空态：无当前项目且无固定 → 整条不渲染", () => {
     const { container } = render(
-      <ProjectTabs currentProject={null} projects={[PROJECT_A]} tabs={makeTabs()} onSwitchToProject={vi.fn()} onCloseCurrentProject={vi.fn()} />,
+      <ProjectTabs projectMetas={null} currentProject={null} projects={[PROJECT_A]} tabs={makeTabs()} onSwitchToProject={vi.fn()} onCloseCurrentProject={vi.fn()} />,
     );
     expect(screen.queryByText("jishu-hub")).toBeNull();
     expect(container.firstChild).toBeNull();
@@ -53,7 +53,7 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
 
   it("当前项目标签：显示项目名 + 关闭按钮；无固定时不渲染其他标签", () => {
     render(
-      <ProjectTabs currentProject={PROJECT_A} projects={[PROJECT_A]} tabs={makeTabs()} onSwitchToProject={vi.fn()} onCloseCurrentProject={vi.fn()} />,
+      <ProjectTabs projectMetas={null} currentProject={PROJECT_A} projects={[PROJECT_A]} tabs={makeTabs()} onSwitchToProject={vi.fn()} onCloseCurrentProject={vi.fn()} />,
     );
     expect(screen.getByText("jishu-hub")).toBeTruthy();
     expect(screen.getByTitle("关闭当前项目")).toBeTruthy();
@@ -67,7 +67,7 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
       lastSession: { "enc-b": { sessionId: "s-b", agentId: "codex" } },
     });
     render(
-      <ProjectTabs currentProject={PROJECT_A} projects={[PROJECT_A, PROJECT_B]} tabs={tabs} onSwitchToProject={onSwitch} onCloseCurrentProject={vi.fn()} />,
+      <ProjectTabs projectMetas={null} currentProject={PROJECT_A} projects={[PROJECT_A, PROJECT_B]} tabs={tabs} onSwitchToProject={onSwitch} onCloseCurrentProject={vi.fn()} />,
     );
     fireEvent.click(screen.getByText("other-work"));
     expect(onSwitch).toHaveBeenCalledWith(PROJECT_B, "s-b", "codex");
@@ -84,7 +84,7 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
     for (const [light, cls] of cases) {
       cleanup();
       render(
-        <ProjectTabs
+        <ProjectTabs projectMetas={null}
           currentProject={PROJECT_A}
           projects={[PROJECT_A, PROJECT_B]}
           tabs={makeTabs({ pins: ["enc-b"], lights: { "enc-b": light } })}
@@ -100,7 +100,7 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
 
   it("补充⑨空闲无点：不渲染圆点但占位保留（标签宽度不变）", () => {
     render(
-      <ProjectTabs currentProject={PROJECT_A} projects={[PROJECT_A, PROJECT_B]} tabs={makeTabs({ pins: ["enc-b"] })} onSwitchToProject={vi.fn()} onCloseCurrentProject={vi.fn()} />,
+      <ProjectTabs projectMetas={null} currentProject={PROJECT_A} projects={[PROJECT_A, PROJECT_B]} tabs={makeTabs({ pins: ["enc-b"] })} onSwitchToProject={vi.fn()} onCloseCurrentProject={vi.fn()} />,
     );
     // 无任何彩色圆点
     expect(document.querySelector("span.rounded-full")).toBeNull();
@@ -113,7 +113,7 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
     const onSwitch = vi.fn();
     const tabs = makeTabs({ pins: ["enc-b"] });
     render(
-      <ProjectTabs currentProject={PROJECT_A} projects={[PROJECT_A, PROJECT_B]} tabs={tabs} onSwitchToProject={onSwitch} onCloseCurrentProject={vi.fn()} />,
+      <ProjectTabs projectMetas={null} currentProject={PROJECT_A} projects={[PROJECT_A, PROJECT_B]} tabs={tabs} onSwitchToProject={onSwitch} onCloseCurrentProject={vi.fn()} />,
     );
     fireEvent.click(screen.getByTitle("关闭标签"));
     expect(tabs.unpinProject).toHaveBeenCalledWith("enc-b");
@@ -124,7 +124,7 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
   it("补充③顺序：当前项目未固定时排末尾（不强制首位）；固定后按 pins 序渲染", () => {
     // B、C 已固定，当前项目 A 未固定 → 顺序 [B, C, A]
     const { unmount } = render(
-      <ProjectTabs
+      <ProjectTabs projectMetas={null}
         currentProject={PROJECT_A}
         projects={[PROJECT_A, PROJECT_B, proj("third", "enc-c")]}
         tabs={makeTabs({ pins: ["enc-b", "enc-c"] })}
@@ -138,7 +138,7 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
     unmount();
     // 当前项目在 pins 中 → 按 pins 序（A 在首位则首位，带关闭钮）
     render(
-      <ProjectTabs
+      <ProjectTabs projectMetas={null}
         currentProject={PROJECT_A}
         projects={[PROJECT_A, PROJECT_B]}
         tabs={makeTabs({ pins: ["enc-a", "enc-b"] })}
@@ -155,7 +155,7 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
     const tabs = makeTabs({ pins: ["enc-b", "enc-gone"] });
     const PROJECT_C = proj("third", "enc-c");
     render(
-      <ProjectTabs currentProject={PROJECT_A} projects={[PROJECT_A, PROJECT_B, PROJECT_C]} tabs={{ ...tabs, pins: ["enc-b", "enc-c"] }} onSwitchToProject={vi.fn()} onCloseCurrentProject={vi.fn()} />,
+      <ProjectTabs projectMetas={null} currentProject={PROJECT_A} projects={[PROJECT_A, PROJECT_B, PROJECT_C]} tabs={{ ...tabs, pins: ["enc-b", "enc-c"] }} onSwitchToProject={vi.fn()} onCloseCurrentProject={vi.fn()} />,
     );
     const src = screen.getByText("other-work").closest("[draggable]");
     const dst = screen.getByText("third").closest("[draggable]");
@@ -167,7 +167,7 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
 
   it("pins 中已删除项目（projects 查无）不渲染；当前项目不重复为固定标签", () => {
     render(
-      <ProjectTabs
+      <ProjectTabs projectMetas={null}
         currentProject={PROJECT_A}
         projects={[PROJECT_A]}
         tabs={makeTabs({ pins: ["enc-a", "enc-gone"] })}

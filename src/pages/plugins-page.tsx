@@ -87,7 +87,7 @@ interface PluginListResult {
  * 需求14 M4（G10/G11 分类显式化）：清单可显式声明 category（八类枚举，
  * A 家族 [info].category / 组合家族 [plugin].category），声明值优先于
  * 推断链；CORE_ENGINE 前端硬编码名单退役（5 个核心插件已声明 core）。 */
-type PluginCategory = "core" | "session" | "pipeline" | "mcp" | "skill" | "cli" | "custom" | "agent" | "appearance";
+type PluginCategory = "core" | "session" | "mcp" | "skill" | "cli" | "custom" | "agent" | "appearance";
 
 /** 需求14 M4-5（06 §5.3 △ 兑现）：呈现位徽标——会话插件卡片右上挂载位小
  *  图标组（title 中文呈现位），「装完即知在哪用」。 */
@@ -104,6 +104,8 @@ const MOUNT_FACE_ICONS: Record<string, { icon: typeof LayoutGrid; label: string 
   "app-overlay": { icon: Layers, label: "应用级浮层" },
 };
 
+/** 需求7 修1c：呈现位标签（文字化——用户看得懂「在哪用」，不再只悬停图标）。
+ * 图标 + 短词并排；流水线并入自定义分类后仍标注其形态。 */
 function MountFaces({ pluginId }: { pluginId: string }) {
   const desc = listSessionPlugins().find((p) => p.id === pluginId);
   const faces = [...new Set((desc?.mounts ?? []).map((m) => m.kind))];
@@ -111,19 +113,26 @@ function MountFaces({ pluginId }: { pluginId: string }) {
   const all = [...faces, ...pipeline];
   if (all.length === 0) return null;
   return (
-    <span className="inline-flex items-center gap-0.5" title={all
-      .map((k) => k === "pipeline" ? "流水线（无 UI）" : MOUNT_FACE_ICONS[k]?.label ?? k)
-      .join(" · ")}>
+    <span className="inline-flex flex-wrap items-center gap-1">
       {all.map((k) => {
         const Icon = k === "pipeline" ? Rocket : MOUNT_FACE_ICONS[k]?.icon ?? LayoutGrid;
-        return <Icon key={k} className="h-2.5 w-2.5 text-muted-foreground/50" />;
+        const label = k === "pipeline" ? "流程" : MOUNT_FACE_ICONS[k]?.label ?? k;
+        return (
+          <span
+            key={k}
+            className="inline-flex items-center gap-0.5 rounded-full border border-border/50 bg-muted/40 px-1.5 py-px text-[9px] text-muted-foreground/80"
+          >
+            <Icon className="h-2.5 w-2.5" />
+            {label}
+          </span>
+        );
       })}
     </span>
   );
 }
 
 const CATEGORY_VALUES: ReadonlySet<string> = new Set([
-  "core", "session", "pipeline", "mcp", "skill", "cli", "custom", "agent", "appearance",
+  "core", "session", "mcp", "skill", "cli", "custom", "agent", "appearance",
 ]);
 
 function categoryOf(p: PluginDescriptor): PluginCategory {
@@ -132,7 +141,7 @@ function categoryOf(p: PluginDescriptor): PluginCategory {
   // v0.9.2 需求1：会话能力插件（前端注册表实现，此处统一管理面启停）。
   // v0.9.5 需求1（原需求26）1d：声明 pipeline 的组合式插件归独立「流水线」
   // tab（video-maker 等编排形态，原混在「会话能力」里不可辨）。
-  if (p.kind === "session") return p.has_pipeline ? "pipeline" : "session";
+  if (p.kind === "session") return p.has_pipeline ? "custom" : "session";
   if (p.core) return "core";
   if (p.kind === "tool") {
     if (p.has_mcp) return "mcp";
@@ -172,15 +181,17 @@ const IMPL_BADGE: Record<ImplKind, { key: string; fallback: string; cls: string 
 };
 
 /** v0.9.3 需求11：分类改横向 tab（顺序按用户口径，智能体置首）。 */
+// 需求7 修1c：分类统一八类（用户口径）——智能体/核心引擎/会话能力/MCP/
+// skill工具/CLI工具/自定义插件/外观；流水线并入「自定义插件」（核心引擎
+// 仅筛选不可新建——创建入口不出现该类）。
 const PLUGIN_CATEGORIES: Array<{ key: PluginCategory; labelKey: string; fallback: string }> = [
   { key: "agent", labelKey: "plugins.typeAgent", fallback: "智能体" },
   { key: "core", labelKey: "plugins.catCore", fallback: "核心引擎" },
   { key: "session", labelKey: "plugins.catSession", fallback: "会话能力" },
-  { key: "pipeline", labelKey: "plugins.catPipeline", fallback: "流水线" },
   { key: "mcp", labelKey: "plugins.typeMcp", fallback: "MCP" },
-  { key: "skill", labelKey: "plugins.typeSkill", fallback: "Skill" },
-  { key: "cli", labelKey: "plugins.typeCli", fallback: "CLI" },
-  { key: "custom", labelKey: "plugins.catCustom", fallback: "自定义" },
+  { key: "skill", labelKey: "plugins.typeSkill", fallback: "skill 工具" },
+  { key: "cli", labelKey: "plugins.typeCli", fallback: "CLI 工具" },
+  { key: "custom", labelKey: "plugins.catCustom", fallback: "自定义插件" },
   // 需求14 M2（03 §2 场景 10）：外观分类——主题插件（[theme] 段声明）。
   { key: "appearance", labelKey: "plugins.catAppearance", fallback: "外观" },
 ];
@@ -245,6 +256,10 @@ export function PluginsPage({
     }
   }, []);
 
+  // 需求8 修复B-T2：MCP 插件连接健康徽标（数据源 = 聚合 server 健康快照；
+  // 无快照/会话未跑过 → 空表不显示徽标——安装态与运行态不再错位）。
+  const [mcpHealth, setMcpHealth] = useState<Record<string, { status: string; error: string | null }>>({});
+
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
@@ -253,6 +268,17 @@ export function PluginsPage({
       console.error("Failed to list plugins:", err);
     } finally {
       setLoading(false);
+    }
+    try {
+      const h = await invokeCommand<{
+        available?: boolean;
+        plugins?: { plugin: string; status: string; error: string | null }[];
+      }>("mcp_plugin_health");
+      const map: Record<string, { status: string; error: string | null }> = {};
+      for (const p of h?.plugins ?? []) map[p.plugin] = { status: p.status, error: p.error };
+      setMcpHealth(map);
+    } catch {
+      setMcpHealth({}); // 只读展示位：失败静默（不显徽标）
     }
   }, []);
 
@@ -593,6 +619,22 @@ export function PluginsPage({
                 <Badge variant="outline" className="px-1 py-0 text-[9px]">
                   {tr("plugins.mcpBadge", "MCP")}
                 </Badge>
+              )}
+              {plugin.has_mcp && mcpHealth[plugin.id] && (
+                <span
+                  className="inline-flex items-center gap-1 text-[9px] text-muted-foreground"
+                  title={mcpHealth[plugin.id].error ?? undefined}
+                >
+                  <span
+                    className={cn(
+                      "inline-block size-1.5 rounded-full",
+                      mcpHealth[plugin.id].status === "connected" ? "bg-emerald-500" : "bg-amber-500",
+                    )}
+                  />
+                  {mcpHealth[plugin.id].status === "connected"
+                    ? tr("plugins.mcpConnected", "已连接")
+                    : tr("plugins.mcpConnecting", "启动中·稍后自动恢复")}
+                </span>
               )}
               {plugin.kind === "session" && <MountFaces pluginId={plugin.id} />}
             </div>

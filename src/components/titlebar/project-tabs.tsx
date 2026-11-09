@@ -21,6 +21,9 @@ import type { ProjectTabsState, TabLight } from "./use-project-tabs";
 export interface ProjectTabsProps {
   currentProject: Project | null;
   projects: Project[] | null;
+  /** 需求7 修3：标签显示名优先 custom_name（默认空间预置「默认空间」，
+   * 覆盖目录名 JishuProjects 直出的观感问题）。 */
+  projectMetas: Record<string, { custom_name?: string | null }> | null;
   tabs: ProjectTabsState;
   /** 切到目标项目的指定会话（agentId 对齐该会话所属智能体）。 */
   onSwitchToProject: (project: Project, sessionId: string | null, agentId: string | null) => void;
@@ -37,6 +40,7 @@ const LIGHT_CLASS: Record<TabLight, string> = {
 export function ProjectTabs({
   currentProject,
   projects,
+  projectMetas,
   tabs,
   onSwitchToProject,
   onCloseCurrentProject,
@@ -62,6 +66,14 @@ export function ProjectTabs({
       last: tabs.lastSession[enc],
     };
   });
+  const displayName = (proj: Project | null | undefined): string => {
+    if (!proj) return "";
+    return (
+      projectMetas?.[proj.encoded_name]?.custom_name?.trim() ||
+      proj.name
+    );
+  };
+
   if (currentProject && !tabs.pins.includes(currentProject.encoded_name)) {
     orderedEntries.push({ enc: currentProject.encoded_name, project: currentProject, isCurrent: true });
   }
@@ -100,7 +112,7 @@ export function ProjectTabs({
                 />
               )}
             </span>
-            <span className="truncate text-xs font-medium">{project!.name}</span>
+            <span className="truncate text-xs font-medium">{displayName(project)}</span>
             <button
               type="button"
               onClick={onCloseCurrentProject}
@@ -155,7 +167,7 @@ export function ProjectTabs({
                 />
               )}
             </span>
-            <span className="truncate">{project!.name}</span>
+            <span className="truncate">{displayName(project)}</span>
             {/* 关闭标签=取消固定（用户裁决 2026-11-03：出现即默认固定，无需独立
                 固定/解除按钮——关闭即取消；hover 显示，点击不冒泡到切换）。 */}
             <button

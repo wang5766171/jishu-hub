@@ -22,7 +22,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore, type RefObject } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { streamStore } from "@/hooks/use-stream-store";
 import { cn } from "@/lib/utils";
@@ -36,6 +36,9 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { useSessionUnread } from "@/features/session-kernel/session-unread";
+import { useEnabledSessionPlugins } from "@/features/session-kernel/plugins/registry";
+import { composedPlugins, composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
+import { Zap } from "lucide-react";
 import { TaskSessionTree } from "@/features/task-workspace/sidebar/task-session-tree";
 import { formatRelativeTime, TerminalIcon } from "./chat-page-utils";
 import type { ConfirmDialogOptions } from "@/components/ui/confirm-dialog";
@@ -82,6 +85,9 @@ export interface ChatSidebarProps {
   handleNewSession: () => void;
   handleRefresh: () => void | Promise<void>;
   handleOpenTaskConversation: () => void;
+  /** 需求7 修1d：菜单形式插件入口（新任务下方，≤5）——点击=新会话预填
+   * 该插件 [menu].prompt 发起。 */
+  onLaunchMenuPlugin: (prompt: string) => void;
   handleSelectSession: (sessionId: string) => void;
   handleFloatSession: (sessionId: string) => void;
   handleResumeSession: (sessionId: string) => void | Promise<void>;
@@ -131,6 +137,7 @@ export function ChatSidebar(props: ChatSidebarProps) {
     handleNewSession,
     handleRefresh,
     handleOpenTaskConversation,
+    onLaunchMenuPlugin,
     handleSelectSession,
     handleFloatSession,
     handleResumeSession,
@@ -228,6 +235,7 @@ export function ChatSidebar(props: ChatSidebarProps) {
               <ClipboardList className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
               <span className="truncate leading-none pt-[1px]">{t("tasks.startTask")}</span>
             </button>
+            <MenuPluginEntries onLaunch={onLaunchMenuPlugin} enabled={Boolean(projectId)} />
           </div>
           {/* Search */}
           <div className="px-3 h-10 pb-2">
@@ -499,5 +507,51 @@ export function ChatSidebar(props: ChatSidebarProps) {
         <div className={cn("flex-1", !sidebarCollapsed && "hidden")} />
       </div>
     </>
+  );
+}
+
+
+/** 需求7 修1d：菜单形式插件入口——启用中的 [menu] 声明组合插件（≤5，
+ * 保存期已校验上限，此处只渲染）。点击 = 新会话预填该插件的 prompt。 */
+function MenuPluginEntries({
+  onLaunch,
+  enabled,
+}: {
+  onLaunch: (prompt: string) => void;
+  enabled: boolean;
+}) {
+  const enabledIds = useEnabledSessionPlugins();
+  const composedRev = useSyncExternalStore(subscribeComposed, composedVersion, () => 0);
+  const entries = useMemo(() => {
+    // 描述符透传 [menu] 段（engine 装配）；与启用集取交集。
+    return composedPlugins()
+      .filter((p) => p.menu && enabledIds.has(p.id))
+      .slice(0, 5)
+      .map((p) => ({ id: p.id, label: p.menu!.label, prompt: p.menu!.prompt }));
+    // composedRev 进依赖：清单装载/启停变化后重算。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabledIds, composedRev]);
+  if (entries.length === 0) return null;
+  return (
+    <div className="mt-1 space-y-0.5">
+      {entries.map((e) => (
+        <button
+          key={e.id}
+          type="button"
+          disabled={!enabled}
+          onClick={() => enabled && onLaunch(e.prompt)}
+          className={cn(
+            "flex h-7 w-full items-center gap-2 rounded-lg pl-4 pr-2 text-xs transition-fast",
+            enabled
+              ? "text-foreground/80 hover:bg-accent"
+              : "opacity-40 cursor-not-allowed"
+          )}
+          title={e.label}
+        >
+          <Zap className="h-3 w-3 shrink-0 text-[var(--icon-action)]/80" />
+          <span className="truncate leading-none pt-[1px]">{e.label}</span>
+        </button>
+      ))}
+    </div>
   );
 }

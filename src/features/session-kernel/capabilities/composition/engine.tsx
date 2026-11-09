@@ -386,6 +386,8 @@ export function buildComposedDescriptor(
     permissions: ["read:blocks"],
     configSchema: schema.length ? schema : undefined,
     pipeline: manifest.pipeline,
+    // 需求7 修1d：[menu] 段透传（会话侧栏菜单入口数据）。
+    menu: manifest.menu,
     mounts,
   };
 }

@@ -141,6 +141,9 @@ export interface SessionComposedManifest {
   config?: ComposedConfigFieldDecl[];
   /** [[agent-tool]] 声明段（6a；可选——缺失即旧行为）。 */
   agent_tool?: AgentToolDecl[];
+  /** 需求7 修1d：菜单形式插件声明段——入口出现在会话侧栏「新任务」下方，
+   * 点击 = 新会话预填 prompt 发起。启用集上限 5（保存期校验拒超额）。 */
+  menu?: { label: string; prompt: string; icon?: string };
 }
 
 // ── 组合引擎对外产物（挂载生成所需） ──

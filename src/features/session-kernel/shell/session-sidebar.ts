@@ -11,7 +11,9 @@
  */
 import { useSyncExternalStore } from "react";
 
-export const SESSION_SIDEBAR_WIDTH_RATIO = 0.5;
+// 需求7 修复（BUG2）：默认宽度 50% → 40% 内容区——用户实测 50% 时侧栏
+// 约为会话区 1.4 倍观感过宽；40% 时侧栏:会话 ≈ 2:3（明显窄于会话区）。
+export const SESSION_SIDEBAR_WIDTH_RATIO = 0.4;
 const WIDTH_STORAGE_KEY = "jishu-session-sidebar-width";
 function loadUserWidth(): number | null {
   const raw = localStorage.getItem(WIDTH_STORAGE_KEY);

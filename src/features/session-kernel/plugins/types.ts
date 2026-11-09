@@ -405,6 +405,8 @@ export interface SessionPluginDescriptor {
   /** v0.9.3 需求13 C4：阶段流水线声明（pipeline 型组合插件——编排定义，
    * 运行时驱动随 C4-slice-2 接 conductor）。 */
   pipeline?: import("../capabilities/pipeline/contracts").PipelineDeclaration;
+  /** 需求7 修1d：菜单入口声明（组合清单 [menu] 段——新任务下方入口）。 */
+  menu?: { label: string; prompt: string; icon?: string };
   descriptionKey?: string;
   descriptionFallback?: string;
   /** 描述符契约版本（演进接缝：Stage 2 版本协商基础）。 */

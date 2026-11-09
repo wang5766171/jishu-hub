@@ -433,6 +433,27 @@ pub fn save_composed_manifest(id: &str, toml: &str) -> Result<(), String> {
     if decl_id != id {
         return Err(format!("清单 id ({decl_id:?}) 与目标 id ({id:?}) 不一致"));
     }
+    // 需求7 修1d：[menu] 段校验——label/prompt 非空 + 启用菜单插件总数 ≤5
+    //（保存期 fail loud；页面不提示上限，超额报错即用户要求的交互）。
+    if let Some(menu) = value.get("menu") {
+        let label = menu.get("label").and_then(|v| v.as_str()).unwrap_or("");
+        let prompt = menu.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+        if label.trim().is_empty() || prompt.trim().is_empty() {
+            return Err("[menu] 段的 label 与 prompt 均不能为空".to_string());
+        }
+        let disabled = load_plugin_config().disabled;
+        let others = composed_session_manifests()
+            .into_iter()
+            .filter(|(other_id, m)| {
+                other_id != id && !disabled.contains(other_id) && m.get("menu").is_some()
+            })
+            .count();
+        if others + 1 > 5 {
+            return Err(format!(
+                "菜单形式插件最多启用 5 个（当前已启用 {others} 个）——请先停用或移除其它菜单插件"
+            ));
+        }
+    }
     // 6c：[[agent-tool]] 名全局唯一（agent 工具名撞名会让 agent 无从
     // 分辨——安装/保存期拒绝，与既有插件 id 冲突检查同纪律）。
     let tool_names: Vec<String> = value

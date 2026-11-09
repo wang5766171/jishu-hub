@@ -59,6 +59,15 @@ interface SkillhubListResult {
 
 type MarketSource = "curated" | "extensions" | "skills";
 
+/** 需求7 修1a：扩展生态在线库条目（npm pi-package 检索）。 */
+interface PiOnlinePackage {
+  name: string;
+  version: string;
+  description: string;
+  publisher: string;
+  date: string;
+}
+
 const PAGE_SIZE = 20;
 
 export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
@@ -71,6 +80,9 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
 
   const [curated, setCurated] = useState<MarketEntry[]>([]);
   const [extensions, setExtensions] = useState<PiPackageEntry[]>([]);
+  const [onlineKw, setOnlineKw] = useState("");
+  const [online, setOnline] = useState<PiOnlinePackage[] | null>(null);
+  const [onlineInstalled, setOnlineInstalled] = useState<string[]>([]);
   const [skills, setSkills] = useState<SkillhubListResult | null>(null);
   const [skillInstalled, setSkillInstalled] = useState<Record<string, string>>({});
   const [installedIds, setInstalledIds] = useState<Set<string>>(new Set());
@@ -104,6 +116,19 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
       if (source === "extensions") {
         const entries = await invokeCommand<PiPackageEntry[]>("pi_package_catalog");
         setExtensions(entries ?? []);
+        // 需求7 修1a：在线库（pi.dev 画廊同源 = npm pi-package keyword）。
+        try {
+          const [results, sources] = await Promise.all([
+            invokeCommand<PiOnlinePackage[]>("pi_package_search", {
+              keyword: onlineKw.trim() || null,
+            }),
+            invokeCommand<string[]>("pi_package_installed_sources"),
+          ]);
+          setOnline(results ?? []);
+          setOnlineInstalled(sources ?? []);
+        } catch (e) {
+          setError(String(e));
+        }
       } else if (source === "skills") {
         const kw = keyword.trim() || null;
         const result = await invokeCommand<SkillhubListResult>("skillhub_list", {
@@ -121,7 +146,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
     } finally {
       setLoading(false);
     }
-  }, [source, scene, keyword, page, refreshInstalled]);
+  }, [source, scene, keyword, page, onlineKw, refreshInstalled]);
 
   useEffect(() => {
     void load();
@@ -420,6 +445,110 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* 扩展生态 · 在线库（需求7 修1a） */}
+      {source === "extensions" && !error && online && (
+        <div>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="text-xs font-medium text-muted-foreground">
+              {t("market.onlineLib", "在线扩展库（pi 生态）")}
+            </div>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
+              <input
+                value={onlineKw}
+                onChange={(e) => setOnlineKw(e.target.value)}
+                placeholder={t("market.onlineSearch", "搜索扩展名…")}
+                className="h-7 w-48 rounded-md border border-border/60 bg-background pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50"
+              />
+            </div>
+          </div>
+          <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
+            {online.slice(0, 12).map((pkg) => {
+              const installed = onlineInstalled.some(
+                (src) => src === "npm:" + pkg.name || src.startsWith("npm:" + pkg.name + "@"),
+              );
+              return (
+                <div key={pkg.name} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
+                  <div className="flex items-center gap-2">
+                    <Package className="h-4 w-4 shrink-0 text-primary/70" />
+                    <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={pkg.name}>
+                      {pkg.name}
+                    </span>
+                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">v{pkg.version}</span>
+                  </div>
+                  <p className="line-clamp-2 text-[11px] leading-relaxed text-muted-foreground" title={pkg.description}>
+                    {pkg.description || "-"}
+                  </p>
+                  <div className="mt-auto flex items-center gap-1 pt-1 text-[10px] text-muted-foreground/70">
+                    {pkg.publisher && <span>@{pkg.publisher}</span>}
+                    {pkg.date && <span>{pkg.date}</span>}
+                    <span className="flex-1" />
+                    {installed ? (
+                      <>
+                        <span className="text-muted-foreground">{t("market.installed")}</span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 text-destructive hover:text-destructive"
+                          disabled={busyId === pkg.name}
+                          aria-label={t("market.uninstall", "卸载")}
+                          onClick={() =>
+                            void (async () => {
+                              setActionError(null);
+                              setBusyId(pkg.name);
+                              try {
+                                await invokeCommand<string>("pi_package_uninstall_online", { name: pkg.name });
+                                await load();
+                              } catch (e) {
+                                setActionError(String(e));
+                              } finally {
+                                setBusyId(null);
+                              }
+                            })()
+                          }
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        size="sm"
+                        className="h-6 px-2 text-[10px]"
+                        disabled={busyId === pkg.name}
+                        onClick={() =>
+                          void (async () => {
+                            setActionError(null);
+                            setBusyId(pkg.name);
+                            try {
+                              await invokeCommand<string>("pi_package_install_online", {
+                                source: "npm:" + pkg.name + "@" + pkg.version,
+                              });
+                              await load();
+                            } catch (e) {
+                              setActionError(String(e));
+                            } finally {
+                              setBusyId(null);
+                            }
+                          })()
+                        }
+                      >
+                        {busyId === pkg.name ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                        <span className="ml-0.5">{t("market.install", "安装")}</span>
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {online.length === 0 && (
+              <p className="col-span-full py-6 text-center text-xs text-muted-foreground">
+                {t("market.onlineEmpty", "没有匹配的 pi 扩展包")}
+              </p>
+            )}
+          </div>
         </div>
       )}
 

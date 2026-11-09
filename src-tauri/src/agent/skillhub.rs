@@ -71,40 +71,67 @@ fn client() -> reqwest::Result<reqwest::Client> {
         .build()
 }
 
-/// 字段宽容提取（API 字段形态随版本可能有出入，缺失给默认值）。
+/// 字段宽容提取（API 字段形态随端点/版本漂移——列表与详情字段名不同，
+/// 需求7 修1b 实测：列表 name/description_zh/version/score；详情在
+/// {skill:{displayName/summary_zh/stats},latestVersion:{version}}）。
 fn entry_from_value(v: &serde_json::Value) -> SkillhubEntry {
-    let as_str = |path: &[&str]| -> String {
-        let mut cur = v;
-        for key in path {
-            cur = cur.get(*key).unwrap_or(&serde_json::Value::Null);
+    let as_str = |paths: &[&[&str]]| -> String {
+        for path in paths {
+            let mut cur = v;
+            for key in *path {
+                cur = cur.get(*key).unwrap_or(&serde_json::Value::Null);
+            }
+            if let Some(s) = cur.as_str() {
+                if !s.is_empty() {
+                    return s.to_string();
+                }
+            }
         }
-        cur.as_str().unwrap_or_default().to_string()
+        String::new()
+    };
+    // requires_api_key 兼容 bool 与字符串 "false"/"true"（详情端点是字符串）。
+    let flag = |paths: &[&[&str]]| -> bool {
+        for path in paths {
+            let mut cur = v;
+            for key in *path {
+                cur = cur.get(*key).unwrap_or(&serde_json::Value::Null);
+            }
+            match cur {
+                serde_json::Value::Bool(b) => return *b,
+                serde_json::Value::String(s) if s.eq_ignore_ascii_case("true") => return true,
+                _ => continue,
+            }
+        }
+        false
     };
     SkillhubEntry {
-        slug: as_str(&["slug"]),
-        name: as_str(&["name"]),
-        description: as_str(&["description_zh"])
-            .is_empty()
-            .then(|| as_str(&["description"]))
-            .unwrap_or_else(|| as_str(&["description_zh"])),
-        category: as_str(&["category"]),
+        slug: as_str(&[&["slug"]]),
+        name: as_str(&[&["name"], &["displayName"]]),
+        description: as_str(&[
+            &["description_zh"],
+            &["description"],
+            &["summary_zh"],
+            &["summary"],
+        ]),
+        category: as_str(&[&["category"]]),
         downloads: v
             .get("downloads")
+            .or_else(|| v.get("stats").and_then(|s| s.get("downloads")))
             .cloned()
             .unwrap_or(serde_json::Value::Null),
-        score: v.get("score").cloned().unwrap_or(serde_json::Value::Null),
-        version: as_str(&["version"]),
-        requires_api_key: v
-            .get("labels")
-            .and_then(|l| l.get("requires_api_key"))
-            .and_then(|b| b.as_bool())
-            .unwrap_or(false),
-        publisher_verified: v
-            .get("publisher")
-            .and_then(|p| p.get("verified"))
-            .and_then(|b| b.as_bool())
-            .unwrap_or(false),
-        publisher_name: as_str(&["publisher", "name"]),
+        score: v
+            .get("score")
+            .or_else(|| v.get("stats").and_then(|s| s.get("stars")))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        version: as_str(&[&["version"], &["latestVersion", "version"]]),
+        requires_api_key: flag(&[&["labels", "requires_api_key"]]),
+        publisher_verified: flag(&[
+            &["publisher", "verified"],
+            &["verified"],
+            &["isAuthorVerified"],
+        ]),
+        publisher_name: as_str(&[&["publisher", "name"], &["authorVerifiedHandle"]]),
     }
 }
 
@@ -140,9 +167,11 @@ pub async fn skillhub_list(
     let arr = ["skills", "list", "items"]
         .iter()
         .find_map(|k| {
-            body.get(*k)
-                .and_then(|v| v.as_array())
-                .or_else(|| body.get("data").and_then(|d| d.get(*k)).and_then(|v| v.as_array()))
+            body.get(*k).and_then(|v| v.as_array()).or_else(|| {
+                body.get("data")
+                    .and_then(|d| d.get(*k))
+                    .and_then(|v| v.as_array())
+            })
         })
         .ok_or_else(|| "响应结构异常（无列表字段）".to_string())?;
     Ok(SkillhubListResult {
@@ -151,9 +180,13 @@ pub async fn skillhub_list(
             .map(entry_from_value)
             .filter(|e| !e.slug.is_empty())
             .collect(),
+        // 需求7 修1b：total 真实位置在 data.total（顶层误读成当前页条数 →
+        // 前端总页数恒 1，22 万技能翻不了页——实测复现）。
         total: body
-            .get("total")
+            .get("data")
+            .and_then(|d| d.get("total"))
             .and_then(|t| t.as_u64())
+            .or_else(|| body.get("total").and_then(|t| t.as_u64()))
             .unwrap_or(arr.len() as u64),
         page,
         page_size,
@@ -173,8 +206,25 @@ pub async fn skillhub_detail(slug: &str) -> Result<SkillhubEntry, String> {
         .json()
         .await
         .map_err(|e| format!("响应解析失败: {e}"))?;
-    let node = body.get("data").unwrap_or(&body);
-    Ok(entry_from_value(node))
+    // 需求7 修1b（二修）：详情端点实测为**顶层平铺** {skill:{...},
+    // latestVersion:{...}, slug}（无 data 包装——首修按 data.skill 取仍空）。
+    // 取顶层 skill 对象；latestVersion 在顶层——并入 node 后统一提取
+    //（entry_from_value 的 version 已带 latestVersion 别名，但那是相对
+    // node 自身路径；此处显式合并保证相对路径可达）。
+    let skill = body
+        .get("skill")
+        .or_else(|| body.get("data").and_then(|d| d.get("skill")))
+        .unwrap_or(&body);
+    let mut merged = skill.clone();
+    if let Some(lv) = body.get("latestVersion") {
+        if merged.get("version").is_none() {
+            merged["version"] = lv
+                .get("version")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+        }
+    }
+    Ok(entry_from_value(&merged))
 }
 
 // ── 安装台账 ──

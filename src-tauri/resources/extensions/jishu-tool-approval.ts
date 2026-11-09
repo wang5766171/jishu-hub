@@ -54,10 +54,22 @@ function readApprovalMode(): string {
   }
 }
 
+/** 需求2 追加：任务不询问模式（Pi settings taskNoAsk）——开启时逐次审批
+ * 直接放行（用户裁决：全都按 agent 推荐执行）。每次评估现读现用。 */
+function readTaskNoAsk(): boolean {
+  try {
+    const raw = readFileSync(join(piAgentDir, "settings.json"), "utf-8");
+    const parsed = JSON.parse(raw) as { taskNoAsk?: unknown };
+    return parsed.taskNoAsk === true;
+  } catch {
+    return false;
+  }
+}
+
 const jishuToolApproval: ExtensionFactory = (pi) => {
   pi.on("tool_call", async (event, ctx) => {
     const mode = readApprovalMode();
-    if (mode === "off") {
+    if (mode === "off" || readTaskNoAsk()) {
       return undefined;
     }
 
