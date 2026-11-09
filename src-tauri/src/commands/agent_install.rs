@@ -137,6 +137,89 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
     Ok(())
 }
 
+/// v0.9.7 需求8 修复A：修复 zip 链路写坏的 npm workspace 链接（存量自愈）。
+///
+/// 坏形态 = `node_modules/<scope>/<pkg>`（或顶层 `<pkg>`）是一个**普通文件**，
+/// 内容为指向 `packages/<X>` 的相对路径文本——pack-pi 早期 zip 把 workspace
+/// junction 存成 symlink 条目，`extract_zip_to_temp` 不识别 symlink 把「目标
+/// 路径文本」当文件内容写出、`copy_dir_recursive` 原样搬运所致。subagent 的
+/// `dist/core` 散模块 import 这些包即 `Cannot find package`。修复 = 删坏文件，
+/// 从 `packages/<X>` 实体拷贝回该位置。幂等：修过的位置是目录，判定自然不中。
+/// 返回修复的条目数。
+pub(crate) fn heal_workspace_links(agent_dir: &std::path::Path) -> Result<usize, String> {
+    let node_modules = agent_dir.join("node_modules");
+    if !node_modules.is_dir() {
+        return Ok(0);
+    }
+    // 顶层与 @scope/ 两层（npm workspace 链接只出现在这两层；.bin 的
+    // cmd-shim 是真文件，不在 healing 范围）。
+    let mut scan_dirs: Vec<std::path::PathBuf> = vec![node_modules.clone()];
+    for entry in std::fs::read_dir(&node_modules).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let p = entry.path();
+        if p.is_dir() && entry.file_name().to_string_lossy().starts_with('@') {
+            scan_dirs.push(p);
+        }
+    }
+    let mut fixed = 0usize;
+    for dir in scan_dirs {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let link_path = entry.path();
+            let Some(target) = broken_link_target(&link_path, agent_dir) else {
+                continue;
+            };
+            std::fs::remove_file(&link_path)
+                .map_err(|e| format!("remove broken link {}: {e}", link_path.display()))?;
+            copy_dir_recursive(&target, &link_path).map_err(|e| {
+                format!(
+                    "heal {} from {}: {e}",
+                    link_path.display(),
+                    target.display()
+                )
+            })?;
+            fixed += 1;
+            log::info!(
+                "[agent-install] healed workspace link {} ← {}",
+                link_path.display(),
+                target.display()
+            );
+        }
+    }
+    Ok(fixed)
+}
+
+/// 判定「坏链接文件」并解出实体目标目录：内容是 <100 字节、无换行、以 `..`
+/// 开头的相对路径（Windows zip 存反斜杠 / macOS 存正斜杠，统一按 `/` 解析），
+/// 且按该文件所在目录解析后落在 agent_dir 内的现存目录（防穿越——workspace
+/// 链接只指向自家 packages/）。真包不可能是百字节内的纯相对路径文本，四条件
+/// 防误伤。
+fn broken_link_target(
+    link_path: &std::path::Path,
+    agent_dir: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let meta = std::fs::metadata(link_path).ok()?;
+    if !meta.is_file() || meta.len() >= 100 {
+        return None;
+    }
+    let content = std::fs::read_to_string(link_path).ok()?;
+    let content = content.trim();
+    if content.contains('\n') || content.contains('\r') || !content.starts_with("..") {
+        return None;
+    }
+    let base = link_path.parent()?;
+    let target = base.join(content.replace('\\', "/"));
+    let canonical_target = target.canonicalize().ok()?;
+    let canonical_base = agent_dir.canonicalize().ok()?;
+    if !canonical_target.starts_with(&canonical_base) || !canonical_target.is_dir() {
+        return None;
+    }
+    Some(canonical_target)
+}
+
 fn backup_managed_pi_runtime(target: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let backup = target.join(format!(".runtime-backup-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&backup).map_err(|error| error.to_string())?;
@@ -335,11 +418,17 @@ pub fn run_install_agent_cli() -> i32 {
                 Err(e) => eprintln!("[install-agent] pi extensions install skipped: {e}"),
             }
             // v0.9.7 需求1：写版本记录（与 GUI 链路一致）。
+            // 需求8 修复A：写记录前 heal 一次（老 zip 兜底），healed 落盘。
             if let Some(record) = crate::agent_runtime_init::runtime_record_path() {
+                let healed = record
+                    .parent()
+                    .and_then(|dir| heal_workspace_links(dir).ok())
+                    .is_some();
                 let _ = std::fs::write(
                     &record,
                     serde_json::to_string_pretty(&serde_json::json!({
-                        "version": crate::agent::jishu_self::PI_AGENT_VERSION
+                        "version": crate::agent::jishu_self::PI_AGENT_VERSION,
+                        "healed": healed,
                     }))
                     .unwrap_or_default(),
                 );
@@ -355,6 +444,65 @@ pub fn run_install_agent_cli() -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    // 需求8 修复A：坏链接文件（内容=指向 packages/<X> 的相对路径文本）被
+    // heal 成实体目录；反例（长内容/非路径/目标不存在/真目录）不动；幂等。
+    #[test]
+    fn heal_workspace_links_fixes_broken_link_files() {
+        let root =
+            std::env::temp_dir().join(format!("jishu-heal-links-test-{}", uuid::Uuid::new_v4()));
+        let scope = root.join("node_modules/@earendil-works");
+        std::fs::create_dir_all(&scope).unwrap();
+        std::fs::create_dir_all(root.join("packages/ai/dist")).unwrap();
+        std::fs::write(root.join("packages/ai/package.json"), r#"{"name":"pi-ai"}"#).unwrap();
+        std::fs::write(root.join("packages/ai/dist/retry.js"), "export const R=1;").unwrap();
+        // 坏件：Windows zip 形态（反斜杠、无换行）。
+        std::fs::write(scope.join("pi-ai"), "..\\..\\packages\\ai").unwrap();
+        // 坏件：macOS zip 形态（正斜杠）。
+        std::fs::write(scope.join("pi-tui"), "../../packages/ai").unwrap();
+
+        let fixed = heal_workspace_links(&root).unwrap();
+        assert_eq!(fixed, 2);
+        for pkg in ["pi-ai", "pi-tui"] {
+            let p = scope.join(pkg);
+            assert!(
+                p.join("package.json").is_file(),
+                "{pkg} 应已 heal 成实体目录"
+            );
+        }
+        // 幂等：再跑一遍无新修复。
+        assert_eq!(heal_workspace_links(&root).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn heal_workspace_links_leaves_non_targets_alone() {
+        let root =
+            std::env::temp_dir().join(format!("jishu-heal-links-neg-{}", uuid::Uuid::new_v4()));
+        let scope = root.join("node_modules/@scope");
+        std::fs::create_dir_all(&scope).unwrap();
+        // 长内容（真包的形态不可能是这个，但保护性反例）。
+        std::fs::write(scope.join("long"), vec![b'.'; 120]).unwrap();
+        // 相对路径但目标不存在。
+        std::fs::write(scope.join("ghost"), "../../packages/ghost").unwrap();
+        // 非路径文本。
+        std::fs::write(scope.join("text"), "hello world not a path").unwrap();
+        // 尝试穿越出 agent_dir。
+        std::fs::write(scope.join("escape"), "../../../../../windows").unwrap();
+        // 真目录（真包）。
+        std::fs::create_dir_all(scope.join("real-pkg")).unwrap();
+        std::fs::write(scope.join("real-pkg/package.json"), "{}").unwrap();
+
+        assert_eq!(heal_workspace_links(&root).unwrap(), 0);
+        assert!(scope.join("long").is_file());
+        assert!(scope.join("ghost").is_file());
+        assert!(scope.join("text").is_file());
+        assert!(scope.join("escape").is_file());
+        assert!(scope.join("real-pkg/package.json").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn allows_git_winget_update_command() {
         assert!(super::is_allowed_install_command(

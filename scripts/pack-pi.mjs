@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, rmSync, existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync, createWriteStream } from "node:fs";
+import { cpSync, rmSync, existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync, createWriteStream, realpathSync } from "node:fs";
 import { resolve, join } from "node:path";
 import archiver from "archiver";
 import { fixShebang, readRuntimeDeps } from "./lib/pi-common.mjs";
@@ -146,6 +146,67 @@ if (existsSync(nodeSource)) {
   }
 } else {
   console.warn(`WARNING: cannot find node binary at ${nodeSource} to embed.`);
+}
+
+// 5.65 v0.9.7 需求8 修复A：解引用全部 symlink/junction 为实体拷贝。
+// npm workspace 在 node_modules 里放的 @earendil-works/* 等是链接（Windows
+// junction / unix symlink）——archiver glob 会把它们写成 zip symlink 条目，
+// 而 Rust 解压器（extract_zip_to_temp）不识别 symlink，会把「目标路径文本」
+// 当文件内容写出（subagent 的 dist/core 散模块 import 随即 Cannot find
+// package）。根治 = 打包前全部换成实体目录，zip 里不再有链接条目。
+console.log("Dereferencing symlinks/junctions to real copies...");
+const dereferenced = dereferenceLinks(piBundle);
+if (dereferenced > 0) {
+  console.log(`Dereferenced ${dereferenced} link entries (e.g. npm workspace packages).`);
+}
+// 断言：全树再扫一遍必须零链接（防未来 npm 行为变化悄悄退化——fail loud）。
+const remaining = collectLinkEntries(piBundle);
+if (remaining.length > 0) {
+  console.error(
+    `[pack-pi] FAILED: ${remaining.length} symlink/junction entries remain after dereference:\n` +
+      remaining.slice(0, 10).map(([p, real]) => `  ${p} -> ${real}`).join("\n")
+  );
+  process.exit(1);
+}
+
+// 全树收集链接条目（realpath 与自身 resolve 路径不一致 = symlink/junction；
+// Windows 上 lstat 对 junction 不报 isSymbolicLink，只能靠 realpath 比对）。
+// 返回 [fullPath, realPath][]；不递归进链接本体（避免重复遍历目标内容）。
+function collectLinkEntries(rootDir) {
+  const links = [];
+  const walk = (dir) => {
+    let items;
+    try {
+      items = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const item of items) {
+      const full = join(dir, item.name);
+      let real;
+      try {
+        real = realpathSync(full);
+      } catch {
+        continue; // 失效链接（目标不存在）留给步骤 6 清理
+      }
+      if (real.toLowerCase() !== resolve(full).toLowerCase()) {
+        links.push([full, real]);
+        continue;
+      }
+      if (item.isDirectory()) walk(full);
+    }
+  };
+  walk(rootDir);
+  return links;
+}
+
+function dereferenceLinks(rootDir) {
+  const links = collectLinkEntries(rootDir);
+  for (const [linkPath, realPath] of links) {
+    rmSync(linkPath, { recursive: true, force: true });
+    cpSync(realPath, linkPath, { recursive: true, dereference: true });
+  }
+  return links.length;
 }
 
 // 6. Clean broken symlinks in node_modules
