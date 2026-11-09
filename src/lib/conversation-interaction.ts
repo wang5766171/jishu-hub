@@ -9,6 +9,19 @@ interface InteractionSubmissionInput {
   customText?: string | null;
 }
 
+/** 需求9 #6：npm 包 ask-user-question 工具描述硬编码英文指令「append
+ * "(Recommended)" to its label」，模型把英文后缀写进 label。展示层剥尾缀
+ * 置 recommended 标志（卡片渲染本地化「推荐」徽标；提交仍回传原始
+ * optionId，不受影响）。兼容半/全角括号与前置空格。 */
+const RECOMMENDED_SUFFIX =
+  /\s*[（(]\s*Recommended\s*[)）]\s*$/i;
+
+function stripRecommendedMark(label: string): { label: string; recommended: boolean } {
+  const match = label.match(RECOMMENDED_SUFFIX);
+  if (!match) return { label, recommended: false };
+  return { label: label.slice(0, match.index).trimEnd(), recommended: true };
+}
+
 /**
  * v0.9.5 需求5 测试期：rpiv-ask RPC 问答器把每题选项烘焙成
  * "N. label — description" 单串（含自动追加的哨兵行已被 hub 剥离）。
@@ -18,14 +31,25 @@ interface InteractionSubmissionInput {
  *   统一占位文案，如「就选这个？」）或为空 → 不展示；
  * - description 各不相同（真实权衡说明）→ label 主行 + description 次行。
  * 非 rpiv 形态（无序号前缀，如 conductor 的原生 select）原样返回。
+ * 需求9 #6：两种形态均剥 label 尾部 "(Recommended)"（见上）。
  */
 export function decorateInteractionOptions<
   T extends { optionId?: string; option_id?: string; label: string; description?: string | null },
->(options: T[]): Array<T & { label: string; description: string | null }> {
+>(
+  options: T[],
+): Array<T & { label: string; description: string | null; recommended: boolean }> {
   const numbered = options.map((option) => option.label.match(/^(\d+)\.\s*(.*)$/s));
   const allNumbered = numbered.length > 0 && numbered.every((m) => m !== null);
   if (!allNumbered) {
-    return options.map((option) => ({ ...option, description: option.description ?? null }));
+    return options.map((option) => {
+      const stripped = stripRecommendedMark(option.label);
+      return {
+        ...option,
+        label: stripped.label,
+        description: option.description ?? null,
+        recommended: stripped.recommended,
+      };
+    });
   }
   const parsed = options.map((_option, index) => {
     const rest = numbered[index]![2];
@@ -38,12 +62,16 @@ export function decorateInteractionOptions<
   const descs = parsed.map((p) => p.description.trim());
   const allHaveDesc = descs.every((d) => d.length > 0);
   const uniform = allHaveDesc && new Set(descs).size === 1;
-  return options.map((option, index) => ({
-    ...option,
-    label: parsed[index]!.label,
-    description:
-      allHaveDesc && !uniform ? parsed[index]!.description : option.description ?? null,
-  }));
+  return options.map((option, index) => {
+    const stripped = stripRecommendedMark(parsed[index]!.label);
+    return {
+      ...option,
+      label: stripped.label,
+      recommended: stripped.recommended,
+      description:
+        allHaveDesc && !uniform ? parsed[index]!.description : option.description ?? null,
+    };
+  });
 }
 
 export function validateInteractionSubmission(

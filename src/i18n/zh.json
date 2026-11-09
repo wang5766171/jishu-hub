@@ -95,7 +95,16 @@
     "cliDesc": "为了在外部终端中便捷唤起 Jishu Hub，强烈建议安装 jishu 命令 (需授权)。",
     "elevationTitle": "需要管理员权限",
     "elevationDesc": "安装「{{name}}」需要写入系统目录（Chocolatey 安装位置），因此需要以管理员身份执行。点击「同意并继续」后将弹出系统授权窗口（UAC），请在其中点击「是」完成授权；选择「取消」则不会安装。",
-    "elevationConfirm": "同意并继续"
+    "elevationConfirm": "同意并继续",
+    "engineTitle": "智能体引擎",
+    "engineVersion": "版本",
+    "engineRecorded": "已装",
+    "engineReady": "已就绪",
+    "engineInitializing": "初始化中…",
+    "engineMismatch": "版本待更新",
+    "engineReinit": "重新初始化",
+    "engineReinstall": "重装引擎",
+    "engineDone": "引擎已更新，新会话生效"
   },
   "status": {
     "installed": "已安装",
@@ -167,6 +176,8 @@
     "noProject": "请选择项目",
     "artifactLinkHint": "点击在右侧产物中心打开",
     "artifactLinkFailed": "无法打开该引用（超出项目范围或文件不可预览）",
+    "artifactLinkNotFound": "文件不存在或已被移动",
+    "artifactLinkTooLarge": "文件过大或无法预览",
     "defaultWorkspaceBadge": "默认",
     "title": "会话",
     "msgCount": "{{count}} 条消息",
@@ -224,6 +235,7 @@
       "interaction response is required": "请选择选项或填写补充说明"
     },
     "interactionDefault": "向用户提问",
+    "interactionRecommended": "推荐",
     "interactionOriginBuiltIn": "内置助手",
     "interactionOriginExternal": "外部助手",
     "interactionOriginGeneric": "助手提问",
@@ -436,6 +448,8 @@
     "createdTitle": "插件已创建",
     "updatedTitle": "插件已保存",
     "mcpBadge": "MCP 工具",
+    "mcpConnected": "已连接",
+    "mcpConnecting": "启动中·稍后自动恢复",
     "panelButton": "面板",
     "panelRun": "执行",
     "panelRunning": "执行中…",
@@ -477,7 +491,7 @@
     "tplCustomBlank": "空白自定义",
     "typeCustom": "自定义插件",
     "catCustom": "自定义插件",
-    "typeSkill": "Skill 工具",
+    "typeSkill": "skill 工具",
     "typeSkillForm": "总控转发",
     "typeSkillDesc": "声明 SKILL.md 能力，经解析器分发到 agent skill 目录",
     "skillSection": "Skill 声明",
@@ -500,7 +514,7 @@
     "mcpBatchDone": "导入完成",
     "hMcpNameAuto": "插件 ID 由名称自动生成：",
     "typeSection": "插件类型",
-    "typeMcp": "MCP 工具",
+    "typeMcp": "MCP",
     "typeMcpForm": "总控转发",
     "typeMcpDesc": "声明 MCP server，经解析器统一转发，增删实时生效",
     "typeCli": "CLI 工具",
@@ -609,7 +623,14 @@
     },
     "entryDescribeV2": "描述需求（推荐）——AI 帮你把插件做出来",
     "entryGoChat": "去会话创建",
-    "entrySuggestPrefix": "想自己配？推荐类型："
+    "entrySuggestPrefix": "想自己配？推荐类型：",
+    "entryTitleV2": "创建插件",
+    "entryHintV2": [
+      "点选分类，AI 帮你把插件做出来（跳到会话继续）；也可以直接输入描述",
+      "Pick a category and the AI builds it (continues in chat); or just type what you want"
+    ],
+    "entryManualExpand": "想自己配？展开手动向导",
+    "entryManualCollapse": "收起手动向导"
   },
   "config": {
     "title": "配置管理",
@@ -1650,7 +1671,10 @@
     "verified": "认证发布者",
     "needsApiKey": "需要 API Key",
     "prevPage": "上一页",
-    "nextPage": "下一页"
+    "nextPage": "下一页",
+    "onlineLib": "在线扩展库（pi 生态）",
+    "onlineSearch": "搜索扩展名…",
+    "onlineEmpty": "没有匹配的 pi 扩展包"
   },
   "onboarding": {
     "initTitle": "正在准备你的智能体",

@@ -143,7 +143,16 @@ export function InteractionComposer({
                 {selected ? <Check className="h-3 w-3" /> : String.fromCharCode(65 + index)}
               </span>
               <span className="min-w-0">
-                <span className="block text-sm font-medium">{option.label}</span>
+                <span className="block text-sm font-medium">
+                  {option.label}
+                  {/* 需求9 #6：剥除模型按工具英文指令写入的 "(Recommended)"，
+                      渲染本地化「推荐」徽标（净化层置 recommended 标志）。 */}
+                  {option.recommended && (
+                    <span className="ml-1.5 inline-block rounded border border-primary/40 bg-primary/[0.08] px-1 py-px text-[10px] font-normal text-primary/90 align-middle">
+                      {t("sessions.interactionRecommended", "推荐")}
+                    </span>
+                  )}
+                </span>
                 {option.description ? (
                   <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
                     {option.description}

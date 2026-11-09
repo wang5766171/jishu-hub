@@ -10,6 +10,10 @@ use crate::util::now_ms;
 /// 阶段语义 4 值退场，执行态由 `run_status` 独立追踪）。
 pub const STATUS_ACTIVE: &str = "active";
 
+/// 任务实例建库默认标题。需求9 #4：runner 上报 goal 时仅当标题仍是该默认
+/// 值才覆盖（用户重命名过的标题不回写）——单源常量供创建与覆盖判定共用。
+pub const DEFAULT_TASK_TITLE: &str = "新任务";
+
 /// 执行实例运行态（5 值，冗余到 task_instance.run_status）。
 ///
 /// 由 graph_run.status 派生，通过 `sync_run_status` 写回。`status` 字段不随执行态变化。
@@ -245,18 +249,15 @@ mod tests {
     }
 
     /// v0.9.7 需求2：runner_update_steps 形状校验 + 持久化 + runner 加载。
+    /// 需求9 #4 扩展：可选 title 覆盖链（默认标题→覆盖；用户重命名→不回写）。
     #[test]
     fn runner_steps_roundtrip() {
         let project = temp_project("runner-steps");
         let project_root = project.to_string_lossy().to_string();
-        let instance = mark_task_session(
-            &project_root,
-            None,
-            "s1",
-            "jishu-task-runner",
-            Some("Steps task"),
-        )
-        .unwrap();
+        // title 传 None → 建库默认「新任务」（runner goal 上报覆盖链的起点）。
+        let instance =
+            mark_task_session(&project_root, None, "s1", "jishu-task-runner", None).unwrap();
+        assert_eq!(instance.title, DEFAULT_TASK_TITLE);
 
         let steps = serde_json::json!({
             "steps": [
@@ -266,15 +267,45 @@ mod tests {
             "pendingQuestion": null,
         })
         .to_string();
-        runner_update_steps(&project_root, &instance.task_id, &steps).unwrap();
+        runner_update_steps(&project_root, &instance.task_id, &steps, None).unwrap();
         // 拒绝非 steps 形状。
-        assert!(runner_update_steps(&project_root, &instance.task_id, "{\"x\":1}").is_err());
+        assert!(runner_update_steps(&project_root, &instance.task_id, "{\"x\":1}", None).is_err());
 
         let loaded = runner_load_task_state(&project_root, &instance.task_id)
             .unwrap()
             .instance
             .unwrap();
         assert_eq!(loaded.stages_json.as_deref(), Some(steps.as_str()));
+        // 需求9 #4：可选 title——默认标题时覆盖（截 40 字符），非默认（用户
+        // 重命名）不回写。
+        runner_update_steps(
+            &project_root,
+            &instance.task_id,
+            &steps,
+            Some("优化首页性能并给出报告"),
+        )
+        .unwrap();
+        let titled = runner_load_task_state(&project_root, &instance.task_id)
+            .unwrap()
+            .instance
+            .unwrap();
+        assert_eq!(titled.title, "优化首页性能并给出报告");
+        rename_task(&project_root, &instance.task_id, "用户自定义名").unwrap();
+        runner_update_steps(
+            &project_root,
+            &instance.task_id,
+            &steps,
+            Some("再上报也不覆盖"),
+        )
+        .unwrap();
+        let kept = runner_load_task_state(&project_root, &instance.task_id)
+            .unwrap()
+            .instance
+            .unwrap();
+        assert_eq!(
+            kept.title, "用户自定义名",
+            "非默认标题不应被 runner 上报回写"
+        );
         let _ = std::fs::remove_dir_all(&project);
     }
 

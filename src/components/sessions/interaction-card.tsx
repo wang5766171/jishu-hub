@@ -138,7 +138,16 @@ export const InteractionCard = memo(function InteractionCard({
                           {selected && <Check className="h-2.5 w-2.5" strokeWidth={3} />}
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className={cn("block", selected && "font-medium")}>{opt.label}</span>
+                          <span className={cn("block", selected && "font-medium")}>
+                            {opt.label}
+                            {/* 需求9 #6：模型按工具英文指令写入的 "(Recommended)"
+                                已在净化层剥除，此处渲染本地化「推荐」徽标。 */}
+                            {"recommended" in opt && opt.recommended && (
+                              <span className="ml-1.5 inline-block rounded border border-primary/40 bg-primary/[0.08] px-1 py-px text-[10px] font-normal text-primary/90 align-middle">
+                                {t("sessions.interactionRecommended", "推荐")}
+                              </span>
+                            )}
+                          </span>
                           {opt.description && (
                             <span className="mt-0.5 block text-xs text-muted-foreground">{opt.description}</span>
                           )}

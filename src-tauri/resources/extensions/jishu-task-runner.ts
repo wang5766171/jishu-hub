@@ -41,8 +41,20 @@ function emptyState(): RunnerState {
   return { schemaVersion: 1, taskId: "", goal: "", steps: [] };
 }
 
+/** 需求9 #5：不询问模式硬拦截的提问类工具（npm 扩展 ask_user_question 的
+ * 历史注册名变体一并覆盖；ask_user 为 runner 自注册，其 execute 内另有硬放行）。 */
+const ASK_TOOLS = new Set([
+  "ask_user",
+  "ask_user_question",
+  "askuserquestion",
+  "ask_question",
+]);
+
 export default function taskRunnerExtension(pi: ExtensionAPI) {
   let state: RunnerState = emptyState();
+  // 需求2 追加：不询问模式（每轮 before_agent_start 经 capability 查询刷新；
+  // ask_user 执行期读缓存——工具执行无法直接起 hubInvoke 的 ctx 通道）。
+  let noAskMode = false;
 
   const persist = (): void => {
     pi.appendEntry("jishu-task-runner", state);
@@ -135,6 +147,9 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
         project_root: process.cwd(),
         task_id: state.taskId || undefined,
         session_id: ctx.sessionManager.getSessionId() || undefined,
+        // 需求9 #4：标题随步骤上报（conductor 退役后唯一标题写入链断裂，
+        // 实例标题恒为默认「新任务」；goal 首次拆解时捕获）。
+        title: state.goal || undefined,
         steps_json: JSON.stringify({
           steps: state.steps,
           pendingQuestion: state.pendingQuestion ?? null,
@@ -207,6 +222,12 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
   // ── 每轮注入：呈现纪律 + 隔离锚点 + 能力插件提示 ──
 
   pi.on("before_agent_start", async (event, ctx) => {
+    // 能力插件联动：启用「需求澄清/计划拆解」时提示为可用能力（非阶段强制）。
+    // 需求9 #5：hubInvoke 前移——旧序先组纪律文本后刷新 noAskMode，开启
+    // 不询问后的第一轮注入的仍是上一轮的询问版纪律。
+    const caps = await hubInvoke(ctx, "runner_capability_plugins", {}, 3000);
+    const capData = caps?.data as { enabled?: string[]; noAsk?: boolean } | undefined;
+    noAskMode = capData?.noAsk === true;
     const lines: string[] = [taskAnchor()];
     if (state.goal) {
       lines.push(`【任务目标】${state.goal}`);
@@ -218,14 +239,25 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
       );
     }
     lines.push(
-      "【任务纪律】" +
-        "过程不逐句播报（任务卡灯由 update_steps 驱动）；只在结果可用、需要用户决策、无法继续时开口；" +
-        "产物落盘后在回复里带 jishu-artifact:// 引用链接；" +
-        "破坏性操作（删除/覆盖/安装/提交）先 ask_user 征得同意。",
+      noAskMode
+        ? "【任务纪律·不询问模式】" +
+          "用户已开启不询问模式：**不要向用户提问**（不用 ask_user、不用 ask_user_question），" +
+          "一切按你自己的最优判断直接执行到底；破坏性操作也直接执行并在结果中说明理由；" +
+          "过程不逐句播报，产物落盘后在回复里带 jishu-artifact:// 引用链接。"
+        : "【任务纪律】" +
+          "过程不逐句播报（任务卡灯由 update_steps 驱动）；只在结果可用、需要用户决策、无法继续时开口；" +
+          "产物落盘后在回复里带 jishu-artifact:// 引用链接；" +
+          "破坏性操作（删除/覆盖/安装/提交）先 ask_user 征得同意。",
     );
-    // 能力插件联动：启用「需求澄清/计划拆解」时提示为可用能力（非阶段强制）。
-    const caps = await hubInvoke(ctx, "runner_capability_plugins", {}, 3000);
-    const enabled = (caps?.data as { enabled?: string[] } | undefined)?.enabled ?? [];
+    // 需求9 #2：引用路径形态硬约束——CommonMark 会吞「反斜杠+标点」里的
+    // 反斜杠（C:\Users\name\.jishu-hub\… → name.jishu-hub，文件必不存在，
+    // 用户实测「全地址路径打不开」即此），一律相对路径+正斜杠。
+    lines.push(
+      "【引用格式】jishu-artifact:// 后只能跟**项目相对路径 + 正斜杠**（如 " +
+        "jishu-artifact://tasks/<task_id>/out/report.html）；禁止绝对路径、" +
+        "禁止反斜杠；路径含空格用 %20。",
+    );
+    const enabled = capData?.enabled ?? [];
     if (enabled.includes("task-requirements")) {
       lines.push("【可用能力】需求澄清：需求模糊时先用它把需求聊清楚、产出结构化需求文档（成果卡呈现，无确认关卡）。");
     }
@@ -249,6 +281,17 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
 
   pi.on("tool_call", async (event) => {
     if (!state.taskId) return;
+    // 需求9 #5：不询问模式硬拦截 npm 扩展的 ask_user_question——原硬放行
+    // 只挂 runner 自注册的 ask_user，问答卡实际多来自
+    // @juicesharp/rpiv-ask-user-question（含「N. Type something.」追加输入
+    // 协议），纪律提示是软约束拦不住它。
+    if (noAskMode && ASK_TOOLS.has(event.toolName)) {
+      return {
+        block: true,
+        reason:
+          "不询问模式已开启：不要向用户提问（含 ask_user/ask_user_question），按自己的最优判断继续执行，结果中说明理由。",
+      };
+    }
     const input = (event as { input?: Record<string, unknown> }).input;
     const pathViolation = taskIsolationViolation(
       typeof input?.path === "string" ? input.path : undefined,
@@ -357,6 +400,11 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
       ),
     }),
     execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+      // 不询问模式（需求2 追加）：不弹问答——按 agent 首个推荐项（或其
+      // 自行判断）直接放行，工具结果说明已自动决策。
+      if (noAskMode) {
+        return `（不询问模式）已按你的推荐执行：${params.options?.[0] ?? "自行判断"}`;
+      }
       state.pendingQuestion = {
         question: params.question,
         options: params.options?.slice(0, 4),

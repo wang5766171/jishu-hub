@@ -226,8 +226,14 @@ fn backup_managed_pi_runtime(target: &std::path::Path) -> Result<std::path::Path
     for name in ["packages", "node_modules"] {
         let current = target.join(name);
         if current.exists() {
-            std::fs::rename(&current, backup.join(name))
-                .map_err(|error| format!("Failed to back up {}: {error}", current.display()))?;
+            if let Err(error) = std::fs::rename(&current, backup.join(name)) {
+                // 需求9 #7：逐项 rename 中途失败必须还原——否则前项（如
+                // packages）只存在于隐藏 backup 目录，`~/.jishu-agent` 残缺，
+                // probe 永败且重试恒败（0.9.6→0.9.7 卸载重装「提示未安装」
+                // 候选 B）。restore 兼容部分还原（backup 里有什么还原什么）。
+                let _ = restore_managed_pi_runtime(target, &backup);
+                return Err(format!("Failed to back up {}: {error}", current.display()));
+            }
         }
     }
     Ok(backup)
@@ -308,6 +314,8 @@ pub(crate) fn install_pi_bundle_from(source: &std::path::Path) -> Result<String,
     if let Err(e) = std::fs::create_dir_all(&target) {
         return Err(format!("Failed to create target directory: {}", e));
     }
+    // 需求9 #7：backup 自身失败时内部还原（见 backup_managed_pi_runtime），
+    // 此处恢复 `?` 直传——旧残缺点已消除。
     let backup = backup_managed_pi_runtime(std::path::Path::new(&target))?;
     if let Err(e) = copy_dir_recursive(source, std::path::Path::new(&target)) {
         let _ = restore_managed_pi_runtime(std::path::Path::new(&target), &backup);

@@ -37,21 +37,44 @@ interface PreviewKindResult {
   kind: "html" | "image" | "markdown" | "text" | "unsupported";
 }
 
-/** 共享处理器：校验（validate_preview_file）通过才发 file-preview-request。 */
+/** 需求9 #2 兜底：CommonMark 链接目标解析会吞「反斜杠+ASCII 标点」里的
+ * 反斜杠——`C:\Users\name\.jishu-hub\tasks\…` 被解析成 `name.jishu-hub`
+ *（分隔符消失，文件必不存在；生成侧已加正斜杠约束治新链，此处救存量
+ * 坏链）。`.jishu-hub` 是固定目录名，启发式命中即插回反斜杠。 */
+export function repairEatenSeparator(path: string): string {
+  // 「非分隔符字符紧跟 .jishu-hub」= 粘连形态（正常路径 .jishu-hub 前必是 \ 或 /）。
+  if (/[^\\/\\]\.jishu-hub[\\/]/i.test(path)) {
+    return path.replace(/([^.\\/\\])\.jishu-hub([\\/])/gi, "$1\\.jishu-hub$2");
+  }
+  return path;
+}
+
+/** 共享处理器：校验（validate_preview_file）通过才发 file-preview-request。
+ * 需求9 #2：①坏链修复启发式（repairEatenSeparator）；② projectPath 缺失
+ *（refresh 掉线/恢复窗口瞬态）回落默认工作空间根——默认空间会话的引用
+ * 仍可校验打开。 */
 export async function openArtifactReference(
   href: string,
   ctx: SessionArtifactCtx,
 ): Promise<{ ok: boolean; error?: string }> {
-  const rel = href.slice(ARTIFACT_SCHEME.length);
+  let rel = href.slice(ARTIFACT_SCHEME.length);
   if (!rel) return { ok: false, error: "empty" };
-  const abs = resolveAgainstProject(rel, ctx.projectPath);
-  if (!ctx.projectPath) {
-    return { ok: false, error: "no-project" };
+  rel = repairEatenSeparator(rel);
+  let projectPath = ctx.projectPath;
+  if (!projectPath) {
+    try {
+      const ws = await invokeCommand<{ path: string }>("get_default_workspace");
+      projectPath = ws?.path ?? null;
+    } catch {
+      projectPath = null;
+    }
+    if (!projectPath) return { ok: false, error: "no-project" };
   }
+  const abs = resolveAgainstProject(rel, projectPath);
   try {
     await invokeCommand<PreviewKindResult>("validate_preview_file", {
       path: abs,
-      projectRoot: ctx.projectPath,
+      projectRoot: projectPath,
       sessionId: ctx.sessionId,
     });
   } catch (e) {
@@ -75,6 +98,7 @@ export function ArtifactLink({ href, children, className, ...rest }: ArtifactLin
   const { t } = useTranslation();
   const artifactCtx = useSessionArtifactCtx();
   const [failed, setFailed] = useState(false);
+  const [failedMsg, setFailedMsg] = useState<string>("");
 
   if (!href || !href.startsWith(ARTIFACT_SCHEME)) {
     return (
@@ -89,6 +113,16 @@ export function ArtifactLink({ href, children, className, ...rest }: ArtifactLin
     const result = await openArtifactReference(href, artifactCtx);
     if (!result.ok) {
       // 项目无 toast 库：链接旁短暂标红提示（3s 自愈），面板保持不动。
+      // 需求9 #2：按后端错误区分提示（原单一文案把「文件不存在」也说成
+      // 「超出项目范围」，误导排查）。
+      const err = result.error ?? "";
+      setFailedMsg(
+        err.includes("文件不存在") || err === "no-project" || err === "empty"
+          ? t("sessions.artifactLinkNotFound", "文件不存在或已被移动")
+          : err.includes("超出项目范围")
+            ? t("sessions.artifactLinkFailed")
+            : t("sessions.artifactLinkTooLarge", "文件过大或无法预览"),
+      );
       setFailed(true);
       setTimeout(() => setFailed(false), 3000);
     }
@@ -101,8 +135,9 @@ export function ArtifactLink({ href, children, className, ...rest }: ArtifactLin
         onClick={handleClick}
         title={t("sessions.artifactLinkHint")}
         className={cn(
-          "cursor-pointer underline decoration-dotted underline-offset-2",
-          failed ? "text-red-500" : "text-[var(--icon-action)]",
+          // 需求7 修2：蓝色实线下划线（原白色虚线不显眼）；失败态红字。
+          "cursor-pointer underline decoration-solid underline-offset-2 font-medium",
+          failed ? "text-red-500 decoration-red-400" : "text-primary decoration-primary/70",
           className
         )}
         {...rest}
@@ -110,7 +145,9 @@ export function ArtifactLink({ href, children, className, ...rest }: ArtifactLin
         {children ?? href.slice(ARTIFACT_SCHEME.length)}
       </a>
       {failed && (
-        <span className="ml-1 text-xs text-red-500">{t("sessions.artifactLinkFailed")}</span>
+        <span className="ml-1 text-xs text-red-500">
+          {failedMsg || t("sessions.artifactLinkFailed")}
+        </span>
       )}
     </>
   );

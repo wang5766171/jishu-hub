@@ -212,3 +212,30 @@ describe("decorateInteractionOptions（rpiv-ask 选项串净化）", () => {
     expect(out[0].label).toBe("1. 红");
   });
 });
+
+// ── 需求9 #6："(Recommended)" 尾缀剥离 + recommended 标志 ──
+describe("decorateInteractionOptions Recommended 净化", () => {
+  it("rpiv 序号形态：剥尾部 (Recommended) 并置标志", () => {
+    const out = decorateInteractionOptions([
+      { optionId: "a", label: "1. 方案甲 (Recommended)", description: null },
+      { optionId: "b", label: "2. 方案乙", description: null },
+    ]);
+    expect(out[0]).toMatchObject({ label: "方案甲", recommended: true });
+    expect(out[1]).toMatchObject({ label: "方案乙", recommended: false });
+  });
+
+  it("非 rpiv 形态同样剥离（全角括号/多余空格）", () => {
+    const out = decorateInteractionOptions([
+      { optionId: "a", label: "继续部署（Recommended） ", description: null },
+    ]);
+    expect(out[0]).toMatchObject({ label: "继续部署", recommended: true });
+  });
+
+  it("label 中部含 Recommended 不误剥（只剥尾部）", () => {
+    const out = decorateInteractionOptions([
+      { optionId: "a", label: "Recommended 策略优先", description: null },
+    ]);
+    expect(out[0].label).toBe("Recommended 策略优先");
+    expect(out[0].recommended).toBe(false);
+  });
+});

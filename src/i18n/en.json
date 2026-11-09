@@ -95,7 +95,16 @@
     "cliDesc": "To conveniently launch Jishu Hub from external terminals, installing the jishu command is strongly recommended (requires authorization).",
     "elevationTitle": "Administrator privileges required",
     "elevationDesc": "Installing \"{{name}}\" writes to system directories (the Chocolatey install location), so it must run as administrator. After you choose \"Continue\", a system authorization (UAC) window will appear — click \"Yes\" there to grant it. Choosing \"Cancel\" aborts the install.",
-    "elevationConfirm": "Continue"
+    "elevationConfirm": "Continue",
+    "engineTitle": "Agent engine",
+    "engineVersion": "Version",
+    "engineRecorded": "installed",
+    "engineReady": "Ready",
+    "engineInitializing": "Initializing…",
+    "engineMismatch": "Update available",
+    "engineReinit": "Re-initialize",
+    "engineReinstall": "Reinstall engine",
+    "engineDone": "Engine updated — new sessions use it"
   },
   "status": {
     "installed": "Installed",
@@ -167,6 +176,8 @@
     "noProject": "Select a project",
     "artifactLinkHint": "Open in artifacts panel",
     "artifactLinkFailed": "Cannot open this reference (outside project or not previewable)",
+    "artifactLinkNotFound": "File not found or moved",
+    "artifactLinkTooLarge": "File too large or not previewable",
     "defaultWorkspaceBadge": "Default",
     "title": "Sessions",
     "msgCount": "{{count}} msg",
@@ -224,6 +235,7 @@
       "interaction response is required": "Select an option or add a response"
     },
     "interactionDefault": "Ask user",
+    "interactionRecommended": "Recommended",
     "interactionOriginBuiltIn": "Built-in assistant",
     "interactionOriginExternal": "External assistant",
     "interactionOriginGeneric": "Assistant question",
@@ -436,6 +448,8 @@
     "createdTitle": "Plugin Created",
     "updatedTitle": "Plugin Saved",
     "mcpBadge": "MCP tools",
+    "mcpConnected": "Connected",
+    "mcpConnecting": "Starting · auto-recovers later",
     "panelButton": "Panel",
     "panelRun": "Run",
     "panelRunning": "Running…",
@@ -477,7 +491,7 @@
     "tplCustomBlank": "Blank custom",
     "typeCustom": "Custom plugin",
     "catCustom": "Custom plugins",
-    "typeSkill": "Skill tool",
+    "typeSkill": "skill tools",
     "typeSkillForm": "Hub-forwarded",
     "typeSkillDesc": "Declare a SKILL.md capability, distributed to agent skill dirs by the resolver",
     "skillSection": "Skill declaration",
@@ -500,10 +514,10 @@
     "mcpBatchDone": "Import finished",
     "hMcpNameAuto": "Plugin id auto-derived from name: ",
     "typeSection": "Plugin type",
-    "typeMcp": "MCP tool",
+    "typeMcp": "MCP",
     "typeMcpForm": "Hub-forwarded",
     "typeMcpDesc": "Declare an MCP server; forwarded by the resolver, live add/remove",
-    "typeCli": "CLI tool",
+    "typeCli": "CLI tools",
     "typeCliForm": "Standalone",
     "typeCliDesc": "Declare command usage; injected into sessions, run via the agent shell",
     "typeAgent": "Agent",
@@ -609,7 +623,14 @@
     },
     "entryDescribeV2": "Describe what you want (recommended) — the AI builds it for you",
     "entryGoChat": "Create in chat",
-    "entrySuggestPrefix": "Prefer DIY? Suggested type: "
+    "entrySuggestPrefix": "Prefer DIY? Suggested type: ",
+    "entryTitleV2": "Create plugin",
+    "entryHintV2": [
+      "点选分类，AI 帮你把插件做出来（跳到会话继续）；也可以直接输入描述",
+      "Pick a category and the AI builds it (continues in chat); or just type what you want"
+    ],
+    "entryManualExpand": "Prefer DIY? Expand manual wizards",
+    "entryManualCollapse": "Collapse manual wizards"
   },
   "config": {
     "title": "Configuration",
@@ -1650,7 +1671,10 @@
     "verified": "Verified publisher",
     "needsApiKey": "Requires API key",
     "prevPage": "Prev",
-    "nextPage": "Next"
+    "nextPage": "Next",
+    "onlineLib": "Online extensions (pi ecosystem)",
+    "onlineSearch": "Search extensions…",
+    "onlineEmpty": "No matching pi extensions"
   },
   "onboarding": {
     "initTitle": "Preparing your agent",

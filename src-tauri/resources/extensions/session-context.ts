@@ -41,7 +41,7 @@ function sessionWorkspaceLine(sessionId: string): string | null {
   }
   const workspace = `${norm(projectPath)}${sep}sessions${sep}${sessionId}`;
   process.env.JISHU_SESSION_WORKSPACE = workspace;
-  return `session_workspace: ${workspace}\n默认空间会话中，你生成的文件默认放在 session_workspace 指向的目录（即环境变量 JISHU_SESSION_WORKSPACE），各会话互不混放。\n引用链接注意：产物引用路径从项目根算起——本会话的文件引用需带 sessions/${sessionId}/ 前缀（如 jishu-artifact://sessions/${sessionId}/docs/结果.html）。`;
+  return `session_workspace: ${workspace}\n默认空间会话中，你生成的文件默认放在 session_workspace 指向的目录（即环境变量 JISHU_SESSION_WORKSPACE），各会话互不混放。\n引用链接注意：产物引用路径从项目根算起——本会话的文件引用需带 sessions/${sessionId}/ 前缀（如 jishu-artifact://sessions/${sessionId}/docs/结果.html）；一律正斜杠相对路径，禁止绝对路径与反斜杠（含空格用 %20）。`;
 }
 
 export default function sessionContextExtension(pi: ExtensionAPI) {

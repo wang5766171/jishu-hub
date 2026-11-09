@@ -547,6 +547,9 @@ useEffect(() => {
   // v0.9.3 需求13 C4-slice2c：pipeline 插件「作为任务启动」——切会话页、
   // 会话作用域切 jishu agent（任务引擎），ChatPage 按 key 预填启动命令。
   const [pipelineLaunch, setPipelineLaunch] = useState<{ key: number; pluginId: string; name: string } | null>(null);
+  // 需求9 #8：两个启动 state 消费后即清——chat/manage 互斥渲染致 ChatPage
+  // 重挂、其防重 ref 归零，state 不清则重挂重预填并掀掉当前会话。
+  const handlePipelineLaunchConsumed = useCallback(() => setPipelineLaunch(null), []);
   const handleLaunchPipeline = useCallback((pluginId: string, name: string) => {
     setChatAgent("jishu-self");
     setPipelineLaunch({ key: Date.now(), pluginId, name });
@@ -557,6 +560,7 @@ useEffect(() => {
   //（pipelineLaunch 同款 key 防重复模式）；留 sessionStorage 标记，agent
   // 产出经确认卡启用成功后回跳插件中心聚光（闭环）。
   const [pluginCreateLaunch, setPluginCreateLaunch] = useState<{ key: number; text: string } | null>(null);
+  const handlePluginCreateLaunchConsumed = useCallback(() => setPluginCreateLaunch(null), []);
   const handleLaunchPluginDescribe = useCallback((text: string) => {
     setChatAgent("jishu-self");
     try {
@@ -725,6 +729,7 @@ useEffect(() => {
             <ProjectTabs
               currentProject={currentProject}
               projects={projects}
+              projectMetas={projectMetas}
               tabs={projectTabs}
               onSwitchToProject={handleTabSwitchToProject}
               onCloseCurrentProject={handleCloseCurrentTab}
@@ -736,7 +741,7 @@ useEffect(() => {
       <ViewerPushRow>
         <Suspense fallback={<LoadingOverlay />}>
           {currentPage === "chat"
-            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} onNavigateAgentModels={handleNavigateAgentModels} pipelineLaunch={pipelineLaunch} pluginCreateLaunch={pluginCreateLaunch} />
+            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} onNavigateAgentModels={handleNavigateAgentModels} pipelineLaunch={pipelineLaunch} onPipelineLaunchConsumed={handlePipelineLaunchConsumed} pluginCreateLaunch={pluginCreateLaunch} onPluginCreateLaunchConsumed={handlePluginCreateLaunchConsumed} />
             : <ManagePage
                 onBack={() => setCurrentPage("chat")}
                 onEnterProject={handleEnterProject}

@@ -4,7 +4,8 @@ import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { streamStore, useIsSessionStreaming } from "@/hooks/use-stream-store";
 import { Button } from "@/components/ui/button";
-import { Blocks, Check, ChevronDown, KeyRound, MessagesSquare, Paperclip, Plus, Send, Server, Square, Sparkles } from "lucide-react";
+import {
+  Zap, Blocks, Check, ChevronDown, KeyRound, MessagesSquare, Paperclip, Plus, Send, Server, Square, Sparkles } from "lucide-react";
 import { FilePreview } from "./file-preview";
 import { InteractionComposer } from "./interaction-composer";
 import { MessageStaging, type StagedMessage } from "./message-staging";
@@ -152,6 +153,10 @@ interface ChatInputProps {
   workModeOptions?: Array<{ value: string; label: string }>;
   workModeValue?: string;
   onWorkModeChange?: (value: string) => void | Promise<void>;
+  /** 需求2 追加：任务不询问模式（任务模式下显示开关——开启后 agent 不再
+   * 提问，全部按推荐执行）。 */
+  taskNoAsk?: boolean;
+  onTaskNoAskChange?: (enabled: boolean) => void;
   accessModeLabel?: string;
   accessModeTitle?: string;
   accessModeReadOnly?: boolean;
@@ -178,10 +183,12 @@ function isInsideProject(filePath: string, projectPath: string): boolean {
 
 /** v0.9.1 需求3 #1：ChatInput 命令句柄——focus 沿用原 textarea 转发语义；
  * restoreTexts 供 chat-page 在收到 steer_queue_cleared（停止清队）时把被清空
- * 的排队文本追加回草稿，不打字丢失。 */
+ * 的排队文本追加回草稿，不打字丢失。setText（需求9 #8）为替换语义——
+ * 预填场景（创建插件/流水线）用：旧草稿+新预填追加会累积两份。 */
 export interface ChatInputHandle {
   focus: () => void;
   restoreTexts: (texts: string[]) => void;
+  setText: (text: string) => void;
 }
 
 const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput({
@@ -211,6 +218,8 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   workModeOptions = [],
   workModeValue,
   onWorkModeChange,
+  taskNoAsk,
+  onTaskNoAskChange,
   accessModeLabel,
   accessModeTitle,
   accessModeReadOnly = true,
@@ -552,6 +561,23 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           textarea.setSelectionRange(pos, pos);
           textarea.focus();
           // 程序性回填（末尾）后滚动容器跟到底，尾部可见（修复五结构）。
+          scrollInputCaretIntoView();
+        });
+      },
+      // 需求9 #8：替换语义回填——预填专用（restoreTexts 追加语义保留给停止
+      // 清队回填），同步草稿持久化避免 localStorage 旧草稿闭环再混入。
+      setText: (text: string) => {
+        const next = text;
+        messageRef.current = next;
+        setMessage(next);
+        onDraftChange?.(next);
+        if (!next) return;
+        requestAnimationFrame(() => {
+          const textarea = textareaRef.current;
+          if (!textarea) return;
+          const pos = next.length;
+          textarea.setSelectionRange(pos, pos);
+          textarea.focus();
           scrollInputCaretIntoView();
         });
       },
@@ -1605,6 +1631,23 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     </div>
                   )}
                 </div>
+              )}
+              {workModeValue === "task" && onTaskNoAskChange && (
+                <button
+                  type="button"
+                  disabled={disabled || sending || isStreaming}
+                  title={taskNoAsk ? "不询问模式已开启：不再提问，全部按推荐执行（点击关闭）" : "开启不询问模式：agent 不再提问，全部按推荐执行"}
+                  onClick={() => onTaskNoAskChange(!taskNoAsk)}
+                  className={cn(
+                    "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs transition-fast disabled:cursor-not-allowed disabled:opacity-50",
+                    taskNoAsk
+                      ? "border-primary/50 bg-primary/10 text-primary"
+                      : "border-border/50 bg-background/80 text-muted-foreground hover:bg-accent/45 hover:text-foreground",
+                  )}
+                >
+                  <Zap className="h-3.5 w-3.5" />
+                  <span className="whitespace-nowrap">不询问</span>
+                </button>
               )}
               {accessModeLabel && (
                 <div className="relative">

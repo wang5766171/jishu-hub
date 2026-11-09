@@ -240,7 +240,7 @@ pub fn mark_task_session(
         title: title
             .map(str::trim)
             .filter(|v| !v.is_empty())
-            .unwrap_or("新任务")
+            .unwrap_or(DEFAULT_TASK_TITLE)
             .to_string(),
         skill_id: skill_id.to_string(),
         planner_agent_id: "jishu_agent".into(),
@@ -280,11 +280,14 @@ pub fn find_by_session(
 }
 
 /// v0.9.7 需求2 C2：runner 步骤清单上报（任务卡数据源，stages_json 列）。
+/// 需求9 #4：可选 `title`（runner 扩展随步骤上报 goal）——仅当实例标题仍是
+/// 建库默认「新任务」时覆盖（用户重命名过的标题不回写）。
 /// 成功后由调用方（IPC 层）emit `task-instance-changed`。
 pub fn runner_update_steps(
     project_root: &str,
     task_id: &str,
     steps_json: &str,
+    title: Option<&str>,
 ) -> Result<TaskLaunchInstance, String> {
     if steps_json.trim().is_empty() {
         return Err("steps_json is required".into());
@@ -300,6 +303,11 @@ pub fn runner_update_steps(
         .get(task_id)?
         .ok_or_else(|| format!("task instance not found: {task_id}"))?;
     instance.stages_json = Some(steps_json.to_string());
+    if let Some(new_title) = title.map(str::trim).filter(|t| !t.is_empty()) {
+        if instance.title == DEFAULT_TASK_TITLE {
+            instance.title = new_title.chars().take(40).collect();
+        }
+    }
     instance.updated_at = now_ms();
     store.upsert(&instance)?;
     Ok(instance)

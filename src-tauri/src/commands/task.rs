@@ -118,15 +118,18 @@ pub(crate) fn task_launch_delete_task(project_root: String, task_id: String) -> 
 }
 
 /// v0.9.7 需求2 C2：runner 步骤清单上报（任务卡数据源）。成功广播事件。
+/// 需求9 #4：可选 title（runner 扩展随步骤上报 goal，仅默认标题时覆盖）。
 #[tauri::command]
 pub(crate) fn runner_update_steps(
     app: tauri::AppHandle,
     project_root: String,
     task_id: String,
     steps_json: String,
+    title: Option<String>,
 ) -> Result<task_launch::TaskLaunchInstance, String> {
     let project_root = resolve_root(&project_root);
-    let instance = task_launch::runner_update_steps(&project_root, &task_id, &steps_json)?;
+    let instance =
+        task_launch::runner_update_steps(&project_root, &task_id, &steps_json, title.as_deref())?;
     emit_task_instance_changed(&app, &project_root);
     Ok(instance)
 }
@@ -140,4 +143,28 @@ pub(crate) fn runner_load_task_state(
 ) -> Result<task_launch::ConductorLoadStateResult, String> {
     let project_root = resolve_root(&project_root);
     task_launch::runner_load_task_state(&project_root, &task_id)
+}
+
+// ── 需求2 追加：任务不询问模式（开启后 agent 不再提问，全部按推荐执行）──
+// 存储：Pi settings.json 的 taskNoAsk 布尔键（与 toolApproval 同文件）——
+// 三个消费方同源读取：① runner 扩展（hubInvoke runner_capability_plugins
+// 透出）ask_user 自动放行；② jishu-tool-approval 扩展跳过逐次确认；
+// ③ 前端开关 UI。orchestrator 审批 gate 早已全自动（T8-P1b），无需接。
+
+#[tauri::command]
+pub(crate) fn get_task_no_ask() -> Result<bool, String> {
+    let cfg = crate::agent::jishu_self::config::load_jishu_config().map_err(|e| e.to_string())?;
+    Ok(cfg
+        .get("taskNoAsk")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+pub(crate) fn set_task_no_ask(enabled: bool) -> Result<bool, String> {
+    let mut cfg =
+        crate::agent::jishu_self::config::load_jishu_config().map_err(|e| e.to_string())?;
+    cfg["taskNoAsk"] = serde_json::json!(enabled);
+    crate::agent::jishu_self::config::save_jishu_config(&cfg).map_err(|e| e.to_string())?;
+    Ok(enabled)
 }

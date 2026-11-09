@@ -26,8 +26,7 @@ pub(crate) fn handle_hub_invoke(
                 .or_else(|| params.get("projectRoot"))
                 .and_then(|v| v.as_str())
                 .ok_or("runner_update_steps: project_root is required")?;
-            let project_root =
-                crate::project::resolve_project_root_or_default(project_root);
+            let project_root = crate::project::resolve_project_root_or_default(project_root);
             let task_id = params
                 .get("task_id")
                 .or_else(|| params.get("taskId"))
@@ -43,7 +42,9 @@ pub(crate) fn handle_hub_invoke(
                         .filter(|s| !s.trim().is_empty())
                         .ok_or("runner_update_steps: task_id or session_id is required")?;
                     crate::task_launch::find_by_session(&project_root, session_id)?
-                        .ok_or_else(|| "runner_update_steps: task instance not found for session".to_string())?
+                        .ok_or_else(|| {
+                            "runner_update_steps: task instance not found for session".to_string()
+                        })?
                         .task_id
                 }
             };
@@ -52,7 +53,18 @@ pub(crate) fn handle_hub_invoke(
                 .or_else(|| params.get("stepsJson"))
                 .and_then(|v| v.as_str())
                 .ok_or("runner_update_steps: steps_json is required")?;
-            let instance = crate::task_launch::runner_update_steps(&project_root, &task_id, steps_json)?;
+            // 需求9 #4：可选标题（runner 随步骤上报 goal）。
+            let title = params
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let instance = crate::task_launch::runner_update_steps(
+                &project_root,
+                &task_id,
+                steps_json,
+                title,
+            )?;
             if let Some(app) = HUB_APP_HANDLE.get() {
                 use tauri::Emitter;
                 let _ = app.emit(
@@ -71,12 +83,18 @@ pub(crate) fn handle_hub_invoke(
         "runner_capability_plugins" => {
             // 能力插件联动：task-requirements/task-plan 启用态（runner 扩展
             // before_agent_start 据此注入「需求澄清/计划拆解」可用能力提示）。
+            // 需求2 追加：透出 taskNoAsk（不询问模式）——runner 扩展 ask_user
+            // 自动放行 + 纪律注入提差异。
             let config = crate::agent::plugin::load_plugin_config();
             let enabled = ["task-requirements", "task-plan"]
                 .into_iter()
                 .filter(|id| !config.disabled.contains(&id.to_string()))
                 .collect::<Vec<_>>();
-            serde_json::to_value(serde_json::json!({ "enabled": enabled }))
+            let no_ask = crate::agent::jishu_self::config::load_jishu_config()
+                .ok()
+                .and_then(|cfg| cfg.get("taskNoAsk").and_then(|v| v.as_bool()))
+                .unwrap_or(false);
+            serde_json::to_value(serde_json::json!({ "enabled": enabled, "noAsk": no_ask }))
                 .map_err(|e| e.to_string())
         }
         // v0.9.3 需求13 C4-slice2：/jishu-pipeline 扩展命令按插件 id 取

@@ -87,7 +87,6 @@ fn heal_once_if_needed(record_path: &Path) {
     }
 }
 
-
 /// 需求8 修复A：写记录（含 healed 标志）——安装完成后 heal 过即置 true，
 /// Ready 路径不再重复 heal。
 fn write_record(record_path: &Path, version: &str, healed: bool) -> Result<(), String> {
@@ -251,6 +250,18 @@ async fn install_runtime_locked(
         crate::agent::jishu_self::PI_AGENT_VERSION,
         healed,
     )?;
+    // 需求9 #7：安装完成后立即重探 agent 健康——安装窗口内（packages 已
+    // rename 进 backup、复制未完）前端 AgentProvider 的 probe 可能把
+    // installed=false 写进缓存且此后无人刷新（0.9.6→0.9.7 卸载重装后恒显
+    // 「未安装」、重启才恢复的竞态）。主动刷新消除缓存竞态。
+    if let Some(state) = app.try_state::<std::sync::Mutex<crate::AppState>>() {
+        if let Ok(registry) = crate::with_app_state(&state, |s| s.registry.clone()) {
+            let _ =
+                tauri::async_runtime::spawn_blocking(move || registry.refresh_health_blocking())
+                    .await;
+            log::info!("[agent-runtime] post-install agent health refreshed");
+        }
+    }
     Ok(AgentRuntimeState::Mismatch {
         // 完成态经状态命令查询即 Ready；此处返回旧记录供调用方判断「刚装完」。
         recorded: None,
@@ -303,8 +314,8 @@ mod tests {
         write_record(&record, "1.5.0-15", true).unwrap();
         let body = std::fs::read_to_string(&record).unwrap();
         assert!(body.contains("\"healed\": true"), "healed 应落盘: {body}");
-        let legacy = serde_json::to_string_pretty(&serde_json::json!({"version": "1.5.0-15"}))
-            .unwrap();
+        let legacy =
+            serde_json::to_string_pretty(&serde_json::json!({"version": "1.5.0-15"})).unwrap();
         std::fs::write(&record, legacy).unwrap();
         assert_eq!(
             read_recorded_version(&record).as_deref(),
