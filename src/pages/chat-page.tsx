@@ -61,11 +61,9 @@ import { clearImageCache, InlineImages, stripImagePrompt } from "@/components/se
 // 任务图数据：chat-page 顶层无条件持有（无 graph 时无副作用），主区 run 流与侧边栏共享。
 import { useTaskGraph, type NodeRunLookupSource } from "@/features/task-instance/graph/use-task-graph";
 // T8-P1 三段合流：执行段的「流程执行」分隔线 + 会话区「是否开始执行」确认卡。
-import { PhaseDivider } from "@/components/sessions/conversation-content";
 import {
   TaskPlanCard,
   TaskNodeCards,
-  TaskStepsCard,
   TaskSummaryCard,
 } from "@/features/task-workspace/task-flow-cards";
 import { Button } from "@/components/ui/button";
@@ -488,6 +486,9 @@ export function ChatPage({
     projectId && activeId ? "list_sessions" : "",
     projectId && activeId ? { agentId: activeId, encodedName: projectId } : undefined,
     activeId + "_" + listRefreshKey,
+    // 需求9 补充2 续：切标签（args 变化）保留旧列表直至新列表到达——
+    // 侧栏不闪空窗（失败时仍清空防误导，见 useInvoke keepStale）。
+    { keepStale: true },
   );
   // Ref mirror for use inside the mount-only stream listener closure.
   const sessionsRef = useRef<Session[] | null>(null);
@@ -1341,6 +1342,18 @@ export function ChatPage({
   useEffect(() => {
     if (taskBoardSignal > 0) setTaskBoardOpen(true);
   }, [taskBoardSignal]);
+  // 需求2 收版反馈 F：任务激活自动唤起任务看板——会话流不再渲染步骤
+  //（呈现唯一载体=看板），任务打开时看板必须可见；按 taskId 唤起一次，
+  // 用户手动收起后不反复弹（同任务切走切回不重唤）。
+  const lastBoardTaskIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const tid = taskModeActive ? (activeTaskLaunchInstance?.task_id ?? null) : null;
+    if (tid && tid !== lastBoardTaskIdRef.current) {
+      lastBoardTaskIdRef.current = tid;
+      requestPanelActivation("session.task-board");
+    }
+    if (!tid) lastBoardTaskIdRef.current = null;
+  }, [taskModeActive, activeTaskLaunchInstance?.task_id]);
 
   // v0.9.2 需求2 M3-5：画布内指定节点执行者（自侧栏迁移；run 进行中禁止）。
   const handleBoardAssignAgent = useCallback(
@@ -2313,22 +2326,13 @@ export function ChatPage({
                   </div>
                 ) : null}
                 {/* T8-P1 三段合流（需求六）：执行阶段不是独立页面，而是在上方 conductor 会话
-                    （需求 + 规划）末尾接一条「流程执行」分隔线，再往下追加执行内容——
-                    未启动时是「是否开始执行」确认卡，已启动后是 run 事件流。 */}
+                    （需求 + 规划）末尾接执行内容——未启动时是「是否开始执行」确认卡，
+                    已启动后是 run 事件流。
+                    v0.9.7 需求2 收版反馈 F：「流程执行」分隔线与 runner 步骤卡移出
+                    会话流——任务看板（session.task-board，已设必装）承载步骤呈现，
+                    会话保持纯对话流。 */}
                 {taskExecutionMode ? (
                   <>
-                    <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4">
-                      <PhaseDivider phase="execute" title={t("task.phase.execution", "流程执行")} />
-                    </div>
-                    {/* v0.9.7 需求2：runner 步骤卡——无图单对话流任务的主任务卡
-                        （灯语言 + ask_user 待决策高亮）；有图任务未启动 run 时
-                        与方案卡并存靠下（以方案卡为先）。 */}
-                    {!activeTaskLaunchInstance?.graph_id && !taskRunStarted && (
-                      <TaskStepsCard
-                        steps={taskRunnerCard.steps}
-                        pendingQuestion={taskRunnerCard.pendingQuestion}
-                      />
-                    )}
                     {taskRunStarted ? (
                       /* v0.9.2 测试期修复（终态渲染两遍流程）：run 终态时节点卡列表
                          与汇总卡的节点行重复展示同一套流程（用户实测「显示两遍」）。

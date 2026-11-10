@@ -436,6 +436,11 @@ function AppContent() {
   useEffect(() => onManageNav(() => setCurrentPage("manage")), []);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectSessionsLoading, setProjectSessionsLoading] = useState(false);
+  // 需求9 补充2 续（2026-11-10 用户反馈「一闪而过的加载动画」）：ChatPage
+  // 挂载过之后（含标签切换/进项目）不再全屏 LoadingOverlay——内容直出
+  //（opencode 式）；overlay 仅限首启恢复项目的无内容窗口。
+  const chatMountedOnceRef = useRef(false);
+  if (currentPage === "chat") chatMountedOnceRef.current = true;
   const [initialProjectRestored, setInitialProjectRestored] = useState(false);
   const { data: projects, loading: projectsLoading, refetch: refetchProjects } = useInvoke<Project[]>("scan_projects");
   const { data: sessionNames, loading: namesLoading, refetch: refetchNames } = useInvoke<Record<string, string>>("get_session_names");
@@ -444,7 +449,10 @@ function AppContent() {
 
   // Only show loading overlay on initial load, not on refresh
   const loading = projectsLoading || namesLoading;
-  const blockingLoading = loading || !initialProjectRestored || projectSessionsLoading;
+  // 需求9 补充2 续：ChatPage 挂载过之后 projectSessionsLoading 不再升格为
+  // 全屏 overlay（切标签/进项目内容直出）；仅首启（从未进过 chat）保留。
+  const blockingLoading =
+    loading || !initialProjectRestored || (projectSessionsLoading && !chatMountedOnceRef.current);
 
   // Restore last project on startup
   // v0.9.4 需求12：开发日志强制开关水合（后端 settings.json 权威）。
@@ -632,6 +640,33 @@ useEffect(() => {
     });
     return () => { cancelled = true; unlistenFn?.(); };
   }, [chatAgentId, projects, setChatAgent]);
+
+  // 需求10（会话通知点击跨标签定位）：desktop-notify-click 现携带会话所属
+  // 项目（Rust 深链处反查 sessions 目录）——所属项目非当前标签时自动切换
+  //（setCurrentProject + 同步导航，floating-restore 同款链）；同项目时不动，
+  // chat-page 内的原监听直接选会话。反查缺失回落原行为（仅切会话）。
+  useEffect(() => {
+    let cancelled = false;
+    let unlistenFn: (() => void) | null = null;
+    listen<{ sessionId?: string | null; projectEncoded?: string | null }>("desktop-notify-click", (event) => {
+      if (cancelled) return;
+      const { sessionId, projectEncoded } = event.payload ?? {};
+      if (!sessionId || !projectEncoded) return;
+      if (projectEncoded === currentProject?.encoded_name) return; // 同标签：chat-page 监听直选
+      const targetProject = projects?.find(p => p.encoded_name === projectEncoded);
+      if (!targetProject) return;
+      setCurrentProject(targetProject);
+      invokeCommand("save_last_project", { encodedName: projectEncoded }).catch(console.error);
+      setCurrentPage("chat");
+      // 需求9 补充2：同步导航（零闪空）——与项目切换同批送达。
+      setNavigateToSession(sessionId);
+      setTimeout(() => setNavigateToSession(null), 500);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    });
+    return () => { cancelled = true; unlistenFn?.(); };
+  }, [projects, currentProject]);
 
   // v0.9.6 需求4 补充②：固定标签状态（pins/lastSession/状态灯）+ 离开自动固定。
   const projectTabs = useProjectTabs();

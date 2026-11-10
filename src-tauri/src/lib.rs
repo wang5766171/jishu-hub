@@ -74,6 +74,31 @@ pub use commands::agent_install::run_install_agent_cli;
 /// 聚焦主窗 + 广播 desktop-notify-click（前端经 ctx.switchSession 定位）；
 /// `jishu-hub://open` → 仅聚焦。运行中实例（single-instance 转发）与冷启动
 ///（deep-link 事件）共用。
+/// 需求10（会话通知点击跨标签定位）：随事件附会话所属项目（sessions 目录
+/// 文件名 `…_<session_id>.jsonl` 的项目目录名 + 解码后的路径）——前端据此
+/// 自动切换到对应标签；反查失败回落仅 sessionId（原行为）。
+fn session_project_of(session_id: &str) -> Option<(String, String)> {
+    let root = crate::agent::jishu_self::pi_session::pi_sessions_root().ok()?;
+    let suffix = format!("_{session_id}.jsonl");
+    for entry in std::fs::read_dir(&root).ok()?.flatten() {
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        if !dir_name.starts_with("--") || !entry.path().is_dir() {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(entry.path()) else {
+            continue;
+        };
+        if files
+            .flatten()
+            .any(|f| f.file_name().to_string_lossy().ends_with(&suffix))
+        {
+            let project_path = crate::project::decode_project_path(&dir_name);
+            return Some((dir_name, project_path));
+        }
+    }
+    None
+}
+
 fn handle_deep_link(app: &tauri::AppHandle, url: &str) {
     use tauri::{Emitter, Manager};
     if let Some(window) = app.get_webview_window("main") {
@@ -84,9 +109,17 @@ fn handle_deep_link(app: &tauri::AppHandle, url: &str) {
     let session_id = url
         .strip_prefix("jishu-hub://session/")
         .filter(|sid| !sid.is_empty());
+    let (project_encoded, project_path) = session_id
+        .and_then(session_project_of)
+        .map(|(enc, path)| (Some(enc), Some(path)))
+        .unwrap_or((None, None));
     let _ = app.emit(
         "desktop-notify-click",
-        serde_json::json!({ "sessionId": session_id }),
+        serde_json::json!({
+            "sessionId": session_id,
+            "projectEncoded": project_encoded,
+            "projectPath": project_path,
+        }),
     );
 }
 
