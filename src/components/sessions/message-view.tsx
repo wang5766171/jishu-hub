@@ -581,9 +581,12 @@ function UserBubble({
   // 后端 extract_tool_snapshot 从注入块派生）；文本标记解析已废弃。
   const firstTextBlock = msg.content.find((b) => b.type === "text");
   const rawText = firstTextBlock && firstTextBlock.type === "text" ? firstTextBlock.text : "";
-  const displayText = rawText;
+  // 需求2 收版反馈 H：剥内部命令前缀——任务首条经 prepareTaskLaunchMessage
+  // 包装为 `/jishu-task dev <goal>` 落盘，回放气泡显示/复制均应还原用户原话
+  //（内部路由指令不属于用户可见内容）。
+  const displayText = rawText.replace(/^\/jishu-task(?:\s+(?:dev|research))?\s+/, "");
   const toolIds = (firstTextBlock && firstTextBlock.type === "text" ? firstTextBlock.tool_ids : undefined) ?? [];
-  const copyText = extractMessageText(msg);
+  const copyText = extractMessageText(msg).replace(/^\/jishu-task(?:\s+(?:dev|research))?\s+/, "");
 
   // 三角色：roleResolver 解析为 orchestrator（主进程派发）→ 「任务助手」样式。
   const isOrchestrator = roleView?.role === "orchestrator";
