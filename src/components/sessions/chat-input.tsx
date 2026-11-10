@@ -1329,6 +1329,17 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
               onDelete={(id) =>
                 setCurrentStagedMessages((prev) => prev.filter((m) => m.id !== id))
               }
+              onReorder={(fromId, toId) =>
+                setCurrentStagedMessages((prev) => {
+                  const from = prev.findIndex((m) => m.id === fromId);
+                  const to = prev.findIndex((m) => m.id === toId);
+                  if (from < 0 || to < 0 || from === to) return prev;
+                  const next = [...prev];
+                  const [moved] = next.splice(from, 1);
+                  next.splice(to, 0, moved);
+                  return next;
+                })
+              }
               onSend={handleGuideStaged}
               sendLoadingId={guideLoading}
               toolNames={Object.fromEntries(
