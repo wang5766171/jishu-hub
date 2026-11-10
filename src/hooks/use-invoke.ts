@@ -9,7 +9,14 @@ interface UseInvokeResult<T> {
   setData: (data: T | null) => void;
 }
 
-export function useInvoke<T>(command: string, args?: Record<string, unknown>, refreshKey?: number | string): UseInvokeResult<T> {
+/** 需求9 补充2 续（2026-11-10）：keepStale——args 变化（如切项目）时保留旧
+ * 数据直至新数据到达（stale-while-revalidate，切换无空窗）；仅请求**失败**
+ * 时清空（残留旧项目的数据会误导操作）。 */
+interface UseInvokeOptions {
+  keepStale?: boolean;
+}
+
+export function useInvoke<T>(command: string, args?: Record<string, unknown>, refreshKey?: number | string, options?: UseInvokeOptions): UseInvokeResult<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -22,6 +29,8 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
   // 和"同参数的 refetch"（保留 data）。
   const lastCommandRef = useRef<string | null>(null);
   const lastArgsRef = useRef<string | null>(null);
+  const keepStaleRef = useRef(false);
+  keepStaleRef.current = options?.keepStale === true;
 
   const fetch = useCallback((silent?: boolean): Promise<T> => {
     const runId = ++runIdRef.current;
@@ -38,7 +47,8 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
     // 通过比较 runId 区分：args 变化触发的新 fetch（command/args 在 useCallback 依赖里
     // 变化才重建 fetch）清空；refetch（同参数）不清空。
     if (runId === 1 || command !== lastCommandRef.current || JSON.stringify(args) !== lastArgsRef.current) {
-      setData(null);
+      // keepStale：args 变化保留旧数据（切换无空窗），仅失败时清（见 catch）。
+      if (!keepStaleRef.current) setData(null);
     }
     lastCommandRef.current = command;
     lastArgsRef.current = JSON.stringify(args);
@@ -53,6 +63,8 @@ export function useInvoke<T>(command: string, args?: Record<string, unknown>, re
         if (runId !== runIdRef.current) throw err;
         setError(String(err));
         setLoading(false);
+        // keepStale 失败兜底：新请求失败不残留旧 args 的数据（防误导操作）。
+        if (keepStaleRef.current) setData(null);
         throw err;
       });
   }, [command, JSON.stringify(args)]);
