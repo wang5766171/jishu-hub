@@ -553,6 +553,21 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // 未注入的残留（防御路径）。
           const steerTexts = state?.steerTexts ?? [];
           const queuedSteers = steerCoordinator.textsOf(steerQueueKey);
+          // 需求11-2（逐条投递）：回合完成且引导队列仍有未投递条目 → 投下
+          // 一条（此刻 pi 已 Idle，steer 进 pi 队列由其开新回合注入；注入
+          // 回执 steer_injected 照常消占位）。队首之外的条目在本轮发送时
+          // 已被闸门拦下（chat-page onGuideStaged），队列里的就是待投递集。
+          if (
+            chunk.data.reason !== "aborted" &&
+            queuedSteers.length > 0 &&
+            steerTexts.length === 0
+          ) {
+            const next = queuedSteers[0];
+            void invokeCommand("steer_chat", {
+              sessionId: finalKey,
+              message: next,
+            }).catch((e) => console.warn("[steer] next-guide delivery failed:", e));
+          }
           // ── Build interactionInsertions with REAL indices ───────────────────
           // The snapshot `item.index` (content.length at interaction_request time)
           // goes stale once the agent emits more content after the request.

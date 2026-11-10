@@ -2788,14 +2788,24 @@ export function ChatPage({
                 }
               }}
               onGuideStaged={async (content: string, toolIds?: string[]) => {
-                if (!selectedSession || selectedSession === "new") return;
+                // 需求11-1：赶来阶段（新会话 id 未 resolve）不再静默丢弃——
+                // 抛错让 chat-input un-claim 保留暂存条目，回合完成的 Route 2
+                // 自动发送兜底（旧版直接 return：暂存被移除=消息蒸发）。
+                if (!selectedSession || selectedSession === "new") {
+                  throw new Error("session-resolving");
+                }
                 // Pi-RPC delivers the guide as a real mid-turn injection
                 // (steer_chat + steer_injected event). ACP (claude-code) has no
                 // mid-turn steer — steer_chat just queues a follow-up prompt and
                 // never injects — so skip it; the guide still queues below and
                 // becomes a real message when the user stops or the reply
                 // completes (Route 2 / turn_complete commit).
-                if (supportsSteer) {
+                // 需求11-2（逐条投递）：仅队首直发 pi（pi steeringMode
+                // one-at-a-time 单条注入）；后续条仅登记前端队列——回合
+                // 完成后由 event-pipeline 的 turn_complete 链投下一条
+                //（回合级逐条，改「一口气全给」）。
+                const queueEmptyForSend = steerCoordinator.textsOf(selectedSession).length === 0;
+                if (supportsSteer && queueEmptyForSend) {
                   await invokeCommand("steer_chat", {
                     sessionId: selectedSession,
                     message: content,
