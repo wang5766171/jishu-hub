@@ -23,6 +23,7 @@ import { memo, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, Pencil, X, Network } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { parseRunnerCard } from "@/features/task-instance/types";
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -40,6 +41,9 @@ export interface TaskSessionTreeTask {
   active_run_id?: string | null;
   last_run_id?: string | null;
   run_status?: string | null;
+  /** 需求2 收版反馈 G：runner（无图）任务的步骤清单——run_status 恒空，
+   * 行状态点由步骤派生（进行中/完成/失败）。 */
+  stages_json?: string | null;
 }
 
 export interface TaskSessionTreeProps {
@@ -100,30 +104,52 @@ const TaskRow = memo(function TaskRow({
             <span className="min-w-0 flex-1 truncate text-left leading-none pt-[1px]">
               {task.title}
             </span>
-            {/* v0.9.2 需求2 M3-4：任务状态灯——执行中呼吸蓝点/完成绿/失败红/取消灰。 */}
+            {/* v0.9.2 需求2 M3-4：任务状态灯——执行中呼吸蓝点/完成绿/失败红/取消灰。
+                需求2 收版反馈 G：runner（无图）任务 run_status 恒空——由 stages_json
+                步骤派生同款三态（进行中=有 running/todo；完成=全 done；失败=含
+                failed 且无进行中），与普通会话行首灯语言一致。 */}
             {(() => {
-              const running = task.run_status === "running";
+              let kind: "running" | "completed" | "failed" | "cancelled" | null = null;
+              if (task.run_status) {
+                kind =
+                  task.run_status === "running"
+                    ? "running"
+                    : task.run_status === "completed"
+                      ? "completed"
+                      : task.run_status === "failed"
+                        ? "failed"
+                        : task.run_status === "cancelled"
+                          ? "cancelled"
+                          : null;
+              } else {
+                const steps = parseRunnerCard(task.stages_json).steps;
+                if (steps.length > 0) {
+                  const anyActive = steps.some(s => s.status === "running" || s.status === "todo");
+                  const anyFailed = steps.some(s => s.status === "failed");
+                  kind = anyActive ? "running" : anyFailed ? "failed" : "completed";
+                }
+              }
+              if (!kind) return null;
               const dotCls =
-                running
+                kind === "running"
                   ? "bg-blue-500 animate-pulse"
-                  : task.run_status === "completed"
+                  : kind === "completed"
                     ? "bg-emerald-500"
-                    : task.run_status === "failed"
+                    : kind === "failed"
                       ? "bg-red-500"
-                      : task.run_status === "cancelled"
-                        ? "bg-muted-foreground/40"
-                        : "";
-              if (!dotCls) return null;
+                      : "bg-muted-foreground/40";
               return (
                 <span
                   className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dotCls)}
-                  title={task.run_status ?? undefined}
+                  title={kind === "running" ? "进行中" : kind === "completed" ? "已完成" : kind === "failed" ? "失败" : "已取消"}
                 />
               );
             })()}
-            <span className="shrink-0 rounded-full bg-primary/10 px-1 py-0.5 text-[9px] font-medium leading-none text-primary">
-              {phase}
-            </span>
+            {phase && (
+              <span className="shrink-0 rounded-full bg-primary/10 px-1 py-0.5 text-[9px] font-medium leading-none text-primary">
+                {phase}
+              </span>
+            )}
             {task.run_status === "running" && onCancelTask ? (
               <span
                 role="button"
