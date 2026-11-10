@@ -635,6 +635,11 @@ useEffect(() => {
 
   // v0.9.6 需求4 补充②：固定标签状态（pins/lastSession/状态灯）+ 离开自动固定。
   const projectTabs = useProjectTabs();
+// 需求9 补充1：离开项目上报 → useProjectTabs 记录（切回标签直达离开会话）。
+  const handleProjectLeaveSession = useCallback(
+    (encoded: string, sessionId: string | null) => projectTabs.noteLeaveSession(encoded, sessionId),
+    [projectTabs.noteLeaveSession],
+  );
   const prevProjectRef = useRef<Project | null>(null);
   useEffect(() => {
     const prev = prevProjectRef.current;
@@ -656,12 +661,18 @@ useEffect(() => {
     setCurrentProject(project);
     invokeCommand("save_last_project", { encodedName: project.encoded_name }).catch(console.error);
     setCurrentPage("chat");
-    if (sessionId) {
-      setTimeout(() => setNavigateToSession(sessionId), 100);
+    // 需求9 补充1：优先回「离开该项目时正在看的会话」（内存记录），无记录
+    // 才回落最近活跃会话（调用方传入）——A-1 离开切 B 再回 A 直达 A-1。
+    const effective = projectTabs.leaveSession[project.encoded_name] ?? sessionId;
+    if (effective) {
+      // 需求9 补充2：同步导航（原 100ms 延时）——与 setCurrentProject 同一
+      // 渲染批次送达 ChatPage，[projectId] 清理 effect 与 [navigateToSession]
+      // 选中 effect 同批执行，中间无空白会话帧（内容直出，opencode 式）。
+      setNavigateToSession(effective);
       setTimeout(() => setNavigateToSession(null), 500);
     }
     getCurrentWindow().setFocus().catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
-  }, [chatAgentId, setChatAgent]);
+  }, [chatAgentId, setChatAgent, projectTabs.leaveSession]);
 
   // v0.9.6 需求4 补充⑦（用户裁决 2026-11-03）：关闭当前标签不再回管理页——
   // 切到前一个固定标签（pins 序左邻，无左邻取右邻）；唯一标签时关闭无效果。
@@ -741,7 +752,7 @@ useEffect(() => {
       <ViewerPushRow>
         <Suspense fallback={<LoadingOverlay />}>
           {currentPage === "chat"
-            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} onNavigateAgentModels={handleNavigateAgentModels} pipelineLaunch={pipelineLaunch} onPipelineLaunchConsumed={handlePipelineLaunchConsumed} pluginCreateLaunch={pluginCreateLaunch} onPluginCreateLaunchConsumed={handlePluginCreateLaunchConsumed} />
+            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} onNavigateAgentModels={handleNavigateAgentModels} pipelineLaunch={pipelineLaunch} onPipelineLaunchConsumed={handlePipelineLaunchConsumed} pluginCreateLaunch={pluginCreateLaunch} onPluginCreateLaunchConsumed={handlePluginCreateLaunchConsumed} onProjectLeaveSession={handleProjectLeaveSession} />
             : <ManagePage
                 onBack={() => setCurrentPage("chat")}
                 onEnterProject={handleEnterProject}

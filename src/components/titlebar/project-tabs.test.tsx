@@ -28,7 +28,8 @@ function makeTabs(over: Partial<ProjectTabsState> = {}): ProjectTabsState {
   return {
     pins: [],
     lights: {},
-    lastSession: {},
+    lastSession: {}, leaveSession: {},
+    noteLeaveSession: () => {},
     pinProject: vi.fn(),
     unpinProject: vi.fn(),
     reorderPins: vi.fn(),

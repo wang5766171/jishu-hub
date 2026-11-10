@@ -141,6 +141,7 @@ export function ChatPage({
   onPipelineLaunchConsumed,
   pluginCreateLaunch,
   onPluginCreateLaunchConsumed,
+  onProjectLeaveSession,
 }: {
   currentProject: Project | null;
   currentProjectMeta?: ProjectMeta;
@@ -163,6 +164,9 @@ export function ChatPage({
   pluginCreateLaunch?: { key: number; text: string } | null;
   /** 需求9 #8：pluginCreateLaunch 消费完成回调（App 层清 state，防重挂重预填）。 */
   onPluginCreateLaunchConsumed?: () => void;
+  /** 需求9 补充1：离开项目时上报「正在看的会话」（App 转发 useProjectTabs
+   * noteLeaveSession——切回标签直达离开会话而非最近活跃会话）。 */
+  onProjectLeaveSession?: (encoded: string, sessionId: string | null) => void;
 }) {
   const { t } = useTranslation();
   // v0.7.0 需求一：会话作用域状态（chatAgentId 替代全局 activeId）。
@@ -666,8 +670,18 @@ export function ChatPage({
     }
   }, []);
 
+  // 需求9 补充1：上一个项目的 encoded（离开上报用——effect 执行时
+  // currentProject 已是新值，旧值经 ref 传递）。
+  const prevProjectEncodedRef = useRef<string | null>(null);
+
   // Clear session state when project changes
   useEffect(() => {
+    // 离开上报（补充1）：旧项目 + 清理前仍在看的会话。
+    const leavingEnc = prevProjectEncodedRef.current;
+    if (leavingEnc && leavingEnc !== projectId) {
+      onProjectLeaveSession?.(leavingEnc, selectedSessionRef.current);
+    }
+    prevProjectEncodedRef.current = projectId;
     saveCurrentScrollBeforeLeave();
     setSelectedSession(null);
     selectedSessionRef.current = null;
@@ -677,10 +691,12 @@ export function ChatPage({
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
-    evictIdleSessionMessagesCache();
+    // 需求9 补充2（opencode 式直渲染）：不再 evict 消息缓存——缓存按
+    // sessionId 全局键控，跨项目保留后切回标签零 IO 直出（原「切项目即清
+    // 空闲缓存」是切换必重读 JSONL 的主因）；内存由 set 侧上限保护。
     newSessionStreamIdsRef.current.clear();
     clearImageCache();
-  }, [projectId]);
+  }, [projectId, onProjectLeaveSession]);
 
   useEffect(() => {
     if (!projectId || !activeId) return;
@@ -700,7 +716,7 @@ export function ChatPage({
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
-    evictIdleSessionMessagesCache();
+    // 需求9 补充2：同 [projectId] effect——缓存保留直出（见上）。
     newSessionStreamIdsRef.current.clear();
     setListRefreshKey(Date.now());
     refetchNames(true).catch(console.error);
@@ -2913,7 +2929,6 @@ export function ChatPage({
 }
 
 import {
-  evictIdleSessionMessagesCache,
   getCachedSessionMessages,
   setCachedSessionMessages,
   deleteCachedSessionMessages,

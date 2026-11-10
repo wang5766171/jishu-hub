@@ -36,12 +36,19 @@ export interface ProjectTabsState {
    * 驱动；重启后无活跃即中性——历史结果不跨重启追忆）。 */
   lights: Record<string, TabLight>;
   lastSession: Record<string, LastSessionInfo>;
+  /** 需求9 补充1：项目 → 离开时正在看的会话（内存态，不持久——跨重启回落
+   * lastSession 合理）。与 lastSession（最近**活跃**会话，轮询驱动，另承担
+   * 状态灯/未读映射）语义分离：切回标签应回到「我离开时的会话」而非
+   * 「该项目最近活跃的会话」。 */
+  leaveSession: Record<string, string>;
   pinProject: (encoded: string) => void;
   unpinProject: (encoded: string) => void;
   /** v0.9.6 补充③：拖拽重排固定标签顺序（持久化——标签位置固定不跳动）。 */
   reorderPins: (from: string, to: string) => void;
   /** 离开项目时调用（自动固定入口）。 */
   noteLeave: (project: Project | null) => void;
+  /** 需求9 补充1：离开项目时记录正在看的会话（ChatPage 经 App 转发）。 */
+  noteLeaveSession: (encoded: string, sessionId: string | null) => void;
   /** 点击标签（已查看）——清绿/红灯。 */
   clearLight: (encoded: string) => void;
   /** v0.9.6 补充⑦：抑制下一次对该项目的离开自动固定（关闭当前标签时用——
@@ -111,6 +118,17 @@ export function useProjectTabs(): ProjectTabsState {
     if (suppressRef.current.delete(project.encoded_name)) return; // 关闭触发的离开不固定
     pinProject(project.encoded_name);
   }, [pinProject]);
+
+  // 需求9 补充1：离开会话记录（内存态 per-project；null 清除）。
+  const [leaveSession, setLeaveSession] = useState<Record<string, string>>({});
+  const noteLeaveSession = useCallback((encoded: string, sessionId: string | null) => {
+    setLeaveSession(prev => {
+      const next = { ...prev };
+      if (sessionId) next[encoded] = sessionId;
+      else delete next[encoded];
+      return next;
+    });
+  }, []);
 
   const clearLight = useCallback((encoded: string) => {
     // v0.9.6 补充⑨：查看=已读——清该项目最近会话的未读（绿/红跨重启亦不再
@@ -222,5 +240,5 @@ export function useProjectTabs(): ProjectTabsState {
   for (const [enc, light] of Object.entries(lights)) {
     if (light === "running") mergedLights[enc] = "running";
   }
-  return { pins, lights: mergedLights, lastSession, pinProject, unpinProject, reorderPins, noteLeave, clearLight, suppressPinOnce };
+  return { pins, lights: mergedLights, lastSession, leaveSession, pinProject, unpinProject, reorderPins, noteLeave, noteLeaveSession, clearLight, suppressPinOnce };
 }
