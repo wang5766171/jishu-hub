@@ -337,6 +337,8 @@ export function ChatSidebar(props: ChatSidebarProps) {
           <TaskSessionTree
             tasks={displayTaskLaunchSessions}
             activeTaskId={activeTaskInstanceId}
+            isSessionStreaming={(sid) => streamingSessionIds.includes(sid)}
+            sessionUnreadOf={(sid) => sessionUnread[sid]}
             onSelectTask={(task) => {
               // 树的 TaskSessionTreeTask 是 TaskLaunchInstanceSummary 的结构子集，
               // 回传时按 task_id 反查完整实例（openTaskSession 需要 project_root 等字段）。
