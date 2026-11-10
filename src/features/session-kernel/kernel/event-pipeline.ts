@@ -74,6 +74,8 @@ export interface AgentEventPipelineDeps {
   supportsSteerRef: MutableRefObject<boolean>;
   taskLaunchOpenRef: MutableRefObject<boolean>;
   taskLaunchPhaseRef: MutableRefObject<TaskLaunchPhase>;
+  /** 需求9 #4 补：任务首条 goal（prepareTaskLaunchMessage 捕获，建实例即写标题）。 */
+  taskLaunchGoalRef: MutableRefObject<string | null>;
   visitedSessions: MutableRefObject<Set<string>>;
   // —— 稳定 setter ——
   setLiveThinkingLevel: Dispatch<SetStateAction<string | null>>;
@@ -334,7 +336,10 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
                 taskId: deps.activeTaskInstanceIdRef.current,
                 sessionId: realId,
                 skillId: deps.selectedTaskSkillIdRef.current || "jishu-task-runner",
-                title: null,
+                // 需求9 #4 补：建实例即写首条 goal（截断在 Rust 侧）——单步
+                // 小任务 agent 不调 update_steps，步骤上报链不触发，标题会
+                // 停在默认「新任务」。
+                title: deps.taskLaunchGoalRef.current,
               })
                 .then((record) => {
                   deps.applyTaskLaunchInstanceSnapshot(record);

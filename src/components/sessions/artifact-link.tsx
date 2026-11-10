@@ -71,18 +71,35 @@ export async function openArtifactReference(
     if (!projectPath) return { ok: false, error: "no-project" };
   }
   const abs = resolveAgainstProject(rel, projectPath);
-  try {
-    await invokeCommand<PreviewKindResult>("validate_preview_file", {
-      path: abs,
+  const validate = (path: string) =>
+    invokeCommand<PreviewKindResult>("validate_preview_file", {
+      path,
       projectRoot: projectPath,
       sessionId: ctx.sessionId,
     });
+  let okPath = abs;
+  try {
+    await validate(abs);
   } catch (e) {
-    return { ok: false, error: String(e) };
+    // 需求9 #2 兜底②：agent 常把产物写到 `.jishu-hub/tasks/` 隐藏产物区，
+    // 引用却按项目相对 `tasks/…` 写（少一段 .jishu-hub——runner 纪律示例
+    // 即此形态）。首次校验「文件不存在」时补 `.jishu-hub/` 段再试（校验
+    // 基准本就含产物区，sessions.rs in_bounds 两基准）。
+    if (!String(e).includes("文件不存在")) {
+      return { ok: false, error: String(e) };
+    }
+    const sep = projectPath.includes("\\") ? "\\" : "/";
+    const alt = `${projectPath.replace(/[\\/]+$/, "")}${sep}.jishu-hub${sep}${rel.replace(/^[\\/]+/, "")}`;
+    try {
+      await validate(alt);
+      okPath = alt;
+    } catch (e2) {
+      return { ok: false, error: String(e2) };
+    }
   }
   emitSessionSignal({
     type: "file-preview-request",
-    file: abs,
+    file: okPath,
     sessionId: ctx.sessionId ?? undefined,
   });
   return { ok: true };
@@ -91,6 +108,26 @@ export async function openArtifactReference(
 interface ArtifactLinkProps extends React.AnchorHTMLAttributes<HTMLAnchorElement> {
   href?: string;
   children?: ReactNode;
+}
+
+/** 需求9 追加：显示名派生——模型常把链接文本直接写成 URL 本身
+ *（[📄 jishu-artifact://…](jishu-artifact://…)），会话里整串协议+路径太吵。
+ * 文本即 URL（或空）→ 只显示文件名（末段，URL 解码）；模型写了人话标题
+ *（如「打开 设计效果图」）→ 原样保留。 */
+export function artifactDisplayName(href: string, childrenText: string): string {
+  const rel = href.slice(ARTIFACT_SCHEME.length);
+  const trimmed = childrenText.trim();
+  const textIsUrl =
+    !trimmed ||
+    trimmed.includes(ARTIFACT_SCHEME) ||
+    trimmed.replace(/^[^\w\u4e00-\u9fa5]+\s*/, "") === rel;
+  if (!textIsUrl) return trimmed;
+  const lastSeg = rel.split(/[\\/]/).filter(Boolean).pop() ?? rel;
+  try {
+    return decodeURIComponent(lastSeg);
+  } catch {
+    return lastSeg;
+  }
 }
 
 /** react-markdown `a` 覆写：artifact 协议拦截，其余默认。 */
@@ -107,6 +144,9 @@ export function ArtifactLink({ href, children, className, ...rest }: ArtifactLin
       </a>
     );
   }
+
+  const rel = href.slice(ARTIFACT_SCHEME.length);
+  const displayName = artifactDisplayName(href, typeof children === "string" ? children : "");
 
   const handleClick = async (event: React.MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
@@ -133,16 +173,17 @@ export function ArtifactLink({ href, children, className, ...rest }: ArtifactLin
       <a
         href={href}
         onClick={handleClick}
-        title={t("sessions.artifactLinkHint")}
+        title={rel || t("sessions.artifactLinkHint")}
         className={cn(
           // 需求7 修2：蓝色实线下划线（原白色虚线不显眼）；失败态红字。
+          // 需求9 追加：强调色实线渲染（text-primary 主题强调色）。
           "cursor-pointer underline decoration-solid underline-offset-2 font-medium",
           failed ? "text-red-500 decoration-red-400" : "text-primary decoration-primary/70",
           className
         )}
         {...rest}
       >
-        {children ?? href.slice(ARTIFACT_SCHEME.length)}
+        {displayName}
       </a>
       {failed && (
         <span className="ml-1 text-xs text-red-500">

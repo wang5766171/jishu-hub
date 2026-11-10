@@ -524,8 +524,18 @@ mod tests {
 
     // v0.9.7 需求5：默认工作空间纯函数面（ensure_default_workspace 集成面
     // 涉 manual_projects/project_meta 真实落盘，留 A7 GUI/CLI 实测）。
+    // 需求9：本组测试持共享 env 锁——chat_tests 等测试并行 set_var
+    // (JISHU_HUB_HOME) 期间，default_workspace_root()（每次现读 env）会漂移，
+    // 曾致 ensure 幂等断言随机挂（并行竞态，非功能回归）。
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn test_default_workspace_root_under_hub_home() {
+        let _g = env_lock();
         let root = default_workspace_root();
         assert_eq!(
             root,
@@ -535,6 +545,7 @@ mod tests {
 
     #[test]
     fn test_is_default_workspace_matches_root_and_case() {
+        let _g = env_lock();
         let root = default_workspace_root();
         assert!(is_default_workspace(&root));
         // Windows 大小写不敏感；其他平台按原样比较。
@@ -550,6 +561,7 @@ mod tests {
 
     #[test]
     fn test_resolve_project_root_or_default() {
+        let _g = env_lock();
         let expected = default_workspace_root().to_string_lossy().to_string();
         assert_eq!(resolve_project_root_or_default(""), expected);
         assert_eq!(resolve_project_root_or_default("   \t "), expected);
@@ -561,6 +573,7 @@ mod tests {
 
     #[test]
     fn test_session_workspace_dir_only_for_default() {
+        let _g = env_lock();
         let root = default_workspace_root();
         // 默认空间：会话子目录；非默认项目：返回项目根本身。
         assert_eq!(
@@ -573,6 +586,7 @@ mod tests {
 
     #[test]
     fn test_ensure_session_workspace_creates_only_for_default() {
+        let _g = env_lock();
         let root = default_workspace_root();
         let dir = ensure_session_workspace(&root, "ses-xyz").expect("default workspace ensure");
         assert!(dir.is_dir());

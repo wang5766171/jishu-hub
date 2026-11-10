@@ -47,6 +47,8 @@ export interface SessionSelectionDeps {
   setTaskLaunchReadOnly: (v: boolean) => void;
   taskLaunchOpenRef: RefObject<boolean>;
   taskLaunchPhaseRef: RefObject<TaskLaunchPhase>;
+  /** 需求9 #4 补：任务首条 goal（mark_session 建实例即写标题用）。 */
+  taskLaunchGoalRef: RefObject<string | null>;
   activeTaskInstanceIdRef: RefObject<string | null>;
   activeTaskRequirementFileRef: RefObject<string | null>;
   lastKnownStatusRef: RefObject<string | null>;
@@ -80,6 +82,7 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
     setTaskLaunchReadOnly,
     taskLaunchOpenRef,
     taskLaunchPhaseRef,
+    taskLaunchGoalRef,
     activeTaskInstanceIdRef,
     activeTaskRequirementFileRef,
     lastKnownStatusRef,
@@ -124,6 +127,9 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
     }
     // 首条消息：以 /jishu-task 命令激活 conductor 扩展，由其驱动 discuss→plan→execute。
     // domain 默认 dev（Batch 4 增加 research 后可由 UI 选择）。
+    // 需求9 #4 补：捕获纯 goal——mark_session 建实例即写标题（单步任务
+    // agent 不调 update_steps，步骤上报链不触发）。
+    taskLaunchGoalRef.current = message;
     return `/jishu-task dev ${message}`;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

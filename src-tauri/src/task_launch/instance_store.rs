@@ -258,8 +258,17 @@ pub fn mark_task_session(
 
     instance.skill_id = skill_id.to_string();
     instance.updated_at = now;
-    if let Some(title) = title.map(str::trim).filter(|v| !v.is_empty()) {
-        instance.title = title.to_string();
+    // 需求9 #4 补：mark 时前端传首条 goal（单步任务步骤上报链不触发）——
+    // 截 40 字符与 runner_update_steps 的覆盖口径一致；仅默认标题时写
+    // （用户重命名不回写，同 runner_update_steps 语义）。
+    if let Some(title) = title
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.chars().take(40).collect::<String>())
+    {
+        if instance.title == DEFAULT_TASK_TITLE {
+            instance.title = title;
+        }
     }
     instance.task_session_id = Some(session_id.to_string());
 

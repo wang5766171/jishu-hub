@@ -324,6 +324,10 @@ export function ChatPage({
   const activeIdRef = useRef<string | null>(activeId);
   const taskLaunchOpenRef = useRef(taskLaunchOpen);
   const taskLaunchPhaseRef = useRef<TaskLaunchPhase>(taskLaunchPhase);
+  // 需求9 #4 补：任务首条 goal（prepareTaskLaunchMessage 包装时捕获）——
+  // mark_session 建实例即写入标题（单步小任务 agent 不调 update_steps，
+  // 步骤上报链不触发，标题会停在默认「新任务」）。
+  const taskLaunchGoalRef = useRef<string | null>(null);
   // 阶段标签自动跟随：跟踪上次 current_phase（数据源为 refreshTaskLaunchSessions 的 3s
   // 轮询）。follow effect 据此前进检测；守卫 taskLaunchPhase===prev 同时防跨任务误跟随
   // 与打断手动回看。
@@ -600,6 +604,7 @@ export function ChatPage({
     setTaskLaunchReadOnly,
     taskLaunchOpenRef,
     taskLaunchPhaseRef,
+    taskLaunchGoalRef,
     activeTaskInstanceIdRef,
     activeTaskRequirementFileRef,
     lastKnownStatusRef,
@@ -1919,6 +1924,7 @@ export function ChatPage({
         supportsSteerRef,
         taskLaunchOpenRef,
         taskLaunchPhaseRef,
+        taskLaunchGoalRef,
         visitedSessions,
         setLiveThinkingLevel,
         setOptimisticSessions,
