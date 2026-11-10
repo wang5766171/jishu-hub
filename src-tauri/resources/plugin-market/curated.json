@@ -34,7 +34,7 @@
     { "id": "session.navigation", "kind": "composed", "title": "会话导航列", "description": "左缘快速跳转到每轮提问位置", "category": "session", "scenes": [], "required": false },
     { "id": "session.tool-stats", "kind": "composed", "title": "工具统计", "description": "统计本会话工具调用总数、失败数与分布", "category": "session", "scenes": [], "required": false },
     { "id": "session.desktop-notify", "kind": "composed", "title": "桌面通知", "description": "回合完成、需审批、任务失败时发系统通知（窗口失焦时也通知）", "category": "session", "scenes": [], "required": false },
-    { "id": "session.task-board", "kind": "composed", "title": "任务看板", "description": "任务节点实时状态、点击钻入子任务会话、画布与取消流程", "category": "session", "scenes": [], "required": false },
+    { "id": "session.task-board", "kind": "composed", "title": "任务看板", "description": "任务步骤实时状态（含单对话流任务步骤灯）、点击钻入子任务会话、画布与取消流程——会话流步骤呈现的唯一载体，必装", "category": "session", "scenes": [], "required": true },
     { "id": "session.interaction-render", "kind": "composed", "title": "交互问答卡", "description": "把交互问答块渲染成统一样式的卡片，含选项与已选高亮", "category": "render", "scenes": [], "required": false },
     { "id": "session.usage", "kind": "builtin-ts", "title": "用量成本面板", "description": "显示 token、成本、会话排行与趋势", "category": "session", "scenes": [], "required": false }
   ]

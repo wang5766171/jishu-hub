@@ -230,6 +230,12 @@ export interface TaskPanelContext {
   /** 当前钻入的子任务会话节点（无选中为 null）——看板高亮用。
    * 可选字段：插件与内核独立演进（版本错位容错），缺失时看板不高亮。 */
   selectedNodeId?: string | null;
+  /** v0.9.7 需求2 收版反馈 F：无图单对话流（runner）任务——nodes 为步骤清单
+   * （stages_json 映射，无子会话不可钻入），看板据此隐藏主会话入口/禁用
+   * 点击并呈现步骤灯。 */
+  runnerMode?: boolean;
+  /** runnerMode 下的待答问题（ask_user 同步；非 runnerMode 恒空）。 */
+  pendingQuestion?: string | null;
   /** 钻入子任务会话；null = 取消选择（主区回退任务阶段会话/主会话）。 */
   onSelectNode(nodeId: string | null): void;
   /** 打开全屏流程画布（高级视图）。 */

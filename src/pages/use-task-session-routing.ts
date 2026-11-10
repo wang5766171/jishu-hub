@@ -13,7 +13,7 @@ import type { AlertDialogOptions, ConfirmDialogOptions } from "@/components/ui/c
 import type { Message } from "@/types";
 import type { ChatInputHandle } from "@/components/sessions/chat-input";
 import type { GraphSnapshot } from "@/features/task-instance/graph/use-task-graph";
-import type { TaskLaunchInstanceSummary } from "@/features/task-instance/types";
+import { parseRunnerCard, type TaskLaunchInstanceSummary } from "@/features/task-instance/types";
 import type {
   TaskPanelContext,
   TaskPanelNode,
@@ -275,16 +275,33 @@ export function useTaskSessionRouting(deps: TaskSessionRoutingDeps) {
     const snapshot = taskGraph.snapshot;
     const nodeRuns = taskGraph.nodeRuns;
     if (!snapshot) {
+      // v0.9.7 需求2 收版反馈 F：无图单对话流（runner）任务——步骤清单
+      //（stages_json）映射为看板节点（状态映射到看板灯语言；无子会话
+      // 不可钻入），会话流不再渲染步骤卡（呈现唯一载体=任务看板）。
+      const runnerCard = parseRunnerCard(activeTaskLaunchInstance.stages_json);
+      const RUNNER_STATUS: Record<string, string> = {
+        todo: "ready",
+        running: "running",
+        done: "succeeded",
+        failed: "failed",
+      };
+      const runnerNodes: TaskPanelNode[] = runnerCard.steps.map((step) => ({
+        nodeId: step.id,
+        title: step.title,
+        status: RUNNER_STATUS[step.status] ?? "ready",
+      }));
       return {
         taskId: activeTaskLaunchInstance.task_id,
         title: activeTaskLaunchInstance.title,
         phase: "run",
         runStatus: taskGraph.runStatus ?? null,
-        completed: 0,
-        total: 0,
-        nodes: [],
+        completed: runnerNodes.filter((n) => n.status === "succeeded" || n.status === "failed").length,
+        total: runnerNodes.length,
+        nodes: runnerNodes,
         nodeSessions: [],
         selectedNodeId: taskSelectedNodeId,
+        runnerMode: true,
+        pendingQuestion: runnerCard.pendingQuestion?.question ?? null,
         onSelectNode: handleTaskSelectNode,
         onOpenCanvas: () => setTaskBoardSignal((n) => n + 1),
         onCancelRun: handleTaskCancelRun,
