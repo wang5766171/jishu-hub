@@ -37,6 +37,18 @@ interface PreviewKindResult {
   kind: "html" | "image" | "markdown" | "text" | "unsupported";
 }
 
+/** 需求6 反馈（2026-11-11 用户实测）：模型常把链接目标里的非 ASCII 文件名
+ * 写成 percent-编码形态（`…/%E6%8E%92%E6%9F%A5….md`）——打开校验拿编码串
+ * 当文件名必「文件不存在」。路径消费统一先解码（非法编码序列保留原串，
+ * 显示名 artifactDisplayName 同款语义）。 */
+export function decodeArtifactRel(rel: string): string {
+  try {
+    return decodeURIComponent(rel);
+  } catch {
+    return rel;
+  }
+}
+
 /** 需求9 #2 兜底：CommonMark 链接目标解析会吞「反斜杠+ASCII 标点」里的
  * 反斜杠——`C:\Users\name\.jishu-hub\tasks\…` 被解析成 `name.jishu-hub`
  *（分隔符消失，文件必不存在；生成侧已加正斜杠约束治新链，此处救存量
@@ -57,7 +69,7 @@ export async function openArtifactReference(
   href: string,
   ctx: SessionArtifactCtx,
 ): Promise<{ ok: boolean; error?: string }> {
-  let rel = href.slice(ARTIFACT_SCHEME.length);
+  let rel = decodeArtifactRel(href.slice(ARTIFACT_SCHEME.length));
   if (!rel) return { ok: false, error: "empty" };
   rel = repairEatenSeparator(rel);
   let projectPath = ctx.projectPath;
@@ -115,19 +127,14 @@ interface ArtifactLinkProps extends React.AnchorHTMLAttributes<HTMLAnchorElement
  * 文本即 URL（或空）→ 只显示文件名（末段，URL 解码）；模型写了人话标题
  *（如「打开 设计效果图」）→ 原样保留。 */
 export function artifactDisplayName(href: string, childrenText: string): string {
-  const rel = href.slice(ARTIFACT_SCHEME.length);
+  const rel = decodeArtifactRel(href.slice(ARTIFACT_SCHEME.length));
   const trimmed = childrenText.trim();
   const textIsUrl =
     !trimmed ||
     trimmed.includes(ARTIFACT_SCHEME) ||
     trimmed.replace(/^[^\w\u4e00-\u9fa5]+\s*/, "") === rel;
   if (!textIsUrl) return trimmed;
-  const lastSeg = rel.split(/[\\/]/).filter(Boolean).pop() ?? rel;
-  try {
-    return decodeURIComponent(lastSeg);
-  } catch {
-    return lastSeg;
-  }
+  return rel.split(/[\\/]/).filter(Boolean).pop() ?? rel;
 }
 
 /** react-markdown `a` 覆写：artifact 协议拦截，其余默认。 */
@@ -145,7 +152,8 @@ export function ArtifactLink({ href, children, className, ...rest }: ArtifactLin
     );
   }
 
-  const rel = href.slice(ARTIFACT_SCHEME.length);
+  // 悬停显示解码后的可读路径（需求6 反馈：编码串不可读）。
+  const rel = decodeArtifactRel(href.slice(ARTIFACT_SCHEME.length));
   const displayName = artifactDisplayName(href, typeof children === "string" ? children : "");
 
   const handleClick = async (event: React.MouseEvent<HTMLAnchorElement>) => {

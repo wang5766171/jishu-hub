@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { repairEatenSeparator, artifactDisplayName } from "./artifact-link";
+import { repairEatenSeparator, artifactDisplayName, decodeArtifactRel } from "./artifact-link";
+
+// 需求6 反馈（2026-11-11）：模型把链接目标中文文件名写成 percent-编码——
+// 路径消费（打开校验/悬停）统一解码；非法编码序列保留原串不抛错。
+describe("decodeArtifactRel", () => {
+  it("中文 percent-编码解码为明文路径", () => {
+    expect(decodeArtifactRel("tasks/draft/out/%E6%8E%92%E6%9F%A5%E6%8A%A5%E5%91%8A.md"))
+      .toBe("tasks/draft/out/排查报告.md");
+  });
+
+  it("明文/混合路径原样（无需解码）", () => {
+    expect(decodeArtifactRel("tasks/draft/ok.txt")).toBe("tasks/draft/ok.txt");
+    expect(decodeArtifactRel("tasks/a%20b/c.md")).toBe("tasks/a b/c.md");
+  });
+
+  it("非法编码序列（孤立 %）不抛错、保留原串", () => {
+    expect(decodeArtifactRel("tasks/100%/report.md")).toBe("tasks/100%/report.md");
+  });
+});
 
 // 需求9 #2：CommonMark 吞「反斜杠+标点」反斜杠的存量坏链修复（启发式：
 // 非分隔符字符粘连 .jishu-hub = 被吞形态，插回反斜杠）。
