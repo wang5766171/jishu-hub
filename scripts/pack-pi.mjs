@@ -308,12 +308,16 @@ console.log(`pi-runtime.zip ready: ${statSync(piRuntimeZip).size} bytes`);
 
 console.log("pi-bundle preparation complete!");
 
-// v0.9.7 需求1 T1：pi-bundle → pi-runtime.zip（deflate level 9；白名单内容）。
+// v0.9.7 需求1 T1 + 反馈二轮：pi-bundle → pi-runtime.zip（**store 级=纯容器**）。
 // 失败必须大声失败（同 runStep 纪律）。
+// 压缩分工（实测数据）：zip 分文件 deflate 对同一内容 79.7MB，NSIS lzma
+// 固体压缩 43.0MB——zip 预压会让 NSIS 对已压数据几乎无收益（安装包 91.7MB
+// 的主因）。故 zip 只做容器（store，首启解压=纯拷贝更快），压缩完全交给
+// NSIS lzma（0.9.6 直排时代同款管线，包体回到 ~60MB 水平）。
 async function packRuntimeZip(bundleDir, zipPath, keepPackages) {
   if (existsSync(zipPath)) rmSync(zipPath, { force: true });
   const output = createWriteStream(zipPath);
-  const archive = archiver("zip", { zlib: { level: 9 } });
+  const archive = archiver("zip", { store: true });
   const fail = new Promise((_, reject) => {
     output.on("error", reject);
     archive.on("error", reject);
