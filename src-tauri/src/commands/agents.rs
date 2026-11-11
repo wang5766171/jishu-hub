@@ -557,6 +557,15 @@ pub(crate) fn plugin_preconnect_focus(
     })
 }
 
+/// v0.9.7 需求12 补充（用户裁决）：关闭标签/无焦点项目时显式清空预连接池
+///（幂等——随后的焦点切换会按新标签重建；主路径已由切换链覆盖，此处为
+/// 显式释放语义+空态兜底）。
+#[tauri::command]
+pub(crate) fn plugin_preconnect_clear() -> Result<(), String> {
+    crate::preconnect::shutdown_all("tab-closed");
+    Ok(())
+}
+
 /// manifest.info.id 必须等于 plugin_id——文件名/会话归属/启停配置都以 id
 /// 为 key，改名等于换插件，请卸载后新建）。
 /// 源码读取结果（需求14 M4 R8：前端 fetch 插件文件会被 CSP connect-src 拦

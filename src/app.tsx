@@ -687,8 +687,12 @@ useEffect(() => {
 
   // v0.9.7 需求12：预连接焦点跟随——当前标签项目变化（含启动首次恢复）即
   // 声明焦点；Rust 池幂等（同项目只补缺口，切换杀旧建新，禁用即杀全）。
+  // 补充（关闭标签释放）：无焦点项目（空态）时清空池——不留孤儿进程。
   useEffect(() => {
-    if (!currentProject?.path) return;
+    if (!currentProject?.path) {
+      invokeCommand("plugin_preconnect_clear").catch(() => undefined);
+      return;
+    }
     invokeCommand("plugin_preconnect_focus", { projectPath: currentProject.path })
       .catch((e) => { if (import.meta.env.DEV) console.warn("preconnect focus failed:", e); });
   }, [currentProject?.path]);
@@ -731,6 +735,9 @@ useEffect(() => {
     if (!target) return;
     projectTabs.suppressPinOnce(cur.encoded_name);
     projectTabs.unpinProject(cur.encoded_name);
+    // 需求12 补充：关闭标签显式释放被关项目的预连接（幂等——被关项目是
+    // 当前焦点时本就随切换重建，此处保证「关闭=释放」语义直接成立）。
+    invokeCommand("plugin_preconnect_clear").catch(() => undefined);
     const last = projectTabs.lastSession[prevEnc];
     handleTabSwitchToProject(target, last?.sessionId ?? null, last?.agentId ?? null);
   }, [currentProject, projects, projectTabs, handleTabSwitchToProject]);

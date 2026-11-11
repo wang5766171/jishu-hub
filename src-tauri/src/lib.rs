@@ -550,6 +550,7 @@ pub fn run() {
             commands::agents::plugin_config_get_all,
             commands::agents::plugin_config_set,
             commands::agents::plugin_preconnect_focus,
+            commands::agents::plugin_preconnect_clear,
             commands::sessions::session_model_get,
             commands::sessions::session_model_set,
             chat::edit_last_user_message,
