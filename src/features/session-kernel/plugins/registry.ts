@@ -18,6 +18,7 @@ import { artifactsPlugin } from "./builtin/artifacts";
 import { streamStatusPlugin } from "./builtin/stream-status";
 import { contextRingPlugin } from "./builtin/context-ring";
 import { todoBoardPlugin } from "./builtin/todo-board";
+import { agentPreconnectPlugin } from "./builtin/agent-preconnect";
 import type { SessionPluginDescriptor } from "./types";
 
 /**
@@ -43,6 +44,9 @@ const BUILTIN_SESSION_PLUGINS: SessionPluginDescriptor[] = [
   // 注意它**不进后端 builtin_session_plugin_specs**（无独立管理条目）：
   // 用户层面与 rpiv-todo 是一个「待办」插件（见 SESSION_PLUGIN_PROXY）。
   todoBoardPlugin,
+  // v0.9.7 需求12：Agent 预连接池——引擎级插件（实现于 Rust preconnect.rs，
+  // mounts 为空），此处描述符承担插件中心开关/配置面（maxPool 池深）。
+  agentPreconnectPlugin,
 ];
 
 /** v0.9.5 需求12：会话插件启用态代理映射——插件 id → 代理条目 id（插件

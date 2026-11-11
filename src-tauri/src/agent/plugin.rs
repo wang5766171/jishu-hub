@@ -362,6 +362,10 @@ pub fn builtin_session_plugin_specs() -> &'static [(&'static str, &'static str)]
         // v0.9.3 需求8：上下文水位环——自 chat-page 内置渲染迁移为插件
         //（composer-trailing 挂载点首插件，ctx 压缩命令面）。
         ("session.context-ring", "上下文水位环"),
+        // v0.9.7 需求12：jishu agent 预连接池——无挂载的「引擎级」会话插件
+        //（开关=池总闸、配置面 maxPool=池深）；实现全在 Rust（preconnect.rs），
+        // 前端描述符仅承担管理面（开关/配置/详情），mounts 为空。
+        ("session.agent-preconnect", "Agent 预连接"),
     ]
 }
 

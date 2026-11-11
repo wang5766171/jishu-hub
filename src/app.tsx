@@ -685,6 +685,14 @@ useEffect(() => {
     prevProjectRef.current = currentProject ?? null;
   }, [currentProject, projectTabs]);
 
+  // v0.9.7 需求12：预连接焦点跟随——当前标签项目变化（含启动首次恢复）即
+  // 声明焦点；Rust 池幂等（同项目只补缺口，切换杀旧建新，禁用即杀全）。
+  useEffect(() => {
+    if (!currentProject?.path) return;
+    invokeCommand("plugin_preconnect_focus", { projectPath: currentProject.path })
+      .catch((e) => { if (import.meta.env.DEV) console.warn("preconnect focus failed:", e); });
+  }, [currentProject?.path]);
+
   // v0.9.6 需求4：标题栏项目标签切换——复刻 floating-restore 模式
   //（上方 floating-restore 处理器先例）：直接 setCurrentProject + 定位
   // 会话，不经管理页中转（ChatPage 不卸载，事件管线持续存活，跨项目流式

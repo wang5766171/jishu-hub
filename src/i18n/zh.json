@@ -1454,6 +1454,10 @@
       "streaming": "生成中",
       "retrying": "重试"
     },
+    "agentPreconnect": {
+      "name": "Agent 预连接",
+      "description": "对当前标签项目预启动 jishu agent 进程，新对话首连免冷启动等待（跟随标签切换，仅对新会话生效）"
+    },
     "interaction": {
       "name": "交互问答卡",
       "description": "消息中交互问答块的卡片化渲染",

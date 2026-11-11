@@ -24,7 +24,9 @@ mod orchestrator;
 // v0.9.6 需求6 F3：用户消息发送受理即落盘（pending_messages.db）。
 pub mod os_adapter;
 mod pending_messages;
+// v0.9.7 需求12：jishu agent 预连接池（内置插件 session.agent-preconnect）。
 mod pi_rpc_runtime;
+mod preconnect;
 mod process_command;
 mod process_control;
 mod project;
@@ -501,6 +503,7 @@ pub fn run() {
             commands::agents::plugin_update,
             commands::agents::plugin_config_get_all,
             commands::agents::plugin_config_set,
+            commands::agents::plugin_preconnect_focus,
             commands::agents::composed_plugin_manifests,
             commands::agents::composed_plugin_save,
             commands::agents::composed_plugin_delete,
@@ -656,6 +659,13 @@ pub fn run() {
             commands::models::test_model,
             commands::models::test_llm_connection,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // v0.9.7 需求12：带 RunEvent 回调运行——Exit 时杀光预连接池进程
+        //（池进程无连接循环看护，不清理会残留成孤儿 jishu agent 进程）。
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                preconnect::shutdown_all("app-exit");
+            }
+        });
 }

@@ -114,6 +114,11 @@ pub(crate) fn plugin_set_enabled(
     agent::plugin::set_plugin_enabled(&plugin_id, enabled)?;
     rebuild_registry(&app, &state);
     agent::plugin::clear_pending_confirm_marker(&plugin_id);
+    // v0.9.7 需求12：预连接插件开关联动（禁用即杀池/启用即重建）——非该
+    // 插件的启停也可能间接影响（registry 重建），统一走一次联动（幂等）。
+    let _ = with_app_state(&state, |s| {
+        crate::preconnect::on_settings_changed(&s.registry)
+    });
     log::info!(
         "[plugin] {} {}d (registry rebuilt)",
         plugin_id,
@@ -523,12 +528,33 @@ pub(crate) fn plugin_config_set(
     values: HashMap<String, serde_json::Value>,
 ) -> Result<(), String> {
     agent::plugin_options::set_values(&plugin_id, values)?;
+    // v0.9.7 需求12：预连接池深配置变更即时生效（补/缩/关）。
+    if let Some(state) = app.try_state::<Mutex<AppState>>() {
+        let _ = with_app_state(&state, |s| {
+            crate::preconnect::on_settings_changed(&s.registry)
+        });
+    }
     use tauri::Emitter;
     let _ = app.emit(
         "plugins-config-changed",
         serde_json::json!({ "pluginId": plugin_id }),
     );
     Ok(())
+}
+
+/// v0.9.7 需求12：预连接焦点声明（前端启动/切标签触发，幂等）——对当前
+/// 焦点标签项目维持 jishu agent 预连接池（深浅/开关跟随插件配置）。
+#[tauri::command]
+pub(crate) fn plugin_preconnect_focus(
+    state: tauri::State<'_, Mutex<AppState>>,
+    project_path: String,
+) -> Result<(), String> {
+    if project_path.trim().is_empty() {
+        return Ok(());
+    }
+    with_app_state(&state, |s| {
+        crate::preconnect::ensure_focus(&s.registry, &project_path);
+    })
 }
 
 /// manifest.info.id 必须等于 plugin_id——文件名/会话归属/启停配置都以 id

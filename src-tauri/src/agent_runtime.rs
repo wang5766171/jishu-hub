@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use serde_json::json;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::ChildStdin;
 
@@ -117,12 +117,19 @@ pub fn acp_turn_signature(prepared: &PreparedGuiTurn) -> Option<String> {
     let PreparedGuiTurn::Acp(acp) = prepared else {
         return None;
     };
+    acp_command_signature(&acp.command)
+}
+
+/// v0.9.7 需求12：command 级启动签名（`acp_turn_signature` 的底层——
+/// 预连接池持有 AcpCommandSpec（无 PreparedGuiTurn 包装）时直接计算，
+/// 归一规则与回合签名完全一致（同一把尺子，池条目与真实回合可互比）。
+pub fn acp_command_signature(command: &crate::agent::AcpCommandSpec) -> Option<String> {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(acp.command.program.as_bytes());
+    hasher.update(command.program.as_bytes());
     hasher.update(b"\x00args\x00");
     let mut skip_next = false;
-    for arg in &acp.command.args {
+    for arg in &command.args {
         if skip_next {
             skip_next = false;
             continue;
@@ -132,10 +139,10 @@ pub fn acp_turn_signature(prepared: &PreparedGuiTurn) -> Option<String> {
             continue;
         }
         hasher.update(arg.as_bytes());
-        hasher.update(b"");
+        hasher.update(b"");
     }
     hasher.update(b"\x00envs\x00");
-    let mut envs: Vec<&(String, String)> = acp.command.envs.iter().collect();
+    let mut envs: Vec<&(String, String)> = command.envs.iter().collect();
     envs.sort();
     for (key, value) in envs {
         if key == "JISHU_SESSION_ID" {
@@ -144,9 +151,33 @@ pub fn acp_turn_signature(prepared: &PreparedGuiTurn) -> Option<String> {
         hasher.update(key.as_bytes());
         hasher.update(b"=");
         hasher.update(value.as_bytes());
-        hasher.update(b"");
+        hasher.update(b"");
     }
     Some(format!("{:x}", hasher.finalize()))
+}
+
+/// v0.9.7 需求12：AcpCommandSpec → tokio 进程构造（stdin/stdout/stderr 全
+/// piped、no-window、用户级 PATH 补全）。`start_gui_acp_turn` 与预连接池
+/// 共用——保证池中进程与真实回合进程的启动形态逐字节一致（cwd 除外，
+/// 由调用方传入）。
+pub fn build_tokio_command_from_spec(
+    spec: &crate::agent::AcpCommandSpec,
+    cwd: &str,
+) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(&spec.program);
+    command.args(&spec.args).current_dir(cwd);
+    for (key, value) in &spec.envs {
+        command.env(key, value);
+    }
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        crate::process_command::tokio_no_window(&mut command);
+    }
+    crate::process_command::extend_path_for_child_tokio(&mut command);
+    command
 }
 
 pub fn transport_for_agent(
@@ -410,33 +441,24 @@ where
     Finish: FnOnce() + Send + 'static,
     Resolve: Fn(&str) + Send + Sync + 'static,
 {
-    let mut command = tokio::process::Command::new(&turn.command.program);
-    command
-        .args(&turn.command.args)
-        .current_dir(&turn.project_path);
-    for (key, value) in &turn.command.envs {
-        command.env(key, value);
-    }
-    command.stdin(std::process::Stdio::piped());
-    command.stdout(std::process::Stdio::piped());
-    command.stderr(std::process::Stdio::piped());
+    let mut command = build_tokio_command_from_spec(&turn.command, &turn.project_path);
 
-    // Transport selection based on adapter surface, not hardcoded agent id.
-    #[cfg(target_os = "windows")]
-    {
-        crate::process_command::tokio_no_window(&mut command);
-    }
-    // v0.7.0：补充用户级 PATH（npm 全局 bin、~/.local/bin 等），
-    // 确保 dev/release 都能找到 codex/claude/claude-agent-acp 等 CLI。
-    crate::process_command::extend_path_for_child_tokio(&mut command);
-
-    let child = command.spawn().map_err(|e| {
-        format!(
-            "Failed to spawn {} {}: {e}",
-            turn.agent_id,
-            turn.transport.as_str()
-        )
-    })?;
+    // v0.9.7 需求12：预连接接管——新会话首连（jishu-self、PiRpc、无
+    // native_session_id）优先从预连接池取现成进程，跳过冷启动（扩展装载/
+    // MCP 连接已在池中完成）。resume/fork 轮（--session-id 定死于启动参数）
+    // 与其余 transport 不接管。
+    let reused = crate::preconnect::take_for_turn(&turn);
+    let took_preconnect = reused.is_some();
+    let child = match reused {
+        Some(child) => child,
+        None => command.spawn().map_err(|e| {
+            format!(
+                "Failed to spawn {} {}: {e}",
+                turn.agent_id,
+                turn.transport.as_str()
+            )
+        })?,
+    };
     let pid = child.id().unwrap_or(0);
     let sid = turn
         .gui_session_id
@@ -461,6 +483,18 @@ where
         pid,
         turn.project_path
     );
+
+    // v0.9.7 需求12：预连接用掉即补——保持池深（「用掉的不算」语义）。焦点
+    // 已切走时 ensure_focus 内部按当前 focus 自行裁决（不补旧项目）。
+    // 注意 manage 的类型是 Mutex<AppState>（try_state 按 exact type 查，
+    // 写 AppState 运行时恒 None——dev 实测曾因此 refill 静默不触发）。
+    if took_preconnect {
+        if let Some(state) = app.try_state::<std::sync::Mutex<crate::AppState>>() {
+            if let Ok(s) = state.lock() {
+                crate::preconnect::ensure_focus(&s.registry, &turn.project_path);
+            }
+        }
+    }
 
     // Dispatch to the transport's runtime:
     // - PiRpc         → Pi native `--mode rpc` protocol (JSON-line).

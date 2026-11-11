@@ -1454,6 +1454,10 @@
       "streaming": "Streaming",
       "retrying": "Retrying"
     },
+    "agentPreconnect": {
+      "name": "Agent Preconnect",
+      "description": "Pre-spawn jishu agent processes for the current tab's project so the first message of a new chat skips cold start (follows tab switches, new sessions only)"
+    },
     "interaction": {
       "name": "Interaction Cards",
       "description": "Card rendering for interaction blocks",
