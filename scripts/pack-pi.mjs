@@ -243,18 +243,74 @@ if (missing.length > 0) {
 console.log(`All ${Object.keys(runtimeDeps).length} runtime dependencies present.`);
 
 // 8. v0.9.7 需求1 T1：压成单文件 pi-runtime.zip（NSIS 解 2 万文件 → 解 1 个 zip；
-//    首启由 Rust ensure_agent_runtime 解压安装）。zip 根 = pi-bundle 内容本身
-//    （packages/ bin/ node_modules/ package.json …），排除构建标记。
-console.log("Packing pi-runtime.zip...");
+//    首启由 Rust ensure_agent_runtime 解压安装）。
+//
+//    需求1 反馈（2026-11-12 用户实测：包 58MB→113MB）：pi 上游 v1.5.0 触发
+//    全量重打包后，pi-bundle 是 workspace 全仓库形态——node_modules 含全部
+//    16 个子包的 hoisted 依赖（158MB，runtime 清单仅 28 项）、packages/ 与
+//    node_modules/@earendil-works/* 是同一批实体的两份拷贝。zip 改**白名单**
+//    打包（pi-bundle 目录不动——增量守卫照旧）：
+//    - bin/（内嵌 node）
+//    - node_modules/<runtime-deps 闭包>（直接清单 + BFS 传递/peer 依赖）
+//    - node_modules/@earendil-works/*（workspace 实体——subagent 散模块
+//      import 走这里）
+//    - packages/coding-agent/dist（bundle 入口按此路径启动）+ fixShebang 后
+//    - packages/ai/dist/providers/data（模型数据，构建守卫同款路径）
+//    - package.json（workspace 元数据，兜底解析）
 const piRuntimeZip = resolve(root, "third_party", "pi-runtime.zip");
-await packRuntimeZip(piBundle, piRuntimeZip);
+
+// 闭包起点：runtime-deps 直接清单 ∪ @earendil-works/*（实体包自身的依赖同样 hoisted）。
+// 排除 @earendil-works/pi-coding-agent 实体：全源码树仅 examples/ 引用它
+//（运行时入口=packages/coding-agent/dist/bundle 路径，subagent 散模块只
+// import pi-tui/pi-ai/pi-agent-core/pi-mcp/pi-codemode——import 统计为据）；
+// 与 packages/coding-agent 同一份 28.6MB，打 zip 一次即可。
+const closureSeeds = new Set(Object.keys(runtimeDeps));
+const nmDir = join(piBundle, "node_modules");
+for (const scope of ["@earendil-works"]) {
+  const scopeDir = join(nmDir, scope);
+  if (!existsSync(scopeDir)) continue;
+  for (const pkg of readdirSync(scopeDir)) {
+    if (scope === "@earendil-works" && pkg === "pi-coding-agent") continue;
+    closureSeeds.add(`${scope}/${pkg}`);
+  }
+}
+
+// BFS 传递闭包（dependencies + optionalDependencies + peerDependencies——
+// hoisted 布局下都在 node_modules 顶层；宁多勿漏：漏 = 运行时
+// ERR_MODULE_NOT_FOUND（历史空包事故教训），多 = 体积小损）。
+const keepPackages = new Set();
+const queue = [...closureSeeds];
+while (queue.length > 0) {
+  const name = queue.pop();
+  if (keepPackages.has(name)) continue;
+  const pkgJson = join(nmDir, name, "package.json");
+  if (!existsSync(pkgJson)) continue; // 清单声明但未安装（verify 步骤已拦必需项）
+  keepPackages.add(name);
+  let deps = {};
+  try {
+    deps = JSON.parse(readFileSync(pkgJson, "utf-8"));
+  } catch {
+    continue;
+  }
+  for (const dep of [
+    ...Object.keys(deps.dependencies ?? {}),
+    ...Object.keys(deps.optionalDependencies ?? {}),
+    ...Object.keys(deps.peerDependencies ?? {}),
+  ]) {
+    if (!keepPackages.has(dep)) queue.push(dep);
+  }
+}
+console.log(`Runtime closure: ${keepPackages.size} packages (from ${closureSeeds.size} seeds + transitive).`);
+
+console.log("Packing pi-runtime.zip...");
+await packRuntimeZip(piBundle, piRuntimeZip, keepPackages);
 console.log(`pi-runtime.zip ready: ${statSync(piRuntimeZip).size} bytes`);
 
 console.log("pi-bundle preparation complete!");
 
-// v0.9.7 需求1 T1：pi-bundle → pi-runtime.zip（deflate；排除 .pi-build-stamp）。
+// v0.9.7 需求1 T1：pi-bundle → pi-runtime.zip（deflate level 9；白名单内容）。
 // 失败必须大声失败（同 runStep 纪律）。
-async function packRuntimeZip(bundleDir, zipPath) {
+async function packRuntimeZip(bundleDir, zipPath, keepPackages) {
   if (existsSync(zipPath)) rmSync(zipPath, { force: true });
   const output = createWriteStream(zipPath);
   const archive = archiver("zip", { zlib: { level: 9 } });
@@ -263,12 +319,17 @@ async function packRuntimeZip(bundleDir, zipPath) {
     archive.on("error", reject);
   });
   archive.pipe(output);
-  // dot: true 确保 .bin/.npmrc 等隐藏项入包；ignore 排除构建标记。
-  archive.glob("**/*", {
-    cwd: bundleDir,
-    dot: true,
-    ignore: [".pi-build-stamp", "**/.pi-build-stamp"],
-  });
+  // 白名单 glob 集（根目录逐项打包；dot: true 保 hidden 项）。
+  const patterns = [
+    "bin/**",
+    "package.json",
+    "packages/coding-agent/dist/**",
+    "packages/ai/dist/providers/data/**",
+    ...[...keepPackages].map((p) => `node_modules/${p}/**`),
+  ];
+  for (const pattern of patterns) {
+    archive.glob(pattern, { cwd: bundleDir, dot: true });
+  }
   const done = new Promise((resolveDone, reject) => {
     output.on("close", resolveDone);
     output.on("error", reject);
