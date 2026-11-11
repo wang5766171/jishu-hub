@@ -130,7 +130,9 @@ export function ProjectTabs({
             draggable
             onDragStart={e => {
               dragEnc.current = enc;
-              e.dataTransfer.effectAllowed = "move";
+              // jsdom（vitest）的合成 DragEvent 无 dataTransfer——可选链防
+              // unhandled error（真浏览器恒有，此处仅测试环境卫生）。
+              if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
             }}
             onDragOver={e => e.preventDefault()}
             onDrop={e => {
