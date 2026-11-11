@@ -527,6 +527,10 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
   // 需求13：流式中原位编辑（回复过程中可编辑本条——停止回复并重发）。
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  // 需求13 样式反馈：编辑框钉住气泡原宽（textarea 固有默认宽会撑窄自适应
+  // 气泡），编辑框透明无边框继承气泡文字样式。
+  const bubbleRef = useRef<HTMLDivElement | null>(null);
+  const [editWidth, setEditWidth] = useState<number | null>(null);
   const display = stripImagePrompt(text) || (text.includes("JISHU_HUB_IMAGES") ? t("sessions.imageOnlyBubble", "📎 发送了附件") : text);
   return (
     <div className="w-full flex justify-end" data-user-message="true">
@@ -534,7 +538,11 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
         <div className="flex items-center gap-2 mb-0.5 text-[11px]">
           <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
         </div>
-        <div className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full" style={{ fontSize: "var(--font-size-prose)" }}>
+        <div
+          ref={bubbleRef}
+          style={editing && editWidth ? { width: Math.max(editWidth, 260) } : undefined}
+          className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full"
+        >
           {editing ? (
             <div className="flex flex-col gap-2" onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -549,7 +557,7 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 rows={Math.min(10, Math.max(2, draft.split("\n").length + 1))}
-                className="w-full resize-none rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground outline-none focus:ring-1 focus:ring-primary"
+                className="w-full resize-none rounded-md bg-transparent px-1 py-0.5 font-[inherit] text-[inherit] leading-normal outline-none focus:ring-1 focus:ring-primary/60"
               />
               <div className="flex justify-end gap-1.5">
                 <button
@@ -582,6 +590,7 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
             type="button"
             onClick={(e) => {
               e.stopPropagation();
+              if (bubbleRef.current) setEditWidth(bubbleRef.current.offsetWidth);
               setDraft(stripImagePrompt(text) || text);
               setEditing(true);
             }}

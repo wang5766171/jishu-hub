@@ -587,6 +587,12 @@ function UserBubble({
   // 需求13：原位编辑态（zcode 式——气泡内容替换为编辑框，Enter 确认/Esc 取消）。
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  // 需求13 样式反馈（2026-11-11 用户实测「编辑框变窄」）：textarea 固有默认
+  // 宽（~20 字符）会把自适应气泡撑窄——进入编辑时记录气泡原宽，编辑态容器
+  // 钉住原宽（min 260 保短消息可编辑），编辑框透明无边框继承气泡文字样式
+  //（「原样气泡变成可编辑」）。
+  const bubbleRef = useRef<HTMLDivElement | null>(null);
+  const [editWidth, setEditWidth] = useState<number | null>(null);
   // v0.9.0 需求3 方案 C：pill 数据源为首文本块的 tool_ids 元数据（回放由
   // 后端 extract_tool_snapshot 从注入块派生）；文本标记解析已废弃。
   const firstTextBlock = msg.content.find((b) => b.type === "text");
@@ -612,6 +618,8 @@ function UserBubble({
           </span>
         </div>
         <div
+          ref={bubbleRef}
+          style={editing && editWidth ? { width: Math.max(editWidth, 260) } : undefined}
           className={cn(
             "min-w-0 max-w-full space-y-1.5 rounded-xl px-3 py-2",
             isOrchestrator
@@ -635,7 +643,7 @@ function UserBubble({
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 rows={Math.min(10, Math.max(2, draft.split("\n").length + 1))}
-                className="w-full resize-none rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground outline-none focus:ring-1 focus:ring-primary"
+                className="w-full resize-none rounded-md bg-transparent px-1 py-0.5 font-[inherit] text-[inherit] leading-normal outline-none focus:ring-1 focus:ring-primary/60"
               />
               <div className="flex justify-end gap-1.5">
                 <button
@@ -722,6 +730,7 @@ function UserBubble({
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
+                if (bubbleRef.current) setEditWidth(bubbleRef.current.offsetWidth);
                 setDraft(displayText || copyText);
                 setEditing(true);
               }}
