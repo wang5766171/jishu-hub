@@ -81,8 +81,15 @@ pub use commands::agent_install::run_install_agent_cli;
 /// 自动切换到对应标签；反查失败回落仅 sessionId（原行为）。
 fn session_project_of(session_id: &str) -> Option<(String, String)> {
     let root = crate::agent::jishu_self::pi_session::pi_sessions_root().ok()?;
+    session_project_in_root(&root, session_id)
+}
+
+/// `session_project_of` 的纯函数核心（root 注入，tempdir 单测覆盖）：
+/// 扫 pi sessions 目录下 `--<encoded>--/<ts>_<session_id>.jsonl` 反查会话
+/// 所属项目。返回 (剥过包裹的 encoded, 解码路径)。
+fn session_project_in_root(root: &std::path::Path, session_id: &str) -> Option<(String, String)> {
     let suffix = format!("_{session_id}.jsonl");
-    for entry in std::fs::read_dir(&root).ok()?.flatten() {
+    for entry in std::fs::read_dir(root).ok()?.flatten() {
         let dir_name = entry.file_name().to_string_lossy().to_string();
         if !dir_name.starts_with("--") || !entry.path().is_dir() {
             continue;
@@ -94,8 +101,18 @@ fn session_project_of(session_id: &str) -> Option<(String, String)> {
             .flatten()
             .any(|f| f.file_name().to_string_lossy().ends_with(&suffix))
         {
-            let project_path = crate::project::decode_project_path(&dir_name);
-            return Some((dir_name, project_path));
+            // 需求10 收口（2026-11-11 用户实测回归）：pi 会话目录名带首尾包裹
+            // `--`（`--C--Users-...--`），而前端 projects[].encoded_name 是
+            // hub encode（`C--Users-...`，无包裹）——原样返回恒不匹配，前端
+            // find 静默失败=点击通知不切标签。剥去包裹再返回（decode 同用
+            // 剥过包裹的入参：带包裹名 find("--") 命中位置 0，盘符解析错位）。
+            let encoded = dir_name
+                .strip_prefix("--")
+                .and_then(|s| s.strip_suffix("--"))
+                .unwrap_or(&dir_name)
+                .to_string();
+            let project_path = crate::project::decode_project_path(&encoded);
+            return Some((encoded, project_path));
         }
     }
     None
@@ -123,6 +140,33 @@ fn handle_deep_link(app: &tauri::AppHandle, url: &str) {
             "projectPath": project_path,
         }),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 需求10 收口：pi 目录名剥首尾 `--` 包裹（与前端 encoded_name 同形）。
+    #[test]
+    fn session_project_in_root_strips_wrapper_dashes() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("--E--JishuTest--");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("2026-11-11T00-00-00-000Z_abc123.jsonl"), b"{}").unwrap();
+
+        let (encoded, path) = session_project_in_root(root.path(), "abc123").expect("found");
+        assert_eq!(
+            encoded, "E--JishuTest",
+            "encoded must match hub encode (no wrapper dashes)"
+        );
+        assert!(
+            path.starts_with("E:"),
+            "decoded path is a drive path: {path}"
+        );
+
+        // 其他会话 / 空目录不误报。
+        assert!(session_project_in_root(root.path(), "other").is_none());
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
