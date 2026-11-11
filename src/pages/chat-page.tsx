@@ -422,6 +422,7 @@ export function ChatPage({
   // ── 簇A 滚动系统（v0.9.7 需求2 补充：迁自本文件 use-chat-scroll，零逻辑变更）──
   const {
     scrollAction,
+    armScroll,
     isAwayFromBottomRef,
     isAwayFromBottom,
     activeTurnIndex,
@@ -603,6 +604,7 @@ export function ChatPage({
     scrollMemory,
     visitedSessions,
     scrollAction,
+    armScroll,
     newSessionStreamIdsRef,
     setTaskModeActive,
     setTaskLaunchOpen,

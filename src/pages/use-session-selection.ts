@@ -39,6 +39,8 @@ export interface SessionSelectionDeps {
   scrollMemory: RefObject<Map<string, number | "bottom">>;
   visitedSessions: RefObject<Set<string>>;
   scrollAction: RefObject<{ type: "bottom" } | { type: "restore"; top: number } | null>;
+  /** 需求9 补充3：指令投递时同步武装滚动遮蔽（定位完成前内容不上屏）。 */
+  armScroll: () => void;
   // 流式标记
   newSessionStreamIdsRef: RefObject<Set<string>>;
   // 任务态重置（切常规会话清任务选中）
@@ -76,6 +78,7 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
     scrollMemory,
     visitedSessions,
     scrollAction,
+    armScroll,
     newSessionStreamIdsRef,
     setTaskModeActive,
     setTaskLaunchOpen,
@@ -225,10 +228,12 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
     refreshSessionUsageRef.current?.(sessionId);
 
     if (isFirstVisit) {
+      armScroll();
       scrollAction.current = { type: "bottom" };
       visitedSessions.current.add(sessionId);
     } else {
       const saved = scrollMemory.current.get(sessionId);
+      armScroll();
       scrollAction.current = saved === "bottom"
         ? { type: "bottom" }
         : saved !== undefined

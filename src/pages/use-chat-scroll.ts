@@ -4,14 +4,18 @@
  *
  * 职责（原文件 839-996 区域 + 相关 refs/state）：
  * ① scrollAction 指令消费（bottom / restore）——useLayoutEffect 挂消息到达；
- * ② 贴底跟随（200ms × 10s 短轮询，覆盖 markdown/图片后置撑高；用户上翻即解除）；
+ * ② 贴底跟随（rAF × 10s 逐帧，覆盖 markdown/图片后置撑高；用户上翻即解除；
+ *   需求9 补充3：自 200ms 轮询收紧——粗步进会露出「停中部再拉底」的滚动）；
  * ③ restore clamp 扩窗重试（渲染窗口化配套：目标在窗口外 → expandSignal）；
  * ④ 滚动事件 rAF 节流 + 离底判定 + 活动轮次计算（turn-rail 高亮数据源）；
- * ⑤ 横杠导航跳转（handleJumpToTurn，窗口外目标双 rAF 扩窗重试）。
+ * ⑤ 横杠导航跳转（handleJumpToTurn，窗口外目标双 rAF 扩窗重试）；
+ * ⑥ 需求9 补充3：滚动武装遮蔽（armScroll——指令投递到定位完成之间
+ *   visibility:hidden，切换的首个可见帧即最终位置，消除多帧滚动闪）。
  *
  * 隐式执行序警示（fix22 教训，迁移时保留原序）：scrollAction 消费 →
  * 消息加载 → 节点会话轮询回填。本 hook 只拥有滚动域；指令的「写入方」
- * （use-session-selection / 任务会话加载）仍经 scrollAction ref 外部投递。
+ * （use-session-selection / 任务会话加载）仍经 scrollAction ref 外部投递，
+ * 投递时应同步调 armScroll()（遮蔽启动）。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { buildTurnSummaries } from "@/components/sessions/turn-rail";
@@ -21,6 +25,9 @@ import type { Message } from "@/types";
 export interface ChatScrollHandle {
   /** 滚动指令（外部写入：bottom / restore；本 hook 消费后置 null）。 */
   scrollAction: RefObject<{ type: "bottom" } | { type: "restore"; top: number } | null>;
+  /** 需求9 补充3：武装滚动遮蔽（写入方投递指令时调用——定位完成前内容
+   *  visibility:hidden，消费/超时后恢复；消除「顶部→中部→底部」多帧闪）。 */
+  armScroll: () => void;
   /** 离底判定 ref（事件管线/任务 run 增长贴底判定共用，非 React 闭包读）。 */
   isAwayFromBottomRef: RefObject<boolean>;
   /** 离底 state（JSX 消费：滚动到底按钮显隐）。 */
@@ -51,10 +58,39 @@ export function useChatScroll({
   const [messageExpandSignal, setMessageExpandSignal] = useState(0);
   const isAwayFromBottomRef = useRef(false);
   // v0.9.4 需求7 修复八 / v0.9.6 需求11：贴底跟随（用户主动到底或 bottom 指令
-  // 置 true；上翻解除）+ 200ms × 10s 短轮询定时器（消费点直接启动）。
+  // 置 true；上翻解除）。v0.9.7 需求9 补充3：跟随步进自 200ms interval 收紧为
+  // rAF 逐帧——大回合 markdown/分帧渲染持续撑高期间，粗步进会露出「停在中部
+  // 再拉底」的可见滚动（CDP 采样：+72ms h=2942 停中部 → +253ms 才拉底）。
   const bottomFollowRef = useRef(false);
   const bottomFollowTimerRef = useRef<number | null>(null);
-  const scrollAction = useRef<{ type: "bottom" } | { type: "restore"; top: number } | null>(null);
+  const scrollAction = useRef<{ type: "bottom" } | { type: "restore"; top: number } | null>( null);
+
+  // ── 需求9 补充3：滚动武装遮蔽 ──
+  // 指令投递（armScroll）到定位完成（消费 layoutEffect）之间，消息区
+  // visibility:hidden——定位过程（空→部分高度 clamp→全高）的中间帧全部
+  // 不上屏，首个可见帧即最终位置（直出，无滚动无闪）。直改 DOM（不经
+  // React state）：arm 与消费都在渲染临界区，state 提交反而引入额外帧。
+  const scrollArmedRef = useRef(false);
+  const armScrollTimerRef = useRef<number | null>(null);
+  const disarmScroll = useCallback(() => {
+    scrollArmedRef.current = false;
+    if (armScrollTimerRef.current !== null) {
+      window.clearTimeout(armScrollTimerRef.current);
+      armScrollTimerRef.current = null;
+    }
+    if (messageAreaRef.current) messageAreaRef.current.style.visibility = "";
+  }, [messageAreaRef]);
+  const armScroll = useCallback(() => {
+    scrollArmedRef.current = true;
+    if (messageAreaRef.current) messageAreaRef.current.style.visibility = "hidden";
+    if (armScrollTimerRef.current !== null) window.clearTimeout(armScrollTimerRef.current);
+    // 保险解除：空会话（sessionMessages 恒空 → 消费 layoutEffect 不执行）或
+    // 装载失败时不得永久隐藏——800ms 强制恢复（此时回退现状行为）。
+    armScrollTimerRef.current = window.setTimeout(() => {
+      armScrollTimerRef.current = null;
+      if (scrollArmedRef.current) disarmScroll();
+    }, 800);
+  }, [messageAreaRef, disarmScroll]);
 
   useLayoutEffect(() => {
     if (!scrollAction.current || !messageAreaRef.current) return;
@@ -63,6 +99,12 @@ export function useChatScroll({
     if (sessionMessages.length === 0) return;
     const action = scrollAction.current;
     scrollAction.current = null;
+    // 遮蔽解除时机（需求9 补充3 二轮）：**延到定位动作落定后**——bottom 在
+    // rAF 首轮跟随拉底之后（内容分帧撑高的半成品高度帧不上屏）；restore
+    // clamp 扩窗在双 rAF 重设之后；常规 restore 消费帧即解除。实测：消费即
+    // 解除会在「半高 clamp → 全高 → rAF 拉底」间露出 1-2 帧中部位置闪。
+    const armed = scrollArmedRef.current;
+    const disarmIfArmed = () => { if (armed) disarmScroll(); };
     bottomFollowRef.current = action.type === "bottom";
     devLog("session", "scrollAction 消费", { type: action.type, top: action.type === "restore" ? action.top : undefined });
     if (action.type === "bottom") {
@@ -70,22 +112,26 @@ export function useChatScroll({
       // v0.9.6 需求11：贴底跟随由消费点直接启动——原独立 effect 挂在
       // [selectedSession] 上，而消息异步晚于 selectedSession 到达：轮询
       // effect 执行时 bottomFollowRef 尚为 false 直接 return「死亡」。
-      // 200ms × 10s：覆盖一切撑高来源；用户上翻即刻解除。
+      // rAF × 10s：覆盖一切撑高来源；用户上翻即刻解除。
       if (bottomFollowTimerRef.current !== null) {
-        window.clearInterval(bottomFollowTimerRef.current);
+        cancelAnimationFrame(bottomFollowTimerRef.current);
       }
       const t0 = Date.now();
-      bottomFollowTimerRef.current = window.setInterval(() => {
+      let disarmed = false;
+      const follow = () => {
         if (!bottomFollowRef.current || isAwayFromBottomRef.current || Date.now() - t0 > 10_000) {
-          if (bottomFollowTimerRef.current !== null) {
-            window.clearInterval(bottomFollowTimerRef.current);
-            bottomFollowTimerRef.current = null;
-          }
+          bottomFollowTimerRef.current = null;
           return;
         }
         const el = messageAreaRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
-      }, 200);
+        if (el && el.scrollHeight - el.scrollTop - el.clientHeight > 1) {
+          el.scrollTop = el.scrollHeight;
+        }
+        // 首轮拉底完成后解除遮蔽（先滚到当帧高度、再上屏）。
+        if (!disarmed) { disarmed = true; disarmIfArmed(); }
+        bottomFollowTimerRef.current = requestAnimationFrame(follow);
+      };
+      bottomFollowTimerRef.current = requestAnimationFrame(follow);
     } else {
       const el = messageAreaRef.current;
       el.scrollTop = action.top;
@@ -99,18 +145,24 @@ export function useChatScroll({
           requestAnimationFrame(() => {
             const el2 = messageAreaRef.current;
             if (el2) el2.scrollTop = Math.min(action.top, el2.scrollHeight - el2.clientHeight);
+            disarmIfArmed();
           });
         });
+      } else {
+        disarmIfArmed();
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionMessages]);
 
-  // 卸载清理贴底跟随定时器（防泄漏）。
+  // 卸载清理贴底跟随 rAF 与武装遮蔽定时器（防泄漏/防残留隐藏）。
   useEffect(
     () => () => {
       if (bottomFollowTimerRef.current !== null) {
-        window.clearInterval(bottomFollowTimerRef.current);
+        cancelAnimationFrame(bottomFollowTimerRef.current);
+      }
+      if (armScrollTimerRef.current !== null) {
+        window.clearTimeout(armScrollTimerRef.current);
       }
     },
     [],
@@ -207,6 +259,7 @@ export function useChatScroll({
 
   return {
     scrollAction,
+    armScroll,
     isAwayFromBottomRef,
     isAwayFromBottom,
     activeTurnIndex,
