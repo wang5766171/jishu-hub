@@ -56,13 +56,15 @@ export function useModelPicker(
       const [opts, act, sess] = await Promise.all([
         invokeCommand<ModelPickerOption[]>("get_model_picker_options", { agentId }),
         invokeCommand<{ provider: string; model: string } | null>("get_active", { agentId }),
+        // session_model_get 返回 Rust Option<(String,String)>——序列化为
+        // 元组数组 [provider, model]（非对象；按对象取值曾致 "undefined/undefined"）。
         sessionKey
-          ? invokeCommand<{ provider: string; model: string } | null>("session_model_get", { sessionId: sessionKey })
+          ? invokeCommand<[string, string] | null>("session_model_get", { sessionId: sessionKey })
           : Promise.resolve(null),
       ]);
       setOptions(opts);
       setActiveValue(act ? `${act.provider}/${act.model}` : null);
-      setSessionModel(sess ? `${sess.provider}/${sess.model}` : null);
+      setSessionModel(sess ? `${sess[0]}/${sess[1]}` : null);
     } catch (e) {
       console.warn("Model picker refresh failed:", e);
     }
