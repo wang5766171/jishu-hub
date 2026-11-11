@@ -64,6 +64,24 @@ fn preview_kind_for_ext(ext: &str) -> PreviewFileKind {
     }
 }
 
+/// v0.9.7 需求14：会话锁定模型读取（None=跟全局 active）。
+#[tauri::command]
+pub(crate) fn session_model_get(
+    session_id: String,
+) -> Result<Option<(String, String)>, String> {
+    Ok(crate::session_models::get_session_model(&session_id))
+}
+
+/// v0.9.7 需求14：会话锁定模型设置（model 空=清除回落全局）。
+#[tauri::command]
+pub(crate) fn session_model_set(
+    session_id: String,
+    provider: String,
+    model: String,
+) -> Result<(), String> {
+    crate::session_models::set_session_model(&session_id, &provider, &model)
+}
+
 #[tauri::command]
 pub(crate) fn validate_preview_file(
     path: String,

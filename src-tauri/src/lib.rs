@@ -32,6 +32,8 @@ mod process_control;
 mod project;
 mod project_config;
 mod session;
+// v0.9.7 需求14：会话级模型表（模型切换只影响当前会话）。
+mod session_models;
 mod task_launch;
 mod task_plan;
 mod usage_store;
@@ -548,6 +550,9 @@ pub fn run() {
             commands::agents::plugin_config_get_all,
             commands::agents::plugin_config_set,
             commands::agents::plugin_preconnect_focus,
+            commands::sessions::session_model_get,
+            commands::sessions::session_model_set,
+            chat::edit_last_user_message,
             commands::agents::composed_plugin_manifests,
             commands::agents::composed_plugin_save,
             commands::agents::composed_plugin_delete,
