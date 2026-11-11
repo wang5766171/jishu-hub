@@ -63,6 +63,8 @@ export function useChatScroll({
   // 再拉底」的可见滚动（CDP 采样：+72ms h=2942 停中部 → +253ms 才拉底）。
   const bottomFollowRef = useRef(false);
   const bottomFollowTimerRef = useRef<number | null>(null);
+  // 需求9 补充3 回归修复：触摸上滑解除跟随的方向判定基准（上一触点 Y）。
+  const lastTouchYRef = useRef<number | null>(null);
   const scrollAction = useRef<{ type: "bottom" } | { type: "restore"; top: number } | null>( null);
 
   // ── 需求9 补充3：滚动武装遮蔽 ──
@@ -173,10 +175,34 @@ export function useChatScroll({
 
   // 滚动事件（rAF 节流）：离底判定 + 活动轮次计算（全消息 DOM 遍历是滚动
   // 卡顿主因之一，节流后每帧至多一次）。
+  // 需求9 补充3 回归修复（2026-11-11 用户实测「往上滚又弹回来」）：贴底
+  // 跟随自 200ms interval 收紧为 rAF 逐帧后，与 scroll 事件的 rAF 回调**同
+  // 帧竞争**——用户向上滚 <100px 时离底判定尚未置位，跟随每帧先拉回底部，
+  // 表现为来回弹滚不动。位置推断不可靠，改**意图判定**：滚轮/触摸向上
+  // 即刻解除跟随（不依赖 scroll 位置）。
   useEffect(() => {
     const el = messageAreaRef.current;
     if (!el) return;
     let scrollTicking = false;
+    const releaseFollow = () => {
+      if (bottomFollowRef.current) {
+        devLog("session", "贴底跟随解除（用户滚轮/触摸向上）", {});
+        bottomFollowRef.current = false;
+      }
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) releaseFollow();
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      const first = e.touches[0];
+      if (!lastTouchYRef.current) {
+        lastTouchYRef.current = first.clientY;
+        return;
+      }
+      if (first.clientY > lastTouchYRef.current) releaseFollow(); // 手指下移=内容向上看
+      lastTouchYRef.current = first.clientY;
+    };
+    const onTouchEnd = () => { lastTouchYRef.current = null; };
     const onScroll = () => {
       if (scrollTicking) return;
       scrollTicking = true;
@@ -211,7 +237,15 @@ export function useChatScroll({
     };
     onScroll();
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: true });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSession, sessionMessages]);
 
