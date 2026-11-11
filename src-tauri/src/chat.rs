@@ -432,6 +432,12 @@ pub async fn send_message(
 ) -> Result<ChatSession, String> {
     // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间；正常路径不受影响）。
     let project_path = crate::project::resolve_project_root_or_default(&project_path);
+    // v0.9.7 需求14：会话级模型注入——显式 override（节点/委派链）优先，其次
+    // 会话锁定模型（新会话/transient 无记录回落全局 active）。
+    let model_override = crate::session_models::resolve_override(
+        &session_id.clone().unwrap_or_default(),
+        model_override,
+    );
     // v0.9.7 需求5 E5：恢复既有会话（真实 id 直传）→ 幂等确保会话子目录
     //（默认空间专属；非默认空间 no-op）。
     if let Some(ref sid) = session_id {
@@ -645,7 +651,9 @@ fn current_spawn_signature(
             session_id: Some(session_id.to_string()),
             message: String::new(),
             timeout_secs: 0,
-            model_override: None,
+            // v0.9.7 需求14：签名基准含会话锁定模型——会话切模型后，空闲
+            // 发送的漂移检测才能触发按新模型重拉进程。
+            model_override: crate::session_models::get_session_model(session_id),
         },
     )
     .ok()?;
@@ -1402,4 +1410,171 @@ pub async fn respond_chat_interaction(
             )
         }
     }
+}
+
+// ── v0.9.7 需求13：编辑最近用户消息（截断重发） ──────────────────────────────
+//
+// 用户语义：编辑会话最后一条用户消息 = 停止进行中的回复（如有）+ 清空该
+// 消息及其后的全部内容 + 以编辑后文本重发。pi RPC 无原位编辑命令（fork
+// 会产生新会话文件，违背「原会话基础上修改」），故在 hub 侧截断 pi 会话
+// JSONL：定位当前路径最后一条 user 消息行，文本校验（防 UI 与文件不同步
+// 错删）通过后，备份原文件并截断该行及其后所有行；杀掉会话进程（流式中
+// =停止回复，进程内存态随之丢弃）。重发由前端走常规 send_message——resume
+// 读截断后的文件，新消息挂回原会话（原位效果）。
+
+/// 截断纯函数（tempdir 单测覆盖）：返回保留行数。
+/// 行结构（pi jsonl）：`{"type":"message","message":{"role","content":[…]},…}`。
+fn truncate_lines_after_last_user(lines: &[&str], expect_text: &str) -> Result<usize, String> {
+    for (i, line) in lines.iter().enumerate().rev() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("message") {
+            continue;
+        }
+        let msg = match v.get("message") {
+            Some(m) => m,
+            None => continue,
+        };
+        if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        // 首 text 块（send 侧单块形态；startsWith 容错工具注入块后缀/任务
+        // 前缀包装造成的差异——expect 传的是落盘原文，正常全等命中）。
+        let text = msg
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| {
+                arr.iter().find(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+            })
+            .and_then(|b| b.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        if !text.starts_with(expect_text) {
+            return Err(
+                "会话最后一条用户消息与预期不一致，已取消编辑（请刷新会话后重试）".to_string(),
+            );
+        }
+        if i == 0 {
+            return Err("该消息之前没有可保留的内容（首条消息不可编辑）".to_string());
+        }
+        return Ok(i);
+    }
+    Err("会话中未找到用户消息".to_string())
+}
+
+/// 定位会话 jsonl（root/<项目目录>/<ts>_<sid>.jsonl 两层扫描）并执行截断。
+fn truncate_session_after_last_user(
+    session_id: &str,
+    expect_text: &str,
+) -> Result<std::path::PathBuf, String> {
+    let root = agent::jishu_self::pi_session::pi_sessions_root()?;
+    let suffix = format!("_{session_id}.jsonl");
+    let mut found: Option<std::path::PathBuf> = None;
+    for dir in std::fs::read_dir(&root).map_err(|e| e.to_string())?.flatten() {
+        let dir_path = dir.path();
+        if !dir_path.is_dir() {
+            continue;
+        }
+        for f in std::fs::read_dir(&dir_path).map_err(|e| e.to_string())?.flatten() {
+            if f.file_name().to_string_lossy().ends_with(&suffix) {
+                found = Some(f.path());
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    let file = found.ok_or_else(|| format!("会话文件未找到: {session_id}"))?;
+    let content = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    let keep = truncate_lines_after_last_user(&lines, expect_text)?;
+    // 备份（覆盖式单份，恢复路径明确）+ 原子写截断。
+    let mut backup = file.clone().into_os_string();
+    backup.push(".edit-bak");
+    let backup = std::path::PathBuf::from(backup);
+    std::fs::copy(&file, &backup).map_err(|e| format!("备份失败: {e}"))?;
+    let kept = format!("{}
+", lines[..keep].join("
+"));
+    crate::util::atomic_write(&file, kept.as_bytes())
+        .map_err(|e| format!("写入截断会话失败: {e}"))?;
+    log::info!(
+        "edit_last_user_message: truncated {} to {keep} lines (backup: {})",
+        file.display(),
+        backup.display()
+    );
+    Ok(file)
+}
+
+/// 编辑最近用户消息：截断会话文件 + 回收该会话进程（agent_id 定位，流式
+/// 中即停止回复）。重发由前端走常规发送链（resume 重拉进程）。
+#[tauri::command]
+pub(crate) async fn edit_last_user_message(
+    app: AppHandle,
+    agent_id: String,
+    session_id: String,
+    expect_text: String,
+) -> Result<(), String> {
+    // 先截断（数据操作失败即返回，不动进程）。
+    truncate_session_after_last_user(&session_id, &expect_text)?;
+    // 回收进程：shutdown（优雅收口）→ 有限等待 → 条目清理（resume 重拉由
+    // 下一次 send 触发）。
+    if let Some(process) = existing_chat_process(&app, &session_id, &agent_id) {
+        if let Some(acp) = process.acp.as_ref() {
+            let _ = acp.shutdown().await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), acp.wait_finished()).await;
+        }
+        let chat_state = app.state::<Mutex<ChatState>>();
+        let mut s = chat_state.lock().map_err(|e| e.to_string())?;
+        remove_process_entries_from(&mut s, Some(process.process_id), Some(&session_id));
+    }
+    Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg_line(id: &str, parent: &str, role: &str, text: &str) -> String {
+        serde_json::json!({
+            "type": "message",
+            "id": id,
+            "parentId": parent,
+            "message": { "role": role, "content": [{ "type": "text", "text": text }] },
+        })
+        .to_string()
+    }
+
+    /// 需求13：截断定位与校验——从尾向前找 user 行、文本 startsWith 校验、
+    /// 保留其前全部行；不匹配/首行/无 user 各自报错。
+    #[test]
+    fn truncate_lines_locates_and_validates() {
+        let info = r#"{"type":"session_info","id":"s0"}"#.to_string();
+        let u1 = msg_line("a", "s0", "user", "AAA");
+        let r1 = msg_line("b", "a", "assistant", "回复");
+        let u2 = msg_line("c", "b", "user", "BBB");
+        let r2 = msg_line("d", "c", "assistant", "bbb-reply");
+        let lines: Vec<&str> = vec![&info, &u1, &r1, &u2, &r2];
+        // 正常：截到 BBB 前（保留 3 行）。
+        assert_eq!(truncate_lines_after_last_user(&lines, "BBB").unwrap(), 3);
+        // 工具注入块后缀差异：startsWith 容错。
+        let injected = msg_line("c2", "b", "user", "BBB
+
+[JISHU-TOOLS:x]");
+        let lines2: Vec<&str> = vec![&info, &u1, &injected];
+        assert_eq!(truncate_lines_after_last_user(&lines2, "BBB").unwrap(), 2);
+        // 文本不符：拒绝。
+        assert!(truncate_lines_after_last_user(&lines, "XXX").is_err());
+        // user 在首行（无可保留内容）：拒绝。
+        let first = msg_line("a", "", "user", "AAA");
+        let only: Vec<&str> = vec![&first];
+        assert!(truncate_lines_after_last_user(&only, "AAA").is_err());
+        // 无 user 行：拒绝。
+        let a2 = msg_line("b", "s0", "assistant", "x");
+        let no_user: Vec<&str> = vec![&info, &a2];
+        assert!(truncate_lines_after_last_user(&no_user, "A").is_err());
+}
 }

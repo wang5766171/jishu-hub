@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { Check, Copy, Bot } from "lucide-react";
+import { Check, Copy, Bot, Pencil } from "lucide-react";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
 import { extractCodeText } from "./code-block-text";
@@ -65,6 +65,10 @@ interface MessageViewProps {
    * 默认 undefined 时完全不触发，保护常规会话（需求七）。
    */
   roleResolver?: (msg: Message) => MessageRoleView | null;
+  /** v0.9.7 需求13：编辑最近用户消息——非空时最后一条用户消息显示编辑
+   * 入口（复制旁）；提交回调 (rawText 落盘原文, newText 编辑后文本)，截断
+   * 重发链由页面承担。null/undefined = 不可编辑（新会话/流式占位等）。 */
+  onEditLastUserMessage?: ((rawText: string, newText: string) => void) | null;
 }
 
 /**
@@ -566,6 +570,7 @@ function UserBubble({
   messageIndex,
   roleView,
   toolNames,
+  onEditSubmit,
 }: {
   msg: Message;
   items: RenderItem[];
@@ -575,8 +580,13 @@ function UserBubble({
   messageIndex: number;
   roleView?: MessageRoleView | null;
   toolNames: Record<string, string>;
+  /** 需求13：非空=本气泡是可编辑的最近用户消息（提交回调收编辑后文本）。 */
+  onEditSubmit?: ((newText: string) => void) | null;
 }) {
   const { t } = useTranslation();
+  // 需求13：原位编辑态（zcode 式——气泡内容替换为编辑框，Enter 确认/Esc 取消）。
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
   // v0.9.0 需求3 方案 C：pill 数据源为首文本块的 tool_ids 元数据（回放由
   // 后端 extract_tool_snapshot 从注入块派生）；文本标记解析已废弃。
   const firstTextBlock = msg.content.find((b) => b.type === "text");
@@ -609,6 +619,44 @@ function UserBubble({
               : "bg-[var(--message-user-bg)] text-[var(--message-user-fg)]",
           )}
         >
+          {editing ? (
+            // 需求13：原位编辑（zcode 式）——textarea 预填原话，Enter 提交
+            //（Shift+Enter 换行）、Esc 取消；按钮同排兜底。
+            <div className="flex flex-col gap-2" onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                if (draft.trim()) { setEditing(false); onEditSubmit?.(draft.trim()); }
+              } else if (e.key === "Escape") {
+                setEditing(false);
+              }
+            }}>
+              <textarea
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                rows={Math.min(10, Math.max(2, draft.split("\n").length + 1))}
+                className="w-full resize-none rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground outline-none focus:ring-1 focus:ring-primary"
+              />
+              <div className="flex justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setEditing(false)}
+                  className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted"
+                >
+                  {t("common.cancel", "取消")}
+                </button>
+                <button
+                  type="button"
+                  disabled={!draft.trim()}
+                  onClick={() => { const text = draft.trim(); setEditing(false); if (text) onEditSubmit?.(text); }}
+                  className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground disabled:opacity-40"
+                >
+                  {t("sessions.editResend", "重发")}
+                </button>
+              </div>
+            </div>
+          ) : (
+          <>
           <InlineImages text={displayText || copyText} />
           {items.map((item, idx) => {
             if (item.kind === "tool-group") {
@@ -663,9 +711,27 @@ function UserBubble({
               </div>
             );
           })}
+          </>
+          )}
         </div>
         <div className="self-end">
           <CopyButton text={copyText} />
+          {onEditSubmit && !editing && (
+            // 需求13：编辑最近用户消息（复制旁入口）。
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setDraft(displayText || copyText);
+                setEditing(true);
+              }}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 mt-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              title={t("sessions.editLastMessage", "编辑并重发")}
+            >
+              <Pencil className="h-3 w-3" />
+              {t("sessions.edit", "编辑")}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -683,6 +749,7 @@ export const MessageView = memo(function MessageView({
   scrollContainerRef,
   roleResolver,
   expandSignal,
+  onEditLastUserMessage,
 }: MessageViewProps) {
   const { t } = useTranslation();
   // v0.8.1 需求7：用户消息 pill 的 id→中文名映射（按会话加载一次）。
@@ -821,6 +888,15 @@ export const MessageView = memo(function MessageView({
     return () => clearTimeout(timer);
   }, [currentOcc, scrollTrigger, searchState.matchToMessage, searchState.total]);
 
+  // 需求13：最后一条用户消息（尾向前）——唯一可编辑行；rawText 取首 text 块
+  // 原文（落盘原文，含 /jishu-task 包装——页面回调按需重包装）。
+  const lastUserMessageIndex = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") return i;
+    }
+    return -1;
+  }, [messages]);
+
   const renderRow = useCallback((row: RenderRow) => {
     if (row.kind === "assistant") {
       const items = buildRenderItemsForMessages(messages, row.messageIndices, resultMap, errorToolIds);
@@ -838,6 +914,13 @@ export const MessageView = memo(function MessageView({
     const msg = messages[row.messageIndex];
     const items = buildRenderItemsForMessages(messages, [row.messageIndex], resultMap, errorToolIds);
     const roleView = roleResolver ? roleResolver(msg) : null;
+    // 需求13：仅最后一条用户消息挂编辑提交。
+    const editable = onEditLastUserMessage && row.messageIndex === lastUserMessageIndex
+      ? (newText: string) => {
+          const raw = msg.content.find((b) => b.type === "text");
+          onEditLastUserMessage(raw && raw.type === "text" ? raw.text : "", newText);
+        }
+      : null;
     return (
       <UserBubble
         msg={msg}
@@ -848,9 +931,10 @@ export const MessageView = memo(function MessageView({
         messageIndex={row.messageIndex}
         roleView={roleView}
         toolNames={toolNames}
+        onEditSubmit={editable}
       />
     );
-  }, [currentOcc, messages, renderingQuery, resultMap, errorToolIds, searchState.offsets, roleResolver, toolNames]);
+  }, [currentOcc, messages, renderingQuery, resultMap, errorToolIds, searchState.offsets, roleResolver, toolNames, onEditLastUserMessage, lastUserMessageIndex]);
 
   // v0.9.1 需求5：user 行轮次序号（实例内从 0 递增），横杠导航轨按
   // [data-turn-index] 定位跳转。v0.9.2 需求1 P1：序号由统一视图模型携带

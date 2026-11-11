@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useCallback, memo, useRef } from "react";
-import { Loader2 } from "lucide-react";
+import { Fragment, useEffect, useCallback, memo, useRef, useState } from "react";
+import { Loader2, Pencil } from "lucide-react";
 import { classifyRetryError } from "@/lib/retry-reason";
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
@@ -40,9 +40,12 @@ interface StreamingMessageProps {
    * store 的 pendingToolIds（与 pendingUserMessage 同源）。 */
   userToolIds?: string[];
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
+  /** 需求13：回复过程中编辑本条用户消息——非空时流式用户气泡显示编辑入口
+   * （rawText=发送原文，newText=编辑后文本；停止回复+截断重发由页面承担）。 */
+  onEditUserMessage?: ((rawText: string, newText: string) => void) | null;
 }
 
-export const StreamingMessage = memo(function StreamingMessage({ sessionId, isComplete = false, userMessage, userToolIds, scrollContainerRef, agentDisplayName }: StreamingMessageProps) {
+export const StreamingMessage = memo(function StreamingMessage({ sessionId, isComplete = false, userMessage, userToolIds, scrollContainerRef, agentDisplayName, onEditUserMessage }: StreamingMessageProps) {
   const state = useSessionStream(sessionId);
   const { t } = useTranslation();
   // v0.8.1 需求7：用户消息气泡内 pill 显示插件中文名（id→显示名映射）。
@@ -288,7 +291,16 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
       {/* User message bubble */}
       {resolvedUserMessage && (
-        <StreamingUserBubble text={resolvedUserMessage} toolIds={resolvedUserToolIds} toolNames={toolNames} />
+        <StreamingUserBubble
+          text={resolvedUserMessage}
+          toolIds={resolvedUserToolIds}
+          toolNames={toolNames}
+          onEdit={
+            onEditUserMessage
+              ? (newText) => onEditUserMessage(resolvedUserMessage, newText)
+              : null
+          }
+        />
       )}
 
       {/* Assistant streaming response — one bubble per segment, with an inline
@@ -510,8 +522,12 @@ function StepStatusIcon({ kind }: { kind: string }) {
  */
 /** 流式阶段主用户消息（v0.9.0 需求3 方案 C：pill 数据源为 toolIds 元数据——
  * compose 时前端已知、经 streamStore.pendingToolIds 传递；文本标记解析已废弃）。 */
-function StreamingUserBubble({ text, toolIds, toolNames }: { text: string; toolIds: string[]; toolNames: Record<string, string> }) {
+function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: string; toolIds: string[]; toolNames: Record<string, string>; onEdit?: ((newText: string) => void) | null }) {
   const { t } = useTranslation();
+  // 需求13：流式中原位编辑（回复过程中可编辑本条——停止回复并重发）。
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const display = stripImagePrompt(text) || (text.includes("JISHU_HUB_IMAGES") ? t("sessions.imageOnlyBubble", "📎 发送了附件") : text);
   return (
     <div className="w-full flex justify-end" data-user-message="true">
       <div className="max-w-[88%] min-w-0 flex flex-col items-end">
@@ -519,10 +535,63 @@ function StreamingUserBubble({ text, toolIds, toolNames }: { text: string; toolI
           <span className="font-medium text-muted-foreground">{t("sessions.user")}</span>
         </div>
         <div className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full" style={{ fontSize: "var(--font-size-prose)" }}>
-          <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
-          <InlineImages text={text} />
-          {stripImagePrompt(text) || (text.includes("JISHU_HUB_IMAGES") ? t("sessions.imageOnlyBubble", "📎 发送了附件") : text)}
+          {editing ? (
+            <div className="flex flex-col gap-2" onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                if (draft.trim()) { setEditing(false); onEdit?.(draft.trim()); }
+              } else if (e.key === "Escape") {
+                setEditing(false);
+              }
+            }}>
+              <textarea
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                rows={Math.min(10, Math.max(2, draft.split("\n").length + 1))}
+                className="w-full resize-none rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground outline-none focus:ring-1 focus:ring-primary"
+              />
+              <div className="flex justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setEditing(false)}
+                  className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted"
+                >
+                  {t("common.cancel", "取消")}
+                </button>
+                <button
+                  type="button"
+                  disabled={!draft.trim()}
+                  onClick={() => { const v = draft.trim(); setEditing(false); if (v) onEdit?.(v); }}
+                  className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground disabled:opacity-40"
+                >
+                  {t("sessions.editResend", "重发")}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
+              <InlineImages text={text} />
+              {display}
+            </>
+          )}
         </div>
+        {onEdit && !editing && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setDraft(stripImagePrompt(text) || text);
+              setEditing(true);
+            }}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 mt-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            title={t("sessions.editLastMessage", "编辑并重发（清空此消息后的回复）")}
+          >
+            <Pencil className="h-3 w-3" />
+            {t("sessions.edit", "编辑")}
+          </button>
+        )}
       </div>
     </div>
   );

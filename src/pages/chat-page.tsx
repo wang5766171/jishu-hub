@@ -304,9 +304,11 @@ export function ChatPage({
   // v0.8.0 需求3：模型选择域拆分至 use-model-picker——候选/档位来自聚合
   // IPC（get_model_picker_options，Pi 语义解析唯一化在后端），前端解析块
   // 与三份双源（model-types 解析 / PI_THINKING_LEVELS 常量）一并消除。
+  // v0.9.7 需求14：传入当前会话——已有会话切模型只锁定本会话（不动全局），
+  // 新会话（null/"new"）仍写全局默认。
   const modelPicker = useModelPicker(activeId, supportsModelPicker, () => {
     refreshAccessMode();
-  });
+  }, selectedSession);
   const { options: modelOptions, activeValue: activeModelValue } = modelPicker;
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLSpanElement>(null);
@@ -792,6 +794,62 @@ export function ChatPage({
       setForking(false);
     }
   }, [activeId, projectId, forking, sessions, sessionNames, currentProject?.path, alertDialog, t]);
+
+  // ── 需求13：编辑最近用户消息（截断重发，原会话原位）────────────────────
+  // 链路：Rust 截断 pi 会话 JSONL（校验原文+备份）并回收进程（流式中=停止
+  // 回复）→ 本地缓存/视图截断到该消息前 → Route 2 式重发（乐观提交+落盘
+  // 由 send_message 承担，turn_complete 不重复提交）。
+  const handleEditLastUserMessage = useCallback(async (rawText: string, newText: string) => {
+    const sid = selectedSessionRef.current;
+    if (!sid || sid === "new" || !activeId) return;
+    try {
+      await invokeCommand("edit_last_user_message", {
+        agentId: activeId,
+        sessionId: sid,
+        expectText: rawText,
+      });
+    } catch (err) {
+      console.error("edit_last_user_message failed:", err);
+      await alertDialog({ title: t("sessions.editLastFailed", "编辑失败"), description: String(err) });
+      return;
+    }
+    // 本地截断：删该消息及其后（按落盘原文定位；找不到则仅重发——文件已
+    // 是权威截断态，重读会话可对齐）。
+    const msgs = sessionMessagesRef.current;
+    let cut = -1;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role !== "user") continue;
+      const raw = msgs[i].content.find((b) => b.type === "text");
+      if (raw && raw.type === "text" && raw.text === rawText) { cut = i; break; }
+    }
+    const kept = cut >= 0 ? msgs.slice(0, cut) : msgs;
+    // 任务前缀重包装：用户编辑的是剥前缀原话，重发保持任务会话语义。
+    const prefixMatch = rawText.match(/^(\/jishu-task (?:dev|research) )/);
+    const outgoing = prefixMatch ? prefixMatch[1] + newText : newText;
+    const updated = [...kept, {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: outgoing }],
+      timestamp: Date.now(),
+    }];
+    setCachedSessionMessages(sid, updated);
+    setSessionMessages(updated);
+    // 流式态清场（流式中编辑场景——进程已被 Rust 侧回收）+ 乐观回复流。
+    streamStore.drop(sid);
+    streamStore.start(sid, null);
+    try {
+      await invokeCommand("send_message", {
+        agentId: activeId,
+        projectPath: currentProject?.path ?? "",
+        sessionId: sid,
+        message: outgoing,
+        modelOverride: null,
+      });
+    } catch (err) {
+      console.error("resend after edit failed:", err);
+      streamStore.drop(sid);
+      await alertDialog({ title: t("sessions.editLastFailed", "编辑失败"), description: String(err) });
+    }
+  }, [activeId, currentProject?.path, alertDialog, t]);
 
   // ── 斜杠命令面板（A2）：GUI 本地命令注册表，不透传给 agent ──────────────
   const hasSelectedSession = Boolean(selectedSession && selectedSession !== "new");
@@ -2324,6 +2382,11 @@ export function ChatPage({
                       flat
                       scrollContainerRef={messageAreaRef}
                       expandSignal={messageExpandSignal}
+                      onEditLastUserMessage={
+                        selectedSession && selectedSession !== "new" && !taskModeActive
+                          ? handleEditLastUserMessage
+                          : null
+                      }
                     />
                   </div>
                 ) : null}
@@ -2411,6 +2474,7 @@ export function ChatPage({
                     isComplete={false}
                     scrollContainerRef={messageAreaRef}
                     agentDisplayName={active?.display_name}
+                    onEditUserMessage={taskModeActive ? null : handleEditLastUserMessage}
                   />
                 )}
               {/* Live placeholders for guided (steer) messages that have NOT
