@@ -968,13 +968,18 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           }
 
           // Route 2 (orthogonal to manual guide): when the turn ends, auto-send
-          // any messages the user staged but did NOT manually guide — merged
-          // into a single new turn. claimAll(finalKey) synchronously marks them
-          // sent for THIS session, so a manual click racing this moment (or a
-          // re-click) is blocked by the shared claimed-id set — each staged
-          // guide is delivered exactly once. Gated on !followUpExpected so it
-          // never competes with a manual steer's follow-up turn (that turn fires
-          // its own turn_complete, which re-evaluates).
+          // any messages the user staged but did NOT manually guide. claimAll
+          // (finalKey) synchronously marks them sent for THIS session, so a
+          // manual click racing this moment (or a re-click) is blocked by the
+          // shared claimed-id set — each staged guide is delivered exactly once.
+          // Gated on !followUpExpected so it never competes with a manual
+          // steer's follow-up turn (that turn fires its own turn_complete,
+          // which re-evaluates).
+          //
+          // 需求11 #2（2026-11-11 用户实测回归）：**逐条发送**——回合完成只发
+          // 队首一条，剩余原序放回待发送区（restore un-claim），下一回合的
+          // turn_complete 再发下一条；多条不再 join("\n") 合并一口气发出。
+          // 顺序即待发送区顺序（含 #3 拖拽调序）。
           //
           // Targets the session whose turn just completed (finalKey), NOT the
           // currently-viewed session. Staging state is partitioned by session
@@ -988,15 +993,18 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           if (!followUpExpected && deps.stagedApiRef.current) {
             const claimed = deps.stagedApiRef.current.claimAll(finalKey);
             if (claimed.length > 0) {
-              // v0.9.4 需求8 补充：暂存附件标记行随自动发送附加（与手动引导
-              // 同通道——文件落盘 + Read 引用）。
-              const claimedWithFiles = claimed.filter((m) => m.fileLines && m.fileLines.length > 0);
-              let fileBlock = "";
-              if (claimedWithFiles.length > 0) {
-                const lines = claimedWithFiles.flatMap((m) => m.fileLines ?? []);
-                fileBlock = "\n" + "\n" + "<!--JISHU_HUB_IMAGES_BEGIN-->" + "\n" + "[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]" + "\n" + lines.join("\n") + "\n" + "<!--JISHU_HUB_IMAGES_END-->";
+              const first = claimed[0];
+              const rest = claimed.slice(1);
+              if (rest.length > 0) {
+                deps.stagedApiRef.current.restore(finalKey, rest);
               }
-              const merged = claimed.map((m) => m.content).join("\n") + fileBlock;
+              // v0.9.4 需求8 补充：暂存附件标记行随自动发送附加（与手动引导
+              // 同通道——文件落盘 + Read 引用）。逐条化后只带本条自己的附件。
+              let fileBlock = "";
+              if (first.fileLines && first.fileLines.length > 0) {
+                fileBlock = "\n" + "\n" + "<!--JISHU_HUB_IMAGES_BEGIN-->" + "\n" + "[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]" + "\n" + first.fileLines.join("\n") + "\n" + "<!--JISHU_HUB_IMAGES_END-->";
+              }
+              const merged = first.content + fileBlock;
               // Start WITHOUT pendingUserMessage: send_message delivers the
               // message to the backend (JSONL), so the reply's turn_complete
               // must NOT re-commit it (would duplicate). Commit it into the
@@ -1031,7 +1039,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
                 } catch (err) {
                   console.error("Auto-send of staged guides failed:", err);
                   streamStore.drop(finalKey);
-                  restore(finalKey, claimed);
+                  restore(finalKey, [first, ...rest]);
                 }
               })();
             }

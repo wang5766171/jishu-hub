@@ -603,7 +603,9 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       restore: (sessionKey: string, messages: StagedMessage[]) => {
         const claimedIds = claimedIdsForSession(sessionKey);
         for (const m of messages) claimedIds.delete(m.id);
-        setStagedMessagesForSession(sessionKey, (prev) => [...prev, ...messages]);
+        // 需求11 #2 逐条发送：放回=保序插回**队首**（领取时的原序在前，
+        // 失败回滚与「发一条放回剩余」都不被打乱；期间新暂存的排其后）。
+        setStagedMessagesForSession(sessionKey, (prev) => [...messages, ...prev]);
       },
     };
   }, [claimedIdsForSession, setStagedMessagesForSession, stagedApiRef]);
