@@ -538,6 +538,7 @@ export function ChatPage({
     lastInstanceRunIdRef,
     lastRealSessionIdRef,
     discoverConductorTaskRef,
+    selectedSessionRef,
     activeTaskResolved: useCallback((record: TaskLaunchInstanceSummary) => {
       setActiveTaskInstanceId(record.task_id);
       lastKnownStatusRef.current = record.status;

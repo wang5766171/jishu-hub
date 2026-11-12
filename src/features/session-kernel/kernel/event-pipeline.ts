@@ -442,25 +442,31 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // 修正为「窗口激活在看」——最小化/失焦时当前会话也通知（v0.9.5 起
           // subagent 集成主会话工具卡、不再产生后台会话，旧门控下通知实际
           // 触发面归零）；窗口激活时维持原语义（正在看的会话不打扰）。
-          const turnCompleteBackground = cid !== deps.selectedSessionRef.current;
-          if (turnCompleteBackground || !isAppWindowActive()) {
-            emitSessionSignal({
-              type: "turn-complete",
-              sessionId: cid,
-              agentId: chunk.agent_id,
-              error: chunk.data.reason === "Error",
-            });
-            devLog("session", "turn-complete 通知信号已发", {
-              session: cid,
-              background: turnCompleteBackground,
-              windowActive: isAppWindowActive(),
-            });
-          }
+          // 收版反馈（2026-11-12 用户实测「点开清掉的绿点切走又出现」）：
+          // 信号发放移到 spurious-completion guard **之后**——被守卫丢弃的
+          // 空转 turn_complete（Route 2 自动发送后旧进程的 early complete）
+          // 不再写未读（原实现信号在守卫前，迟到空转事件反复重写未读）。
+          const emitTurnCompleteSignal = () => {
+            const turnCompleteBackground = cid !== deps.selectedSessionRef.current;
+            if (turnCompleteBackground || !isAppWindowActive()) {
+              emitSessionSignal({
+                type: "turn-complete",
+                sessionId: cid,
+                agentId: chunk.agent_id,
+                error: chunk.data.reason === "Error",
+              });
+              devLog("session", "turn-complete 通知信号已发", {
+                session: cid,
+                background: turnCompleteBackground,
+                windowActive: isAppWindowActive(),
+              });
+            }
+          };
           // Build final assistant/user messages from the accumulated state.
           const state = streamStore.getState(cid);
           const finalKey = state?.resolvedId ?? cid;
           // v0.8.0 需求10：用量以 Hub SQLite 为权威（Rust turn_end 记账，
-          // 与页面在场无关）；回合结束后拉取最新行刷新前端缓存（圆环数据源）。
+          // 与页面在场无关）；回合结束后拉取最新前端缓存（圆环数据源）。
           void deps.refreshSessionUsage(finalKey);
           // Spurious-completion guard: when a follow-up streaming state was just
           // created at the end of a turn (a manually-guided steer committed as a
@@ -504,8 +510,9 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             // 本会永卡「思考中」——由已修好的停止通道（F1）+ 消息即落盘
             // （F3）兜底，用户点停止即可；旧实现不认回合，5s 内重发的新
             // 回合会被误收口（评审 P1），故整体移除。
-            continue;
+            continue; // 空转完成：不发 turn-complete 信号（见上方信号块注释）
           }
+          emitTurnCompleteSignal();
           const isNewSessionStream =
             deps.newSessionStreamIdsRef.current.has(cid)
             || deps.newSessionStreamIdsRef.current.has(finalKey);
