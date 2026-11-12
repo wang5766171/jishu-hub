@@ -5,7 +5,6 @@ import { useTranslation } from "react-i18next";
 import { ProjectsPage } from "./projects-page";
 import { ConfigPage } from "./config-page";
 import { CommandsPage } from "./commands-page";
-import { EnvCheckPage } from "./env-check-page";
 import { PluginsPage } from "./plugins-page";
 // 需求14 M2（S3）：外观设置页（主题卡列表）。
 import { AppearancePage } from "./appearance-page";
@@ -37,6 +36,8 @@ interface ManagePageProps {
   onLaunchPipeline?: (pluginId: string, name: string) => void;
   /** v0.9.7 需求3 C1：描述需求创建插件（跳会话页预填创作指令）。 */
   onLaunchDescribe?: (text: string) => void;
+  /** 需求4 反馈裁决：管理菜单「安装引导」——重新打开引导页（二次进入）。 */
+  onReopenOnboarding: () => void;
   projects: Project[] | null;
   projectMetas: Record<string, ProjectMeta> | null;
   refetchProjects: (silent?: boolean) => Promise<Project[]>;
@@ -79,7 +80,9 @@ const menuGroups: { titleKey: string; titleFallback: string; items: ManageMenuIt
     titleFallback: "系统",
     items: [
       { id: "commands", icon: Rocket, labelKey: "manage.menuCommands", fallback: "快捷命令" },
-      { id: "env", icon: Activity, labelKey: "manage.menuEnv", fallback: "环境检测" },
+      // 需求4 反馈裁决（2026-11-12）：环境检测页退役——入口改为「安装引导」
+      //（重新打开引导页：引擎/环境就绪态查看 + 重装/补装 + 重走流程）。
+      { id: "env", icon: Activity, labelKey: "manage.menuOnboarding", fallback: "安装引导" },
     ],
   },
 ];
@@ -103,7 +106,7 @@ const agentSectionTab: Partial<Record<AgentConfigSection, ManageTab>> = {
   advanced: "agent-advanced",
 };
 
-export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigateToAgentModels, onLaunchPipeline, onLaunchDescribe, projects, projectMetas, refetchProjects, refetchProjectMetas }: ManagePageProps) {
+export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigateToAgentModels, onLaunchPipeline, onLaunchDescribe, onReopenOnboarding, projects, projectMetas, refetchProjects, refetchProjectMetas }: ManagePageProps) {
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<ManageTab>("projects");
   const prevNavRef = useRef(0);
@@ -225,7 +228,22 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigat
         {activeTab === "plugins" && <PluginsPage onLaunchPipeline={onLaunchPipeline} onLaunchDescribe={onLaunchDescribe} />}
         {activeTab === "appearance" && <AppearancePage />}
         {activeTab === "commands" && <CommandsPage />}
-        {activeTab === "env" && <EnvCheckPage />}
+        {activeTab === "env" && (
+          // 需求4 反馈裁决：环境检测页退役——此 tab 只承载「重新运行安装
+          // 引导」入口（引擎/运行环境的检查与重装都在引导页步骤①）。
+          <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
+            <Activity className="h-8 w-8 text-muted-foreground/60" />
+            <div>
+              <div className="text-sm font-medium">{t("manage.onboardingTitle", "安装引导")}</div>
+              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+                {t("manage.onboardingDesc", "智能体引擎初始化与运行环境检查已合并到安装引导。可重新运行引导完成检查、补装或重装。")}
+              </p>
+            </div>
+            <Button size="sm" onClick={onReopenOnboarding}>
+              {t("manage.onboardingReopen", "重新运行安装引导")}
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

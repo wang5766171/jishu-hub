@@ -423,7 +423,7 @@ function TitleBar({
   );
 }
 
-function AppContent() {
+function AppContent({ onReopenOnboarding }: { onReopenOnboarding: () => void }) {
   // v0.7.0 需求一：会话作用域状态。项目/会话/元数据随会话作用域 agent 切换重新拉取。
   const { chatAgentId, setChatAgent, setManageAgent } = useAgent();
   // 1c（v0.9.5 需求1）：CLI plugins validate 跨进程校验桥。
@@ -810,6 +810,7 @@ useEffect(() => {
                 navigateToAgentModels={agentModelsNavKey}
                 onLaunchPipeline={handleLaunchPipeline}
                 onLaunchDescribe={handleLaunchPluginDescribe}
+                onReopenOnboarding={onReopenOnboarding}
                 projects={projects}
                 projectMetas={projectMetas}
                 refetchProjects={refetchProjects}
@@ -916,6 +917,10 @@ function AppContentWrapper() {
   // null = 查询中；false = 走引导；true = 直接主界面。旧 localStorage 键
   // 不迁移（全局裁决：首次运行 0.9.7 统一走一遍引导），检测到即删除。
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
+  // 需求4 反馈裁决（2026-11-12）：环境检测页退役，「安装引导」成为唯一
+  // 安装/初始化界面——管理菜单「安装引导」入口可重新打开（二次进入：
+  // 步骤①显示引擎与环境就绪态，重装/补装后走完流程返回主界面）。
+  const [forceOnboard, setForceOnboard] = useState(false);
   // 需求14 M2（S3）：主题插件装载器——App 根部消费（ThemeProvider 内），
   // 订阅组合清单版本实现主题热更；env-check 首屏阶段同样生效。
   usePluginTheme();
@@ -933,7 +938,7 @@ function AppContentWrapper() {
     return null;
   }
 
-  if (!onboarded) {
+  if (!onboarded || forceOnboard) {
     return (
       <div className="flex flex-col h-screen w-screen bg-background text-foreground relative">
         <TitleBar currentPage={"chat"} onNavigate={() => {}} disabled={true} />
@@ -942,6 +947,7 @@ function AppContentWrapper() {
             onComplete={() => {
               invokeCommand("set_onboarded", { value: true }).catch(console.error);
               setOnboarded(true);
+              setForceOnboard(false);
             }}
           />
         </div>
@@ -949,7 +955,7 @@ function AppContentWrapper() {
     );
   }
 
-  return <AppContent />;
+  return <AppContent onReopenOnboarding={() => setForceOnboard(true)} />;
 }
 
 function App() {
