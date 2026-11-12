@@ -318,7 +318,7 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
           <X className={cn("h-4 w-4 shrink-0", optional ? "text-muted-foreground/50" : "text-destructive")} />
         )}
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 text-[15px]">
+          <div className="flex items-center gap-1.5 text-sm">
             <span className="font-medium">{labels[id]}</span>
             {optional && (
               <span className="rounded bg-muted px-1 py-0.5 text-[11px] text-muted-foreground">
@@ -381,7 +381,7 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
   return (
     <div className="flex flex-col items-center gap-5 py-6">
       <div className="text-center">
-        <div className="text-xl font-semibold">
+        <div className="text-lg font-semibold">
           {t("onboarding.initTitle", "正在准备你的智能体")}
         </div>
         <div className="mt-1.5 text-sm text-muted-foreground/70">
@@ -399,7 +399,7 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
           <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary/70" />
         )}
         <div className="min-w-0 flex-1">
-          <div className="text-[15px] font-medium">{t("onboarding.engineTitle", "智能体引擎")}</div>
+          <div className="text-sm font-medium">{t("onboarding.engineTitle", "智能体引擎")}</div>
           <div className="text-sm text-muted-foreground">
             {failed
               ? t("onboarding.initFailed", "初始化未完成——可重试（重新解压安装引擎）")
@@ -482,7 +482,7 @@ function SceneStep({ onNext, onSkip }: { onNext: (scenes?: string[]) => void; on
   return (
     <div className="flex flex-col gap-5">
       <div className="text-center">
-        <div className="text-xl font-semibold">{t("onboarding.sceneTitle", "你主要用它做什么？")}</div>
+        <div className="text-lg font-semibold">{t("onboarding.sceneTitle", "你主要用它做什么？")}</div>
         <div className="mt-1.5 text-sm text-muted-foreground">
           {t("onboarding.sceneHint", "可多选——按场景给你配好推荐装备")}
         </div>
@@ -504,7 +504,7 @@ function SceneStep({ onNext, onSkip }: { onNext: (scenes?: string[]) => void; on
               )}
             >
               <Icon className={cn("h-6 w-6", active ? "text-primary" : "text-primary/70")} />
-              <span className="text-[15px] font-medium">{t(scene.nameKey)}</span>
+              <span className="text-sm font-medium">{t(scene.nameKey)}</span>
             </button>
           );
         })}
@@ -639,7 +639,7 @@ function RecommendStep({
   return (
     <div className="flex flex-col gap-4">
       <div className="text-center">
-        <div className="text-xl font-semibold">{t("onboarding.recommendTitle", "按需配齐装备")}</div>
+        <div className="text-lg font-semibold">{t("onboarding.recommendTitle", "按需配齐装备")}</div>
         <div className="mt-1.5 text-sm text-muted-foreground">
           {t("onboarding.recommendHint", "勾选要装的（都可随时在插件市场增删）")}
         </div>
@@ -764,7 +764,7 @@ function InstallStep({ items, onStart, onBack }: { items: InstallItem[]; onStart
   return (
     <div className="flex flex-col gap-4">
       <div className="text-center">
-        <div className="text-xl font-semibold">{t("onboarding.installingTitle", "正在安装所选")}</div>
+        <div className="text-lg font-semibold">{t("onboarding.installingTitle", "正在安装所选")}</div>
         <div className="mt-1.5 text-sm text-muted-foreground">
           {t("onboarding.installingHint", "安装完成后即可开始使用；失败的项可稍后在插件市场重试")}
         </div>
