@@ -941,7 +941,13 @@ function AppContentWrapper() {
   if (!onboarded || forceOnboard) {
     return (
       <div className="flex flex-col h-screen w-screen bg-background text-foreground relative">
-        <TitleBar currentPage={"chat"} onNavigate={() => {}} disabled={true} />
+        {/* 收版反馈（2026-11-12）：主动进入（管理菜单「安装引导」）不隐藏
+            菜单栏——菜单导航本身即「返回工作区」；首启初始化进入仍锁定。 */}
+        <TitleBar
+          currentPage={"chat"}
+          onNavigate={forceOnboard ? () => setForceOnboard(false) : () => {}}
+          disabled={!forceOnboard}
+        />
         <div className="flex-1 overflow-hidden bg-background">
           <OnboardingWizard
             onComplete={() => {
@@ -949,7 +955,6 @@ function AppContentWrapper() {
               setOnboarded(true);
               setForceOnboard(false);
             }}
-            onExit={forceOnboard ? () => setForceOnboard(false) : undefined}
           />
         </div>
       </div>

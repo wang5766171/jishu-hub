@@ -1750,7 +1750,9 @@
     "backToStep": "Back to step {{n}}",
     "installingTitle": "Installing selections",
     "installingHint": "You can start once installation finishes; failed items can be retried later in the plugin market",
-    "noSelection": "Nothing selected — start right away"
+    "noSelection": "Nothing selected — start right away",
+    "rtNewVersion": "Latest v{{v}}",
+    "rtUpdate": "Update"
   },
   "taskSteps": {
     "title": "Task steps",

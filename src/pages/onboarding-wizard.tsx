@@ -21,10 +21,11 @@ import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { PLUGIN_SCENES } from "@/lib/plugin-scenes";
-import { MIN_NODE_VERSION, nodeVersionSatisfies } from "@/agents/version-constants";
+import { MIN_NODE_VERSION, isVersionNewer, nodeVersionSatisfies } from "@/agents/version-constants";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
+  ArrowUpCircle,
   Bot,
   Check,
   ChevronLeft,
@@ -74,23 +75,13 @@ interface SkillhubEntry {
 
 type InstallState = "idle" | "installing" | "done" | "failed";
 
-export function OnboardingWizard({ onComplete, onExit }: { onComplete: () => void; onExit?: () => void }) {
+export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   const { t } = useTranslation();
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
 
   return (
     <div className="flex h-full flex-col items-center overflow-y-auto bg-background px-6 py-8">
       <div className="w-full max-w-2xl">
-        {/* 收版反馈③（2026-11-12）：主动进入的安装引导可退出——返回工作区；
-            首启初始化进入不可退出（装完才进主界面）。 */}
-        {onExit && (
-          <div className="mb-2 flex justify-end">
-            <Button variant="ghost" size="sm" className="text-xs text-muted-foreground" onClick={onExit}>
-              <X className="h-3.5 w-3.5" />
-              <span className="ml-1">{t("onboarding.exitToWork", "返回工作区")}</span>
-            </Button>
-          </div>
-        )}
         {/* 进度指示——收版反馈①②：四步（环境检测为第一步）；已完成的
             步骤圆圈可点击回退。 */}
         <div className="mb-6 flex items-center justify-center gap-2 text-xs text-muted-foreground">
@@ -101,7 +92,7 @@ export function OnboardingWizard({ onComplete, onExit }: { onComplete: () => voi
                 disabled={n >= step}
                 onClick={() => setStep(n as 1 | 2 | 3 | 4)}
                 className={cn(
-                  "flex h-5 w-5 items-center justify-center rounded-full border text-[10px]",
+                  "flex h-6 w-6 items-center justify-center rounded-full border text-xs",
                   step > n
                     ? "border-primary bg-primary text-primary-foreground"
                     : step === n
@@ -151,6 +142,15 @@ let installItemsHolder: InstallItem[] = [];
 // ── 步骤①：环境准备（引擎初始化 + 运行环境必装项——需求4 反馈裁决：原
 // 环境检测页退役，必装项并入引导，装齐才放行）──
 
+interface RuntimeStatusLite {
+  id: string;
+  installed: boolean;
+  version: string | null;
+  update_command?: string | null;
+  download_url?: string | null;
+  latest_package?: string | null;
+}
+
 interface EnvData {
   node_installed: boolean;
   node_version: string | null;
@@ -160,6 +160,7 @@ interface EnvData {
   python_version: string | null;
   git_installed: boolean;
   git_version: string | null;
+  runtimes?: RuntimeStatusLite[];
 }
 
 function EnvPrepStep({ onReady }: { onReady: () => void }) {
@@ -169,6 +170,11 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
   const [failed, setFailed] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [env, setEnv] = useState<EnvData | null>(null);
+  // 收版反馈③（2026-11-12）：运行环境支持检查更新（原环境检测页能力）——
+  // npm 可直接更新，其余项给下载入口。
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [latestVersions, setLatestVersions] = useState<Map<string, string>>(new Map());
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
 
   const poll = useCallback(async () => {
     try {
@@ -214,12 +220,51 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
 
   // 必装项判定：引擎 ready + Node（≥ 最低版）+ npm + Git。Python 可选
   // （常用但非 agent 运行根基——缺项提示不拦截）。
-  // 收版反馈①③（2026-11-12 用户实测「没有环境检查/第一步闪一下」）：
-  // 就绪后**不再自动放行**——展示全绿结果 + 「下一步」按钮由用户确认
-  // 进入（环境检查可见可核对，消除一闪而过）。
   const nodeOk = !!env?.node_installed
     && (!env.node_version || nodeVersionSatisfies(env.node_version, MIN_NODE_VERSION));
   const essentialsOk = status?.state === "ready" && nodeOk && !!env?.npm_installed && !!env?.git_installed;
+
+  const checkUpdates = async () => {
+    const packages = (env?.runtimes ?? [])
+      .filter((r) => r.latest_package)
+      .map((r) => [r.id, r.latest_package as string]);
+    if (packages.length === 0) return;
+    setCheckingUpdates(true);
+    try {
+      const results = await invokeCommand<Array<{ id: string; latest_version: string | null }>>(
+        "check_available_updates",
+        { packages },
+      );
+      const map = new Map<string, string>();
+      for (const r of results ?? []) {
+        if (r.latest_version) map.set(r.id, r.latest_version);
+      }
+      setLatestVersions(map);
+    } catch {
+      /* 检查失败静默——可重试 */
+    } finally {
+      setCheckingUpdates(false);
+    }
+  };
+
+  const runUpdate = async (id: string) => {
+    const cmd = (env?.runtimes ?? []).find((r) => r.id === id)?.update_command;
+    if (!cmd) return;
+    setUpdatingId(id);
+    try {
+      await invokeCommand<string>("install_agent_command", { command: cmd });
+      await refreshEnv();
+      setLatestVersions((prev) => {
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
+    } catch (err) {
+      console.warn("runtime update failed:", err);
+    } finally {
+      setUpdatingId(null);
+    }
+  };
 
   const stageText =
     stage === "extract"
@@ -246,7 +291,7 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
     invokeCommand("open_url", { url }).catch(console.error);
   };
 
-  // 运行环境行（必装三件套 + 可选 Python）：installed ✓ 版本 / 缺失→下载入口。
+  // 运行环境行：installed ✓ 版本（+新版本提示/更新入口）/ 缺失→下载入口。
   const renderRuntimeRow = (
     id: "node" | "npm" | "git" | "python",
     ok: boolean,
@@ -261,28 +306,37 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
       git: t("onboarding.rtGit", "Git"),
       python: t("onboarding.rtPython", "Python"),
     };
+    const runtime = (env?.runtimes ?? []).find((r) => r.id === id);
+    const latest = latestVersions.get(id);
+    const hasUpdate = ok && !!version && !!latest && isVersionNewer(version, latest);
+    const updateCmd = runtime?.update_command ?? undefined;
     return (
-      <div key={id} className="flex items-center gap-3 rounded-lg border border-border/60 px-3 py-2">
+      <div key={id} className="flex items-center gap-3 rounded-lg border border-border/60 px-3 py-2.5">
         {ok ? (
           <Check className="h-4 w-4 shrink-0 text-[var(--icon-success)]" />
         ) : (
           <X className={cn("h-4 w-4 shrink-0", optional ? "text-muted-foreground/50" : "text-destructive")} />
         )}
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 text-sm">
+          <div className="flex items-center gap-1.5 text-[15px]">
             <span className="font-medium">{labels[id]}</span>
             {optional && (
-              <span className="rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+              <span className="rounded bg-muted px-1 py-0.5 text-[11px] text-muted-foreground">
                 {t("onboarding.rtOptional", "可选")}
               </span>
             )}
           </div>
           {ok ? (
-            <div className="text-xs text-muted-foreground">
+            <div className="text-sm text-muted-foreground">
               {version ? `v${version}` : t("env.normal", "已就绪")}
+              {hasUpdate && (
+                <span className="ml-2 text-amber-600">
+                  {t("onboarding.rtNewVersion", "最新 v{{v}}", { v: latest })}
+                </span>
+              )}
             </div>
           ) : (
-            <div className="text-xs text-muted-foreground">
+            <div className="text-sm text-muted-foreground">
               {warn
                 ?? (optional
                   ? t("onboarding.rtOptionalMissing", "未安装——不影响引导继续")
@@ -295,10 +349,29 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
             variant="outline"
             size="sm"
             className="shrink-0"
-            onClick={() => openUrl(downloadUrl)}
+            onClick={() => openUrl(runtime?.download_url ?? downloadUrl)}
           >
             <Download className="h-3.5 w-3.5" />
             <span className="ml-1">{t("onboarding.rtDownload", "下载")}</span>
+          </Button>
+        )}
+        {ok && hasUpdate && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            disabled={updatingId === id}
+            onClick={() => {
+              if (updateCmd) void runUpdate(id);
+              else openUrl(runtime?.download_url ?? downloadUrl);
+            }}
+          >
+            {updatingId === id ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ArrowUpCircle className="h-3.5 w-3.5" />
+            )}
+            <span className="ml-1">{updateCmd ? t("onboarding.rtUpdate", "更新") : t("onboarding.rtDownload", "下载")}</span>
           </Button>
         )}
       </div>
@@ -308,10 +381,10 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
   return (
     <div className="flex flex-col items-center gap-5 py-6">
       <div className="text-center">
-        <div className="text-lg font-semibold">
+        <div className="text-xl font-semibold">
           {t("onboarding.initTitle", "正在准备你的智能体")}
         </div>
-        <div className="mt-1 text-xs text-muted-foreground/60">
+        <div className="mt-1.5 text-sm text-muted-foreground/70">
           {t("onboarding.initHint", "首次开箱需要几十秒（解压与配置），完成前不进入主界面")}
         </div>
       </div>
@@ -326,8 +399,8 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
           <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary/70" />
         )}
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium">{t("onboarding.engineTitle", "智能体引擎")}</div>
-          <div className="text-xs text-muted-foreground">
+          <div className="text-[15px] font-medium">{t("onboarding.engineTitle", "智能体引擎")}</div>
+          <div className="text-sm text-muted-foreground">
             {failed
               ? t("onboarding.initFailed", "初始化未完成——可重试（重新解压安装引擎）")
               : status?.state === "ready"
@@ -345,7 +418,7 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
 
       {/* 运行环境（必装：Node/npm/Git；可选：Python） */}
       <div className="flex w-full flex-col gap-2">
-        <div className="text-xs font-medium text-muted-foreground">{t("onboarding.rtTitle", "运行环境")}</div>
+        <div className="text-sm font-medium text-muted-foreground">{t("onboarding.rtTitle", "运行环境")}</div>
         {renderRuntimeRow("node", nodeOk, env?.node_version ?? null, "https://nodejs.org/", false,
           env?.node_installed && env.node_version && !nodeVersionSatisfies(env.node_version, MIN_NODE_VERSION)
             ? t("onboarding.rtNodeLow", `版本过低 v${env.node_version}（需 ≥ v${MIN_NODE_VERSION}），请升级`)
@@ -357,11 +430,21 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
           <Button
             variant="ghost"
             size="sm"
-            className="text-xs text-muted-foreground"
+            className="text-sm text-muted-foreground"
             onClick={() => void refreshEnv()}
           >
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshCw className="h-4 w-4" />
             <span className="ml-1">{t("onboarding.rtRecheck", "重新检测")}</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-sm text-muted-foreground"
+            disabled={checkingUpdates}
+            onClick={() => void checkUpdates()}
+          >
+            {checkingUpdates ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUpCircle className="h-4 w-4" />}
+            <span className="ml-1">{checkingUpdates ? t("env.checkingUpdate", "检查中…") : t("env.checkUpdate", "检查更新")}</span>
           </Button>
         </div>
         {/* 反馈①③：必装项全就绪 → 用户确认进入（检查结果可见，不闪跳）。 */}
@@ -399,8 +482,8 @@ function SceneStep({ onNext, onSkip }: { onNext: (scenes?: string[]) => void; on
   return (
     <div className="flex flex-col gap-5">
       <div className="text-center">
-        <div className="text-lg font-semibold">{t("onboarding.sceneTitle", "你主要用它做什么？")}</div>
-        <div className="mt-1 text-xs text-muted-foreground">
+        <div className="text-xl font-semibold">{t("onboarding.sceneTitle", "你主要用它做什么？")}</div>
+        <div className="mt-1.5 text-sm text-muted-foreground">
           {t("onboarding.sceneHint", "可多选——按场景给你配好推荐装备")}
         </div>
       </div>
@@ -421,7 +504,7 @@ function SceneStep({ onNext, onSkip }: { onNext: (scenes?: string[]) => void; on
               )}
             >
               <Icon className={cn("h-6 w-6", active ? "text-primary" : "text-primary/70")} />
-              <span className="text-sm font-medium">{t(scene.nameKey)}</span>
+              <span className="text-[15px] font-medium">{t(scene.nameKey)}</span>
             </button>
           );
         })}
@@ -556,15 +639,15 @@ function RecommendStep({
   return (
     <div className="flex flex-col gap-4">
       <div className="text-center">
-        <div className="text-lg font-semibold">{t("onboarding.recommendTitle", "按需配齐装备")}</div>
-        <div className="mt-1 text-xs text-muted-foreground">
+        <div className="text-xl font-semibold">{t("onboarding.recommendTitle", "按需配齐装备")}</div>
+        <div className="mt-1.5 text-sm text-muted-foreground">
           {t("onboarding.recommendHint", "勾选要装的（都可随时在插件市场增删）")}
         </div>
       </div>
 
       {plugins.length > 0 && (
         <div>
-          <div className="mb-2 text-xs font-medium text-muted-foreground">{t("onboarding.recPlugins", "插件")}</div>
+          <div className="mb-2 text-sm font-medium text-muted-foreground">{t("onboarding.recPlugins", "插件")}</div>
           <div className="space-y-1.5">
             {plugins.map((p) => {
               const key = `plugin::${p.id}`;
@@ -585,7 +668,7 @@ function RecommendStep({
       )}
 
       <div>
-        <div className="mb-2 text-xs font-medium text-muted-foreground">{t("onboarding.recSkills", "技能")}</div>
+        <div className="mb-2 text-sm font-medium text-muted-foreground">{t("onboarding.recSkills", "技能")}</div>
         {skillError ? (
           <div className="flex items-center gap-2 rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
             {t("onboarding.skillOffline", "技能市场暂不可用（网络）——可稍后在插件市场安装")}
@@ -594,7 +677,7 @@ function RecommendStep({
             </Button>
           </div>
         ) : skills.length === 0 ? (
-          <div className="px-3 py-2 text-xs text-muted-foreground/70">
+          <div className="px-3 py-2 text-sm text-muted-foreground/70">
             <Loader2 className="mr-1.5 inline h-3 w-3 animate-spin" />
             {t("onboarding.skillLoading", "正在获取推荐技能…")}
           </div>
@@ -681,8 +764,8 @@ function InstallStep({ items, onStart, onBack }: { items: InstallItem[]; onStart
   return (
     <div className="flex flex-col gap-4">
       <div className="text-center">
-        <div className="text-lg font-semibold">{t("onboarding.installingTitle", "正在安装所选")}</div>
-        <div className="mt-1 text-xs text-muted-foreground">
+        <div className="text-xl font-semibold">{t("onboarding.installingTitle", "正在安装所选")}</div>
+        <div className="mt-1.5 text-sm text-muted-foreground">
           {t("onboarding.installingHint", "安装完成后即可开始使用；失败的项可稍后在插件市场重试")}
         </div>
       </div>
@@ -756,11 +839,11 @@ function RecommendRow({
         className="mt-0.5 h-3.5 w-3.5 accent-[var(--primary)]"
       />
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 text-[13px] font-medium">
+        <div className="flex items-center gap-2 text-sm font-medium">
           <span className="truncate">{title}</span>
-          {meta && <span className="shrink-0 text-[10px] text-amber-600">{meta}</span>}
+          {meta && <span className="shrink-0 text-[11px] text-amber-600">{meta}</span>}
         </div>
-        <p className="line-clamp-1 text-[11px] text-muted-foreground" title={description}>
+        <p className="line-clamp-1 text-xs text-muted-foreground" title={description}>
           {description}
         </p>
       </div>
