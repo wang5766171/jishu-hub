@@ -236,7 +236,7 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigat
             <div>
               <div className="text-sm font-medium">{t("manage.onboardingTitle", "安装引导")}</div>
               <p className="mt-1 max-w-sm text-xs text-muted-foreground">
-                {t("manage.onboardingDesc", "智能体引擎初始化与运行环境检查已合并到安装引导。可重新运行引导完成检查、补装或重装。")}
+                {t("manage.onboardingDesc", "安装引导包含智能体引擎安装与运行环境（Node.js / npm / Git）检查，以及插件与技能推荐。")}
               </p>
             </div>
             <Button size="sm" onClick={onReopenOnboarding}>

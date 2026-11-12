@@ -102,8 +102,10 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
         </div>
 
         {step === 1 && <EnvPrepStep onReady={() => setStep(2)} />}
+        {/* 收版反馈④（2026-11-12 用户裁决）：「自定义（跳过推荐）」只跳过
+            当前场景选择步——仍进入推荐步，不再整个引导直接结束。 */}
         {step === 2 && (
-          <SceneStep onNext={() => setStep(3)} onSkip={onComplete} />
+          <SceneStep onNext={() => setStep(3)} onSkip={() => setStep(3)} />
         )}
         {step === 3 && (
           <RecommendStep scenes={selectedScenesHolder} onStart={onComplete} onBack={() => setStep(2)} />
@@ -182,12 +184,12 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
 
   // 必装项判定：引擎 ready + Node（≥ 最低版）+ npm + Git。Python 可选
   // （常用但非 agent 运行根基——缺项提示不拦截）。
+  // 收版反馈①③（2026-11-12 用户实测「没有环境检查/第一步闪一下」）：
+  // 就绪后**不再自动放行**——展示全绿结果 + 「下一步」按钮由用户确认
+  // 进入（环境检查可见可核对，消除一闪而过）。
   const nodeOk = !!env?.node_installed
     && (!env.node_version || nodeVersionSatisfies(env.node_version, MIN_NODE_VERSION));
   const essentialsOk = status?.state === "ready" && nodeOk && !!env?.npm_installed && !!env?.git_installed;
-  useEffect(() => {
-    if (essentialsOk) onReady();
-  }, [essentialsOk, onReady]);
 
   const stageText =
     stage === "extract"
@@ -321,7 +323,7 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
         {renderRuntimeRow("npm", !!env?.npm_installed, env?.npm_version ?? null, "https://nodejs.org/")}
         {renderRuntimeRow("git", !!env?.git_installed, env?.git_version ?? null, "https://git-scm.com/downloads")}
         {renderRuntimeRow("python", !!env?.python_installed, env?.python_version ?? null, "https://www.python.org/downloads/", true)}
-        <div className="flex justify-center pt-1">
+        <div className="flex items-center justify-center gap-3 pt-1">
           <Button
             variant="ghost"
             size="sm"
@@ -330,6 +332,12 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
           >
             <RefreshCw className="h-3.5 w-3.5" />
             <span className="ml-1">{t("onboarding.rtRecheck", "重新检测")}</span>
+          </Button>
+        </div>
+        {/* 反馈①③：必装项全就绪 → 用户确认进入（检查结果可见，不闪跳）。 */}
+        <div className="flex justify-center pt-2">
+          <Button size="sm" disabled={!essentialsOk} onClick={onReady}>
+            {t("onboarding.next", "下一步")}
           </Button>
         </div>
       </div>
