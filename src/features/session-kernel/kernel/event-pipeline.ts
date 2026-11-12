@@ -447,6 +447,8 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // 空转 turn_complete（Route 2 自动发送后旧进程的 early complete）
           // 不再写未读（原实现信号在守卫前，迟到空转事件反复重写未读）。
           const emitTurnCompleteSignal = () => {
+            // 闭包捕获循环变量——TS 控制流收窄在函数体内失效，显式恢复。
+            if (chunk.data.kind !== "turn_complete") return;
             const turnCompleteBackground = cid !== deps.selectedSessionRef.current;
             if (turnCompleteBackground || !isAppWindowActive()) {
               emitSessionSignal({
