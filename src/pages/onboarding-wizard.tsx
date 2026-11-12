@@ -113,7 +113,15 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
         {/* 收版反馈④（2026-11-12 用户裁决）：「自定义（跳过推荐）」只跳过
             当前场景选择步——仍进入推荐步，不再整个引导直接结束。 */}
         {step === 2 && (
-          <SceneStep onNext={() => setStep(3)} onSkip={() => setStep(3)} />
+          <SceneStep
+            onNext={() => setStep(3)}
+            onSkip={() => {
+              // 收版反馈：改选「自定义」进入时清空场景记录——否则推荐页
+              // 仍按上一轮选的场景拉取（返回重选不重置）。
+              selectedScenesHolder = [];
+              setStep(3);
+            }}
+          />
         )}
         {step === 3 && (
           <RecommendStep

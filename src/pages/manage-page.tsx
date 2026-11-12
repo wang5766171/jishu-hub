@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button";
 // 批次5（v0.9.5 需求1 GUI 改造）：会话区 → 管理页导航事件。
 import { onManageNav } from "@/lib/app-nav";
 import type { AgentConfigSection, ManageTab, Project, ProjectMeta } from "@/types";
+import { OnboardingWizard } from "@/pages/onboarding-wizard";
 
 interface ManagePageProps {
   onBack: () => void;
@@ -36,8 +37,6 @@ interface ManagePageProps {
   onLaunchPipeline?: (pluginId: string, name: string) => void;
   /** v0.9.7 需求3 C1：描述需求创建插件（跳会话页预填创作指令）。 */
   onLaunchDescribe?: (text: string) => void;
-  /** 需求4 反馈裁决：管理菜单「安装引导」——重新打开引导页（二次进入）。 */
-  onReopenOnboarding: () => void;
   projects: Project[] | null;
   projectMetas: Record<string, ProjectMeta> | null;
   refetchProjects: (silent?: boolean) => Promise<Project[]>;
@@ -106,7 +105,7 @@ const agentSectionTab: Partial<Record<AgentConfigSection, ManageTab>> = {
   advanced: "agent-advanced",
 };
 
-export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigateToAgentModels, onLaunchPipeline, onLaunchDescribe, onReopenOnboarding, projects, projectMetas, refetchProjects, refetchProjectMetas }: ManagePageProps) {
+export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigateToAgentModels, onLaunchPipeline, onLaunchDescribe, projects, projectMetas, refetchProjects, refetchProjectMetas }: ManagePageProps) {
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<ManageTab>("projects");
   const prevNavRef = useRef(0);
@@ -229,19 +228,10 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigat
         {activeTab === "appearance" && <AppearancePage />}
         {activeTab === "commands" && <CommandsPage />}
         {activeTab === "env" && (
-          // 需求4 反馈裁决：环境检测页退役——此 tab 只承载「重新运行安装
-          // 引导」入口（引擎/运行环境的检查与重装都在引导页步骤①）。
-          <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
-            <Activity className="h-8 w-8 text-muted-foreground/60" />
-            <div>
-              <div className="text-sm font-medium">{t("manage.onboardingTitle", "安装引导")}</div>
-              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
-                {t("manage.onboardingDesc", "安装引导包含智能体引擎安装与运行环境（Node.js / npm / Git）检查，以及插件与技能推荐。")}
-              </p>
-            </div>
-            <Button size="sm" onClick={onReopenOnboarding}>
-              {t("manage.onboardingReopen", "重新运行安装引导")}
-            </Button>
+          // 需求4 反馈裁决（2026-11-12 二轮）：主动进入形态——左侧菜单保留，
+          // 引导流程内嵌在管理页内容区；「开始使用」= 返回工作区。
+          <div className="h-full overflow-y-auto px-4 py-2">
+            <OnboardingWizard onComplete={onBack} />
           </div>
         )}
       </div>
