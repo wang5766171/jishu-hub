@@ -1745,7 +1745,12 @@
     "installSelected": "Install selected",
     "start": "Start using",
     "back": "Back",
-    "backToWizard": "Back to setup"
+    "backToWizard": "Back to setup",
+    "exitToWork": "Back to workspace",
+    "backToStep": "Back to step {{n}}",
+    "installingTitle": "Installing selections",
+    "installingHint": "You can start once installation finishes; failed items can be retried later in the plugin market",
+    "noSelection": "Nothing selected — start right away"
   },
   "taskSteps": {
     "title": "Task steps",

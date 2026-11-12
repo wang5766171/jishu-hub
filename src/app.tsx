@@ -949,6 +949,7 @@ function AppContentWrapper() {
               setOnboarded(true);
               setForceOnboard(false);
             }}
+            onExit={forceOnboard ? () => setForceOnboard(false) : undefined}
           />
         </div>
       </div>

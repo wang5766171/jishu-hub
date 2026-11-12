@@ -1745,7 +1745,12 @@
     "installSelected": "安装所选",
     "start": "开始使用",
     "back": "上一步",
-    "backToWizard": "返回引导"
+    "backToWizard": "返回引导",
+    "exitToWork": "返回工作区",
+    "backToStep": "回到第 {{n}} 步",
+    "installingTitle": "正在安装所选",
+    "installingHint": "安装完成后即可开始使用；失败的项可稍后在插件市场重试",
+    "noSelection": "没有勾选任何项——直接开始使用"
   },
   "taskSteps": {
     "title": "任务步骤",

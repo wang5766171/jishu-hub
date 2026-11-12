@@ -16,7 +16,7 @@
  *    「开始使用」→ onComplete（落默认空间由 app 兜底 effect 承接，Q11）。
  * 无「先逛逛」（Q1：装完才进主界面）；「进入工作台」只在步骤③出现。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { invokeCommand } from "@/hooks/use-invoke";
@@ -74,17 +74,32 @@ interface SkillhubEntry {
 
 type InstallState = "idle" | "installing" | "done" | "failed";
 
-export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+export function OnboardingWizard({ onComplete, onExit }: { onComplete: () => void; onExit?: () => void }) {
+  const { t } = useTranslation();
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
 
   return (
     <div className="flex h-full flex-col items-center overflow-y-auto bg-background px-6 py-8">
       <div className="w-full max-w-2xl">
-        {/* 进度指示 */}
+        {/* 收版反馈③（2026-11-12）：主动进入的安装引导可退出——返回工作区；
+            首启初始化进入不可退出（装完才进主界面）。 */}
+        {onExit && (
+          <div className="mb-2 flex justify-end">
+            <Button variant="ghost" size="sm" className="text-xs text-muted-foreground" onClick={onExit}>
+              <X className="h-3.5 w-3.5" />
+              <span className="ml-1">{t("onboarding.exitToWork", "返回工作区")}</span>
+            </Button>
+          </div>
+        )}
+        {/* 进度指示——收版反馈①②：四步（环境检测为第一步）；已完成的
+            步骤圆圈可点击回退。 */}
         <div className="mb-6 flex items-center justify-center gap-2 text-xs text-muted-foreground">
-          {[1, 2, 3].map((n) => (
+          {[1, 2, 3, 4].map((n) => (
             <div key={n} className="flex items-center gap-2">
-              <span
+              <button
+                type="button"
+                disabled={n >= step}
+                onClick={() => setStep(n as 1 | 2 | 3 | 4)}
                 className={cn(
                   "flex h-5 w-5 items-center justify-center rounded-full border text-[10px]",
                   step > n
@@ -92,11 +107,13 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
                     : step === n
                       ? "border-primary text-primary"
                       : "border-border/60",
+                  n < step && "cursor-pointer hover:opacity-80",
                 )}
+                title={n < step ? t("onboarding.backToStep", "回到第 {{n}} 步", { n }) : undefined}
               >
                 {step > n ? <Check className="h-3 w-3" /> : n}
-              </span>
-              {n < 3 && <span className="h-px w-8 bg-border/60" />}
+              </button>
+              {n < 4 && <span className="h-px w-8 bg-border/60" />}
             </div>
           ))}
         </div>
@@ -108,7 +125,17 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
           <SceneStep onNext={() => setStep(3)} onSkip={() => setStep(3)} />
         )}
         {step === 3 && (
-          <RecommendStep scenes={selectedScenesHolder} onStart={onComplete} onBack={() => setStep(2)} />
+          <RecommendStep
+            scenes={selectedScenesHolder}
+            onNext={(items) => {
+              installItemsHolder = items;
+              setStep(4);
+            }}
+            onBack={() => setStep(2)}
+          />
+        )}
+        {step === 4 && (
+          <InstallStep items={installItemsHolder} onStart={onComplete} onBack={() => setStep(3)} />
         )}
       </div>
     </div>
@@ -117,6 +144,9 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
 
 // 步骤②→③ 的选择传递（简单 holder——向导不重挂载，避免状态提升样板）。
 let selectedScenesHolder: string[] = [];
+// ③→④ 选中清单传递（同款 holder）。
+let installItemsHolder: InstallItem[] = [];
+
 
 // ── 步骤①：环境准备（引擎初始化 + 运行环境必装项——需求4 反馈裁决：原
 // 环境检测页退役，必装项并入引导，装齐才放行）──
@@ -410,13 +440,22 @@ function SceneStep({ onNext, onSkip }: { onNext: (scenes?: string[]) => void; on
 
 // ── 步骤③：场景推荐 + 安装 + 开始 ──
 
+/** ③→④ 传递的选中项（统一形态，安装步逐项执行）。 */
+export interface InstallItem {
+  kind: "plugin" | "skill";
+  id: string;
+  title: string;
+  description: string;
+  meta?: string;
+}
+
 function RecommendStep({
   scenes,
-  onStart,
+  onNext,
   onBack,
 }: {
   scenes: string[];
-  onStart: () => void;
+  onNext: (items: InstallItem[]) => void;
   onBack: () => void;
 }) {
   const { t } = useTranslation();
@@ -424,16 +463,22 @@ function RecommendStep({
   const [skills, setSkills] = useState<SkillhubEntry[]>([]);
   const [skillError, setSkillError] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [installStates, setInstallStates] = useState<Record<string, InstallState>>({});
-  const [installing, setInstalling] = useState(false);
+  // 收版反馈⑤：选了场景 → 推荐项默认勾上；「自定义（跳过推荐）」进入 →
+  // 不默认勾（用户自选）。
+  const preselect = scenes.length > 0;
 
   const load = useCallback(async () => {
     setSkillError(false);
-    // 插件：各场景 curated 非 required 可装件。
+    // 插件：各场景 curated 非 required 可装件。收版反馈④：跳过场景进入时
+    // scenes 为空——改为全部场景各取头部一件合并（多场景代表），洗牌限量，
+    // 不再空列表/转圈。
+    const scenesToLoad = scenes.length > 0
+      ? scenes
+      : PLUGIN_SCENES.filter((s) => s.id !== "custom").map((s) => s.id);
     try {
       const all: MarketEntry[] = [];
       const seen = new Set<string>();
-      for (const scene of scenes) {
+      for (const scene of scenesToLoad) {
         const entries = await invokeCommand<MarketEntry[]>("market_list_curated", { scene });
         for (const e of entries ?? []) {
           if (!e.required && !seen.has(e.id)) {
@@ -442,22 +487,22 @@ function RecommendStep({
           }
         }
       }
-      setPlugins(all);
-      setPicked(new Set(all.map((e) => e.id)));
+      const pickedList = scenes.length > 0 ? all : shuffle(all).slice(0, 6);
+      setPlugins(pickedList);
+      if (preselect) setPicked(new Set(pickedList.map((e) => `plugin::${e.id}`)));
     } catch {
       /* 插件源内嵌不会失败 */
     }
-    // 技能：每场景按评分取前 4（SkillHub 在线）。
-    if (scenes.length === 0) return;
+    // 技能：每场景按评分取前 4（跳过场景时每场景取 1，洗牌限量 6）。
     try {
       const collected: SkillhubEntry[] = [];
       const seenSkill = new Set<string>();
-      for (const scene of scenes) {
+      for (const scene of scenesToLoad) {
         const result = await invokeCommand<{ entries: SkillhubEntry[] }>("skillhub_list", {
           scene,
           keyword: null,
           page: 1,
-          pageSize: 4,
+          pageSize: scenes.length > 0 ? 4 : 1,
         });
         for (const e of result.entries ?? []) {
           if (!seenSkill.has(e.slug)) {
@@ -466,37 +511,23 @@ function RecommendStep({
           }
         }
       }
-      setSkills(collected);
+      const skillList = scenes.length > 0 ? collected : shuffle(collected).slice(0, 6);
+      setSkills(skillList);
+      if (preselect) {
+        setPicked((prev) => {
+          const next = new Set(prev);
+          for (const s of skillList) next.add(`skill::${s.slug}`);
+          return next;
+        });
+      }
     } catch {
       setSkillError(true);
     }
-  }, [scenes]);
+  }, [scenes, preselect]);
 
   useEffect(() => {
     void load();
   }, [load]);
-
-  const installAll = async () => {
-    setInstalling(true);
-    const next: Record<string, InstallState> = { ...installStates };
-    for (const key of picked) {
-      const [kind, id] = key.split("::");
-      next[key] = "installing";
-      setInstallStates({ ...next });
-      try {
-        if (kind === "plugin") {
-          await invokeCommand<string>("market_install", { pluginId: id });
-        } else {
-          await invokeCommand<string>("skillhub_install", { slug: id });
-        }
-        next[key] = "done";
-      } catch {
-        next[key] = "failed";
-      }
-      setInstallStates({ ...next });
-    }
-    setInstalling(false);
-  };
 
   const toggle = (key: string) => {
     setPicked((prev) => {
@@ -507,7 +538,20 @@ function RecommendStep({
     });
   };
 
-  const anyInstalling = Object.values(installStates).some((s) => s === "installing") || installing;
+  const proceed = () => {
+    const items: InstallItem[] = [];
+    for (const p of plugins) {
+      if (picked.has(`plugin::${p.id}`)) {
+        items.push({ kind: "plugin", id: p.id, title: p.title, description: p.description });
+      }
+    }
+    for (const s of skills) {
+      if (picked.has(`skill::${s.slug}`)) {
+        items.push({ kind: "skill", id: s.slug, title: s.name, description: s.description, meta: s.requires_api_key ? t("onboarding.needsKey", "需要 API Key") : undefined });
+      }
+    }
+    onNext(items);
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -524,7 +568,6 @@ function RecommendStep({
           <div className="space-y-1.5">
             {plugins.map((p) => {
               const key = `plugin::${p.id}`;
-              const state = installStates[key] ?? "idle";
               return (
                 <RecommendRow
                   key={key}
@@ -532,8 +575,8 @@ function RecommendStep({
                   onToggle={() => toggle(key)}
                   title={p.title}
                   description={p.description}
-                  state={state}
-                  disabled={state === "done" || state === "installing"}
+                  state="idle"
+                  disabled={false}
                 />
               );
             })}
@@ -559,7 +602,6 @@ function RecommendStep({
           <div className="space-y-1.5">
             {skills.map((s) => {
               const key = `skill::${s.slug}`;
-              const state = installStates[key] ?? "idle";
               return (
                 <RecommendRow
                   key={key}
@@ -567,8 +609,8 @@ function RecommendStep({
                   onToggle={() => toggle(key)}
                   title={s.name}
                   description={s.description}
-                  state={state}
-                  disabled={state === "done" || state === "installing"}
+                  state="idle"
+                  disabled={false}
                   meta={s.requires_api_key ? t("onboarding.needsKey", "需要 API Key") : undefined}
                 />
               );
@@ -578,30 +620,109 @@ function RecommendStep({
       </div>
 
       <div className="flex items-center justify-between pt-2">
-        <Button variant="ghost" size="sm" onClick={onBack} disabled={anyInstalling}>
+        <Button variant="ghost" size="sm" onClick={onBack}>
           <ChevronLeft className="h-4 w-4" />
           {t("onboarding.back", "上一步")}
         </Button>
-        <div className="flex items-center gap-2">
-          {picked.size > 0 && !anyInstalling && Object.values(installStates).every((s) => s === "idle") && (
-            <Button variant="outline" size="sm" onClick={() => void installAll()}>
-              <Download className="h-4 w-4" />
-              <span className="ml-1.5">{t("onboarding.installSelected", "安装所选")}</span>
-            </Button>
-          )}
-          <Button
-            size="sm"
-            onClick={onStart}
-            disabled={anyInstalling}
-          >
-            {t("onboarding.start", "开始使用")}
-          </Button>
-        </div>
+        <Button size="sm" onClick={proceed}>
+          {t("onboarding.next", "下一步")}
+        </Button>
       </div>
     </div>
   );
 }
 
+/** 收版反馈④：跳过场景时的通用推荐——简单洗牌（Fisher-Yates）。 */
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/** 步骤④：安装所选 + 开始使用（进入即逐项安装；零选中直接开始）。 */
+function InstallStep({ items, onStart, onBack }: { items: InstallItem[]; onStart: () => void; onBack: () => void }) {
+  const { t } = useTranslation();
+  const [states, setStates] = useState<Record<string, InstallState>>({});
+  const [started, setStarted] = useState(false);
+
+  // 进入即安装（runRef 幂等：严格模式双调用下只装一次）。
+  const runRef = useRef(false);
+  useEffect(() => {
+    if (runRef.current) return;
+    runRef.current = true;
+    setStarted(true);
+    void (async () => {
+      const next: Record<string, InstallState> = {};
+      for (const item of items) {
+        const key = `${item.kind}::${item.id}`;
+        next[key] = "installing";
+        setStates({ ...next });
+        try {
+          if (item.kind === "plugin") {
+            await invokeCommand<string>("market_install", { pluginId: item.id });
+          } else {
+            await invokeCommand<string>("skillhub_install", { slug: item.id });
+          }
+          next[key] = "done";
+        } catch {
+          next[key] = "failed";
+        }
+        setStates({ ...next });
+      }
+      setStarted(false);
+    })();
+  }, [items]);
+
+  const anyInstalling = started || Object.values(states).some((s) => s === "installing");
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="text-center">
+        <div className="text-lg font-semibold">{t("onboarding.installingTitle", "正在安装所选")}</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          {t("onboarding.installingHint", "安装完成后即可开始使用；失败的项可稍后在插件市场重试")}
+        </div>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="py-6 text-center text-sm text-muted-foreground">
+          {t("onboarding.noSelection", "没有勾选任何项——直接开始使用")}
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {items.map((item) => {
+            const key = `${item.kind}::${item.id}`;
+            return (
+              <RecommendRow
+                key={key}
+                checked
+                onToggle={() => undefined}
+                title={item.title}
+                description={item.description}
+                state={states[key] ?? "idle"}
+                disabled
+                meta={item.meta}
+              />
+            );
+          })}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between pt-2">
+        <Button variant="ghost" size="sm" onClick={onBack} disabled={anyInstalling}>
+          <ChevronLeft className="h-4 w-4" />
+          {t("onboarding.back", "上一步")}
+        </Button>
+        <Button size="sm" onClick={onStart} disabled={anyInstalling}>
+          {t("onboarding.start", "开始使用")}
+        </Button>
+      </div>
+    </div>
+  );
+}
 function RecommendRow({
   checked,
   onToggle,
