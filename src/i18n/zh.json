@@ -1752,7 +1752,11 @@
     "installingHint": "安装完成后即可开始使用；失败的项可稍后在插件市场重试",
     "noSelection": "没有勾选任何项——直接开始使用",
     "rtNewVersion": "最新 v{{v}}",
-    "rtUpdate": "更新"
+    "rtUpdate": "更新",
+    "rtUpdated": "{{name}} 已更新到 v{{version}}。",
+    "rtUpdateNoChangeTitle": "更新命令已执行",
+    "rtUpdateNoChange": "{{name}} 的更新命令已执行完成，但检测到的版本仍为 v{{version}}。可能是更新源尚未提供该新版本，或新版本需要重启应用后生效。",
+    "rtUpdateFailed": "更新失败"
   },
   "taskSteps": {
     "title": "任务步骤",

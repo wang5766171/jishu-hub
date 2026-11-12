@@ -24,6 +24,7 @@ import { PLUGIN_SCENES } from "@/lib/plugin-scenes";
 import { MIN_NODE_VERSION, isVersionNewer, nodeVersionSatisfies } from "@/agents/version-constants";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   ArrowUpCircle,
   Bot,
@@ -173,6 +174,7 @@ interface EnvData {
 
 function EnvPrepStep({ onReady }: { onReady: () => void }) {
   const { t } = useTranslation();
+  const { alert: alertDialog, confirm: confirmDialog } = useConfirmDialog();
   const [status, setStatus] = useState<AgentRuntimeStatus | null>(null);
   const [stage, setStage] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -255,20 +257,79 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
     }
   };
 
-  const runUpdate = async (id: string) => {
-    const cmd = (env?.runtimes ?? []).find((r) => r.id === id)?.update_command;
+  // 收版反馈（2026-11-12 用户实测「git 点击更新没效果」）：三层修复——
+  // ① 提权命令先征得同意（UAC 不再无预期弹出）；② 失败显性弹窗（原静默
+  // console.warn=点了没反应）；③ 命令执行成功但重检版本未变化时给出明确
+  // 提示（winget 源滞后于 GitHub latest / 新 git 未进当前 PATH 都会走到）。
+  const runUpdate = async (id: string, name: string) => {
+    const runtime = (env?.runtimes ?? []).find((r) => r.id === id);
+    const cmd = runtime?.update_command;
     if (!cmd) return;
+    try {
+      const needsElevation = await invokeCommand<boolean>(
+        "install_command_needs_elevation",
+        { command: cmd },
+      );
+      if (needsElevation) {
+        const agreed = await confirmDialog({
+          title: t("env.elevationTitle", "需要管理员权限"),
+          description: t("env.elevationDesc", {
+            defaultValue: `更新「${name}」需要写入系统目录，将以管理员身份执行。点击「同意并继续」后请在系统授权窗口中选择「是」。`,
+            name,
+          }),
+          confirmText: t("env.elevationConfirm", "同意并继续"),
+          cancelText: t("common.cancel", "取消"),
+        });
+        if (!agreed) return;
+      }
+    } catch {
+      /* 提权查询失败不阻断——由命令自身给出结果 */
+    }
     setUpdatingId(id);
     try {
       await invokeCommand<string>("install_agent_command", { command: cmd });
+      const prevVersion = runtime?.version ?? null;
       await refreshEnv();
+      // 重检后读新版本（refreshEnv 是 setState——用命令直查一次拿权威值）。
+      const fresh = await invokeCommand<EnvData>("check_environment");
+      const freshVersion = (fresh.runtimes ?? []).find((r) => r.id === id)?.version ?? null;
       setLatestVersions((prev) => {
         const next = new Map(prev);
         next.delete(id);
         return next;
       });
+      if (freshVersion && prevVersion && freshVersion !== prevVersion) {
+        await alertDialog({
+          title: t("env.updateSuccess", "更新成功"),
+          description: t("onboarding.rtUpdated", {
+            defaultValue: `${name} 已更新到 v${freshVersion}。`,
+            name,
+            version: freshVersion,
+          }),
+        });
+      } else {
+        await alertDialog({
+          title: t("onboarding.rtUpdateNoChangeTitle", "更新命令已执行"),
+          description: t("onboarding.rtUpdateNoChange", {
+            defaultValue: `${name} 的更新命令已执行完成，但检测到的版本仍为${prevVersion ? ` v${prevVersion}` : "原版本"}。可能是更新源尚未提供该新版本，或新版本需要重启应用后生效。`,
+            name,
+            version: prevVersion ?? "",
+          }),
+        });
+      }
     } catch (err) {
-      console.warn("runtime update failed:", err);
+      const errText = String(err);
+      if (errText.includes("UAC_CANCELLED")) {
+        await alertDialog({
+          title: t("env.title", "环境检测"),
+          description: t("env.uacCancelled", "已取消管理员授权，更新未执行。可重新更新并在授权弹窗中选择「是」。"), 
+        });
+      } else {
+        await alertDialog({
+          title: t("env.title", "环境检测"),
+          description: `${t("onboarding.rtUpdateFailed", "更新失败")}: ${errText.slice(0, 400)}`,
+        });
+      }
     } finally {
       setUpdatingId(null);
     }
@@ -370,7 +431,7 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
             className="shrink-0"
             disabled={updatingId === id}
             onClick={() => {
-              if (updateCmd) void runUpdate(id);
+              if (updateCmd) void runUpdate(id, labels[id]);
               else openUrl(runtime?.download_url ?? downloadUrl);
             }}
           >
