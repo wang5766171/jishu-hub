@@ -174,7 +174,7 @@ interface EnvData {
 
 function EnvPrepStep({ onReady }: { onReady: () => void }) {
   const { t } = useTranslation();
-  const { alert: alertDialog, confirm: confirmDialog } = useConfirmDialog();
+  const { alert: alertDialog, confirm: confirmDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const [status, setStatus] = useState<AgentRuntimeStatus | null>(null);
   const [stage, setStage] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -523,6 +523,9 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
           </Button>
         </div>
       </div>
+      {/* useConfirmDialog 契约：弹窗节点必须渲染（漏渲染=confirm/alert 的
+          Promise 永不落定——更新链 await 卡死、按钮永远转圈）。 */}
+      {confirmDialogNode}
     </div>
   );
 }
