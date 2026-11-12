@@ -16,7 +16,10 @@
     "confirm": "Confirm",
     "pause": "Pause",
     "resume": "Resume",
-    "dismiss": "Dismiss"
+    "dismiss": "Dismiss",
+    "disabled": "Disabled",
+    "enabled": "Enabled",
+    "notFound": "Not found"
   },
   "time": {
     "justNow": "just now",
@@ -51,7 +54,10 @@
     "menuEnv": "Environment Check",
     "menuOnboarding": "Setup Guide",
     "menuBackups": "Config Backups",
-    "pageDescBackups": "Restore configuration snapshots, or import/export configs"
+    "pageDescBackups": "Restore configuration snapshots, or import/export configs",
+    "onboardingTitle": "Setup Guide",
+    "onboardingDesc": "The setup guide installs the agent engine, checks runtimes (Node.js / npm / Git), and recommends plugins and skills.",
+    "onboardingReopen": "Run setup guide again"
   },
   "env": {
     "title": "Environment Check",
@@ -105,7 +111,8 @@
     "engineMismatch": "Update available",
     "engineReinit": "Re-initialize",
     "engineReinstall": "Reinstall engine",
-    "engineDone": "Engine updated — new sessions use it"
+    "engineDone": "Engine updated — new sessions use it",
+    "installSuccess": "Installed successfully"
   },
   "status": {
     "installed": "Installed",
@@ -353,7 +360,11 @@
     "deepThinking": "Deep thinking...",
     "compacting": "Compacting context...",
     "renderSourcePlugin": "Plugin render",
-    "renderSourceBuiltin": "Builtin render"
+    "renderSourceBuiltin": "Builtin render",
+    "activeModel": "Pick model",
+    "imageOnlyBubble": "📎 Attachment sent",
+    "scrollToBottom": "Scroll to bottom",
+    "stagingDrag": "Drag to reorder"
   },
   "plugins": {
     "entryStepFace": "Business face (what · where)",
@@ -635,7 +646,15 @@
       "Pick a category and the AI builds it (continues in chat); or just type what you want"
     ],
     "entryManualExpand": "Prefer DIY? Expand manual wizards",
-    "entryManualCollapse": "Collapse manual wizards"
+    "entryManualCollapse": "Collapse manual wizards",
+    "actionFailed": "Action failed",
+    "coreBadge": "Core",
+    "detailDirtyHint": "Unsaved changes",
+    "disabledBadge": "Disabled",
+    "modalTabSource": "Source",
+    "removeTitle": "Uninstall \"{{name}}\"?",
+    "removeDesc": "The plugin will no longer be available. You can install it again later.",
+    "removeConfirm": "Uninstall"
   },
   "config": {
     "title": "Configuration",
@@ -1263,7 +1282,9 @@
       "attempt": "Attempt",
       "nodeNotStarted": "This step has not started yet — its session will appear here once it runs.",
       "nodeStarting": "Step is running: setting up the session, content will appear here once ready.",
-      "showPlanCard": "Back to execution flow"
+      "showPlanCard": "Back to execution flow",
+      "cancelRunTitle": "Cancel task run",
+      "cancelRunConfirm": "Running subtasks will all stop; completed node results are kept. Cancel?"
     },
     "event": {
       "runStarted": "I have started executing this flow ({{count}} steps in total). I will drive and monitor each node's execution.",
@@ -1367,7 +1388,8 @@
       "waiting": "waiting",
       "mainSession": "Main chat",
       "mainSessionHint": "The task's requirement/planning/execution session",
-      "currentPosition": "current"
+      "currentPosition": "current",
+      "pendingQuestion": "Awaiting answer"
     },
     "htmlRender": {
       "name": "HTML Live Render",
@@ -1439,7 +1461,8 @@
       "kindTask": "Task",
       "kindNode": "Node",
       "kindSession": "Session",
-      "kindUnknown": "Other"
+      "kindUnknown": "Other",
+      "last7daysCost": "Last 7 days cost"
     },
     "search": {
       "name": "Message Search",
@@ -1521,7 +1544,9 @@
     "unselectAll": "Select none",
     "acceptance": "Acceptance",
     "confirmRun": "Run selected ({{count}})",
-    "uncheckedHint": "Unchecked subtasks are excluded from this run"
+    "uncheckedHint": "Unchecked subtasks are excluded from this run",
+    "autoAssign": "Auto-assign",
+    "executor": "Executor"
   },
   "taskFlow": {
     "openSession": "Open session",
@@ -1538,7 +1563,11 @@
       "skipped": "skipped",
       "cancelled": "cancelled",
       "superseded": "superseded"
-    }
+    },
+    "nodeActionWorking": "Working…",
+    "retryNode": "Retry",
+    "skipNode": "Skip (downstream continues)",
+    "toggleAcceptance": "Show/hide acceptance criteria"
   },
   "taskSummary": {
     "completed": "Task completed",

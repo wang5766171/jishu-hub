@@ -16,7 +16,10 @@
     "confirm": "确认",
     "pause": "暂停",
     "resume": "恢复",
-    "dismiss": "知道了"
+    "dismiss": "知道了",
+    "disabled": "已禁用",
+    "enabled": "已启用",
+    "notFound": "未找到"
   },
   "time": {
     "justNow": "刚刚",
@@ -51,7 +54,10 @@
     "menuEnv": "环境检测",
     "menuOnboarding": "安装引导",
     "menuBackups": "配置备份",
-    "pageDescBackups": "配置快照的恢复，以及配置的导入导出"
+    "pageDescBackups": "配置快照的恢复，以及配置的导入导出",
+    "onboardingTitle": "安装引导",
+    "onboardingDesc": "安装引导包含智能体引擎安装与运行环境（Node.js / npm / Git）检查，以及插件与技能推荐。",
+    "onboardingReopen": "重新运行安装引导"
   },
   "env": {
     "title": "环境检测",
@@ -105,7 +111,8 @@
     "engineMismatch": "版本待更新",
     "engineReinit": "重新初始化",
     "engineReinstall": "重装引擎",
-    "engineDone": "引擎已更新，新会话生效"
+    "engineDone": "引擎已更新，新会话生效",
+    "installSuccess": "安装成功"
   },
   "status": {
     "installed": "已安装",
@@ -353,7 +360,11 @@
     "deepThinking": "深度思考中...",
     "compacting": "上下文压缩中...",
     "renderSourcePlugin": "插件渲染",
-    "renderSourceBuiltin": "内置渲染"
+    "renderSourceBuiltin": "内置渲染",
+    "activeModel": "选择模型",
+    "imageOnlyBubble": "📎 发送了附件",
+    "scrollToBottom": "滚动到底部",
+    "stagingDrag": "拖动调整顺序"
   },
   "plugins": {
     "entryStepFace": "业务形态（做什么·在哪用）",
@@ -635,7 +646,15 @@
       "Pick a category and the AI builds it (continues in chat); or just type what you want"
     ],
     "entryManualExpand": "想自己配？展开手动向导",
-    "entryManualCollapse": "收起手动向导"
+    "entryManualCollapse": "收起手动向导",
+    "actionFailed": "操作失败",
+    "coreBadge": "核心引擎",
+    "detailDirtyHint": "有未保存修改",
+    "disabledBadge": "已禁用",
+    "modalTabSource": "源码",
+    "removeTitle": "卸载「{{name}}」？",
+    "removeDesc": "卸载后插件不再可用，可重新安装恢复。",
+    "removeConfirm": "卸载"
   },
   "config": {
     "title": "配置管理",
@@ -1263,7 +1282,9 @@
       "attempt": "尝试",
       "nodeNotStarted": "该步骤尚未开始执行，执行后会在此显示它的会话。",
       "nodeStarting": "该步骤正在执行，正在建立会话，建立后在此显示会话内容。",
-      "showPlanCard": "返回执行流程"
+      "showPlanCard": "返回执行流程",
+      "cancelRunTitle": "取消任务执行",
+      "cancelRunConfirm": "进行中的子任务将全部停止，已完成的节点结果保留。确定取消？"
     },
     "event": {
       "runStarted": "我已经开始执行这个流程（共 {{count}} 个步骤），会逐个驱动并监控每个节点的执行。",
@@ -1367,7 +1388,8 @@
       "waiting": "等待中",
       "mainSession": "主会话",
       "mainSessionHint": "本任务的需求/规划/执行讨论会话",
-      "currentPosition": "当前"
+      "currentPosition": "当前",
+      "pendingQuestion": "待回答"
     },
     "htmlRender": {
       "name": "HTML 实时渲染",
@@ -1439,7 +1461,8 @@
       "kindTask": "任务",
       "kindNode": "子节点",
       "kindSession": "会话",
-      "kindUnknown": "其他项目"
+      "kindUnknown": "其他项目",
+      "last7daysCost": "近 7 日成本"
     },
     "search": {
       "name": "消息搜索",
@@ -1521,7 +1544,9 @@
     "unselectAll": "全不选",
     "acceptance": "验收",
     "confirmRun": "确认执行（{{count}} 项）",
-    "uncheckedHint": "未勾选的子任务将从本次执行中移除"
+    "uncheckedHint": "未勾选的子任务将从本次执行中移除",
+    "autoAssign": "自动分配",
+    "executor": "执行者"
   },
   "taskFlow": {
     "openSession": "进入会话",
@@ -1538,7 +1563,11 @@
       "skipped": "已跳过",
       "cancelled": "已取消",
       "superseded": "已废弃"
-    }
+    },
+    "nodeActionWorking": "处理中…",
+    "retryNode": "重试",
+    "skipNode": "跳过（下游继续）",
+    "toggleAcceptance": "展开/收起验收标准"
   },
   "taskSummary": {
     "completed": "任务完成",
