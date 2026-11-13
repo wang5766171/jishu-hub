@@ -638,6 +638,9 @@ function UserBubble({
                 setEditing(false);
               }
             }}>
+              {toolIds.length > 0 && (
+                <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
+              )}
               <textarea
                 autoFocus
                 value={draft}

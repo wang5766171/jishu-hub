@@ -818,10 +818,17 @@ export function ChatPage({
     // 是权威截断态，重读会话可对齐）。
     const msgs = sessionMessagesRef.current;
     let cut = -1;
+    let editedToolIds: string[] | undefined;
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role !== "user") continue;
       const raw = msgs[i].content.find((b) => b.type === "text");
-      if (raw && raw.type === "text" && raw.text === rawText) { cut = i; break; }
+      if (raw && raw.type === "text" && raw.text === rawText) {
+        cut = i;
+        // 编辑保插件（收版反馈 2026-11-13）：原消息的工具插件 pill 元数据随
+        // 重发保留（服务端注入按会话工具集照常发生，落盘块回放同源）。
+        editedToolIds = raw.tool_ids?.length ? raw.tool_ids : undefined;
+        break;
+      }
     }
     const kept = cut >= 0 ? msgs.slice(0, cut) : msgs;
     // 任务前缀重包装：用户编辑的是剥前缀原话，重发保持任务会话语义。
@@ -829,7 +836,7 @@ export function ChatPage({
     const outgoing = prefixMatch ? prefixMatch[1] + newText : newText;
     const updated = [...kept, {
       role: "user" as const,
-      content: [{ type: "text" as const, text: outgoing }],
+      content: [{ type: "text" as const, text: outgoing, tool_ids: editedToolIds }],
       timestamp: Date.now(),
     }];
     setCachedSessionMessages(sid, updated);

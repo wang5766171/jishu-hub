@@ -552,6 +552,9 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
                 setEditing(false);
               }
             }}>
+              {toolIds.length > 0 && (
+                <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
+              )}
               <textarea
                 autoFocus
                 value={draft}

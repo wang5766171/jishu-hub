@@ -527,7 +527,13 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           if (state?.pendingUserMessage) {
             newMessages.push({
               role: "user",
-              content: [{ type: "text", text: state.pendingUserMessage }],
+              content: [{
+                type: "text",
+                text: state.pendingUserMessage,
+                // 收版反馈（2026-11-13）：本地提交保留工具插件 pill 元数据——
+                // 此前只写 text，流式一结束 pill 即消失（重进会话才恢复）。
+                tool_ids: state.pendingToolIds?.length ? state.pendingToolIds : undefined,
+              }],
               timestamp: Date.now(),
             });
           }
