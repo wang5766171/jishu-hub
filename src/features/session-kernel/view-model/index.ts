@@ -1,5 +1,6 @@
 export {
   buildSessionRows,
+  isUserToolResultOnlyMessage,
   buildTurnSummaries,
   type SessionRowModel,
   type TurnSummary,

@@ -23,7 +23,7 @@ import { isInteractionToolName, looksLikeInteractionToolInput } from "@/lib/inte
 import { PhaseDivider } from "./conversation-content";
 // v0.9.2 需求1 P1：行/轮次语义迁移至会话内核统一视图模型（单一权威，
 // 导航轨等轮次消费方读同一份，消除双实现契约对齐负担）。
-import { buildSessionRows, type SessionRowModel } from "@/features/session-kernel/view-model";
+import { buildSessionRows, isUserToolResultOnlyMessage, type SessionRowModel } from "@/features/session-kernel/view-model";
 // v0.9.5 需求4 P2：轮级三段式（已工作折叠 + 正文 + 文件改动概览）。
 import { buildTurnSegments } from "@/features/session-kernel/view-model/build-turn-segments";
 import { TurnGroupView } from "@/features/session-kernel/shell/turn-group-view";
@@ -904,7 +904,12 @@ export const MessageView = memo(function MessageView({
   // 原文（落盘原文，含 /jishu-task 包装——页面回调按需重包装）。
   const lastUserMessageIndex = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "user") return i;
+      if (messages[i].role !== "user") continue;
+      // 工具结果型 user（插件/工具调用的回放形态）不是用户输入——排除
+      //（与 buildSessionRows 行划分同口径；不排除时编辑入口会挂到工具
+      // 结果上，真正可编辑的最后一条用户文字消息反而没有按钮）。
+      if (isUserToolResultOnlyMessage(messages[i])) continue;
+      return i;
     }
     return -1;
   }, [messages]);
