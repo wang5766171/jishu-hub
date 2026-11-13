@@ -119,7 +119,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
   const [extUpdates, setExtUpdates] = useState<ExtensionUpdateStatus[] | null>(null);
   const [skillUpdates, setSkillUpdates] = useState<SkillUpdateStatus[] | null>(null);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
-  const [updatingAll, setUpdatingAll] = useState(false);
+  const [updatingAll] = useState(false);
   // 需求3 四轮：分类过滤 / 重新加载 / 单卡检查更新。
   const batchUpdates = useMarketUpdates();
   const [extCategory, setExtCategory] = useState<string>("all");
