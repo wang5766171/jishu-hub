@@ -1712,7 +1712,11 @@
     "nextPage": "下一页",
     "onlineLib": "在线扩展库（pi 生态）",
     "onlineSearch": "搜索扩展名…",
-    "onlineEmpty": "没有匹配的 pi 扩展包"
+    "onlineEmpty": "没有匹配的 pi 扩展包",
+    "onlineLibPiindex": "在线扩展库（Pi Index）",
+    "checkUpdates": "检查更新",
+    "updateAll": "全部更新",
+    "allUpToDate": "已装内容均为最新版本"
   },
   "onboarding": {
     "initTitle": "正在准备你的智能体",

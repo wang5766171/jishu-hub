@@ -1712,7 +1712,11 @@
     "nextPage": "Next",
     "onlineLib": "Online extensions (pi ecosystem)",
     "onlineSearch": "Search extensions…",
-    "onlineEmpty": "No matching pi extensions"
+    "onlineEmpty": "No matching pi extensions",
+    "onlineLibPiindex": "Online Extensions (Pi Index)",
+    "checkUpdates": "Check updates",
+    "updateAll": "Update all",
+    "allUpToDate": "Everything installed is up to date"
   },
   "onboarding": {
     "initTitle": "Preparing your agent",

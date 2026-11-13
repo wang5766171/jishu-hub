@@ -68,6 +68,30 @@ interface PiOnlinePackage {
   date: string;
 }
 
+/** 需求3 补充（2026-11-13）：Pi Index 在线目录条目（piindex.dev——
+ * awesome-pi 清单）与更新状态形态。 */
+interface PiindexEntry {
+  name: string;
+  description: string;
+  npmPackage: string | null;
+  githubUrl: string | null;
+  category: string;
+}
+
+interface ExtensionUpdateStatus {
+  package: string;
+  installed: string;
+  latest: string;
+  hasUpdate: boolean;
+}
+
+interface SkillUpdateStatus {
+  slug: string;
+  installed: string;
+  latest: string;
+  hasUpdate: boolean;
+}
+
 const PAGE_SIZE = 20;
 
 export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
@@ -83,6 +107,12 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
   const [onlineKw, setOnlineKw] = useState("");
   const [online, setOnline] = useState<PiOnlinePackage[] | null>(null);
   const [onlineInstalled, setOnlineInstalled] = useState<string[]>([]);
+  // 需求3 补充：piindex 检索结果（在线库主源；npm 检索为兜底）；更新检查。
+  const [piindex, setPiindex] = useState<PiindexEntry[] | null>(null);
+  const [extUpdates, setExtUpdates] = useState<ExtensionUpdateStatus[] | null>(null);
+  const [skillUpdates, setSkillUpdates] = useState<SkillUpdateStatus[] | null>(null);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updatingAll, setUpdatingAll] = useState(false);
   const [skills, setSkills] = useState<SkillhubListResult | null>(null);
   const [skillInstalled, setSkillInstalled] = useState<Record<string, string>>({});
   const [installedIds, setInstalledIds] = useState<Set<string>>(new Set());
@@ -116,18 +146,26 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
       if (source === "extensions") {
         const entries = await invokeCommand<PiPackageEntry[]>("pi_package_catalog");
         setExtensions(entries ?? []);
-        // 需求7 修1a：在线库（pi.dev 画廊同源 = npm pi-package keyword）。
+        // 需求3 补充：在线库主源换 Pi Index（piindex.dev/awesome-pi 清单），
+        // npm pi-package 检索为兜底（piindex 不可达时回落）。
+        const sources = await invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]);
+        setOnlineInstalled(sources ?? []);
         try {
-          const [results, sources] = await Promise.all([
-            invokeCommand<PiOnlinePackage[]>("pi_package_search", {
+          const results = await invokeCommand<PiindexEntry[]>("piindex_search", {
+            keyword: onlineKw.trim() || null,
+          });
+          setPiindex(results ?? []);
+          setOnline(null);
+        } catch {
+          setPiindex(null);
+          try {
+            const results = await invokeCommand<PiOnlinePackage[]>("pi_package_search", {
               keyword: onlineKw.trim() || null,
-            }),
-            invokeCommand<string[]>("pi_package_installed_sources"),
-          ]);
-          setOnline(results ?? []);
-          setOnlineInstalled(sources ?? []);
-        } catch (e) {
-          setError(String(e));
+            });
+            setOnline(results ?? []);
+          } catch (e) {
+            setError(String(e));
+          }
         }
       } else if (source === "skills") {
         const kw = keyword.trim() || null;
@@ -448,12 +486,61 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
         </div>
       )}
 
-      {/* 扩展生态 · 在线库（需求7 修1a） */}
-      {source === "extensions" && !error && online && (
+      {/* 扩展生态 · 在线库（需求3 补充：Pi Index 主源，npm 兜底） */}
+      {source === "extensions" && !error && (piindex || online) && (
         <div>
           <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="text-xs font-medium text-muted-foreground">
-              {t("market.onlineLib", "在线扩展库（pi 生态）")}
+            <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+              {piindex
+                ? t("market.onlineLibPiindex", "在线扩展库（Pi Index）")
+                : t("market.onlineLib", "在线扩展库（pi 生态）")}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-[10px]"
+                disabled={checkingUpdates || updatingAll}
+                onClick={() =>
+                  void (async () => {
+                    setCheckingUpdates(true);
+                    setActionError(null);
+                    try {
+                      setExtUpdates(await invokeCommand<ExtensionUpdateStatus[]>("extension_check_updates"));
+                    } catch (e) {
+                      setActionError(String(e));
+                    } finally {
+                      setCheckingUpdates(false);
+                    }
+                  })()
+                }
+              >
+                {checkingUpdates ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                <span className="ml-0.5">{t("market.checkUpdates", "检查更新")}</span>
+              </Button>
+              {extUpdates?.some((u) => u.hasUpdate) && (
+                <Button
+                  size="sm"
+                  className="h-6 px-2 text-[10px]"
+                  disabled={updatingAll}
+                  onClick={() =>
+                    void (async () => {
+                      setUpdatingAll(true);
+                      setActionError(null);
+                      try {
+                        await invokeCommand("extension_update", { packages: null });
+                        setExtUpdates(await invokeCommand<ExtensionUpdateStatus[]>("extension_check_updates"));
+                        onChanged?.();
+                      } catch (e) {
+                        setActionError(String(e));
+                      } finally {
+                        setUpdatingAll(false);
+                      }
+                    })()
+                  }
+                >
+                  {updatingAll ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                  <span className="ml-0.5">{t("market.updateAll", "全部更新")}</span>
+                </Button>
+              )}
             </div>
             <div className="relative">
               <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
@@ -465,6 +552,81 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
               />
             </div>
           </div>
+          {/* 需求3 补充：有更新的已装扩展（检查更新后显示） */}
+          {extUpdates?.some((u) => u.hasUpdate) && (
+            <div className="mb-2 space-y-1 rounded-lg border border-amber-500/30 bg-amber-500/5 p-2">
+              {extUpdates.filter((u) => u.hasUpdate).map((u) => (
+                <div key={u.package} className="flex items-center gap-2 text-[11px]">
+                  <Package className="h-3 w-3 shrink-0 text-amber-600" />
+                  <span className="min-w-0 flex-1 truncate font-mono">{u.package}</span>
+                  <span className="shrink-0 text-muted-foreground">v{u.installed}</span>
+                  <span className="shrink-0 text-amber-600">→ v{u.latest}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {extUpdates && !extUpdates.some((u) => u.hasUpdate) && (
+            <div className="mb-2 px-1 text-[10px] text-muted-foreground/70">
+              {t("market.allUpToDate", "已装扩展均为最新版本")}
+            </div>
+          )}
+          {/* Pi Index 目录卡片（主源） */}
+          {piindex && (
+            <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
+              {piindex.slice(0, 18).map((entry) => {
+                const pkg = entry.npmPackage;
+                const installed = !!pkg && onlineInstalled.some(
+                  (src) => src === "npm:" + pkg || src.startsWith("npm:" + pkg + "@"),
+                );
+                return (
+                  <div key={entry.name + (entry.githubUrl ?? "")} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
+                    <div className="flex items-center gap-2">
+                      <Package className="h-4 w-4 shrink-0 text-primary/70" />
+                      <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={entry.name}>{entry.name}</span>
+                      <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">{entry.category}</span>
+                    </div>
+                    <p className="line-clamp-2 text-[11px] leading-relaxed text-muted-foreground" title={entry.description}>{entry.description || "-"}</p>
+                    <div className="mt-auto flex items-center gap-1 pt-1 text-[10px] text-muted-foreground/70">
+                      {entry.githubUrl && (
+                        <a href={entry.githubUrl} target="_blank" rel="noreferrer" className="hover:text-foreground hover:underline">GitHub</a>
+                      )}
+                      <span className="flex-1" />
+                      {pkg && installed && <span className="text-muted-foreground">{t("market.installed")}</span>}
+                      {pkg && !installed && (
+                        <Button
+                          size="sm"
+                          className="h-6 px-2 text-[10px]"
+                          disabled={busyId === pkg}
+                          onClick={() =>
+                            void (async () => {
+                              setActionError(null);
+                              setBusyId(pkg);
+                              try {
+                                // 安装走 pi 包管理器（npm 装载 + settings.json
+                                // 注册一步完成，装完 hub 提示启用）。
+                                await invokeCommand<string>("pi_package_install_online", { source: "npm:" + pkg });
+                                await load();
+                                onChanged?.();
+                              } catch (e) {
+                                setActionError(String(e));
+                              } finally {
+                                setBusyId(null);
+                              }
+                            })()
+                          }
+                        >
+                          {busyId === pkg ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                          <span className="ml-0.5">{t("market.install", "安装")}</span>
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {/* npm 检索兜底卡片（piindex 不可达时 online 非空才渲染） */}
+          {online && (
           <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
             {online.slice(0, 12).map((pkg) => {
               const installed = onlineInstalled.some(
@@ -549,12 +711,72 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
               </p>
             )}
           </div>
+          )}
         </div>
       )}
 
       {/* 技能市场 */}
       {source === "skills" && !error && (
         <>
+          {/* 需求3 补充：已装技能检查更新 + 全部更新（SkillHub 台账 vs 市场 latest） */}
+          <div className="mb-2 flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-[10px]"
+              disabled={checkingUpdates || updatingAll}
+              onClick={() =>
+                void (async () => {
+                  setCheckingUpdates(true);
+                  setActionError(null);
+                  try {
+                    setSkillUpdates(await invokeCommand<SkillUpdateStatus[]>("skillhub_check_updates"));
+                  } catch (e) {
+                    setActionError(String(e));
+                  } finally {
+                    setCheckingUpdates(false);
+                  }
+                })()
+              }
+            >
+              {checkingUpdates ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              <span className="ml-0.5">{t("market.checkUpdates", "检查更新")}</span>
+            </Button>
+            {skillUpdates?.some((u) => u.hasUpdate) && (
+              <Button
+                size="sm"
+                className="h-6 px-2 text-[10px]"
+                disabled={updatingAll}
+                onClick={() =>
+                  void (async () => {
+                    setUpdatingAll(true);
+                    setActionError(null);
+                    try {
+                      await invokeCommand("skillhub_update", { slugs: null });
+                      setSkillUpdates(await invokeCommand<SkillUpdateStatus[]>("skillhub_check_updates"));
+                      const installed = await invokeCommand<Record<string, string>>("skillhub_installed");
+                      setSkillInstalled(installed ?? {});
+                    } catch (e) {
+                      setActionError(String(e));
+                    } finally {
+                      setUpdatingAll(false);
+                    }
+                  })()
+                }
+              >
+                {updatingAll ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                <span className="ml-0.5">{t("market.updateAll", "全部更新")}</span>
+              </Button>
+            )}
+            {skillUpdates && !skillUpdates.some((u) => u.hasUpdate) && (
+              <span className="text-[10px] text-muted-foreground/70">{t("market.allUpToDate", "已装技能均为最新版本")}</span>
+            )}
+            {skillUpdates?.some((u) => u.hasUpdate) && (
+              <span className="text-[10px] text-amber-600">
+                {skillUpdates.filter((u) => u.hasUpdate).map((u) => u.slug).join(", ")}
+              </span>
+            )}
+          </div>
           <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
             {(skills?.entries ?? []).map((skill) => {
               const installedVersion = skillInstalled[skill.slug];

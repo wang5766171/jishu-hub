@@ -512,6 +512,44 @@ pub(crate) fn composed_plugin_manifests() -> Result<Vec<serde_json::Value>, Stri
         .collect())
 }
 
+/// v0.9.7 需求3 补充：Pi Index 在线目录检索（awesome-pi 清单，本地过滤）。
+#[tauri::command]
+pub(crate) async fn piindex_search(
+    keyword: Option<String>,
+) -> Result<Vec<agent::piindex::PiindexEntry>, String> {
+    agent::piindex::piindex_search(keyword.as_deref()).await
+}
+
+/// 扩展包检测更新（settings.json 钉定版本 vs npm latest）。
+#[tauri::command]
+pub(crate) async fn extension_check_updates(
+) -> Result<Vec<agent::piindex::ExtensionUpdateStatus>, String> {
+    agent::piindex::extension_check_updates().await
+}
+
+/// 扩展包批量更新（空=全部有更新的；改写钉定版本，pi 启动自装）。
+#[tauri::command]
+pub(crate) async fn extension_update(
+    packages: Option<Vec<String>>,
+) -> Result<Vec<agent::piindex::ExtensionUpdateStatus>, String> {
+    agent::piindex::extension_update(packages).await
+}
+
+/// 技能检测更新（SkillHub 台账 vs 市场 latest）。
+#[tauri::command]
+pub(crate) async fn skillhub_check_updates(
+) -> Result<Vec<agent::piindex::SkillUpdateStatus>, String> {
+    agent::piindex::skillhub_check_updates().await
+}
+
+/// 技能批量更新（空=全部有更新的；覆盖安装+台账刷新）。
+#[tauri::command]
+pub(crate) async fn skillhub_update(
+    slugs: Option<Vec<String>>,
+) -> Result<Vec<agent::piindex::SkillUpdateStatus>, String> {
+    agent::piindex::skillhub_update(slugs).await
+}
+
 /// v0.9.3 需求12 P1：插件配置面——全量读取（前端与 defaults 合并）。
 #[tauri::command]
 pub(crate) fn plugin_config_get_all(
