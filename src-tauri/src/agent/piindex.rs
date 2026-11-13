@@ -1,17 +1,18 @@
-//! Pi Index 在线目录与扩展/技能更新（v0.9.7 需求3 补充，2026-11-13）。
+//! Pi Index 在线目录与扩展/技能更新（v0.9.7 需求3 补充，2026-11-13 二轮）。
 //!
-//! 数据源：<https://piindex.dev>（Pi 社区资源目录，数据底座为 GitHub
-//! `BubblePtr/awesome-pi` 清单，CC0）。站点无公开 JSON API——直接解析
-//! awesome-pi 的 raw README（条目行 `- [名称](github) - 描述 \`pi install
-//! npm:<pkg>\``，章节标题=分类），本地关键词过滤即"查询接口"。
+//! 数据源：`GET https://piindex.dev/zh/`（Pi 社区资源目录中文页）——静态
+//! HTML 全量内嵌 192 条资源卡片（其中 133 条扩展包 data-kind=packages），
+//! 带**中文说明/中文分类/星数/周下载量/安装命令/详情页链接**，一次 GET
+//! 即结构化清单（站点无 JSON API——页面即接口；robots 允许抓取）。
+//! 解析规则移植自用户调研文档《pi-extension-api-spec.md》§11.4（regex
+//! 卡片提取）；失败回落 npm pi-package 检索（前端兜底）。
 //!
-//! 更新机制设计（skill 与扩展统一）：
+//! 更新机制（skill 与扩展统一）：
 //! - **检测更新**：已装清单 → 各源并发查 latest（扩展=npm registry
 //!   dist-tags；技能=SkillHub detail.version）→ 与本地记录比对。
-//! - **批量更新**：扩展=原子改写 pi `settings.json` 的 `npm:<pkg>@<ver>`
-//!   钉定版本（pi 进程启动自装该版，与既有 packages sync 同机制，无需
-//!   hub 代装）；技能=逐项重跑 `skillhub_install`（覆盖安装+台账刷新）。
-//! - 两种更新都幂等（已是最新则无操作）。
+//! - **批量更新**：扩展走 pi 包管理器 install npm:pkg@latest（装载+
+//!   settings.json 钉定注册一步完成）；技能=逐项重跑 `skillhub_install`
+//!   （覆盖安装+台账刷新）。两种更新都幂等。
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
@@ -19,20 +20,33 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-const LIST_URL: &str = "https://raw.githubusercontent.com/BubblePtr/awesome-pi/main/README.md";
+const LIST_URL: &str = "https://piindex.dev/zh/";
 const LIST_TTL: Duration = Duration::from_secs(10 * 60);
+/// 预期卡片量级（站点改版/解析漂移的告警线——低于此值视为解析失败回落）。
+const MIN_EXPECTED_CARDS: usize = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PiindexEntry {
     pub name: String,
+    /// 中文说明（piindex 中文页，176/192 有；缺失为空串——前端兜底英文）。
     pub description: String,
     pub npm_package: Option<String>,
     pub github_url: Option<String>,
+    /// 中文分类（resource-tag data-label；多分类以「/」连接）。
     pub category: String,
+    /// 资源类型中文名（扩展包/主题等）。
+    pub kind_label: String,
+    /// piindex 详情页（相对路径 /zh/packages/<slug>/ → 绝对 URL）。
+    pub detail_url: Option<String>,
+    pub stars: Option<u64>,
+    pub weekly_downloads: Option<u64>,
+    /// 站点预拼接的中英文检索全文（data-search）。
+    #[serde(default)]
+    pub search_text: String,
 }
 
-// ── 在线目录（awesome-pi 解析 + 缓存） ──
+// ── 在线目录（piindex.dev/zh/ 卡片解析 + 缓存） ──
 
 fn cache() -> &'static Mutex<Option<(Instant, Vec<PiindexEntry>)>> {
     static CACHE: OnceLock<Mutex<Option<(Instant, Vec<PiindexEntry>)>>> = OnceLock::new();
@@ -41,7 +55,7 @@ fn cache() -> &'static Mutex<Option<(Instant, Vec<PiindexEntry>)>> {
 
 fn http() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(20))
         .user_agent("jishu-hub")
         .build()
         .map_err(|e| e.to_string())
@@ -51,7 +65,7 @@ async fn fetch_list() -> Result<Vec<PiindexEntry>, String> {
     {
         let guard = cache().lock().unwrap_or_else(|e| e.into_inner());
         if let Some((at, list)) = guard.as_ref() {
-            if at.elapsed() < LIST_TTL && !list.is_empty() {
+            if at.elapsed() < LIST_TTL && list.len() >= MIN_EXPECTED_CARDS {
                 return Ok(list.clone());
             }
         }
@@ -66,82 +80,148 @@ async fn fetch_list() -> Result<Vec<PiindexEntry>, String> {
         .text()
         .await
         .map_err(|e| e.to_string())?;
-    let list = parse_awesome_readme(&body);
-    if list.is_empty() {
-        return Err("piindex 清单为空（解析失败或上游格式变化）".to_string());
+    let list = parse_piindex_html(&body);
+    if list.len() < MIN_EXPECTED_CARDS {
+        // 站点改版/结构漂移——宁可回落 npm 检索也不给残缺清单。
+        return Err(format!(
+            "piindex 清单解析异常（{} 条 < 预期 {}）——可能站点改版",
+            list.len(),
+            MIN_EXPECTED_CARDS
+        ));
     }
     *cache().lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), list.clone()));
     Ok(list)
 }
 
-/// 解析 awesome-pi README：`## 分类小节` 下 `- [名称](url) - 描述 \`pi
-/// install npm:<pkg>\``。非 npm 形态（git: 等）照录（npm_package=None，
-/// 前端安装入口按命令展示）。
-fn parse_awesome_readme(body: &str) -> Vec<PiindexEntry> {
+/// 提取 HTML 属性值（已 HTML 实体反转义）。
+fn attr_of(html: &str, name: &str) -> Option<String> {
+    let pattern = regex::Regex::new(&format!(r#"{name}="([^"]*)""#)).ok()?;
+    pattern
+        .captures(html)
+        .and_then(|c| c.get(1))
+        .map(|m| html_unescape(m.as_str()))
+}
+
+/// 剥标签取纯文本（压缩空白）。
+fn text_of(html: &str) -> String {
+    let stripped = regex::Regex::new(r"<[^>]+>")
+        .map(|re| re.replace_all(html, " "))
+        .unwrap_or_default();
+    let squashed = regex::Regex::new(r"\s+")
+        .map(|re| re.replace_all(&stripped, " "))
+        .unwrap_or_default();
+    html_unescape(squashed.trim())
+}
+
+fn html_unescape(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+}
+
+/// 解析 `<article class="resource">` 卡片（只留扩展包 data-kind=packages）。
+/// 字段提取表见模块头引用的调研文档 §11.3。
+fn parse_piindex_html(body: &str) -> Vec<PiindexEntry> {
+    let card_re = match regex::Regex::new(r#"(?s)<article class="resource"([^>]*)>(.*?)</article>"#)
+    {
+        Ok(re) => re,
+        Err(_) => return Vec::new(),
+    };
     let mut out = Vec::new();
-    let mut category = String::new();
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("## ") {
-            category = rest
-                .trim()
-                .trim_matches('（')
-                .split('（')
-                .next()
-                .unwrap_or(rest)
-                .trim()
-                .to_string();
+    for caps in card_re.captures_iter(body) {
+        let attrs = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let inner = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        if attr_of(attrs, "data-kind").as_deref() != Some("packages") {
             continue;
         }
-        if !trimmed.starts_with("- ") {
-            continue;
-        }
-        let rest = &trimmed[2..];
-        // [名称](url) 前可能有 emoji 前缀（🔥 等）。
-        let bracket_start = match rest.find('[') {
-            Some(i) => i,
-            None => continue,
-        };
-        let Some(name_end) = rest[bracket_start..].find(']') else {
-            continue;
-        };
-        let name = &rest[bracket_start + 1..bracket_start + name_end];
+        // 名称：package-link 文本；缺失时从安装命令尾段反解。
+        let name = regex::Regex::new(r#"class="package-link"[^>]*>([^<]+)</a>"#)
+            .ok()
+            .and_then(|re| re.captures(inner))
+            .and_then(|c| c.get(1))
+            .map(|m| html_unescape(m.as_str().trim()));
+        // 安装命令（data-copy；缺失回退 code 文本）。
+        let install = attr_of(inner, "data-copy")
+            .or_else(|| {
+                regex::Regex::new(r"(?s)<code>(.*?)</code>")
+                    .ok()
+                    .and_then(|re| re.captures(inner))
+                    .and_then(|c| c.get(1))
+                    .map(|m| html_unescape(m.as_str().trim()))
+            })
+            .unwrap_or_default();
+        let name = name.unwrap_or_else(|| {
+            install
+                .split_whitespace()
+                .last()
+                .unwrap_or_default()
+                .trim_start_matches("npm:")
+                .to_string()
+        });
         if name.is_empty() {
             continue;
         }
-        let github_url = rest[bracket_start + name_end..]
-            .strip_prefix("](")
-            .and_then(|tail| tail.split(')').next())
-            .filter(|u| u.starts_with("http"))
-            .map(str::to_string);
-        // 描述与安装命令：取行内反引里的 `pi install ...`；其余 `- 描述`。
-        let npm_package = trimmed
-            .split('`')
-            .nth(1)
-            .and_then(|cmd| cmd.strip_prefix("pi install npm:"))
-            .map(str::to_string);
-        let description = trimmed
-            .split_once(" - ")
-            .map(|(_, d)| d)
-            .unwrap_or("")
-            .split(" `")
-            .next()
-            .unwrap_or("")
-            .trim()
-            .trim_end_matches('。')
-            .to_string();
+        // npm 包名：仅 `pi install npm:<pkg>` 形态提供一键安装。
+        let npm_package = install
+            .strip_prefix("pi install npm:")
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty());
+        // 中文说明。
+        let description = regex::Regex::new(r"(?s)resource-description[^>]*>\s*<p>(.*?)</p>")
+            .ok()
+            .and_then(|re| re.captures(inner))
+            .and_then(|c| c.get(1))
+            .map(|m| text_of(m.as_str()))
+            .unwrap_or_default();
+        // 中文分类（多个以 / 连接）+ 类型中文名。
+        let category = regex::Regex::new(r#"class="resource-tag"[^>]*data-label="([^"]+)""#)
+            .ok()
+            .map(|re| {
+                re.captures_iter(inner)
+                    .filter_map(|c| c.get(1))
+                    .map(|m| html_unescape(m.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .unwrap_or_default();
+        let kind_label = regex::Regex::new(r#"class="resource-kind"[^>]*data-label="([^"]+)""#)
+            .ok()
+            .and_then(|re| re.captures(inner))
+            .and_then(|c| c.get(1))
+            .map(|m| html_unescape(m.as_str()))
+            .unwrap_or_default();
+        // GitHub 仓库 + 详情页链接（相对 → 绝对）。
+        let github_url =
+            regex::Regex::new(r#"href="(https://github.com/[^"]+)"[^>]*data-repo-link"#)
+                .ok()
+                .and_then(|re| re.captures(inner))
+                .and_then(|c| c.get(1))
+                .map(|m| html_unescape(m.as_str()));
+        let detail_url = regex::Regex::new(r#"class="package-link"\s+href="(/zh/packages/[^"]+)""#)
+            .ok()
+            .and_then(|re| re.captures(inner))
+            .and_then(|c| c.get(1))
+            .map(|m| format!("https://piindex.dev{}", m.as_str()));
         out.push(PiindexEntry {
-            name: name.to_string(),
+            name,
             description,
             npm_package,
             github_url,
-            category: category.clone(),
+            category,
+            kind_label,
+            detail_url,
+            stars: attr_of(attrs, "data-stars").and_then(|v| v.parse().ok()),
+            weekly_downloads: attr_of(attrs, "data-downloads").and_then(|v| v.parse().ok()),
+            search_text: attr_of(attrs, "data-search").unwrap_or_default(),
         });
     }
     out
 }
 
-/// 检索：关键词命中名称/包名/描述（大小写不敏感；空关键词返回全量）。
+/// 检索：关键词命中站点预拼的中文英文全文（data-search）+ 名称/包名
+/// （大小写不敏感；空关键词返回全量）。
 pub async fn piindex_search(keyword: Option<&str>) -> Result<Vec<PiindexEntry>, String> {
     let list = fetch_list().await?;
     let Some(kw) = keyword.filter(|k| !k.trim().is_empty()) else {
@@ -151,8 +231,8 @@ pub async fn piindex_search(keyword: Option<&str>) -> Result<Vec<PiindexEntry>, 
     Ok(list
         .into_iter()
         .filter(|e| {
-            e.name.to_lowercase().contains(&kw)
-                || e.description.to_lowercase().contains(&kw)
+            e.search_text.to_lowercase().contains(&kw)
+                || e.name.to_lowercase().contains(&kw)
                 || e.npm_package
                     .as_deref()
                     .is_some_and(|p| p.to_lowercase().contains(&kw))
@@ -372,15 +452,31 @@ mod tests {
 
     /// 清单解析：分类跟随 + npm 包名提取 + 描述剥离（非 npm 形态照录）。
     #[test]
-    fn parses_awesome_entries() {
-        let body = "## Subagents（子代理）\n\n- 🔥 [pi-subagents](https://github.com/nicobailon/pi-subagents) - 社区子代理扩展，支持链式。`pi install npm:pi-subagents`\n- [git-tool](https://github.com/x/git-tool) - git 工具。`pi install git:https://github.com/x/git-tool`\n";
-        let list = parse_awesome_readme(body);
-        assert_eq!(list.len(), 2);
-        assert_eq!(list[0].name, "pi-subagents");
-        assert_eq!(list[0].npm_package.as_deref(), Some("pi-subagents"));
-        assert!(list[0].description.contains("社区子代理"));
-        assert!(list[0].category.contains("Subagents"));
-        assert_eq!(list[1].npm_package, None);
+    fn parses_piindex_cards() {
+        let body = r#"<article class="resource" id="pi-web-access-x" data-kind="packages" data-stars="1779" data-downloads="295964" data-search="pi-web-access 网页与搜索 pi install npm:pi-web-access">
+          <div class="resource-heading"><h3><a class="package-link" href="/zh/packages/pi-web-access/">pi-web-access</a></h3></div>
+          <div class="resource-description"><p>Web 搜索、URL 获取与 PDF 提取。</p></div>
+          <div class="resource-categories"><a class="resource-kind" data-label="扩展包">扩展包</a><a class="resource-tag" data-label="网页与搜索">网页与搜索</a></div>
+          <a href="https://github.com/nicobailon/pi-web-access" data-repo-link="true">查看项目</a>
+          <div class="install-command"><code>pi install npm:pi-web-access</code><button data-copy="pi install npm:pi-web-access"></button></div>
+        </article>
+        <article class="resource" data-kind="themes" data-stars="1" data-downloads="2"><h3><a class="package-link" href="/zh/packages/t/">theme-x</a></h3></article>"#;
+        let list = parse_piindex_html(body);
+        assert_eq!(list.len(), 1, "只留 packages 卡");
+        let e = &list[0];
+        assert_eq!(e.name, "pi-web-access");
+        assert_eq!(e.npm_package.as_deref(), Some("pi-web-access"));
+        assert!(e.description.contains("Web 搜索"));
+        assert_eq!(e.category, "网页与搜索");
+        assert_eq!(e.kind_label, "扩展包");
+        assert_eq!(e.stars, Some(1779));
+        assert_eq!(e.weekly_downloads, Some(295964));
+        assert!(e
+            .detail_url
+            .as_deref()
+            .unwrap_or("")
+            .ends_with("/zh/packages/pi-web-access/"));
+        assert!(e.github_url.as_deref().unwrap_or("").contains("github.com"));
     }
 
     /// settings.json 条目拆分（npm:pkg@ver）。

@@ -1716,7 +1716,15 @@
     "onlineLibPiindex": "Online Extensions (Pi Index)",
     "checkUpdates": "Check updates",
     "updateAll": "Update all",
-    "allUpToDate": "Everything installed is up to date"
+    "allUpToDate": "Everything installed is up to date",
+    "sourceInstalled": "Installed",
+    "detail": "Details",
+    "installedExtensions": "Installed extensions",
+    "installedSkills": "Installed skills",
+    "none": "None",
+    "upToDate": "Up to date",
+    "publisherVerified": "Publisher verified",
+    "publisher": "Publisher"
   },
   "onboarding": {
     "initTitle": "Preparing your agent",
