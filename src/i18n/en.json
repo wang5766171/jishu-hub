@@ -1724,7 +1724,10 @@
     "none": "None",
     "upToDate": "Up to date",
     "publisherVerified": "Publisher verified",
-    "publisher": "Publisher"
+    "publisher": "Publisher",
+    "reload": "Reload",
+    "checkUpdate": "Check update",
+    "updateOne": "Update"
   },
   "onboarding": {
     "initTitle": "Preparing your agent",

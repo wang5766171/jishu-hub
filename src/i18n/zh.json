@@ -1724,7 +1724,10 @@
     "none": "暂无",
     "upToDate": "最新",
     "publisherVerified": "发布者已验证",
-    "publisher": "发布者"
+    "publisher": "发布者",
+    "reload": "重新加载",
+    "checkUpdate": "检查更新",
+    "updateOne": "更新"
   },
   "onboarding": {
     "initTitle": "正在准备你的智能体",

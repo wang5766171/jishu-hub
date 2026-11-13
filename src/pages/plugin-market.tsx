@@ -119,6 +119,12 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
   const [skillUpdates, setSkillUpdates] = useState<SkillUpdateStatus[] | null>(null);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updatingAll, setUpdatingAll] = useState(false);
+  // 需求3 四轮：分类过滤 / 重新加载 / 单卡检查更新。
+  const [extCategory, setExtCategory] = useState<string>("all");
+  const [reloading, setReloading] = useState(false);
+  const [extCardUpdate, setExtCardUpdate] = useState<Record<string, ExtensionUpdateStatus>>({});
+  const [skillCardUpdate, setSkillCardUpdate] = useState<Record<string, SkillUpdateStatus>>({});
+  const [cardBusy, setCardBusy] = useState<string | null>(null);
   const [skills, setSkills] = useState<SkillhubListResult | null>(null);
   const [skillInstalled, setSkillInstalled] = useState<Record<string, string>>({});
   const [installedIds, setInstalledIds] = useState<Set<string>>(new Set());
@@ -135,6 +141,21 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
       /* plugin_list 失败保持当前值 */
     }
   }, []);
+
+  const extCategories = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of piindex ?? []) {
+      for (const c of e.category.split("/")) {
+        const t = c.trim();
+        if (t) set.add(t);
+      }
+    }
+    return ["all", ...[...set].sort((a, b) => a.localeCompare(b, "zh"))];
+  }, [piindex]);
+  const filteredPiindex = useMemo(() => {
+    if (!piindex) return null;
+    return extCategory === "all" ? piindex : piindex.filter((e) => e.category.split("/").some((c) => c.trim() === extCategory));
+  }, [piindex, extCategory]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -528,6 +549,29 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
               {piindex
                 ? t("market.onlineLibPiindex", "在线扩展库（Pi Index）")
                 : t("market.onlineLib", "在线扩展库（pi 生态）")}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-[10px]"
+                disabled={reloading}
+                onClick={() =>
+                  void (async () => {
+                    setReloading(true);
+                    setActionError(null);
+                    try {
+                      const fresh = await invokeCommand<PiindexEntry[]>("piindex_refresh");
+                      setPiindex(fresh ?? []);
+                    } catch (e) {
+                      setActionError(String(e));
+                    } finally {
+                      setReloading(false);
+                    }
+                  })()
+                }
+              >
+                {reloading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                <span className="ml-0.5">{t("market.reload", "重新加载")}</span>
+              </Button>
             </div>
             <div className="relative">
               <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
@@ -539,10 +583,29 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
               />
             </div>
           </div>
+          {piindex && extCategories.length > 1 && (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {extCategories.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setExtCategory(c)}
+                  className={
+                    "rounded-full border px-2.5 py-0.5 text-[11px] transition-colors " +
+                    (extCategory === c
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border/60 text-muted-foreground hover:border-primary/40 hover:text-foreground")
+                  }
+                >
+                  {c === "all" ? t("market.sceneAll", "全部") : c}
+                </button>
+              ))}
+            </div>
+          )}
           {/* Pi Index 目录卡片（主源） */}
           {piindex && (
             <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
-              {piindex.slice(0, 18).map((entry) => {
+              {(filteredPiindex ?? piindex!).slice(0, 36).map((entry) => {
                 const pkg = entry.npmPackage;
                 const installed = !!pkg && onlineInstalled.some(
                   (src) => src === "npm:" + pkg || src.startsWith("npm:" + pkg + "@"),
@@ -570,9 +633,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                           {t("market.detail", "详情")}
                         </button>
                       )}
-                      {entry.githubUrl && (
-                        <a href={entry.githubUrl} target="_blank" rel="noreferrer" className="hover:text-foreground hover:underline">GitHub</a>
-                      )}
+
                       {pkg && installed && <span className="text-muted-foreground">{t("market.installed")}</span>}
                       {pkg && !installed && (
                         <Button
@@ -779,22 +840,81 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
             {onlineInstalled.length === 0 ? (
               <p className="py-3 text-xs text-muted-foreground/60">{t("market.none", "暂无")}</p>
             ) : (
-              <div className="space-y-1.5">
+              <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
                 {onlineInstalled.map((src) => {
                   const m = src.match(/^npm:(.+?)@(.+)$/);
                   const pkg = m?.[1] ?? src.replace(/^npm:/, "");
                   const ver = m?.[2] ?? "";
-                  const upd = extUpdates?.find((u) => u.package === pkg);
+                  const upd = extUpdates?.find((u) => u.package === pkg) ?? extCardUpdate[pkg];
                   return (
-                    <div key={src} className="flex items-center gap-2 rounded-lg border border-border/60 px-3 py-2 text-xs">
-                      <Package className="h-3.5 w-3.5 shrink-0 text-primary/70" />
-                      <span className="min-w-0 flex-1 truncate font-mono">{pkg}</span>
-                      <span className="shrink-0 text-muted-foreground">{ver ? `v${ver}` : ""}</span>
-                      {upd?.hasUpdate ? (
-                        <span className="shrink-0 text-amber-600">→ v{upd.latest}</span>
-                      ) : extUpdates ? (
-                        <span className="shrink-0 text-muted-foreground/50">{t("market.upToDate", "最新")}</span>
-                      ) : null}
+                    <div key={src} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
+                      <div className="flex items-center gap-2">
+                        <Package className="h-4 w-4 shrink-0 text-primary/70" />
+                        <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium" title={pkg}>{pkg}</span>
+                        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{ver ? `v${ver}` : ""}</span>
+                      </div>
+                      <div className="mt-auto flex items-center gap-1 pt-1 text-[10px] text-muted-foreground/70">
+                        {upd?.hasUpdate ? (
+                          <>
+                            <span className="text-amber-600">→ v{upd!.latest}</span>
+                            <span className="flex-1" />
+                            <Button
+                              size="sm"
+                              className="h-6 px-2 text-[10px]"
+                              disabled={cardBusy === pkg}
+                              onClick={() =>
+                                void (async () => {
+                                  setCardBusy(pkg);
+                                  setActionError(null);
+                                  try {
+                                    await invokeCommand("extension_update", { packages: [pkg] });
+                                    const status = await invokeCommand<ExtensionUpdateStatus>("extension_check_update", { package: pkg });
+                                    setExtCardUpdate((prev) => ({ ...prev, [pkg]: status }));
+                                    const sources = await invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]);
+                                    setOnlineInstalled(sources ?? []);
+                                    onChanged?.();
+                                  } catch (e) {
+                                    setActionError(String(e));
+                                  } finally {
+                                    setCardBusy(null);
+                                  }
+                                })()
+                              }
+                            >
+                              {cardBusy === pkg ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                              <span className="ml-0.5">{t("market.updateOne", "更新")}</span>
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            {upd ? <span>{t("market.upToDate", "最新")}</span> : null}
+                            <span className="flex-1" />
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 px-2 text-[10px]"
+                              disabled={cardBusy === pkg}
+                              onClick={() =>
+                                void (async () => {
+                                  setCardBusy(pkg);
+                                  setActionError(null);
+                                  try {
+                                    const status = await invokeCommand<ExtensionUpdateStatus>("extension_check_update", { package: pkg });
+                                    setExtCardUpdate((prev) => ({ ...prev, [pkg]: status }));
+                                  } catch (e) {
+                                    setActionError(String(e));
+                                  } finally {
+                                    setCardBusy(null);
+                                  }
+                                })()
+                              }
+                            >
+                              {cardBusy === pkg ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                              <span className="ml-0.5">{t("market.checkUpdate", "检查更新")}</span>
+                            </Button>
+                          </>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -810,19 +930,79 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
             {Object.keys(skillInstalled).length === 0 ? (
               <p className="py-3 text-xs text-muted-foreground/60">{t("market.none", "暂无")}</p>
             ) : (
-              <div className="space-y-1.5">
+              <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
                 {Object.entries(skillInstalled).map(([slug, ver]) => {
-                  const upd = skillUpdates?.find((u) => u.slug === slug);
+                  const upd = skillUpdates?.find((u) => u.slug === slug) ?? skillCardUpdate[slug];
+                  const hasUpdate = upd?.hasUpdate;
                   return (
-                    <div key={slug} className="flex items-center gap-2 rounded-lg border border-border/60 px-3 py-2 text-xs">
-                      <Bot className="h-3.5 w-3.5 shrink-0 text-primary/70" />
-                      <span className="min-w-0 flex-1 truncate font-mono">{slug}</span>
-                      <span className="shrink-0 text-muted-foreground">{ver ? `v${ver}` : ""}</span>
-                      {upd?.hasUpdate ? (
-                        <span className="shrink-0 text-amber-600">→ v{upd.latest}</span>
-                      ) : skillUpdates ? (
-                        <span className="shrink-0 text-muted-foreground/50">{t("market.upToDate", "最新")}</span>
-                      ) : null}
+                    <div key={slug} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
+                      <div className="flex items-center gap-2">
+                        <Bot className="h-4 w-4 shrink-0 text-primary/70" />
+                        <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium" title={slug}>{slug}</span>
+                        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{ver ? `v${ver}` : ""}</span>
+                      </div>
+                      <div className="mt-auto flex items-center gap-1 pt-1 text-[10px] text-muted-foreground/70">
+                        {hasUpdate ? (
+                          <>
+                            <span className="text-amber-600">→ v{upd!.latest}</span>
+                            <span className="flex-1" />
+                            <Button
+                              size="sm"
+                              className="h-6 px-2 text-[10px]"
+                              disabled={cardBusy === slug}
+                              onClick={() =>
+                                void (async () => {
+                                  setCardBusy(slug);
+                                  setActionError(null);
+                                  try {
+                                    await invokeCommand("skillhub_update", { slugs: [slug] });
+                                    const status = await invokeCommand<SkillUpdateStatus>("skillhub_check_update", { slug });
+                                    setSkillCardUpdate((prev) => ({ ...prev, [slug]: status }));
+                                    const installedSkills = await invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>);
+                                    setSkillInstalled(installedSkills ?? {});
+                                    onChanged?.();
+                                  } catch (e) {
+                                    setActionError(String(e));
+                                  } finally {
+                                    setCardBusy(null);
+                                  }
+                                })()
+                              }
+                            >
+                              {cardBusy === slug ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                              <span className="ml-0.5">{t("market.updateOne", "更新")}</span>
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            {upd ? <span>{t("market.upToDate", "最新")}</span> : null}
+                            <span className="flex-1" />
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 px-2 text-[10px]"
+                              disabled={cardBusy === slug}
+                              onClick={() =>
+                                void (async () => {
+                                  setCardBusy(slug);
+                                  setActionError(null);
+                                  try {
+                                    const status = await invokeCommand<SkillUpdateStatus>("skillhub_check_update", { slug });
+                                    setSkillCardUpdate((prev) => ({ ...prev, [slug]: status }));
+                                  } catch (e) {
+                                    setActionError(String(e));
+                                  } finally {
+                                    setCardBusy(null);
+                                  }
+                                })()
+                              }
+                            >
+                              {cardBusy === slug ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                              <span className="ml-0.5">{t("market.checkUpdate", "检查更新")}</span>
+                            </Button>
+                          </>
+                        )}
+                      </div>
                     </div>
                   );
                 })}

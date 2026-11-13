@@ -61,6 +61,49 @@ fn http() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
+/// 磁盘缓存（需求3 四轮裁决：扩展列表 DB 缓存，每日首次打开比对更新）：
+///  = { fetchedAt, entries }。
+fn disk_cache_path() -> std::path::PathBuf {
+    crate::agent::manifest::hub_home().join("piindex-cache.json")
+}
+
+fn read_disk_cache() -> Option<Vec<PiindexEntry>> {
+    let content = std::fs::read_to_string(disk_cache_path()).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let entries: Vec<PiindexEntry> = serde_json::from_value(value.get("entries")?.clone()).ok()?;
+    (entries.len() >= MIN_EXPECTED_CARDS).then_some(entries)
+}
+
+fn write_disk_cache(entries: &[PiindexEntry]) {
+    let payload = serde_json::json!({
+        "fetchedAt": chrono::Utc::now().to_rfc3339(),
+        "entries": entries,
+    });
+    if let Ok(serialized) = serde_json::to_string_pretty(&payload) {
+        let _ = crate::util::atomic_write(&disk_cache_path(), serialized.as_bytes());
+    }
+}
+
+fn disk_cache_fresh_today() -> bool {
+    let Ok(content) = std::fs::read_to_string(disk_cache_path()) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+    let fetched = value
+        .get("fetchedAt")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+    match fetched {
+        // 本地日历日内的缓存视为新鲜（每日首次打开触发比对更新）。
+        Some(at) => {
+            at.with_timezone(&chrono::Local).date_naive() == chrono::Local::now().date_naive()
+        }
+        None => false,
+    }
+}
+
 async fn fetch_list() -> Result<Vec<PiindexEntry>, String> {
     {
         let guard = cache().lock().unwrap_or_else(|e| e.into_inner());
@@ -68,6 +111,14 @@ async fn fetch_list() -> Result<Vec<PiindexEntry>, String> {
             if at.elapsed() < LIST_TTL && list.len() >= MIN_EXPECTED_CARDS {
                 return Ok(list.clone());
             }
+        }
+    }
+    // 内存缓存缺失：当日磁盘缓存命中直接用（不碰网络）。
+    if disk_cache_fresh_today() {
+        if let Some(entries) = read_disk_cache() {
+            *cache().lock().unwrap_or_else(|e| e.into_inner()) =
+                Some((Instant::now(), entries.clone()));
+            return Ok(entries);
         }
     }
     let body = http()?
@@ -89,6 +140,7 @@ async fn fetch_list() -> Result<Vec<PiindexEntry>, String> {
             MIN_EXPECTED_CARDS
         ));
     }
+    write_disk_cache(&list);
     *cache().lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), list.clone()));
     Ok(list)
 }
@@ -218,6 +270,12 @@ fn parse_piindex_html(body: &str) -> Vec<PiindexEntry> {
         });
     }
     out
+}
+
+/// 手动触发刷新（「重新加载」按钮）：清两级缓存 → 强制网络拉取 → 写盘。
+pub async fn piindex_refresh() -> Result<Vec<PiindexEntry>, String> {
+    *cache().lock().unwrap_or_else(|e| e.into_inner()) = None;
+    fetch_list().await
 }
 
 /// 检索：关键词命中站点预拼的中文英文全文（data-search）+ 名称/包名
@@ -444,6 +502,50 @@ pub async fn skillhub_update(slugs: Option<Vec<String>>) -> Result<Vec<SkillUpda
         }
     }
     Ok(updated)
+}
+
+/// 单包检测更新（已安装页卡片独立检查）。
+pub async fn extension_check_update(package: &str) -> Result<ExtensionUpdateStatus, String> {
+    let packages = read_packages()?;
+    let entry = packages
+        .iter()
+        .find(|e| split_package(e).is_some_and(|(pkg, _)| pkg == package))
+        .ok_or_else(|| format!("未安装: {package}"))?;
+    let (pkg, ver) = split_package(entry).unwrap();
+    let latest = npm_latest(pkg).await?;
+    Ok(ExtensionUpdateStatus {
+        package: pkg.to_string(),
+        installed: ver.to_string(),
+        has_update: latest != ver,
+        latest,
+    })
+}
+
+/// 单技能检测更新（已安装页卡片独立检查）。
+pub async fn skillhub_check_update(slug: &str) -> Result<SkillUpdateStatus, String> {
+    let installed = super::skillhub::skillhub_installed();
+    let ver = installed
+        .get(slug)
+        .ok_or_else(|| format!("未安装: {slug}"))?
+        .clone();
+    let latest = super::skillhub::skillhub_detail(slug)
+        .await
+        .map_err(|e| format!("市场查询失败: {e}"))?
+        .version;
+    if latest.is_empty() {
+        return Ok(SkillUpdateStatus {
+            slug: slug.to_string(),
+            installed: ver.clone(),
+            latest: ver,
+            has_update: false,
+        });
+    }
+    Ok(SkillUpdateStatus {
+        slug: slug.to_string(),
+        has_update: latest != ver,
+        installed: ver,
+        latest,
+    })
 }
 
 #[cfg(test)]

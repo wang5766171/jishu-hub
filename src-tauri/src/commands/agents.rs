@@ -535,6 +535,27 @@ pub(crate) async fn extension_update(
     agent::piindex::extension_update(packages).await
 }
 
+/// Pi Index 强制刷新（「重新加载」按钮——清两级缓存重拉写盘）。
+#[tauri::command]
+pub(crate) async fn piindex_refresh() -> Result<Vec<agent::piindex::PiindexEntry>, String> {
+    agent::piindex::piindex_refresh().await
+}
+
+/// 单包/单技能检测更新（已安装页卡片独立检查）。
+#[tauri::command]
+pub(crate) async fn extension_check_update(
+    package: String,
+) -> Result<agent::piindex::ExtensionUpdateStatus, String> {
+    agent::piindex::extension_check_update(&package).await
+}
+
+#[tauri::command]
+pub(crate) async fn skillhub_check_update(
+    slug: String,
+) -> Result<agent::piindex::SkillUpdateStatus, String> {
+    agent::piindex::skillhub_check_update(&slug).await
+}
+
 /// 技能检测更新（SkillHub 台账 vs 市场 latest）。
 #[tauri::command]
 pub(crate) async fn skillhub_check_updates(
