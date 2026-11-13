@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
-import { Blocks } from "lucide-react";
+import { Blocks, X } from "lucide-react";
 
 /** 会话工具条目（后端 session_tool_list，与 chat-input 的 SessionTool 同构）。 */
 interface SessionTool {
@@ -54,9 +54,13 @@ export function useSessionToolNames(sessionId: string | null): Record<string, st
 export function EmbeddedToolPills({
   toolIds,
   toolNames,
+  onRemove,
 }: {
   toolIds: string[];
   toolNames: Record<string, string>;
+  /** 收版反馈（2026-11-13 用户裁决）：编辑态工具可删——传入后每个 pill 带
+   * 移除按钮（删除本次重发不再携带该工具调用；不传=静态展示）。 */
+  onRemove?: (id: string) => void;
 }) {
   if (toolIds.length === 0) return null;
   return (
@@ -69,6 +73,16 @@ export function EmbeddedToolPills({
         >
           <Blocks className="h-3 w-3 shrink-0 text-[var(--icon-config)]" />
           <span className="truncate">{toolNames[id] ?? id}</span>
+          {onRemove && (
+            <button
+              type="button"
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRemove(id); }}
+              className="-mr-0.5 ml-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm text-muted-foreground/70 hover:bg-destructive/15 hover:text-destructive"
+              title="删除此工具调用（重发不再携带）"
+            >
+              <X className="h-2.5 w-2.5" />
+            </button>
+          )}
         </span>
       ))}
     </span>

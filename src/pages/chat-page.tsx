@@ -800,7 +800,7 @@ export function ChatPage({
   // 链路：Rust 截断 pi 会话 JSONL（校验原文+备份）并回收进程（流式中=停止
   // 回复）→ 本地缓存/视图截断到该消息前 → Route 2 式重发（乐观提交+落盘
   // 由 send_message 承担，turn_complete 不重复提交）。
-  const handleEditLastUserMessage = useCallback(async (rawText: string, newText: string) => {
+  const handleEditLastUserMessage = useCallback(async (rawText: string, newText: string, remainingToolIds?: string[]) => {
     const sid = selectedSessionRef.current;
     if (!sid || sid === "new" || !activeId) return;
     try {
@@ -834,9 +834,20 @@ export function ChatPage({
     // 任务前缀重包装：用户编辑的是剥前缀原话，重发保持任务会话语义。
     const prefixMatch = rawText.match(/^(\/jishu-task (?:dev|research) )/);
     const outgoing = prefixMatch ? prefixMatch[1] + newText : newText;
+    // 收版反馈（2026-11-13 用户裁决「编辑的时候能编辑工具」）：编辑态删除/
+    // 保留工具调用——重发前把会话工具集覆写为保留集（send 侧按此注入），
+    // 本地提交的 pill 元数据同步。
+    const finalToolIds = remainingToolIds !== undefined ? remainingToolIds : editedToolIds;
+    if (remainingToolIds !== undefined) {
+      try {
+        await invokeCommand("session_set_tools", { sessionId: sid, toolIds: remainingToolIds });
+      } catch (err) {
+        console.warn("session_set_tools after edit failed:", err);
+      }
+    }
     const updated = [...kept, {
       role: "user" as const,
-      content: [{ type: "text" as const, text: outgoing, tool_ids: editedToolIds }],
+      content: [{ type: "text" as const, text: outgoing, tool_ids: finalToolIds }],
       timestamp: Date.now(),
     }];
     setCachedSessionMessages(sid, updated);

@@ -68,7 +68,7 @@ interface MessageViewProps {
   /** v0.9.7 需求13：编辑最近用户消息——非空时最后一条用户消息显示编辑
    * 入口（复制旁）；提交回调 (rawText 落盘原文, newText 编辑后文本)，截断
    * 重发链由页面承担。null/undefined = 不可编辑（新会话/流式占位等）。 */
-  onEditLastUserMessage?: ((rawText: string, newText: string) => void) | null;
+  onEditLastUserMessage?: ((rawText: string, newText: string, remainingToolIds?: string[]) => void) | null;
 }
 
 /**
@@ -580,8 +580,9 @@ function UserBubble({
   messageIndex: number;
   roleView?: MessageRoleView | null;
   toolNames: Record<string, string>;
-  /** 需求13：非空=本气泡是可编辑的最近用户消息（提交回调收编辑后文本）。 */
-  onEditSubmit?: ((newText: string) => void) | null;
+  /** 需求13：非空=本气泡是可编辑的最近用户消息（提交回调收编辑后文本+
+   * 保留的工具调用 id——编辑可删/留工具）。 */
+  onEditSubmit?: ((newText: string, remainingToolIds?: string[]) => void) | null;
 }) {
   const { t } = useTranslation();
   // 需求13：原位编辑态（zcode 式——气泡内容替换为编辑框，Enter 确认/Esc 取消）。
@@ -593,6 +594,9 @@ function UserBubble({
   //（「原样气泡变成可编辑」）。
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   const [editWidth, setEditWidth] = useState<number | null>(null);
+  // 收版反馈（2026-11-13 用户裁决「编辑的时候能编辑工具」）：编辑态工具
+  // pill 可删可留——重发只带保留的工具调用。
+  const [draftToolIds, setDraftToolIds] = useState<string[]>([]);
   // v0.9.0 需求3 方案 C：pill 数据源为首文本块的 tool_ids 元数据（回放由
   // 后端 extract_tool_snapshot 从注入块派生）；文本标记解析已废弃。
   const firstTextBlock = msg.content.find((b) => b.type === "text");
@@ -633,13 +637,17 @@ function UserBubble({
             <div className="flex flex-col gap-2" onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                if (draft.trim()) { setEditing(false); onEditSubmit?.(draft.trim()); }
+                if (draft.trim()) { setEditing(false); onEditSubmit?.(draft.trim(), draftToolIds); }
               } else if (e.key === "Escape") {
                 setEditing(false);
               }
             }}>
-              {toolIds.length > 0 && (
-                <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
+              {draftToolIds.length > 0 && (
+                <EmbeddedToolPills
+                  toolIds={draftToolIds}
+                  toolNames={toolNames}
+                  onRemove={(id) => setDraftToolIds((prev) => prev.filter((x) => x !== id))}
+                />
               )}
               <textarea
                 autoFocus
@@ -659,7 +667,7 @@ function UserBubble({
                 <button
                   type="button"
                   disabled={!draft.trim()}
-                  onClick={() => { const text = draft.trim(); setEditing(false); if (text) onEditSubmit?.(text); }}
+                  onClick={() => { const text = draft.trim(); setEditing(false); if (text) onEditSubmit?.(text, draftToolIds); }}
                   className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground disabled:opacity-40"
                 >
                   {t("sessions.editResend", "重发")}
@@ -735,6 +743,7 @@ function UserBubble({
                 e.stopPropagation();
                 if (bubbleRef.current) setEditWidth(bubbleRef.current.offsetWidth);
                 setDraft(displayText || copyText);
+                setDraftToolIds(toolIds);
                 setEditing(true);
               }}
               className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 mt-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
@@ -933,9 +942,9 @@ export const MessageView = memo(function MessageView({
     const roleView = roleResolver ? roleResolver(msg) : null;
     // 需求13：仅最后一条用户消息挂编辑提交。
     const editable = onEditLastUserMessage && row.messageIndex === lastUserMessageIndex
-      ? (newText: string) => {
+      ? (newText: string, remainingToolIds?: string[]) => {
           const raw = msg.content.find((b) => b.type === "text");
-          onEditLastUserMessage(raw && raw.type === "text" ? raw.text : "", newText);
+          onEditLastUserMessage(raw && raw.type === "text" ? raw.text : "", newText, remainingToolIds);
         }
       : null;
     return (

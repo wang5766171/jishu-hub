@@ -297,7 +297,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
           toolNames={toolNames}
           onEdit={
             onEditUserMessage
-              ? (newText) => onEditUserMessage(resolvedUserMessage, newText)
+              ? (newText, remainingToolIds) => onEditUserMessage(resolvedUserMessage, newText, remainingToolIds)
               : null
           }
         />
