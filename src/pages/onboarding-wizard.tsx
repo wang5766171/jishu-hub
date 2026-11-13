@@ -287,7 +287,8 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
     }
     setUpdatingId(id);
     try {
-      await invokeCommand<string>("install_agent_command", { command: cmd });
+      // 多方式策略链（winget→choco→安装包静默装），一种失败自动尝试下一种。
+      const result = await invokeCommand<{ method: string; output: string }>("runtime_update", { id });
       const prevVersion = runtime?.version ?? null;
       await refreshEnv();
       // 重检后读新版本（refreshEnv 是 setState——用命令直查一次拿权威值）。
@@ -298,11 +299,14 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
         next.delete(id);
         return next;
       });
+      const methodText = result.method === "installer"
+        ? t("onboarding.rtMethodInstaller", "在线安装包")
+        : result.method;
       if (freshVersion && prevVersion && freshVersion !== prevVersion) {
         await alertDialog({
           title: t("env.updateSuccess", "更新成功"),
           description: t("onboarding.rtUpdated", {
-            defaultValue: `${name} 已更新到 v${freshVersion}。`,
+            defaultValue: `${name} 已通过 ${methodText} 更新到 v${freshVersion}。`,
             name,
             version: freshVersion,
           }),
@@ -325,10 +329,13 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
           description: t("env.uacCancelled", "已取消管理员授权，更新未执行。可重新更新并在授权弹窗中选择「是」。"), 
         });
       } else {
-        await alertDialog({
-          title: t("env.title", "环境检测"),
-          description: `${t("onboarding.rtUpdateFailed", "更新失败")}: ${errText.slice(0, 400)}`,
+        const openDownload = await confirmDialog({
+          title: t("onboarding.rtUpdateFailed", "更新失败"),
+          description: `${errText.slice(0, 400)}`,
+          confirmText: t("onboarding.rtOpenDownload", "打开下载页手动更新"),
+          cancelText: t("common.cancel", "取消"),
         });
+        if (openDownload) openUrl(runtime?.download_url ?? downloadUrls[id] ?? "");
       }
     } finally {
       setUpdatingId(null);
@@ -358,6 +365,12 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
 
   const openUrl = (url: string) => {
     invokeCommand("open_url", { url }).catch(console.error);
+  };
+  const downloadUrls: Record<string, string> = {
+    node: "https://nodejs.org/",
+    npm: "https://nodejs.org/",
+    git: "https://git-scm.com/downloads",
+    python: "https://www.python.org/downloads/",
   };
 
   // 运行环境行：installed ✓ 版本（+新版本提示/更新入口）/ 缺失→下载入口。

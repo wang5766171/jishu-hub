@@ -526,6 +526,7 @@ pub fn run() {
             commands::agent_install::agent_runtime_status,
             commands::agent_install::agent_runtime_init,
             commands::env_check::check_environment,
+            commands::runtime_update::runtime_update,
             commands::agents::check_transport_bridge,
             commands::agents::install_transport_bridge,
             commands::agents::agent_official_auth,

@@ -11,6 +11,7 @@ pub(crate) mod native_mcp;
 pub(crate) mod orchestrator;
 pub(crate) mod plugin_panel;
 pub(crate) mod presets;
+pub(crate) mod runtime_update;
 pub(crate) mod projects;
 pub(crate) mod sessions;
 pub(crate) mod settings;

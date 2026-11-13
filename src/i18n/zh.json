@@ -1756,7 +1756,9 @@
     "rtUpdated": "{{name}} 已更新到 v{{version}}。",
     "rtUpdateNoChangeTitle": "更新命令已执行",
     "rtUpdateNoChange": "{{name}} 的更新命令已执行完成，但检测到的版本仍为 v{{version}}。可能是更新源尚未提供该新版本，或新版本需要重启应用后生效。",
-    "rtUpdateFailed": "更新失败"
+    "rtUpdateFailed": "更新失败",
+    "rtMethodInstaller": "在线安装包",
+    "rtOpenDownload": "打开下载页手动更新"
   },
   "taskSteps": {
     "title": "任务步骤",

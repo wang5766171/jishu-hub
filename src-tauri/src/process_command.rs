@@ -15,6 +15,28 @@ pub fn std_no_window(command: &mut std::process::Command) -> &mut std::process::
     command
 }
 
+/// std 版 PATH 补全（与 tokio 版同源路径集）——安装/更新命令链
+/// （shell::run_install_command）用 StdCommand，此前完全没补 PATH。
+pub fn extend_path_for_child_std(
+    command: &mut std::process::Command,
+) -> &mut std::process::Command {
+    let extra = collect_user_paths();
+    if extra.is_empty() {
+        return command;
+    }
+    let current_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut parts: Vec<std::path::PathBuf> = std::env::split_paths(&current_path).collect();
+    for dir in extra {
+        let path_dir = std::path::PathBuf::from(&dir);
+        if !parts.contains(&path_dir) {
+            parts.push(path_dir);
+        }
+    }
+    let joined = std::env::join_paths(parts).unwrap_or(current_path);
+    command.env("PATH", joined);
+    command
+}
+
 pub fn tokio_no_window(command: &mut tokio::process::Command) -> &mut tokio::process::Command {
     #[cfg(target_os = "windows")]
     {
@@ -62,6 +84,14 @@ fn collect_user_paths() -> Vec<String> {
         if let Ok(home) = std::env::var("USERPROFILE") {
             dirs.push(format!("{}\\.local\\bin", home));
         }
+        // v0.9.7 收版反馈（2026-11-13）：winget 是用户级 Store 别名
+        // （%LOCALAPPDATA%\Microsoft\WindowsApps）——hub 子进程 PATH 缺该
+        // 目录时 winget「无法识别」（在线更新策略链第一跳）。choco bin
+        // 一并补（策略链第二跳）。
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            dirs.push(format!("{}\\Microsoft\\WindowsApps", local));
+        }
+        dirs.push("C:\\ProgramData\\chocolatey\\bin".to_string());
     }
     #[cfg(not(target_os = "windows"))]
     {

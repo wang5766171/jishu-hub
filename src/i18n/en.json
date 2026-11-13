@@ -1756,7 +1756,9 @@
     "rtUpdated": "{{name}} updated to v{{version}}.",
     "rtUpdateNoChangeTitle": "Update command finished",
     "rtUpdateNoChange": "The update command for {{name}} finished, but the detected version is still v{{version}}. The update source may not offer the newer version yet, or a restart may be needed for it to take effect.",
-    "rtUpdateFailed": "Update failed"
+    "rtUpdateFailed": "Update failed",
+    "rtMethodInstaller": "online installer",
+    "rtOpenDownload": "Open download page"
   },
   "taskSteps": {
     "title": "Task steps",

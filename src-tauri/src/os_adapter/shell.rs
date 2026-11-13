@@ -104,7 +104,9 @@ pub async fn run_install_command(
         if let Some(dir) = current_dir {
             installer.current_dir(dir);
         }
-        let output = crate::process_command::std_no_window(&mut installer)
+        // v0.9.7 收版反馈：安装/更新子进程补用户级 PATH（winget/npm 等）。
+        let installer = crate::process_command::extend_path_for_child_std(&mut installer);
+        let output = crate::process_command::std_no_window(installer)
             .output()
             .map_err(|e| format!("Failed to spawn powershell: {}", e))?;
 
