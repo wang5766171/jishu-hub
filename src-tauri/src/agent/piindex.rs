@@ -188,12 +188,15 @@ fn parse_piindex_html(body: &str) -> Vec<PiindexEntry> {
         if attr_of(attrs, "data-kind").as_deref() != Some("packages") {
             continue;
         }
-        // 名称：package-link 文本；缺失时从安装命令尾段反解。
+        // 名称：package-link 文本 → 标题链接 data-package（132/135 卡是 GitHub
+        // 直链形态，带 data-package 属性——收版反馈：大量卡片只有编码名，
+        // 根因即此处只认 package-link）→ 安装命令尾段反解。
         let name = regex::Regex::new(r#"class="package-link"[^>]*>([^<]+)</a>"#)
             .ok()
             .and_then(|re| re.captures(inner))
             .and_then(|c| c.get(1))
-            .map(|m| html_unescape(m.as_str().trim()));
+            .map(|m| html_unescape(m.as_str().trim()))
+            .or_else(|| attr_of(inner, "data-package"));
         // 安装命令（data-copy；缺失回退 code 文本）。
         let install = attr_of(inner, "data-copy")
             .or_else(|| {
@@ -220,12 +223,28 @@ fn parse_piindex_html(body: &str) -> Vec<PiindexEntry> {
             .strip_prefix("pi install npm:")
             .map(|p| p.trim().to_string())
             .filter(|p| !p.is_empty());
-        // 中文说明。
+        // 中文说明：直接 <p> → <details> 折叠形态（description-full /
+        // description-preview——收版反馈：pi-better-web-search 等 10 张卡
+        // 无说明即此结构）。
         let description = regex::Regex::new(r"(?s)resource-description[^>]*>\s*<p>(.*?)</p>")
             .ok()
             .and_then(|re| re.captures(inner))
             .and_then(|c| c.get(1))
             .map(|m| text_of(m.as_str()))
+            .or_else(|| {
+                regex::Regex::new(r#"(?s)<p class="description-full">(.*?)</p>"#)
+                    .ok()
+                    .and_then(|re| re.captures(inner))
+                    .and_then(|c| c.get(1))
+                    .map(|m| text_of(m.as_str()))
+            })
+            .or_else(|| {
+                regex::Regex::new(r#"(?s)<span class="description-preview">(.*?)</span>"#)
+                    .ok()
+                    .and_then(|re| re.captures(inner))
+                    .and_then(|c| c.get(1))
+                    .map(|m| text_of(m.as_str()))
+            })
             .unwrap_or_default();
         // 中文分类（多个以 / 连接）+ 类型中文名。
         let category = regex::Regex::new(r#"class="resource-tag"[^>]*data-label="([^"]+)""#)

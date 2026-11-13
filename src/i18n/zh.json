@@ -1727,7 +1727,10 @@
     "publisher": "发布者",
     "reload": "重新加载",
     "checkUpdate": "检查更新",
-    "updateOne": "更新"
+    "updateOne": "更新",
+    "viewSource": "查看来源",
+    "updatingShort": "更新中",
+    "updatingProgress": "更新中 {{d}}/{{n}}"
   },
   "onboarding": {
     "initTitle": "正在准备你的智能体",

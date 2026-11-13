@@ -16,8 +16,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { PLUGIN_SCENES } from "@/lib/plugin-scenes";
-import { Bot, Check, Download, Info, Loader2, Package, RefreshCw, Search, ShieldCheck, Sparkles, Trash2 } from "lucide-react";
+import { Bot, Check, Download, ExternalLink, Info, Loader2, Package, RefreshCw, Search, ShieldCheck, Sparkles, Trash2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { startExtensionUpdateAll, startSkillUpdateAll, updatesPending, useMarketUpdates } from "./plugin-market-updates";
 
 interface MarketEntry {
   id: string;
@@ -120,6 +121,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updatingAll, setUpdatingAll] = useState(false);
   // 需求3 四轮：分类过滤 / 重新加载 / 单卡检查更新。
+  const batchUpdates = useMarketUpdates();
   const [extCategory, setExtCategory] = useState<string>("all");
   const [reloading, setReloading] = useState(false);
   const [extCardUpdate, setExtCardUpdate] = useState<Record<string, ExtensionUpdateStatus>>({});
@@ -230,6 +232,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
   // 需求3 补充：技能详情（skillhub_detail 拉取，弹窗展示）。
   const [skillDetailOpen, setSkillDetailOpen] = useState(false);
   const [skillDetail, setSkillDetail] = useState<SkillhubEntry | null>(null);
+  const [extDetailEntry, setExtDetailEntry] = useState<PiindexEntry | null>(null);
   const [skillDetailLoading, setSkillDetailLoading] = useState(false);
   const openSkillDetail = useCallback(async (slug: string) => {
     setSkillDetailOpen(true);
@@ -624,15 +627,15 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                         <span title="npm 周下载">↓ {entry.weeklyDownloads >= 10000 ? Math.round(entry.weeklyDownloads / 1000) / 10 + "万" : entry.weeklyDownloads}</span>
                       )}
                       <span className="flex-1" />
-                      {entry.detailUrl && (
-                        <button
-                          type="button"
-                          className="hover:text-foreground hover:underline"
-                          onClick={() => void invokeCommand("open_url", { url: entry.detailUrl })}
-                        >
-                          {t("market.detail", "详情")}
-                        </button>
-                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-1.5 text-[10px] text-muted-foreground"
+                        aria-label={t("market.detail", "详情")}
+                        onClick={() => setExtDetailEntry(entry)}
+                      >
+                        <Info className="h-3 w-3" />
+                      </Button>
 
                       {pkg && installed && <span className="text-muted-foreground">{t("market.installed")}</span>}
                       {pkg && !installed && (
@@ -789,45 +792,46 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
               {checkingUpdates ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
               <span className="ml-1">{t("market.checkUpdates", "检查更新")}</span>
             </Button>
-            {(extUpdates?.some((u) => u.hasUpdate) || skillUpdates?.some((u) => u.hasUpdate)) && (
+{(extUpdates?.some((u) => u.hasUpdate) || skillUpdates?.some((u) => u.hasUpdate) || batchUpdates.extensionRunning || batchUpdates.skillRunning) && (
               <Button
                 size="sm"
                 className="h-7 px-2.5 text-xs"
-                disabled={updatingAll}
-                onClick={() =>
+                disabled={batchUpdates.extensionRunning || batchUpdates.skillRunning}
+                onClick={() => {
+                  setActionError(null);
+                  // 全局 store 执行（离开页面不打断）；本页订阅恢复进度显示。
+                  if (extUpdates?.some((u) => u.hasUpdate)) startExtensionUpdateAll();
+                  if (skillUpdates?.some((u) => u.hasUpdate)) startSkillUpdateAll();
+                  // 批量完成后刷新本页数据（页面还开着时）。
                   void (async () => {
-                    setUpdatingAll(true);
-                    setActionError(null);
+                    while (updatesPending()) await new Promise((r) => setTimeout(r, 800));
                     try {
-                      await Promise.all([
-                        extUpdates?.some((u) => u.hasUpdate)
-                          ? invokeCommand("extension_update", { packages: null })
-                          : Promise.resolve(null),
-                        skillUpdates?.some((u) => u.hasUpdate)
-                          ? invokeCommand("skillhub_update", { slugs: null })
-                          : Promise.resolve(null),
+                      const [sources, installedSkills] = await Promise.all([
+                        invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
+                        invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>),
                       ]);
+                      setOnlineInstalled(sources ?? []);
+                      setSkillInstalled(installedSkills ?? {});
                       const [ext, skill] = await Promise.all([
                         invokeCommand<ExtensionUpdateStatus[]>("extension_check_updates"),
                         invokeCommand<SkillUpdateStatus[]>("skillhub_check_updates"),
                       ]);
                       setExtUpdates(ext);
                       setSkillUpdates(skill);
-                      const sources = await invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]);
-                      setOnlineInstalled(sources ?? []);
-                      const installedSkills = await invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>);
-                      setSkillInstalled(installedSkills ?? {});
                       onChanged?.();
-                    } catch (e) {
-                      setActionError(String(e));
-                    } finally {
-                      setUpdatingAll(false);
-                    }
-                  })()
-                }
+                    } catch { /* 完成刷新失败静默 */ }
+                  })();
+                }}
               >
-                {updatingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                <span className="ml-1">{t("market.updateAll", "全部更新")}</span>
+                {batchUpdates.extensionRunning || batchUpdates.skillRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                <span className="ml-1">
+                  {batchUpdates.extensionRunning || batchUpdates.skillRunning
+                    ? t("market.updatingProgress", "更新中 {{d}}/{{n}}", {
+                        d: batchUpdates.extensionDone + batchUpdates.skillDone,
+                        n: batchUpdates.extensionTotal + batchUpdates.skillTotal,
+                      })
+                    : t("market.updateAll", "全部更新")}
+                </span>
               </Button>
             )}
           </div>
@@ -861,7 +865,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                             <Button
                               size="sm"
                               className="h-6 px-2 text-[10px]"
-                              disabled={cardBusy === pkg}
+                              disabled={cardBusy === pkg || batchUpdates.extensionRunning}
                               onClick={() =>
                                 void (async () => {
                                   setCardBusy(pkg);
@@ -881,8 +885,8 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                                 })()
                               }
                             >
-                              {cardBusy === pkg ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
-                              <span className="ml-0.5">{t("market.updateOne", "更新")}</span>
+                              {cardBusy === pkg || batchUpdates.extensionRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                              <span className="ml-0.5">{batchUpdates.extensionRunning ? t("market.updatingShort", "更新中") : t("market.updateOne", "更新")}</span>
                             </Button>
                           </>
                         ) : (
@@ -893,7 +897,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                               variant="ghost"
                               size="sm"
                               className="h-6 px-2 text-[10px]"
-                              disabled={cardBusy === pkg}
+                              disabled={cardBusy === pkg || checkingUpdates || batchUpdates.extensionRunning}
                               onClick={() =>
                                 void (async () => {
                                   setCardBusy(pkg);
@@ -909,7 +913,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                                 })()
                               }
                             >
-                              {cardBusy === pkg ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                              {cardBusy === pkg || checkingUpdates || batchUpdates.extensionRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
                               <span className="ml-0.5">{t("market.checkUpdate", "检查更新")}</span>
                             </Button>
                           </>
@@ -949,7 +953,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                             <Button
                               size="sm"
                               className="h-6 px-2 text-[10px]"
-                              disabled={cardBusy === slug}
+                              disabled={cardBusy === slug || batchUpdates.skillRunning}
                               onClick={() =>
                                 void (async () => {
                                   setCardBusy(slug);
@@ -969,8 +973,8 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                                 })()
                               }
                             >
-                              {cardBusy === slug ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
-                              <span className="ml-0.5">{t("market.updateOne", "更新")}</span>
+                              {cardBusy === slug || batchUpdates.skillRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                              <span className="ml-0.5">{batchUpdates.skillRunning ? t("market.updatingShort", "更新中") : t("market.updateOne", "更新")}</span>
                             </Button>
                           </>
                         ) : (
@@ -981,7 +985,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                               variant="ghost"
                               size="sm"
                               className="h-6 px-2 text-[10px]"
-                              disabled={cardBusy === slug}
+                              disabled={cardBusy === slug || checkingUpdates || batchUpdates.skillRunning}
                               onClick={() =>
                                 void (async () => {
                                   setCardBusy(slug);
@@ -997,7 +1001,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                                 })()
                               }
                             >
-                              {cardBusy === slug ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                              {cardBusy === slug || checkingUpdates || batchUpdates.skillRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
                               <span className="ml-0.5">{t("market.checkUpdate", "检查更新")}</span>
                             </Button>
                           </>
@@ -1104,6 +1108,52 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
           </div>
         </>
       )}
+      {/* 扩展详情弹窗（叹号入口——说明+查看来源）。 */}
+      <Dialog open={!!extDetailEntry} onOpenChange={(open) => !open && setExtDetailEntry(null)}>
+        <DialogContent className="max-w-md">
+          {extDetailEntry ? (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Package className="h-4 w-4 text-primary/70" />
+                  <span className="min-w-0 truncate">{extDetailEntry.name}</span>
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3 text-sm">
+                <p className="leading-relaxed text-muted-foreground">{extDetailEntry.description || "-"}</p>
+                <div className="flex flex-wrap gap-1.5 text-[11px]">
+                  {extDetailEntry.kindLabel && (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">{extDetailEntry.kindLabel}</span>
+                  )}
+                  {extDetailEntry.category && (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">{extDetailEntry.category}</span>
+                  )}
+                  {extDetailEntry.stars != null && <span className="rounded bg-muted px-1.5 py-0.5">★ {extDetailEntry.stars}</span>}
+                  {extDetailEntry.weeklyDownloads != null && (
+                    <span className="rounded bg-muted px-1.5 py-0.5">↓ {extDetailEntry.weeklyDownloads >= 10000 ? Math.round(extDetailEntry.weeklyDownloads / 1000) / 10 + "万/周" : extDetailEntry.weeklyDownloads + "/周"}</span>
+                  )}
+                </div>
+                {(extDetailEntry.detailUrl || extDetailEntry.githubUrl) && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() =>
+                      void invokeCommand("open_url", {
+                        url: extDetailEntry.detailUrl ?? extDetailEntry.githubUrl,
+                      })
+                    }
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    <span className="ml-1">{t("market.viewSource", "查看来源")}</span>
+                  </Button>
+                )}
+              </div>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
       {/* 技能详情（需求3 补充） */}
       <Dialog open={skillDetailOpen} onOpenChange={setSkillDetailOpen}>
         <DialogContent className="max-w-md">
@@ -1138,6 +1188,15 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                     {t("market.publisher", "发布者")}：{skillDetail.publisher_name}
                   </div>
                 )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => void invokeCommand("open_url", { url: `https://skillhub.cn/skills/${skillDetail.slug}` })}
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  <span className="ml-1">{t("market.viewSource", "查看来源")}</span>
+                </Button>
               </div>
             </>
           )}

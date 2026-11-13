@@ -1727,7 +1727,10 @@
     "publisher": "Publisher",
     "reload": "Reload",
     "checkUpdate": "Check update",
-    "updateOne": "Update"
+    "updateOne": "Update",
+    "viewSource": "View source",
+    "updatingShort": "Updating",
+    "updatingProgress": "Updating {{d}}/{{n}}"
   },
   "onboarding": {
     "initTitle": "Preparing your agent",
