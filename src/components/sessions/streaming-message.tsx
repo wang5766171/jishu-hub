@@ -42,7 +42,7 @@ interface StreamingMessageProps {
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
   /** 需求13：回复过程中编辑本条用户消息——非空时流式用户气泡显示编辑入口
    * （rawText=发送原文，newText=编辑后文本；停止回复+截断重发由页面承担）。 */
-  onEditUserMessage?: ((rawText: string, newText: string) => void) | null;
+  onEditUserMessage?: ((rawText: string, newText: string, remainingToolIds?: string[]) => void) | null;
 }
 
 export const StreamingMessage = memo(function StreamingMessage({ sessionId, isComplete = false, userMessage, userToolIds, scrollContainerRef, agentDisplayName, onEditUserMessage }: StreamingMessageProps) {
@@ -522,7 +522,7 @@ function StepStatusIcon({ kind }: { kind: string }) {
  */
 /** 流式阶段主用户消息（v0.9.0 需求3 方案 C：pill 数据源为 toolIds 元数据——
  * compose 时前端已知、经 streamStore.pendingToolIds 传递；文本标记解析已废弃）。 */
-function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: string; toolIds: string[]; toolNames: Record<string, string>; onEdit?: ((newText: string) => void) | null }) {
+function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: string; toolIds: string[]; toolNames: Record<string, string>; onEdit?: ((newText: string, remainingToolIds?: string[]) => void) | null }) {
   const { t } = useTranslation();
   // 需求13：流式中原位编辑（回复过程中可编辑本条——停止回复并重发）。
   const [editing, setEditing] = useState(false);
@@ -531,6 +531,8 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
   // 气泡），编辑框透明无边框继承气泡文字样式。
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   const [editWidth, setEditWidth] = useState<number | null>(null);
+  // 收版反馈：编辑态工具可删可留（重发只带保留的工具调用）。
+  const [draftToolIds, setDraftToolIds] = useState<string[]>([]);
   const display = stripImagePrompt(text) || (text.includes("JISHU_HUB_IMAGES") ? t("sessions.imageOnlyBubble", "📎 发送了附件") : text);
   return (
     <div className="w-full flex justify-end" data-user-message="true">
@@ -547,13 +549,17 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
             <div className="flex flex-col gap-2" onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                if (draft.trim()) { setEditing(false); onEdit?.(draft.trim()); }
+                if (draft.trim()) { setEditing(false); onEdit?.(draft.trim(), draftToolIds); }
               } else if (e.key === "Escape") {
                 setEditing(false);
               }
             }}>
-              {toolIds.length > 0 && (
-                <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
+              {draftToolIds.length > 0 && (
+                <EmbeddedToolPills
+                  toolIds={draftToolIds}
+                  toolNames={toolNames}
+                  onRemove={(id) => setDraftToolIds((prev) => prev.filter((x) => x !== id))}
+                />
               )}
               <textarea
                 autoFocus
@@ -573,7 +579,7 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
                 <button
                   type="button"
                   disabled={!draft.trim()}
-                  onClick={() => { const v = draft.trim(); setEditing(false); if (v) onEdit?.(v); }}
+                  onClick={() => { const v = draft.trim(); setEditing(false); if (v) onEdit?.(v, draftToolIds); }}
                   className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground disabled:opacity-40"
                 >
                   {t("sessions.editResend", "重发")}
@@ -595,6 +601,7 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
               e.stopPropagation();
               if (bubbleRef.current) setEditWidth(bubbleRef.current.offsetWidth);
               setDraft(stripImagePrompt(text) || text);
+              setDraftToolIds(toolIds);
               setEditing(true);
             }}
             className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 mt-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
