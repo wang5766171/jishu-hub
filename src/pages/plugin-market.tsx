@@ -864,6 +864,15 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                   </div>
                   <div className="mt-auto flex items-center gap-1 pt-1">
                     <span className="flex-1" />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-1.5 text-[10px] text-muted-foreground"
+                      onClick={() => void openSkillDetail(skill.slug)}
+                      aria-label={t("market.detail", "详情")}
+                    >
+                      <Info className="h-3 w-3" />
+                    </Button>
                     {installedVersion ? (
                       <>
                         <span className="text-[10px] text-muted-foreground">
@@ -881,15 +890,6 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                         </Button>
                       </>
                     ) : (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 px-1.5 text-[10px] text-muted-foreground"
-                        onClick={() => void openSkillDetail(skill.slug)}
-                        aria-label={t("market.detail", "详情")}
-                      >
-                        <Info className="h-3 w-3" />
-                      </Button>
                       <Button
                         size="sm"
                         className="h-6 px-2 text-[10px]"
