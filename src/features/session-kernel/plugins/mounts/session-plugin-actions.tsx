@@ -23,7 +23,7 @@ export function SessionPluginActions({
   enabled: Set<string>;
 }) {
   const { t } = useTranslation();
-  const { confirm: confirmDialog } = useConfirmDialog();
+  const { confirm: confirmDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const behaviors = useAllPluginBehaviors();
   // 能力中心「常驻挂件 · 点击定位」：动作位按钮脉冲一次。
   const spotlight = useInstallSpotlight();
@@ -87,6 +87,8 @@ export function SessionPluginActions({
           </button>
         );
       })}
+      {/* useConfirmDialog 契约：须渲染 dialogNode，否则 confirm() 永不落定。 */}
+      {confirmDialogNode}
     </span>
   );
 }

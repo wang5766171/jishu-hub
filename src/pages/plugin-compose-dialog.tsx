@@ -62,7 +62,7 @@ export function PluginComposeDialog({
   onCreated: () => void;
 }) {
   const { t } = useTranslation();
-  const { alert: alertDialog } = useConfirmDialog();
+  const { alert: alertDialog, dialogNode: alertDialogNode } = useConfirmDialog();
   // 3a-3：功能导向两步——先选「你想在会话里看到什么」，推荐积木预填后再微调。
   const [step, setStep] = useState<"intent" | "detail">("intent");
   const [intentDesc, setIntentDesc] = useState("");
@@ -207,7 +207,9 @@ export function PluginComposeDialog({
   const input = "h-7 w-full rounded-md border border-border/70 bg-transparent px-2 text-xs outline-none focus:border-primary/60";
 
   // 批次1 统一弹窗：外壳收敛 UniModal（z-80/遮罩/Esc），表单与创建链不变。
+  // alert 确认弹窗（useConfirmDialog 契约：dialogNode 须渲染，否则 alert() 永不落定）。
   return (
+    <>
     <UniModal open onClose={() => onOpenChange(false)} size="lg" label="新建组合插件">
       <UniModalHeader
         title="新建组合插件"
@@ -404,5 +406,7 @@ export function PluginComposeDialog({
           </Button>
         </div>
     </UniModal>
+    {alertDialogNode}
+    </>
   );
 }

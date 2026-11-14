@@ -76,7 +76,7 @@ export function PluginHybridWizard({
   presetMount?: "dock-panel" | "rail-widget" | "sidebar-panel" | "composer-trailing";
 }) {
   const { t } = useTranslation();
-  const { alert: alertDialog } = useConfirmDialog();
+  const { alert: alertDialog, dialogNode: alertDialogNode } = useConfirmDialog();
   const [name, setName] = useState("");
   const [sourceType, setSourceType] = useState<HybridSourceType>("messages");
   const [mount, setMount] = useState<HybridMount>(presetMount ?? "dock-panel");
@@ -154,6 +154,8 @@ export function PluginHybridWizard({
 
   // 批次1 统一弹窗：外壳收敛 UniModal（z-80/遮罩/Esc），编辑器/预览链不变。
   return (
+    // alert 确认弹窗（useConfirmDialog 契约：dialogNode 须渲染，否则 alert() 永不落定）。
+    <>
     <UniModal open={open} onClose={() => onOpenChange(false)} className="w-[min(1020px,96vw)]" label={t("plugins.wiz.hybridTitle", "混合插件向导")}>
       <UniModalHeader
         title={t("plugins.wiz.hybridTitle", "混合插件向导") + "（TOML + component.js）"}
@@ -241,5 +243,7 @@ export function PluginHybridWizard({
           </Button>
         </div>
     </UniModal>
+    {alertDialogNode}
+    </>
   );
 }

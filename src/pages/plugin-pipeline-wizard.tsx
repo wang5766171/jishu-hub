@@ -46,7 +46,7 @@ export function PluginPipelineWizard({
   onCreated?: () => void;
 }) {
   const { t } = useTranslation();
-  const { alert: alertDialog } = useConfirmDialog();
+  const { alert: alertDialog, dialogNode: alertDialogNode } = useConfirmDialog();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [stages, setStages] = useState<StageDraft[]>([
@@ -141,6 +141,8 @@ export function PluginPipelineWizard({
   };
 
   return (
+    // alert 确认弹窗（useConfirmDialog 契约：dialogNode 须渲染，否则 alert() 永不落定）。
+    <>
     <UniModal open={open} onClose={() => onOpenChange(false)} size="lg" label={t("plugins.wiz.pipelineTitle", "流水线向导（阶段编排）")}>
       <UniModalHeader
         title={t("plugins.wiz.pipelineTitle", "流水线向导（阶段编排）")}
@@ -280,5 +282,7 @@ export function PluginPipelineWizard({
           </Button>
         </div>
     </UniModal>
+    {alertDialogNode}
+    </>
   );
 }

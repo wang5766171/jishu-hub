@@ -186,7 +186,7 @@ function MarketPager({
 
 export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
   const { t } = useTranslation();
-  const { confirm: confirmDialog } = useConfirmDialog();
+  const { confirm: confirmDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const [source, setSource] = useState<MarketSource>("curated");
   const [scene, setScene] = useState<string>("all");
   const [keyword, setKeyword] = useState("");
@@ -1382,6 +1382,10 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* 技能安装确认弹窗（useConfirmDialog 契约：须渲染 dialogNode，否则
+          confirm() 永不落定——点击安装无反应的根因）。 */}
+      {confirmDialogNode}
     </div>
   );
 }
