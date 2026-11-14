@@ -224,13 +224,23 @@ const IDENTITY_BADGE: Record<
  * 无 UI 呈现。 */
 type FormValue = "session" | "sidebar" | "floating" | "theme" | "none";
 
-/** 挂载位 → 形态推导映射（无显式 [info].form 声明时的兜底）。 */
+/** 挂载位 → 形态推导映射（**代码审计全量 9 种挂载位 + 主题**，
+ * 2026-11-14 十二轮）：dock-panel 是悬浮覆盖式停靠面板（与 sidebar-panel
+ * 的挤压式相对——types.ts 文档语义），归悬浮窗。
+ * block-renderer/tool-result-renderer/header-action = 会话内呈现；
+ * rail-widget/composer-trailing/app-overlay = 悬浮/挂件；
+ * event-hook 无 UI；app-theme = 主题外观；pipeline 为编排声明非 UI 形态
+ * （其呈现由块渲染挂载覆盖），不单列。 */
 const MOUNT_FORM_MAP: Record<string, FormValue> = {
   "block-renderer": "session",
+  "tool-result-renderer": "session",
+  "header-action": "session",
   "sidebar-panel": "sidebar",
-  "dock-panel": "sidebar",
+  "dock-panel": "floating",
   "rail-widget": "floating",
   "composer-trailing": "floating",
+  "app-overlay": "floating",
+  "event-hook": "none",
   "app-theme": "theme",
 };
 
@@ -268,10 +278,10 @@ function formOf(p: PluginDescriptor): FormValue {
     const mounts = [
       ...new Set(listSessionPlugins().find((x) => x.id === p.id)?.mounts.map((m) => m.kind) ?? []),
     ];
-    for (const m of mounts) {
-      const f = MOUNT_FORM_MAP[m];
-      if (f) return f;
-    }
+    // 多挂载位取**最有信息量**的形态——event-hook（无 UI）常与真实 UI 挂载
+    // 并存（产物中心 = event-hook + sidebar-panel），首个命中会被无 UI 截胡。
+    const forms = mounts.map((m) => MOUNT_FORM_MAP[m]).filter(Boolean);
+    return forms.find((f) => f !== "none") ?? forms[0] ?? "none";
   }
   return "none";
 }
@@ -1397,42 +1407,51 @@ export function PluginsPage({
             className="h-7 w-52 rounded-md border border-border/60 bg-background pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50"
           />
         </div>
-        {/* 实现方式筛选 chips——与实现徽章三值对应（配置实现/代码实现/
-            混合实现；内置件身份维度表达，不在此筛）。 */}
-        <div className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
-          <span className="mr-0.5">{tr("plugins.implFilterLabel", "实现")}</span>
-          {(["all", "config", "code", "combo"] as const).map((k) => (
-            <button
-              key={k}
-              type="button"
-              onClick={() => setImplFilter(k)}
-              className={cn(
-                "rounded-full border px-2 py-0.5 transition-colors",
-                implFilter === k
-                  ? "border-primary/60 bg-primary/10 text-primary"
-                  : "border-border/60 text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {k === "all" ? tr("plugins.implAll", "全部") : tr(IMPL_BADGE[k].key, IMPL_BADGE[k].fallback)}
-            </button>
-          ))}
-          {/* 形态筛选（与形态徽章五值对应）。 */}
-          <span className="mx-1 ml-3">{tr("plugins.formFilterLabel", "形态")}</span>
-          {(["all", "session", "sidebar", "floating", "theme", "none"] as const).map((k) => (
-            <button
-              key={k}
-              type="button"
-              onClick={() => setFormFilter(k)}
-              className={cn(
-                "rounded-full border px-2 py-0.5 transition-colors",
-                formFilter === k
-                  ? "border-primary/60 bg-primary/10 text-primary"
-                  : "border-border/60 text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {k === "all" ? tr("plugins.formAll", "全部") : tr(FORM_BADGE[k].key, FORM_BADGE[k].fallback)}
-            </button>
-          ))}
+        {/* 筛选维度分组（十二轮样式优化）：维度标题与选项视觉分离——标题
+            弱化底色胶囊、选项保持描边 chips，组间竖分隔线。实现方式（与实现
+            徽章三值对应）｜形态（与形态徽章五值对应）。 */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[10px]">
+          <span className="rounded bg-muted px-1.5 py-0.5 font-medium text-muted-foreground">
+            {tr("plugins.implFilterLabel", "实现")}
+          </span>
+          <div className="flex items-center gap-1">
+            {(["all", "config", "code", "combo"] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setImplFilter(k)}
+                className={cn(
+                  "rounded-full border px-2 py-0.5 transition-colors",
+                  implFilter === k
+                    ? "border-primary/60 bg-primary/10 text-primary"
+                    : "border-border/60 text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {k === "all" ? tr("plugins.implAll", "全部") : tr(IMPL_BADGE[k].key, IMPL_BADGE[k].fallback)}
+              </button>
+            ))}
+          </div>
+          <div className="h-3.5 w-px bg-border/70" />
+          <span className="rounded bg-muted px-1.5 py-0.5 font-medium text-muted-foreground">
+            {tr("plugins.formFilterLabel", "形态")}
+          </span>
+          <div className="flex items-center gap-1">
+            {(["all", "session", "sidebar", "floating", "theme", "none"] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setFormFilter(k)}
+                className={cn(
+                  "rounded-full border px-2 py-0.5 transition-colors",
+                  formFilter === k
+                    ? "border-primary/60 bg-primary/10 text-primary"
+                    : "border-border/60 text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {k === "all" ? tr("plugins.formAll", "全部") : tr(FORM_BADGE[k].key, FORM_BADGE[k].fallback)}
+              </button>
+            ))}
+          </div>
         </div>
         </div>
       </div>
