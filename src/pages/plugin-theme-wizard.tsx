@@ -160,7 +160,7 @@ export function PluginThemeWizard({ open, onOpenChange, onCreated }: {
   const tomlText = useMemo(() => {
     return [
       "[plugin]", `id = "${id}"`, `name = "${cfg.name || "我的主题"}"`,
-      `description = "自定义主题"`, 'kind = "session-composed"', 'category = "appearance"',
+      `description = "自定义主题"`, 'kind = "session-composed"', 'category = "appearance"', 'form = "theme"',
       "", "[theme]", 'css = "@file:theme.css"', `base = "${cfg.base}"`,
       `preview = ["${cfg.colors.background}", "${cfg.colors.layer1}", "${cfg.colors.primary}"]`,
       "", "[render]", 'mount = "app-theme"',

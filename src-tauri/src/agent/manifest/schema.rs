@@ -263,7 +263,7 @@ pub struct InfoSection {
 
 /// 插件形态枚举（标签三类体系的第三类）：会话/侧边栏/悬浮窗/无 UI 呈现
 ///（无挂载位的 MCP/Skill/CLI 等统一标注）。
-pub const PLUGIN_FORM_VALUES: &[&str] = &["session", "sidebar", "floating", "none"];
+pub const PLUGIN_FORM_VALUES: &[&str] = &["session", "sidebar", "floating", "theme", "none"];
 
 /// 分类枚举合法值（与前端 PLUGIN_CATEGORIES 一致；fail loud 防拼错静默落错 tab）。
 /// 需求14 M2：appearance = 外观（主题插件，03 §2 场景 10 新增分类）。

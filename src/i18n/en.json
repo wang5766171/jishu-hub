@@ -680,7 +680,10 @@
     "formSession": "Session",
     "formSidebar": "Sidebar",
     "formFloating": "Floating",
-    "formNone": "No UI"
+    "formNone": "No UI",
+    "formTheme": "Theme",
+    "formFilterLabel": "Form",
+    "formAll": "All"
   },
   "config": {
     "title": "Configuration",

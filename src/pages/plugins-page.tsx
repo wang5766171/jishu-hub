@@ -220,21 +220,50 @@ const IDENTITY_BADGE: Record<
   custom: { key: "plugins.identityCustom", fallback: "自建", cls: "border-emerald-500/40 text-emerald-600" },
 };
 
+/** 形态五值（v0.9.7 需求3 十一轮裁决）：会话/侧边栏/悬浮窗/主题外观/
+ * 无 UI 呈现。 */
+type FormValue = "session" | "sidebar" | "floating" | "theme" | "none";
+
 /** 挂载位 → 形态推导映射（无显式 [info].form 声明时的兜底）。 */
-const MOUNT_FORM_MAP: Record<string, "session" | "sidebar" | "floating"> = {
+const MOUNT_FORM_MAP: Record<string, FormValue> = {
   "block-renderer": "session",
   "sidebar-panel": "sidebar",
   "dock-panel": "sidebar",
   "rail-widget": "floating",
   "composer-trailing": "floating",
+  "app-theme": "theme",
 };
 
-/** 形态三值+兜底：显式声明优先 → 会话插件主挂载位推导 → 统一「无 UI
- * 呈现」（MCP/Skill/CLI 等无挂载位件）。 */
-function formOf(p: PluginDescriptor): "session" | "sidebar" | "floating" | "none" {
-  if (p.form === "session" || p.form === "sidebar" || p.form === "floating" || p.form === "none") {
-    return p.form;
+/** hub 随包件形态基表（存量已物化副本不走 resources 重部署——非必需件
+ * 已物化不覆盖，此处一处真源覆盖全部已装副本；新创建件由显式 form 声明）。
+ * 统一标签分析（2026-11-14）：会话内渲染卡/清单 = session；纯工具/技能/
+ * 解析器底座 = none。 */
+const HUB_FORMS: Record<string, FormValue> = {
+  "html-preview": "session", // 会话内 HTML 预览
+  "interactive-qa": "session", // 交互问答卡
+  "task-requirements": "session", // 需求澄清卡
+  "task-plan": "session", // 流程规划卡
+  "pi-todo": "session", // 待办清单（pi 会话内渲染）
+  "jishu-subagent": "none",
+  "pi-lens": "none",
+  "pi-web-access": "none",
+  "jishu-cli-guide": "none",
+  "mcp-create-tool": "none",
+  "skill-create-tool": "none",
+  "mcp-resolver": "none",
+  "skill-resolver": "none",
+};
+
+/** 形态判定链：显式 [info].form 声明 → hub 随包件基表 → 外观类声明
+ *（category=appearance）→ 会话插件挂载位推导 → 统一「无 UI 呈现」。 */
+function formOf(p: PluginDescriptor): FormValue {
+  const declared = p.form;
+  if (declared === "session" || declared === "sidebar" || declared === "floating"
+    || declared === "theme" || declared === "none") {
+    return declared;
   }
+  if (HUB_FORMS[p.id]) return HUB_FORMS[p.id];
+  if (p.category === "appearance") return "theme";
   if (p.kind === "session") {
     const mounts = [
       ...new Set(listSessionPlugins().find((x) => x.id === p.id)?.mounts.map((m) => m.kind) ?? []),
@@ -247,13 +276,11 @@ function formOf(p: PluginDescriptor): "session" | "sidebar" | "floating" | "none
   return "none";
 }
 
-const FORM_BADGE: Record<
-  "session" | "sidebar" | "floating" | "none",
-  { key: string; fallback: string }
-> = {
+const FORM_BADGE: Record<FormValue, { key: string; fallback: string }> = {
   session: { key: "plugins.formSession", fallback: "会话" },
   sidebar: { key: "plugins.formSidebar", fallback: "侧边栏" },
   floating: { key: "plugins.formFloating", fallback: "悬浮窗" },
+  theme: { key: "plugins.formTheme", fallback: "主题外观" },
   none: { key: "plugins.formNone", fallback: "无 UI 呈现" },
 };
 
@@ -568,6 +595,8 @@ export function PluginsPage({
   // 徽章三值一一对应（内置件无实现徽章，不参与实现筛选）。
   type ImplFilter = Exclude<ImplKind, "builtin"> | "all";
   const [implFilter, setImplFilter] = useState<ImplFilter>("all");
+  // v0.9.7 需求3 十一轮（用户裁决）：形态筛选——与形态徽章五值一一对应。
+  const [formFilter, setFormFilter] = useState<FormValue | "all">("all");
   // 需求14 M4（G8 搜索）：跨分类搜索（id/名称/描述/路径/接管语言集命中）；
   // 非空时网格展示全库命中项（忽略当前 tab），实现维度筛选仍叠加。
   const [search, setSearch] = useState("");
@@ -1328,6 +1357,86 @@ export function PluginsPage({
         </div>
       )}
 
+      {/* v0.9.3 需求11：分类横向 tab（胶囊形态）——业务 tab（Y 轴：在哪用）
+          × 实现筛选（X 轴：怎么造）双视角（批次2）+ 需求14 搜索框（G8）。 */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+        {PLUGIN_CATEGORIES.map((cat) => {
+          const items = cat.key === "extension"
+            ? extInstalled
+            : (result?.plugins ?? []).filter((x) => categoryOf(x) === cat.key);
+          const active = activeTab === cat.key;
+          return (
+            <button
+              key={cat.key}
+              type="button"
+              onClick={() => switchTab(cat.key)}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                active
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+              )}
+            >
+              {tr(cat.labelKey, cat.fallback)}
+              <span className={cn("text-[10px] tabular-nums", active ? "opacity-80" : "opacity-50")}>
+                {items.length}
+              </span>
+            </button>
+          );
+        })}
+        </div>
+        <div className="flex items-center gap-2">
+        {/* 需求14 M4（G8）：跨分类搜索——非空时网格展示全库命中（忽略 tab）。 */}
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={tr("plugins.searchPlaceholder", "搜索 id/名称/描述/语言…")}
+            className="h-7 w-52 rounded-md border border-border/60 bg-background pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50"
+          />
+        </div>
+        {/* 实现方式筛选 chips——与实现徽章三值对应（配置实现/代码实现/
+            混合实现；内置件身份维度表达，不在此筛）。 */}
+        <div className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
+          <span className="mr-0.5">{tr("plugins.implFilterLabel", "实现")}</span>
+          {(["all", "config", "code", "combo"] as const).map((k) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setImplFilter(k)}
+              className={cn(
+                "rounded-full border px-2 py-0.5 transition-colors",
+                implFilter === k
+                  ? "border-primary/60 bg-primary/10 text-primary"
+                  : "border-border/60 text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {k === "all" ? tr("plugins.implAll", "全部") : tr(IMPL_BADGE[k].key, IMPL_BADGE[k].fallback)}
+            </button>
+          ))}
+          {/* 形态筛选（与形态徽章五值对应）。 */}
+          <span className="mx-1 ml-3">{tr("plugins.formFilterLabel", "形态")}</span>
+          {(["all", "session", "sidebar", "floating", "theme", "none"] as const).map((k) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setFormFilter(k)}
+              className={cn(
+                "rounded-full border px-2 py-0.5 transition-colors",
+                formFilter === k
+                  ? "border-primary/60 bg-primary/10 text-primary"
+                  : "border-border/60 text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {k === "all" ? tr("plugins.formAll", "全部") : tr(FORM_BADGE[k].key, FORM_BADGE[k].fallback)}
+            </button>
+          ))}
+        </div>
+        </div>
+      </div>
+
       {/* v0.9.7 需求3 已装页优化二版（2026-11-14 裁决）：更新检查按当前
           tab 范围——仅技能/扩展包 tab 有更新语义；当前 tab 无可更新内容
           （无市场件/无包）不显示检查更新；全部更新仅在检出新版或批量进行
@@ -1430,69 +1539,6 @@ export function PluginsPage({
         );
       })()}
 
-      {/* v0.9.3 需求11：分类横向 tab（胶囊形态）——业务 tab（Y 轴：在哪用）
-          × 实现筛选（X 轴：怎么造）双视角（批次2）+ 需求14 搜索框（G8）。 */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-3">
-        <div className="flex flex-wrap items-center gap-1.5">
-        {PLUGIN_CATEGORIES.map((cat) => {
-          const items = cat.key === "extension"
-            ? extInstalled
-            : (result?.plugins ?? []).filter((x) => categoryOf(x) === cat.key);
-          const active = activeTab === cat.key;
-          return (
-            <button
-              key={cat.key}
-              type="button"
-              onClick={() => switchTab(cat.key)}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors",
-                active
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-              )}
-            >
-              {tr(cat.labelKey, cat.fallback)}
-              <span className={cn("text-[10px] tabular-nums", active ? "opacity-80" : "opacity-50")}>
-                {items.length}
-              </span>
-            </button>
-          );
-        })}
-        </div>
-        <div className="flex items-center gap-2">
-        {/* 需求14 M4（G8）：跨分类搜索——非空时网格展示全库命中（忽略 tab）。 */}
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={tr("plugins.searchPlaceholder", "搜索 id/名称/描述/语言…")}
-            className="h-7 w-52 rounded-md border border-border/60 bg-background pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50"
-          />
-        </div>
-        {/* 实现方式筛选 chips——与实现徽章三值对应（配置实现/代码实现/
-            混合实现；内置件身份维度表达，不在此筛）。 */}
-        <div className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
-          <span className="mr-0.5">{tr("plugins.implFilterLabel", "实现")}</span>
-          {(["all", "config", "code", "combo"] as const).map((k) => (
-            <button
-              key={k}
-              type="button"
-              onClick={() => setImplFilter(k)}
-              className={cn(
-                "rounded-full border px-2 py-0.5 transition-colors",
-                implFilter === k
-                  ? "border-primary/60 bg-primary/10 text-primary"
-                  : "border-border/60 text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {k === "all" ? tr("plugins.implAll", "全部") : tr(IMPL_BADGE[k].key, IMPL_BADGE[k].fallback)}
-            </button>
-          ))}
-        </div>
-        </div>
-      </div>
-
       {/* 卡片网格：自适应列数铺满区域（v0.9.3 需求11，minmax 卡宽 ~230px）；
           批次2：叠加实现维度过滤；需求14 M4（G8）：搜索非空时跨分类展示
           全库命中（tab 失效、实现筛选叠加、专属区块隐藏）。 */}
@@ -1510,14 +1556,18 @@ export function PluginsPage({
           .filter((x) =>
             search.trim()
               ? matchesSearch(x) && (implFilter === "all" || implKindOf(x) === implFilter)
-              : categoryOf(x) === activeTab && (implFilter === "all" || implKindOf(x) === implFilter),
+                  && (formFilter === "all" || formOf(x) === formFilter)
+              : categoryOf(x) === activeTab && (implFilter === "all" || implKindOf(x) === implFilter)
+                  && (formFilter === "all" || formOf(x) === formFilter),
           )
           .map((plugin) => renderCard(plugin))}
       </div>
       {(result?.plugins ?? []).filter((x) =>
         search.trim()
           ? matchesSearch(x) && (implFilter === "all" || implKindOf(x) === implFilter)
-          : categoryOf(x) === activeTab && (implFilter === "all" || implKindOf(x) === implFilter),
+              && (formFilter === "all" || formOf(x) === formFilter)
+          : categoryOf(x) === activeTab && (implFilter === "all" || implKindOf(x) === implFilter)
+              && (formFilter === "all" || formOf(x) === formFilter),
       ).length === 0 && (
         <p className="py-10 text-center text-sm text-muted-foreground">
           {search.trim()

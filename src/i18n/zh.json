@@ -680,7 +680,10 @@
     "formSession": "会话",
     "formSidebar": "侧边栏",
     "formFloating": "悬浮窗",
-    "formNone": "无 UI 呈现"
+    "formNone": "无 UI 呈现",
+    "formTheme": "主题外观",
+    "formFilterLabel": "形态",
+    "formAll": "全部"
   },
   "config": {
     "title": "配置管理",
