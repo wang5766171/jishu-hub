@@ -126,9 +126,13 @@ function formatCount(n: number): string {
   return n >= 10000 ? `${Math.round(n / 1000) / 10}万` : String(Math.floor(n));
 }
 
-/** 周下载涨跌着色（▲升 ▼跌）。 */
+/** 周下载涨跌着色与间距：彩色主题红绿区分涨跌（colorful: variant），黑白
+ * （亮/暗）主题统一灰不抢焦点；ml-1 与「/周」保持间距。 */
 function trendClass(trend: string): string {
-  return trend.includes("▲") ? "text-emerald-600" : "text-red-500";
+  const color = trend.includes("▲")
+    ? "text-muted-foreground colorful:text-emerald-600"
+    : "text-muted-foreground colorful:text-red-500";
+  return `ml-1 ${color}`;
 }
 
 /** 分页条（在线扩展库客户端分页 / 技能市场服务端分页共用——
