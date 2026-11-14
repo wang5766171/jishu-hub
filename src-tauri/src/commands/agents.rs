@@ -528,10 +528,12 @@ pub(crate) async fn extension_check_updates(
 }
 
 /// 扩展包批量更新（空=全部有更新的；改写钉定版本，pi 启动自装）。
+/// 评审 P2：返回 {updated, failed} 双列报告——partial failure 仍完成可
+/// 完成的项，失败项带原因如实上报（跨端契约字段名冻结 updated/failed）。
 #[tauri::command]
 pub(crate) async fn extension_update(
     packages: Option<Vec<String>>,
-) -> Result<Vec<agent::piindex::ExtensionUpdateStatus>, String> {
+) -> Result<agent::piindex::BatchUpdateReport, String> {
     agent::piindex::extension_update(packages).await
 }
 
@@ -564,10 +566,11 @@ pub(crate) async fn skillhub_check_updates(
 }
 
 /// 技能批量更新（空=全部有更新的；覆盖安装+台账刷新）。
+/// 评审 P2：与 extension_update 同形状返回 {updated, failed}。
 #[tauri::command]
 pub(crate) async fn skillhub_update(
     slugs: Option<Vec<String>>,
-) -> Result<Vec<agent::piindex::SkillUpdateStatus>, String> {
+) -> Result<agent::piindex::BatchUpdateReport, String> {
     agent::piindex::skillhub_update(slugs).await
 }
 
@@ -1147,16 +1150,31 @@ pub(crate) fn market_list_curated(
     Ok(agent::plugin::market::market_list_curated(scene.as_deref()))
 }
 
-/// C2-① 安装（幂等；pi-package 形态含 npm 包安装）。
+/// C2-① 安装（幂等；pi-package 形态含 npm 包安装）。评审 P1-8：成功后
+/// rebuild_registry 热生效——清单/分发/settings.json packages 即时刷新
+/// （对齐 skillhub_install 既有写法，装完不用重启/手动刷新）。
 #[tauri::command]
-pub(crate) async fn market_install(plugin_id: String) -> Result<String, String> {
-    agent::plugin::market::market_install(&plugin_id).await
+pub(crate) async fn market_install(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
+    plugin_id: String,
+) -> Result<String, String> {
+    let result = agent::plugin::market::market_install(&plugin_id).await?;
+    rebuild_registry(&app, &state);
+    Ok(result)
 }
 
-/// C2-① 卸载（还原未部署态；required 拒绝）。
+/// C2-① 卸载（还原未部署态；required 拒绝）。评审 P1-8：成功后
+/// rebuild_registry 热生效（对齐 skillhub_uninstall 的统一卸载链）。
 #[tauri::command]
-pub(crate) async fn market_uninstall(plugin_id: String) -> Result<String, String> {
-    agent::plugin::market::market_uninstall(&plugin_id).await
+pub(crate) async fn market_uninstall(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
+    plugin_id: String,
+) -> Result<String, String> {
+    let result = agent::plugin::market::market_uninstall(&plugin_id).await?;
+    rebuild_registry(&app, &state);
+    Ok(result)
 }
 
 /// C2-② 扩展生态：pi npm 扩展包目录（首批 = 钉版 5 包静态清单；在线
@@ -1408,9 +1426,99 @@ pub(crate) async fn pi_package_install_online(source: String) -> Result<String, 
         .map(|_| format!("{source} 已安装"))
 }
 
+/// 在线包卸载源归一（评审追加·「在线扩展补卸载」后端半边）：签名统一接受
+/// `source`（npm:pkg / git:github.com/... 形态，与安装源同源）；兼容既有
+/// 裸包名调用（npm 兜底——历史前端传 {name}）。返回 (归一 source, npm 包名)。
+fn normalize_uninstall_source(source: &str) -> (String, Option<String>) {
+    let trimmed = source.trim();
+    if trimmed.starts_with("npm:") {
+        // 去版本尾段取包名（scoped 包 @org/name 的首 @ 不受 rsplit 影响）。
+        let name = trimmed
+            .strip_prefix("npm:")
+            .and_then(|rest| match rest.rsplit_once('@') {
+                Some((n, v)) if !n.is_empty() && !v.is_empty() => Some(n.to_string()),
+                _ => Some(rest.to_string()),
+            })
+            .filter(|n| !n.is_empty());
+        (trimmed.to_string(), name)
+    } else if trimmed.starts_with("git:") {
+        (trimmed.to_string(), None) // git 源无 npm 包名
+    } else {
+        (format!("npm:{trimmed}"), Some(trimmed.to_string()))
+    }
+}
+
+/// 卸载守卫：pi_package_catalog 内置 5 包（PI_PACKAGE_PLUGIN_MAP 全集）与
+/// curated required（默认安装集）pi-package 件拒绝卸载——默认安装集不可
+/// 拆，误卸会破坏开箱能力（用户裁决「在线扩展补卸载」的边界）。
+fn guard_uninstall_target(pkg: Option<&str>) -> Result<(), String> {
+    let Some(pkg) = pkg else {
+        return Ok(()); // git 源不在内置/required 名单语义内
+    };
+    if agent::plugin::PI_PACKAGE_PLUGIN_MAP
+        .iter()
+        .any(|(_, p)| *p == pkg)
+    {
+        return Err("系统内置/必装扩展不可卸载".to_string());
+    }
+    // curated required 名单件按插件 id 比对（历史调用可能传 id 形态）。
+    if agent::plugin::market::required_pi_package_ids()
+        .iter()
+        .any(|id| *id == pkg)
+    {
+        return Err("系统内置/必装扩展不可卸载".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
-pub(crate) async fn pi_package_uninstall_online(name: String) -> Result<String, String> {
-    agent::jishu_self::JishuSelfAgent::run_pi_package_command("remove", &name)
+pub(crate) async fn pi_package_uninstall_online(source: String) -> Result<String, String> {
+    let (source, pkg) = normalize_uninstall_source(&source);
+    guard_uninstall_target(pkg.as_deref())?;
+    agent::jishu_self::JishuSelfAgent::run_pi_package_command("remove", &source)
         .await
-        .map(|_| format!("{name} 已卸载"))
+        .map(|_| format!("{source} 已卸载"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 评审追加：卸载源归一——npm:/git: 原样透传（npm 带版本取包名），
+    /// 裸包名 npm 兜底（历史前端传 {name}）。
+    #[test]
+    fn normalize_uninstall_source_forms() {
+        let (src, pkg) = normalize_uninstall_source("npm:pi-fireworks@0.1.2");
+        assert_eq!(src, "npm:pi-fireworks@0.1.2");
+        assert_eq!(pkg.as_deref(), Some("pi-fireworks"));
+        let (_, pkg) = normalize_uninstall_source("npm:@scope/pkg@1.0.0");
+        assert_eq!(pkg.as_deref(), Some("@scope/pkg"));
+        let (src, pkg) = normalize_uninstall_source("some-pkg");
+        assert_eq!(src, "npm:some-pkg");
+        assert_eq!(pkg.as_deref(), Some("some-pkg"));
+        // git 源无 npm 包名。
+        let (src, pkg) = normalize_uninstall_source("git:github.com/owner/repo");
+        assert_eq!(src, "git:github.com/owner/repo");
+        assert_eq!(pkg, None);
+    }
+
+    /// 评审追加：卸载守卫——内置 5 包与 curated required 名单件拒绝，
+    /// 普通在线包/git 源放行。
+    #[test]
+    fn guard_uninstall_target_rejects_builtin_and_required() {
+        // 内置 5 包（PI_PACKAGE_PLUGIN_MAP 全集抽两样代表：裸名与 scoped）。
+        for builtin in ["pi-lens", "pi-web-access", "@juicesharp/rpiv-todo"] {
+            let err = guard_uninstall_target(Some(builtin)).unwrap_err();
+            assert!(
+                err.contains("系统内置/必装扩展不可卸载"),
+                "{builtin} → {err}"
+            );
+        }
+        // curated required 名单件按 id 形态（如历史传 id）同样拒绝。
+        assert!(guard_uninstall_target(Some("jishu-subagent")).is_err());
+        // 普通在线包与 git 源放行。
+        assert!(guard_uninstall_target(Some("pi-fireworks")).is_ok());
+        assert!(guard_uninstall_target(Some("npm:any-pkg@2.0")).is_ok());
+        assert!(guard_uninstall_target(None).is_ok());
+    }
 }
