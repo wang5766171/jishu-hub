@@ -1466,17 +1466,11 @@ export function PluginsPage({
           );
         })}
         </div>
-        <div className="flex items-center gap-2">
-        {/* 需求14 M4（G8）：跨分类搜索——非空时网格展示全库命中（忽略 tab）。 */}
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={tr("plugins.searchPlaceholder", "搜索 id/名称/描述/语言…")}
-            className="h-7 w-52 rounded-md border border-border/60 bg-background pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50"
-          />
-        </div>
+      </div>
+
+      {/* 工具行（十四轮 UI 统一）：筛选 chips 在左、搜索框恒最右（跨分类
+          搜索——非空时网格展示全库命中，忽略 tab）。 */}
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
         {/* 筛选维度分组（十二轮样式优化）：维度标题与选项视觉分离——标题
             弱化底色胶囊、选项保持描边 chips，组间竖分隔线。实现方式（与实现
             徽章三值对应）｜形态（与形态徽章五值对应）。 */}
@@ -1523,6 +1517,15 @@ export function PluginsPage({
             ))}
           </div>
         </div>
+        {/* 搜索框：工具行恒最右（十四轮统一）。 */}
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={tr("plugins.searchPlaceholder", "搜索 id/名称/描述/语言…")}
+            className="h-7 w-48 rounded-md border border-border/60 bg-background pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50"
+          />
         </div>
       </div>
 

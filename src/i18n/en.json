@@ -1765,7 +1765,8 @@
     "githubStars": "GitHub stars",
     "npmWeeklyDownloads": "npm weekly downloads",
     "perWeek": "/wk",
-    "updateFailedItems": "Failed to update: {{names}}"
+    "updateFailedItems": "Failed to update: {{names}}",
+    "searchUnified": "Search…"
   },
   "onboarding": {
     "initTitle": "Preparing your agent",

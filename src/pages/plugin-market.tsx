@@ -196,6 +196,8 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
   const [curated, setCurated] = useState<MarketEntry[]>([]);
   const [extensions, setExtensions] = useState<PiPackageEntry[]>([]);
   const [onlineKw, setOnlineKw] = useState("");
+  // 十四轮 UI 统一：精选页签统一搜索框（本地按名称/说明过滤）。
+  const [curatedKw, setCuratedKw] = useState("");
   const [online, setOnline] = useState<PiOnlinePackage[] | null>(null);
   const [onlineInstalled, setOnlineInstalled] = useState<string[]>([]);
   // 需求3 补充：piindex 检索结果（在线库主源；npm 检索为兜底）；更新检查。
@@ -455,9 +457,44 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
           ))}
         </div>
         <div className="flex items-center gap-2">
-          {source !== "extensions" && (
-            <div className="flex flex-wrap items-center gap-1 text-[10px]">
-              {sceneTabs.map((s) => (
+          {source === "extensions" && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-[10px]"
+              disabled={reloading}
+              onClick={() =>
+                void (async () => {
+                  setReloading(true);
+                  setActionError(null);
+                  try {
+                    const fresh = await invokeCommand<PiindexEntry[]>("piindex_refresh");
+                    setPiindex(fresh ?? []);
+                  } catch (e) {
+                    setActionError(String(e));
+                  } finally {
+                    setReloading(false);
+                  }
+                })()
+              }
+            >
+              {reloading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              <span className="ml-0.5">{t("market.reload", "重新加载")}</span>
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          </Button>
+        </div>
+      </div>
+
+      {/* 工具行（十四轮 UI 统一，业界通行布局：筛选 chips 在左、搜索框恒
+          最右、结构各页签恒定）：场景筛选（精选/技能）或分类筛选（扩展）；
+          搜索三源统一——精选本地过滤 / 扩展在线库过滤 / 技能市场检索。 */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1 text-[10px]">
+          {source !== "extensions"
+            ? sceneTabs.map((s) => (
                 <button
                   key={s.id}
                   type="button"
@@ -474,26 +511,44 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                 >
                   {s.label}
                 </button>
+              ))
+            : extCategories.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => {
+                    setExtCategory(c);
+                    setExtPage(1);
+                  }}
+                  className={cn(
+                    "rounded-full border px-2 py-0.5 transition-colors",
+                    extCategory === c
+                      ? "border-primary/60 bg-primary/10 text-primary"
+                      : "border-border/60 text-muted-foreground hover:border-primary/40",
+                  )}
+                >
+                  {c === "all" ? t("market.sceneAll", "全部") : c}
+                </button>
               ))}
-            </div>
-          )}
-          {source === "skills" && (
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
-              <input
-                value={keyword}
-                onChange={(e) => {
-                  setKeyword(e.target.value);
-                  setPage(1);
-                }}
-                placeholder={t("market.skillSearch", "搜索技能…")}
-                className="h-7 w-44 rounded-md border border-border/60 bg-background pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50"
-              />
-            </div>
-          )}
-          <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-          </Button>
+        </div>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
+          <input
+            value={source === "skills" ? keyword : source === "extensions" ? onlineKw : curatedKw}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (source === "skills") {
+                setKeyword(v);
+                setPage(1);
+              } else if (source === "extensions") {
+                setOnlineKw(v);
+              } else {
+                setCuratedKw(v);
+              }
+            }}
+            placeholder={t("market.searchUnified", "搜索…")}
+            className="h-7 w-48 rounded-md border border-border/60 bg-background pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50"
+          />
         </div>
       </div>
 
@@ -515,7 +570,12 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
       {/* 精选 */}
       {source === "curated" && !error && (
         <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(240px,1fr))]">
-          {curated.map((entry) => {
+          {curated
+            .filter((e) => {
+              const q = curatedKw.trim().toLowerCase();
+              return !q || [e.title, e.description, e.id].join(" ").toLowerCase().includes(q);
+            })
+            .map((entry) => {
             const installed = installedIds.has(entry.id);
             return (
               <div
@@ -584,7 +644,13 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
               </div>
             );
           })}
-          {curated.length === 0 && !loading && (
+          {(curatedKw.trim()
+            ? curated.filter((e) => {
+                const q = curatedKw.trim().toLowerCase();
+                return [e.title, e.description, e.id].join(' ').toLowerCase().includes(q);
+              }).length === 0
+            : curated.length === 0) &&
+            !loading && (
             <p className="col-span-full py-8 text-center text-sm text-muted-foreground">
               {t("market.curatedEmpty", "该场景暂无精选条目")}
             </p>
@@ -650,71 +716,12 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
       {/* 扩展生态 · 在线库（需求3 补充：Pi Index 主源，npm 兜底） */}
       {source === "extensions" && !error && (piindex || online) && (
         <div>
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-              {piindex
-                ? t("market.onlineLibPiindex", "在线扩展库（Pi Index）")
-                // 评审 P1-12 修复：fallback 与 zh.json 同步去引擎代号（§7）。
-                : t("market.onlineLib", "在线扩展库")}
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 px-2 text-[10px]"
-                disabled={reloading}
-                onClick={() =>
-                  void (async () => {
-                    setReloading(true);
-                    setActionError(null);
-                    try {
-                      const fresh = await invokeCommand<PiindexEntry[]>("piindex_refresh");
-                      setPiindex(fresh ?? []);
-                    } catch (e) {
-                      setActionError(String(e));
-                    } finally {
-                      setReloading(false);
-                    }
-                  })()
-                }
-              >
-                {reloading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                <span className="ml-0.5">{t("market.reload", "重新加载")}</span>
-              </Button>
-            </div>
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
-              <input
-                value={onlineKw}
-                onChange={(e) => {
-                  setOnlineKw(e.target.value);
-                  setExtPage(1);
-                }}
-                placeholder={t("market.onlineSearch", "搜索扩展名…")}
-                className="h-7 w-48 rounded-md border border-border/60 bg-background pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50"
-              />
-            </div>
+          {/* 小节标题（工具行统一承载分类筛选与搜索——十四轮 UI 统一）。 */}
+          <div className="mb-2 text-xs font-medium text-muted-foreground">
+            {piindex
+              ? t("market.onlineLibPiindex", "在线扩展库（Pi Index）")
+              : t("market.onlineLib", "在线扩展库")}
           </div>
-          {piindex && extCategories.length > 1 && (
-            <div className="mb-2 flex flex-wrap gap-1.5">
-              {extCategories.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => {
-                    setExtCategory(c);
-                    setExtPage(1);
-                  }}
-                  className={
-                    "rounded-full border px-2.5 py-0.5 text-[11px] transition-colors " +
-                    (extCategory === c
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "border-border/60 text-muted-foreground hover:border-primary/40 hover:text-foreground")
-                  }
-                >
-                  {c === "all" ? t("market.sceneAll", "全部") : c}
-                </button>
-              ))}
-            </div>
-          )}
           {/* Pi Index 目录卡片（主源；npm/git 源都可装——git 卡安装命令尾段即源） */}
           {piindex && (
             <>
