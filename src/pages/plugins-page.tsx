@@ -13,6 +13,7 @@ import { AlertCircle, Download, Loader2, Pencil, Plus, RefreshCw, Search, Shield
 import type { AgentStatus } from "@/agents/types";
 import { PluginCreateDialog } from "./plugin-create-dialog";
 import { PluginDetailModal, type DrawerPluginInfo } from "./plugin-detail-modal";
+import { generalizeEngineCodename } from "./engine-codename";
 import { PluginComposeDialog } from "./plugin-compose-dialog";
 // 3b（v0.9.5 需求1）：混合插件可视化向导（编辑器 + 预览 + API 参考）。
 import { PluginHybridWizard } from "./plugin-hybrid-wizard";
@@ -134,13 +135,6 @@ function MountFaces({ pluginId }: { pluginId: string }) {
 const CATEGORY_VALUES: ReadonlySet<string> = new Set([
   "core", "session", "mcp", "skill", "cli", "custom", "agent", "appearance",
 ]);
-
-/** 评审 P1-12 修复（§7 引擎代号不暴露）：核心引擎卡描述来自后端内置对照表
- * （plugin.rs 含「Pi 引擎」字样；后端并行改数据源）——展示面兜底泛化，
- * 防旧缓存/回放数据泄漏。导出供详情弹窗（plugin-detail-modal）同源消费。 */
-export function generalizeEngineCodename(desc: string): string {
-  return desc.replace(/内嵌 ?Pi 引擎/g, "内嵌引擎").replace(/Pi 引擎/g, "引擎");
-}
 
 function categoryOf(p: PluginDescriptor): PluginCategory {
   // 显式声明优先（拼错值由后端 fail loud 拒绝装载，此处再滤一道防御）。

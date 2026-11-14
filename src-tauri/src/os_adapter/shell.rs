@@ -99,15 +99,23 @@ pub async fn run_install_command(
             "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; {}",
             command
         );
-        let mut installer = StdCommand::new("powershell");
-        installer.args(["-NoProfile", "-Command", &prefixed]);
-        if let Some(dir) = current_dir {
-            installer.current_dir(dir);
-        }
-        // v0.9.7 收版反馈：安装/更新子进程补用户级 PATH（winget/npm 等）。
-        let installer = crate::process_command::extend_path_for_child_std(&mut installer);
-        let output = crate::process_command::std_no_window(installer)
-            .output()
+        let dir = current_dir.map(std::path::Path::to_path_buf);
+        // 评审 P2 补齐：阻塞 .output() 移入 spawn_blocking——async fn 内裸
+        // 阻塞会占死 tokio worker（外层 timeout 放弃等待后线程仍被占用，
+        // 多次超时可累积耗尽 worker 池；对齐 run_powershell_capture 形态）。
+        let execution = tauri::async_runtime::spawn_blocking(move || {
+            let mut installer = StdCommand::new("powershell");
+            installer.args(["-NoProfile", "-Command", &prefixed]);
+            if let Some(d) = dir {
+                installer.current_dir(d);
+            }
+            // v0.9.7 收版反馈：安装/更新子进程补用户级 PATH（winget/npm 等）。
+            let installer = crate::process_command::extend_path_for_child_std(&mut installer);
+            crate::process_command::std_no_window(installer).output()
+        });
+        let output = execution
+            .await
+            .map_err(|e| format!("install task failed: {e}"))?
             .map_err(|e| format!("Failed to spawn powershell: {}", e))?;
 
         if output.status.success() {

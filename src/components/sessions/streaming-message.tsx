@@ -565,6 +565,11 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
                   onRemove={(id) => setDraftToolIds((prev) => prev.filter((x) => x !== id))}
                 />
               )}
+              {imageOnlyEdit && (
+                <p className="text-[10px] leading-tight opacity-70">
+                  {t("sessions.imageOnlyEditHint", "补充文字重发将不再携带原图片，需要图片请重新上传")}
+                </p>
+              )}
               <textarea
                 autoFocus
                 value={draft}

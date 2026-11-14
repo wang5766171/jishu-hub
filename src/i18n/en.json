@@ -374,7 +374,8 @@
     "taskUnreadFailed": "Unread failed result",
     "taskUnreadDone": "Unread completed result",
     "scrollToBottom": "Scroll to bottom",
-    "stagingDrag": "Drag to reorder"
+    "stagingDrag": "Drag to reorder",
+    "imageOnlyEditHint": "Resending with new text will not carry the original image — re-attach it if needed"
   },
   "plugins": {
     "entryStepFace": "Business face (what · where)",
@@ -1745,7 +1746,8 @@
     "updatingProgress": "Updating {{d}}/{{n}}",
     "githubStars": "GitHub stars",
     "npmWeeklyDownloads": "npm weekly downloads",
-    "perWeek": "/wk"
+    "perWeek": "/wk",
+    "updateFailedItems": "Failed to update: {{names}}"
   },
   "onboarding": {
     "initTitle": "Preparing your agent",

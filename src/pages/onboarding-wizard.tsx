@@ -148,6 +148,11 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
 let selectedScenesHolder: string[] = [];
 // ③→④ 选中清单传递（同款 holder）。
 let installItemsHolder: InstallItem[] = [];
+// ③ 推荐步勾选与已见推荐项（修复轮回归收口：RecommendStep 条件挂载，
+// 返回②再重进会卸载重置——提升为 holder 使「返回重进」同样保留勾选；
+// 与 selectedScenesHolder 同款先例）。
+let recommendPicksHolder: Set<string> = new Set();
+let knownRecommendationsHolder: Set<string> = new Set();
 
 
 // ── 步骤①：环境准备（引擎初始化 + 运行环境必装项——需求4 反馈裁决：原
@@ -632,15 +637,15 @@ function RecommendStep({
   const [plugins, setPlugins] = useState<MarketEntry[]>([]);
   const [skills, setSkills] = useState<SkillhubEntry[]>([]);
   const [skillError, setSkillError] = useState(false);
-  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [picked, setPicked] = useState<Set<string>>(() => new Set(recommendPicksHolder));
   // 收版反馈⑤：选了场景 → 推荐项默认勾上；「自定义（跳过推荐）」进入 →
   // 不默认勾（用户自选）。
   const preselect = scenes.length > 0;
-  // 评审 P2-6 修复：preselect 只在首次 load 生效——重试/返回重进不再重置
-  // 勾选（knownPicks 记录已出过的推荐项，仅合并首次出现的新项，用户手改
-  // 的勾选状态保留）。修前每次 load 全量 setPicked 覆盖，用户取消勾选后
-  // 点「重试」勾选被悄悄加回。
-  const knownPicksRef = useRef<Set<string>>(new Set());
+  // 评审 P2-6 修复：preselect 只在首次出现的新项上生效——重试/返回重进
+  // 均不再重置勾选（knownPicks 记录已出过的推荐项只合并新项；picked 经
+  // 模块级 holder 跨「返回②卸载」存活——修复轮回归收口：条件挂载曾使
+  // 返回路径重置勾选）。
+  const knownPicksRef = { current: knownRecommendationsHolder };
 
   const load = useCallback(async () => {
     setSkillError(false);
@@ -667,7 +672,7 @@ function RecommendStep({
       if (preselect) {
         // 评审 P2-6：只合并首次出现的新项（首次 load=全量勾选，后续 load
         // 保留用户已有勾选）。
-        setPicked((prev) => {
+        applyPicked((prev) => {
           const next = new Set(prev);
           for (const e of pickedList) {
             const key = `plugin::${e.id}`;
@@ -703,7 +708,7 @@ function RecommendStep({
       if (preselect) {
         // 评审 P2-6：与插件同规则——只合并首次出现的新项，不回加用户已
         // 取消勾选的技能。
-        setPicked((prev) => {
+        applyPicked((prev) => {
           const next = new Set(prev);
           for (const s of skillList) {
             const key = `skill::${s.slug}`;
@@ -722,8 +727,18 @@ function RecommendStep({
     void load();
   }, [load]);
 
-  const toggle = (key: string) => {
+  // picked 变更统一包装：state 与模块级 holder 同步（返回②卸载重进后由
+  // holder 恢复，见顶部 holder 声明注释）。
+  const applyPicked = (fn: (prev: Set<string>) => Set<string>) => {
     setPicked((prev) => {
+      const next = fn(prev);
+      recommendPicksHolder = next;
+      return next;
+    });
+  };
+
+  const toggle = (key: string) => {
+    applyPicked((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);

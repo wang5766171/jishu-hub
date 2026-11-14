@@ -145,7 +145,9 @@ pub(crate) fn runner_load_task_state(
     task_launch::runner_load_task_state(&project_root, &task_id)
 }
 
-// ── 需求2 追加：任务不询问模式（开启后 agent 不再提问，全部按推荐执行）──
+// ── 需求2 追加：任务不询问模式（v0.9.7 评审裁决收窄：仅任务会话内生效，
+// 开启后本任务会话 agent 不再提问、全部按推荐执行；普通对话不受影响——
+// 判定在 jishu-tool-approval 扩展的 isTaskSession）──
 // 存储：Pi settings.json 的 taskNoAsk 布尔键（与 toolApproval 同文件）——
 // 三个消费方同源读取：① runner 扩展（hubInvoke runner_capability_plugins
 // 透出）ask_user 自动放行；② jishu-tool-approval 扩展跳过逐次确认；

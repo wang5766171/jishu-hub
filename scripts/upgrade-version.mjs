@@ -56,12 +56,13 @@ const pkgsToUpdate = [
 ];
 
 // fork packages/ 实际目录与清单一致性告警（console.warn 级，不阻断）：
-// 上游增删包导致漂移时提示维护者同步本脚本（实测机制：目录存在但
-// package.json 已被上游移除 = 死条目，同样纳入比对）。
+// 仅比对「有 package.json 的 workspace 包」——目录存在但清单已被上游移除
+// 的（如 client/protocol/server）本就不可能入 pkgsToUpdate，纳入比对只会
+// 每次狼来了（修复轮回归收口：告警噪音与死条目删除结论自相矛盾）。
 const actualPkgDirs = new Set(
   fs
     .readdirSync(PACKAGES_DIR, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
+    .filter((d) => d.isDirectory() && fs.existsSync(path.join(PACKAGES_DIR, d.name, "package.json")))
     .map((d) => d.name)
 );
 const listedPkgDirs = new Set(

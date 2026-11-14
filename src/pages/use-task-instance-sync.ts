@@ -73,15 +73,19 @@ export function useTaskInstanceSync(deps: TaskInstanceSyncDeps) {
       }
     })(),
   ));
-  // 评审 P2-14 修复：台账有界化——每轮同步时剔除「已不处于 failed」的任务 id
-  // （任务修复/重跑/删除后不再占台账），防集合只增不减无限膨胀（§9：记录类
+  // 评审 P2-14 修复：台账有界化——剔除「本轮可见且已不处于 failed」的任务
+  // id（任务修复/重跑后不再占台账），防集合只增不减无限膨胀（§9：记录类
   // 数据长期应落 SQLite，本处为显示层幂等辅助，有界化后量级恒小）。
+  // 修复轮回归收口（评审 P2）：只剔「出现且非 failed」——task_launch_list_sessions
+  // 按当前 projectRoot 查询，若按「缺席即删」清理，切到项目 B 会误清项目 A
+  // 仍 failed 的台账，切回后已读红点复现，违背本文件「消失后不应再出现」
+  // 的成文不变量。
   const pruneNotified = useCallback((items: TaskLaunchInstanceSummary[]) => {
-    const stillFailed = new Set(
-      items.filter((i) => i.status === "failed").map((i) => i.task_id),
+    const recovered = new Set(
+      items.filter((i) => i.status !== "failed").map((i) => i.task_id),
     );
-    const kept = [...notifiedFailedTaskIdsRef.current].filter((id) => stillFailed.has(id));
-    if (kept.length === notifiedFailedTaskIdsRef.current.size) return;
+    if (![...notifiedFailedTaskIdsRef.current].some((id) => recovered.has(id))) return;
+    const kept = [...notifiedFailedTaskIdsRef.current].filter((id) => !recovered.has(id));
     notifiedFailedTaskIdsRef.current = new Set(kept);
     try {
       localStorage.setItem(NOTIFIED_KEY, JSON.stringify(kept));

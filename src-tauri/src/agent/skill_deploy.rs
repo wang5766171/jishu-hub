@@ -151,6 +151,45 @@ pub struct SkillDeclEntry {
 /// 部署原文照抄。新增 skill = 加子目录，更新 skill = 改文件（任一侧，含
 /// agent 目录里的分发副本——v0.9.5 需求9 新者胜），rebuild（启动/启停/
 /// 编辑保存）时自动同步——对标 MCP 的动态发现语义。
+/// SKILL.md frontmatter 的 description 解析（单源权威）：普通标量取值剥
+/// 双/单引号；块标量（`|`/`|-`/`>`/`>-`）取后续更深缩进行**空格折叠**为
+/// 单行——描述供技能卡展示与注入文本消费，单行散文是目标形态。块内空行
+/// 视为内容结束（YAML 段落语义的实用近似）。skillhub manifest 生成与本
+/// 目录源展开两链共用（评审 P2：双实现口径漂移合一）。
+pub(crate) fn frontmatter_description(content: &str) -> String {
+    let lines: Vec<&str> = content
+        .lines()
+        .skip_while(|l| !l.starts_with("---"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("---"))
+        .collect();
+    let idx = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("description:"));
+    let Some(i) = idx else {
+        return String::new();
+    };
+    let key_indent = lines[i].len() - lines[i].trim_start().len();
+    let raw = lines[i]
+        .splitn(2, "description:")
+        .nth(1)
+        .unwrap_or("")
+        .trim();
+    if !matches!(raw, "|" | "|-" | ">" | ">-") {
+        return raw.trim_matches('"').trim_matches('\'').to_string();
+    }
+    // 块标量：收集后续比键行缩进更深的非空行，空格折叠。
+    lines[i + 1..]
+        .iter()
+        .take_while(|l| {
+            let t = l.trim();
+            !t.is_empty() && (l.len() - l.trim_start().len()) > key_indent
+        })
+        .map(|l| l.trim())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub(crate) fn dir_source_skills(plugin_root: &Path, plugin_id: &str) -> Vec<SkillDeclEntry> {
     let skills_dir = plugin_root.join("skills");
     let Ok(entries) = std::fs::read_dir(&skills_dir) else {
@@ -168,46 +207,8 @@ pub(crate) fn dir_source_skills(plugin_root: &Path, plugin_id: &str) -> Vec<Skil
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        // frontmatter description 简析（status/提示展示用；缺失不阻断部署）。
-        // 评审修复：YAML 块标量（`description: |-` / `|` / `>` / `>-`）取后续
-        // 缩进行拼接——此前把记号「|-」当值显示在技能卡上（评审 P2-15）。
-        let description = {
-            let lines: Vec<&str> = content
-                .lines()
-                .skip_while(|l| !l.starts_with("---"))
-                .skip(1)
-                .take_while(|l| !l.starts_with("---"))
-                .collect();
-            let idx = lines.iter().position(|l| l.trim_start().starts_with("description:"));
-            match idx {
-                Some(i) => {
-                    let raw = lines[i].splitn(2, "description:").nth(1).unwrap_or("").trim();
-                    if matches!(raw, "|" | "|-" | ">" | ">-") {
-                        // 块标量：收集后续比 description 行缩进更深的行。
-                        let indent = lines[i].len() - lines[i].trim_start().len();
-                        let joined: Vec<String> = lines[i + 1..]
-                            .iter()
-                            .take_while(|l| {
-                                let t = l.trim();
-                                !t.is_empty()
-                                    && (l.len() - l.trim_start().len()) > indent
-                                    && !l.trim_start().starts_with("---")
-                            })
-                            .map(|l| l.trim().to_string())
-                            .collect();
-                        if joined.is_empty() {
-                            String::new()
-                        } else {
-                            let sep = if raw.starts_with('|') { "\n" } else { " " };
-                            joined.join(sep)
-                        }
-                    } else {
-                        raw.to_string()
-                    }
-                }
-                None => String::new(),
-            }
-        };
+        // frontmatter description（status/提示展示用；缺失不阻断部署）。
+        let description = frontmatter_description(&content);
         out.push(SkillDeclEntry {
             dir_name: skill_dir_name(plugin_id, &name),
             description,
@@ -1100,7 +1101,8 @@ body",
     }
 
     /// 评审 P2-15：SKILL.md frontmatter 的 YAML 块标量 description（`|-`）
-    /// 取后续缩进行拼接——此前把记号「|-」当值显示在技能卡上。
+    /// 取后续缩进行空格折叠（单源 frontmatter_description——skillhub 与目录
+    /// 源两链共用；此前把记号「|-」当值显示在技能卡上）。
     #[test]
     fn dir_source_skills_block_scalar_description() {
         let root = tempfile::tempdir().unwrap();
@@ -1113,7 +1115,28 @@ body",
         .unwrap();
         let decls = dir_source_skills(root.path(), "p1");
         assert_eq!(decls.len(), 1);
-        assert_eq!(decls[0].description, "第一行说明。\n第二行说明。");
+        assert_eq!(decls[0].description, "第一行说明。 第二行说明。");
+    }
+
+    /// 单源解析补充形态：引号值剥除 / 折叠块（>）与字面块（|）同折叠 /
+    /// 块内空行终止收集。
+    #[test]
+    fn frontmatter_description_edge_shapes() {
+        use super::frontmatter_description;
+        assert_eq!(
+            frontmatter_description("---\nname: a\ndescription: \"引号说明\"\n---\n"),
+            "引号说明"
+        );
+        assert_eq!(
+            frontmatter_description("---\nname: b\ndescription: >\n  甲\n  乙\n---\n"),
+            "甲 乙"
+        );
+        // 块内空行后缩进内容不并入（段落近似）。
+        assert_eq!(
+            frontmatter_description("---\nname: c\ndescription: |-\n  首段\n\n  次段\n---\n"),
+            "首段"
+        );
+        assert_eq!(frontmatter_description("---\nname: d\n---\n"), "");
     }
 
     #[test]

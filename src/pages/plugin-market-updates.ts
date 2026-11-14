@@ -19,6 +19,8 @@ export interface MarketUpdateState {
   skillRunning: boolean;
   skillTotal: number;
   skillDone: number;
+  /** 批量更新失败项（name 列表；评审 P2：BatchUpdateReport.failed 透出） */
+  failedNames: string[];
 }
 
 let state: MarketUpdateState = {
@@ -28,6 +30,7 @@ let state: MarketUpdateState = {
   skillRunning: false,
   skillTotal: 0,
   skillDone: 0,
+  failedNames: [],
 };
 
 const listeners = new Set<() => void>();
@@ -53,22 +56,35 @@ export function useMarketUpdates(): MarketUpdateState {
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
+/** 最近一轮批量更新的失败项清单（消费后由页面提示；不清除，下轮重置）。 */
+export function marketUpdateFailures(): string[] {
+  return state.failedNames;
+}
+
 /** 批量更新全部有更新的扩展（逐包更新，进度推进；离开页面继续跑）。 */
 export function startExtensionUpdateAll(): void {
   if (state.extensionRunning) return;
-  set({ extensionRunning: true, extensionDone: 0, extensionTotal: 0 });
+  set({ extensionRunning: true, extensionDone: 0, extensionTotal: 0, failedNames: [] });
   void (async () => {
     try {
-      const updates = await invokeCommand<Array<{ package: string; hasUpdate: boolean }>>(
+      const updates = await invokeCommand<Array<{ package: string; has_update: boolean }>>(
         "extension_check_updates",
       );
-      const pending = (updates ?? []).filter((u) => u.hasUpdate);
+      const pending = (updates ?? []).filter((u) => u.has_update);
       set({ extensionTotal: pending.length, extensionDone: 0 });
       for (const u of pending) {
+        // 评审 P2：单包失败不再整批 Err——读 BatchUpdateReport.failed 透出。
         try {
-          await invokeCommand("extension_update", { packages: [u.package] });
+          const rep = await invokeCommand<{ updated?: string[]; failed?: Array<{ name: string; error: string }> }>(
+            "extension_update",
+            { packages: [u.package] },
+          );
+          if (rep?.failed?.length) {
+            set({ failedNames: [...state.failedNames, ...rep.failed.map((f) => f.name)] });
+          }
         } catch (e) {
           console.warn("[market-updates] 扩展更新失败:", u.package, e);
+          set({ failedNames: [...state.failedNames, u.package] });
         }
         set({ extensionDone: state.extensionDone + 1 });
       }
@@ -83,19 +99,26 @@ export function startExtensionUpdateAll(): void {
 /** 批量更新全部有更新的技能。 */
 export function startSkillUpdateAll(): void {
   if (state.skillRunning) return;
-  set({ skillRunning: true, skillDone: 0, skillTotal: 0 });
+  set({ skillRunning: true, skillDone: 0, skillTotal: 0, failedNames: state.extensionRunning ? state.failedNames : [] });
   void (async () => {
     try {
-      const updates = await invokeCommand<Array<{ slug: string; hasUpdate: boolean }>>(
+      const updates = await invokeCommand<Array<{ slug: string; has_update: boolean }>>(
         "skillhub_check_updates",
       );
-      const pending = (updates ?? []).filter((u) => u.hasUpdate);
+      const pending = (updates ?? []).filter((u) => u.has_update);
       set({ skillTotal: pending.length, skillDone: 0 });
       for (const u of pending) {
         try {
-          await invokeCommand("skillhub_update", { slugs: [u.slug] });
+          const rep = await invokeCommand<{ updated?: string[]; failed?: Array<{ name: string; error: string }> }>(
+            "skillhub_update",
+            { slugs: [u.slug] },
+          );
+          if (rep?.failed?.length) {
+            set({ failedNames: [...state.failedNames, ...rep.failed.map((f) => f.name)] });
+          }
         } catch (e) {
           console.warn("[market-updates] 技能更新失败:", u.slug, e);
+          set({ failedNames: [...state.failedNames, u.slug] });
         }
         set({ skillDone: state.skillDone + 1 });
       }

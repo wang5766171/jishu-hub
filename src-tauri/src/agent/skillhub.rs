@@ -28,7 +28,14 @@ const MAX_SKILL_ZIP_BYTES: usize = 50 * 1024 * 1024;
 /// `..`——禁 `/`、`\`、`..` 等路径穿越形态。slug 会拼进 API URL path/query
 /// 与落盘目录名（plugins/<slug>/），detail/install/uninstall 三个入口统一
 /// 过闸，不匹配即 Err（fail loud）。
+/// 修复轮补（评审 P2）：拒结尾 `.`（Win32 路径剥结尾点——`demo.` 与 `demo`
+/// 会指向同一磁盘目录，双 slug 漂移）与 Windows 保留设备名（CON/PRN/AUX/
+/// NUL/COM1-9/LPT1-9，目录创建失败）。
 fn ensure_slug_safe(slug: &str) -> Result<(), String> {
+    const RESERVED: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
     let ok = !slug.is_empty()
         && slug
             .chars()
@@ -37,12 +44,14 @@ fn ensure_slug_safe(slug: &str) -> Result<(), String> {
         && slug
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        && !slug.contains("..");
+        && !slug.contains("..")
+        && !slug.ends_with('.')
+        && !RESERVED.contains(&slug.to_ascii_uppercase().as_str());
     if ok {
         Ok(())
     } else {
         Err(format!(
-            "slug 非法: {slug:?}（只允许字母/数字开头，含字母、数字、.、_、-，且不含连续 ..）"
+            "slug 非法: {slug:?}（只允许字母/数字开头，含字母、数字、.、_、-，不含连续 ..、不以点结尾、非 Windows 保留名）"
         ))
     }
 }
@@ -303,39 +312,11 @@ fn skill_target_dirs() -> Vec<PathBuf> {
 }
 
 /// SKILL.md frontmatter description 简析（缺失/为空返回空串，调用方回退）。
-/// 形态覆盖：单行 `description: xxx`（可带引号）与 YAML 块标量
-/// `description: |` / `|-` / `>` / `>-`（后续缩进行剥缩进拼接为单行）。
-/// 块标量泄漏根因：naive 解析只取键后同行文本，`|-` 字面被原样当值。
+/// 评审 P2 双实现合一：解析本体收敛到 skill_deploy::frontmatter_description
+/// （单源权威——此前 skillhub 与目录源展开各持一份实现，块标量折叠/引号/
+/// 缩进口径已漂移）；本函数仅薄委托保持调用点稳定。
 fn description_from_skill_md(text: &str) -> String {
-    let mut lines = text.lines().skip_while(|l| !l.starts_with("---"));
-    lines.next(); // 消费首个 `---`（frontmatter 开始）
-    let mut out = String::new();
-    let mut in_block = false;
-    for line in lines {
-        if line.starts_with("---") {
-            break; // frontmatter 结束
-        }
-        if in_block {
-            // 块标量续行：比键更深缩进；回到顶层键即块结束。
-            if line.starts_with(' ') || line.starts_with('\t') {
-                if !out.is_empty() {
-                    out.push(' ');
-                }
-                out.push_str(line.trim());
-                continue;
-            }
-            break;
-        }
-        if let Some(v) = line.strip_prefix("description:") {
-            let v = v.trim();
-            if matches!(v, "|" | "|-" | ">" | ">-") {
-                in_block = true;
-            } else if !v.is_empty() {
-                return v.trim_matches('"').trim_matches('\'').to_string();
-            }
-        }
-    }
-    out
+    super::skill_deploy::frontmatter_description(text)
 }
 
 /// 安装：下载 zip → 校验（拒穿越 + 必含 SKILL.md）→ 解压到各 agent 技能

@@ -374,7 +374,8 @@
     "taskUnreadFailed": "有失败结果未读",
     "taskUnreadDone": "有完成结果未读",
     "scrollToBottom": "滚动到底部",
-    "stagingDrag": "拖动调整顺序"
+    "stagingDrag": "拖动调整顺序",
+    "imageOnlyEditHint": "补充文字重发将不再携带原图片，需要图片请重新上传"
   },
   "plugins": {
     "entryStepFace": "业务形态（做什么·在哪用）",
@@ -1745,7 +1746,8 @@
     "updatingProgress": "更新中 {{d}}/{{n}}",
     "githubStars": "GitHub Star 数",
     "npmWeeklyDownloads": "npm 每周下载量",
-    "perWeek": "/周"
+    "perWeek": "/周",
+    "updateFailedItems": "以下项更新失败：{{names}}"
   },
   "onboarding": {
     "initTitle": "正在准备你的智能体",

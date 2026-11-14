@@ -1061,6 +1061,9 @@ enum HarvestPing {
 /// 暂移 ping 线程，主线程 `recv_timeout` 到点未归 = 判死。滞留线程归位时
 /// 接收端已关闭、send 失败，连接随线程退出 drop（stdin 关闭，子进程随之
 /// 退出）兜底回收——「不丢连接」纪律的镜像：这里要的就是让它死。
+/// 边界（如实）：若子进程挂死且不关 stdout，阻塞 read 永不返回——线程与
+/// 该连接有界滞留（每轮每连接至多一条，不再增长）；换来的判死确定性可
+/// 接受，孤儿线程不阻塞收割主线程。
 fn connection_alive_with_deadline(mut live: LivePlugin, deadline: Duration) -> HarvestPing {
     let (tx, rx) = std::sync::mpsc::channel::<(LivePlugin, bool)>();
     std::thread::spawn(move || {

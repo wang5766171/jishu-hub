@@ -34,7 +34,7 @@ import { cn } from "@/lib/utils";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { CodeEditor } from "@/components/code-editor";
 import { FolderOpen } from "lucide-react";
-import { generalizeEngineCodename } from "./plugins-page";
+import { generalizeEngineCodename } from "./engine-codename";
 
 /** plugins-page 的描述符投影（避免循环依赖：仅取模态所需字段）。 */
 export interface DrawerPluginInfo {

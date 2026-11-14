@@ -104,8 +104,11 @@ export function useModelPicker(
         onModelChanged?.();
       } catch (err) {
         // 评审 P2-10：失败回滚到原值（乐观更新撤回），警告保留供回溯。
-        setSessionModel(prevSession);
-        if (!perSession) setActiveValue(prevActive);
+        // 修复轮回归收口：条件式回滚——仅当当前显示值仍是「本次」乐观值
+        // 才回滚（快速连选 A→B 且 A 先失败时，无条件回滚会用 A 的旧值
+        // 盖掉 B 的乐观值，造成 UI 与后端锁值错位）。
+        setSessionModel((cur) => (cur === value ? prevSession : cur));
+        if (!perSession) setActiveValue((cur) => (cur === value ? prevActive : cur));
         console.warn(perSession ? "session_model_set failed:" : "set_active failed:", err);
       }
     },

@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
 import { PLUGIN_SCENES } from "@/lib/plugin-scenes";
 import { ArrowDownToLine, Bot, Check, Download, ExternalLink, Info, Loader2, Package, RefreshCw, Search, ShieldCheck, Sparkles, Star, Trash2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { startExtensionUpdateAll, startSkillUpdateAll, updatesPending, useMarketUpdates } from "./plugin-market-updates";
+import { marketUpdateFailures, startExtensionUpdateAll, startSkillUpdateAll, updatesPending, useMarketUpdates } from "./plugin-market-updates";
 
 interface MarketEntry {
   id: string;
@@ -100,14 +100,14 @@ interface ExtensionUpdateStatus {
   package: string;
   installed: string;
   latest: string;
-  hasUpdate: boolean;
+  has_update: boolean;
 }
 
 interface SkillUpdateStatus {
   slug: string;
   installed: string;
   latest: string;
-  hasUpdate: boolean;
+  has_update: boolean;
 }
 
 /** 已装源串与 piindex 条目匹配（npm 源按包名前缀；git 源归一 https
@@ -775,12 +775,12 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                         : // git 源 pi 落盘形态可能带 https:// 前缀——归一比对。
                           src === source || src === source.replace("git:github.com/", "git:https://github.com/"),
                     );
-                  // 评审需求16：系统内置判定（pi_package_catalog 且 curated 标记
-                  // required 的 5 包）——内置项不出现卸载钮。
+                  // 评审需求16：系统内置判定——catalog 命中即内置（对齐后端
+                  // guard_uninstall_target 的 PI_PACKAGE_PLUGIN_MAP 全集口径；
+                  // 修复轮回归收口：此前按「curated required」判，pi-lens 非
+                  // required 却在内置集，会出现点了必报错的卸载钮）。
                   const builtin = installed && extensions.some(
-                    (pkg) =>
-                      curated.find((c) => c.id === pkg.plugin_id)?.required &&
-                      installedSourceMatchesPiindex(pkg.source, entry),
+                    (pkg) => installedSourceMatchesPiindex(pkg.source, entry),
                   );
                   return (
                     <div key={entry.name + (entry.github_url ?? "")} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
@@ -942,7 +942,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                               setActionError(null);
                               setBusyId(pkg.name);
                               try {
-                                await invokeCommand<string>("pi_package_uninstall_online", { name: pkg.name });
+                                await invokeCommand<string>("pi_package_uninstall_online", { source: "npm:" + pkg.name });
                                 await load();
                               } catch (e) {
                                 setActionError(String(e));
@@ -1026,7 +1026,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
               {checkingUpdates ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
               <span className="ml-1">{t("market.checkUpdates", "检查更新")}</span>
             </Button>
-{(extUpdates?.some((u) => u.hasUpdate) || skillUpdates?.some((u) => u.hasUpdate) || batchUpdates.extensionRunning || batchUpdates.skillRunning) && (
+{(extUpdates?.some((u) => u.has_update) || skillUpdates?.some((u) => u.has_update) || batchUpdates.extensionRunning || batchUpdates.skillRunning) && (
               <Button
                 size="sm"
                 className="h-7 px-2.5 text-xs"
@@ -1034,11 +1034,15 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                 onClick={() => {
                   setActionError(null);
                   // 全局 store 执行（离开页面不打断）；本页订阅恢复进度显示。
-                  if (extUpdates?.some((u) => u.hasUpdate)) startExtensionUpdateAll();
-                  if (skillUpdates?.some((u) => u.hasUpdate)) startSkillUpdateAll();
+                  if (extUpdates?.some((u) => u.has_update)) startExtensionUpdateAll();
+                  if (skillUpdates?.some((u) => u.has_update)) startSkillUpdateAll();
                   // 批量完成后刷新本页数据（页面还开着时）。
                   void (async () => {
                     while (updatesPending()) await new Promise((r) => setTimeout(r, 800));
+                    const failures = marketUpdateFailures();
+                    if (failures.length) {
+                      setActionError(t("market.updateFailedItems", "以下项更新失败：{{names}}", { names: failures.join("、") }));
+                    }
                     try {
                       const [sources, installedSkills] = await Promise.all([
                         invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
@@ -1099,7 +1103,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                         </p>
                       ) : null}
                       <div className="mt-auto flex items-center gap-1 pt-1 text-[10px] text-muted-foreground/70">
-                        {upd?.hasUpdate ? (
+                        {upd?.has_update ? (
                           <>
                             <span className="text-amber-600">→ v{upd!.latest}</span>
                             <span className="flex-1" />
@@ -1112,7 +1116,10 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                                   setCardBusy(pkg);
                                   setActionError(null);
                                   try {
-                                    await invokeCommand("extension_update", { packages: [pkg] });
+                                    const rep = await invokeCommand<{ updated?: string[]; failed?: Array<{ name: string; error: string }> }>("extension_update", { packages: [pkg] });
+                                    if (rep?.failed?.length) {
+                                      setActionError(t("market.updateFailedItems", "以下项更新失败：{{names}}", { names: rep.failed.map((f) => `${f.name}（${f.error}）`).join("、") }));
+                                    }
                                     const status = await invokeCommand<ExtensionUpdateStatus>("extension_check_update", { package: pkg });
                                     setExtCardUpdate((prev) => ({ ...prev, [pkg]: status }));
                                     const sources = await invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]);
@@ -1190,7 +1197,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
               <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
                 {Object.entries(skillInstalled).map(([slug, ver]) => {
                   const upd = skillUpdates?.find((u) => u.slug === slug) ?? skillCardUpdate[slug];
-                  const hasUpdate = upd?.hasUpdate;
+                  const has_update = upd?.has_update;
                   return (
                     <div key={slug} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
                       <div className="flex items-center gap-2">
@@ -1199,7 +1206,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                         <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{ver ? `v${ver}` : ""}</span>
                       </div>
                       <div className="mt-auto flex items-center gap-1 pt-1 text-[10px] text-muted-foreground/70">
-                        {hasUpdate ? (
+                        {has_update ? (
                           <>
                             <span className="text-amber-600">→ v{upd!.latest}</span>
                             <span className="flex-1" />
@@ -1212,7 +1219,10 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                                   setCardBusy(slug);
                                   setActionError(null);
                                   try {
-                                    await invokeCommand("skillhub_update", { slugs: [slug] });
+                                    const rep = await invokeCommand<{ updated?: string[]; failed?: Array<{ name: string; error: string }> }>("skillhub_update", { slugs: [slug] });
+                                    if (rep?.failed?.length) {
+                                      setActionError(t("market.updateFailedItems", "以下项更新失败：{{names}}", { names: rep.failed.map((f) => `${f.name}（${f.error}）`).join("、") }));
+                                    }
                                     const status = await invokeCommand<SkillUpdateStatus>("skillhub_check_update", { slug });
                                     setSkillCardUpdate((prev) => ({ ...prev, [slug]: status }));
                                     const installedSkills = await invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>);
