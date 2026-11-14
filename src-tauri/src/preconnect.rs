@@ -12,8 +12,9 @@
 //! - **跟随当前标签项目**：启动时给起始标签预连、切标签给新标签预连
 //!   （旧项目条目全杀——池只服务单一焦点项目）；
 //! - **仅接管新会话首连**：resume/fork 轮的 `--session-id` 定死于进程启动
-//!   参数，池进程无法事后补挂，天然不接管（签名比对也兜底）；仅
-//!   jishu-self + PiRpc（用户明确「只针对 jishu agent」）；
+//!   参数，池进程无法事后补挂，天然不接管（签名比对也兜底）；对象由能力位
+//!   判定——声明 PRECONNECTABLE 的 agent + PiRpc（评审 P2-⑤ 用户裁决：
+//!   能力化替代 agent id 分支）；
 //! - **签名一致性**：池条目按 `acp_command_signature`（与回合签名同一把
 //!   尺）预存签名，接管时与真实回合的 command 比对——模型/工具面/env 任何
 //!   漂移即不匹配，回落正常 spawn 路径（安全方向：宁可慢，不可错进程）。
@@ -33,10 +34,23 @@ use crate::agent_runtime::{self, PreparedAcpTurn};
 
 /// 插件中心条目 id（`builtin_session_plugin_specs` 按此对齐）。
 pub const PLUGIN_ID: &str = "session.agent-preconnect";
-/// jishu agent（PiRpc transport）——唯一预连对象（用户明确范围）。
-const TARGET_AGENT_ID: &str = "jishu-self";
 const DEFAULT_MAX_POOL: usize = 3;
 const MAX_POOL_LIMIT: usize = 8;
+
+/// 评审 P2-⑤ 用户裁决：能力化替代 agent id 分支——预连对象不再硬编码
+/// "jishu-self"，改为经 registry 查谁声明了 PRECONNECTABLE 能力位
+/// （唯一声明者即为池对象；无声明者则池空转）。
+fn preconnectable_agent_id(registry: &AgentRegistry) -> Option<String> {
+    registry
+        .agents_info()
+        .into_iter()
+        .find(|(_, agent)| {
+            agent
+                .capabilities()
+                .contains(crate::agent::AgentCapabilities::PRECONNECTABLE)
+        })
+        .map(|(id, _)| id)
+}
 
 // ── 配置 ──
 
@@ -120,15 +134,16 @@ pub fn shutdown_all(reason: &str) {
 
 // ── spawn ──
 
-/// 按「新会话首连」形态构建 jishu-self 的启动 spec（session_id=None → 无
+/// 按「新会话首连」形态构建预连对象的启动 spec（session_id=None → 无
 /// --session-id，与真实首连逐参数一致；tools 白名单/模型 args/envs 全跟
 /// 随当前配置）+ 签名。registry 缺 agent/构建失败返回 None（调用方放弃补池）。
 fn build_spec(
     registry: &AgentRegistry,
+    agent_id: &str,
     project_path: &str,
 ) -> Option<(crate::agent::AcpCommandSpec, String)> {
     let request = crate::agent_runtime::AgentTurnRequest {
-        agent_id: TARGET_AGENT_ID.to_string(),
+        agent_id: agent_id.to_string(),
         project_path: project_path.to_string(),
         session_id: None,
         message: String::new(),
@@ -143,17 +158,58 @@ fn build_spec(
     Some((acp.command.clone(), signature))
 }
 
-/// 后台补池任务：spawn 到目标条数。spawn 后重新锁池插入——若插入时焦点
-/// 已切走（用户快速切标签），立刻杀掉刚 spawn 的进程并停手（不再补旧项目）。
-fn fill_async(registry: std::sync::Arc<AgentRegistry>, project_path: String, want: usize) {
+/// spawn 后锁内插池（评审 P1-2 复查点）。spawn 与插池之间事件可能交错：
+/// 并发 fill 任务都已 spawn、`ensure_focus` 恰在此时收缩/禁用插件、用户调小
+/// maxPool——插入时点的池深与开关必须按锁内最新状态复查，超限/关闸即杀掉
+/// 刚 spawn 的进程并停手，杜绝池被异步任务撑爆。返回是否成功入池。
+fn insert_spawned(
+    settings: &Settings,
+    project_path: &str,
+    signature: String,
+    mut child: tokio::process::Child,
+) -> bool {
+    let mut guard = pool().lock().unwrap_or_else(|e| e.into_inner());
+    if guard.focus.as_deref() != Some(project_path) {
+        // 焦点已变：杀掉这个刚 spawn 的，停止补旧项目。
+        let _ = child.start_kill();
+        return false;
+    }
+    if !settings.enabled || guard.entries.len() >= settings.max_pool {
+        // 容量/开关复查：以插池瞬间快照为准，杀超额进程（评审 P1-2）。
+        let _ = child.start_kill();
+        log::info!(
+            "[preconnect] dropped excess spawn for {project_path} (pool={} max={} enabled={})",
+            guard.entries.len(),
+            settings.max_pool,
+            settings.enabled
+        );
+        return false;
+    }
+    guard.entries.push(Entry {
+        project_path: project_path.to_string(),
+        signature,
+        child,
+        created_at: Instant::now(),
+    });
+    true
+}
+
+/// 后台补池任务：spawn 到目标条数。spawn 后经 `insert_spawned` 重新锁池插入
+/// ——焦点切走或容量超限即杀掉刚 spawn 的进程并停手（不再补旧项目）。
+fn fill_async(
+    registry: std::sync::Arc<AgentRegistry>,
+    agent_id: String,
+    project_path: String,
+    want: usize,
+) {
     tauri::async_runtime::spawn(async move {
         for _ in 0..want {
             // 每次 spawn 前用最新配置构建（长池龄期间用户可能改模型/工具面）。
-            let Some((spec, signature)) = build_spec(&registry, &project_path) else {
+            let Some((spec, signature)) = build_spec(&registry, &agent_id, &project_path) else {
                 log::warn!("[preconnect] build spec failed for {project_path}, skip refill");
                 return;
             };
-            let mut child =
+            let child =
                 match agent_runtime::build_tokio_command_from_spec(&spec, &project_path).spawn() {
                     Ok(child) => child,
                     Err(e) => {
@@ -167,18 +223,9 @@ fn fill_async(registry: std::sync::Arc<AgentRegistry>, project_path: String, wan
                 "[preconnect] warmed pid {:?} for {project_path}",
                 child.id()
             );
-            let mut guard = pool().lock().unwrap_or_else(|e| e.into_inner());
-            if guard.focus.as_deref() != Some(project_path.as_str()) {
-                // 焦点已变：杀掉这个刚 spawn 的，停止补旧项目。
-                let _ = child.start_kill();
+            if !insert_spawned(&settings(), &project_path, signature, child) {
                 return;
             }
-            guard.entries.push(Entry {
-                project_path: project_path.clone(),
-                signature,
-                child,
-                created_at: Instant::now(),
-            });
         }
     });
 }
@@ -206,6 +253,19 @@ pub fn ensure_focus(registry: &std::sync::Arc<AgentRegistry>, project_path: &str
         }
         return;
     }
+    // 评审 P2-⑤：经 registry 能力位解析预连对象，无人声明则只清不建。
+    let Some(agent_id) = preconnectable_agent_id(registry) else {
+        let mut guard = pool().lock().unwrap_or_else(|e| e.into_inner());
+        let killed = guard.entries.len();
+        guard.focus = Some(project_path.to_string());
+        kill_all(&mut guard);
+        if killed > 0 {
+            log::info!(
+                "[preconnect] no PRECONNECTABLE agent, killed {killed} process(es) (focus kept)"
+            );
+        }
+        return;
+    };
     let want = {
         let mut guard = pool().lock().unwrap_or_else(|e| e.into_inner());
         if guard.focus.as_deref() != Some(project_path) {
@@ -219,12 +279,16 @@ pub fn ensure_focus(registry: &std::sync::Arc<AgentRegistry>, project_path: &str
             }
         }
         let live = sweep_dead(&mut guard);
-        // 池深收缩（maxPool 调小）：杀掉超额条目（队尾新进程保留）。
+        // 池深收缩（maxPool 调小）：杀掉超额条目。remove(0) 杀最老的队首
+        // 进程、保留队尾新进程（评审 P2-⑥：原 pop 与注释语义相反）。
         if live > s.max_pool {
             let excess = live - s.max_pool;
             for _ in 0..excess {
-                if let Some(mut entry) = guard.entries.pop() {
-                    let _ = entry.child.start_kill();
+                if !guard.entries.is_empty() {
+                    let pid = guard.entries[0].child.id();
+                    let _ = guard.entries[0].child.start_kill();
+                    guard.entries.remove(0);
+                    log::info!("[preconnect] pool shrunk: killed pid {pid:?}");
                 }
             }
             log::info!("[preconnect] pool shrunk: killed {excess} excess entrie(s)");
@@ -232,7 +296,7 @@ pub fn ensure_focus(registry: &std::sync::Arc<AgentRegistry>, project_path: &str
         s.max_pool.saturating_sub(guard.entries.len())
     };
     if want > 0 {
-        fill_async(registry.clone(), project_path.to_string(), want);
+        fill_async(registry.clone(), agent_id, project_path.to_string(), want);
     }
 }
 
@@ -261,13 +325,18 @@ pub fn on_settings_changed(registry: &std::sync::Arc<AgentRegistry>) {
 }
 
 /// 新会话首连接管判定 + 取用（`start_gui_acp_turn` 调用）：
-/// 匹配（jishu-self × PiRpc × 无 native_session_id × 同项目 × 同签名 × 进程
-/// 活着）弹出条目返回 child；任何不匹配返回 None（调用方回落正常 spawn）。
-/// 同项目但签名漂移的死配置条目顺手杀——配置变了进程即废。
-pub fn take_for_turn(turn: &PreparedAcpTurn) -> Option<tokio::process::Child> {
+/// 匹配（agent 声明 PRECONNECTABLE × PiRpc × 无 native_session_id × 同项目
+/// × 同签名 × 进程活着）弹出条目返回 child；任何不匹配返回 None（调用方
+/// 回落正常 spawn）。同项目但签名漂移的死配置条目顺手杀——配置变了进程即废。
+pub fn take_for_turn(
+    registry: &AgentRegistry,
+    turn: &PreparedAcpTurn,
+) -> Option<tokio::process::Child> {
     if turn.transport != crate::agent::TransportSurface::PiRpc
-        || turn.agent_id != TARGET_AGENT_ID
         || turn.native_session_id.is_some()
+        // 评审 P2-⑤ 用户裁决：能力化替代 agent id 分支——目标 agent 未声明
+        // PRECONNECTABLE 即不接管（含 registry 缺 agent 的情况）。
+        || !preconnectable_agent_id(registry).is_some_and(|id| id == turn.agent_id)
     {
         return None;
     }
@@ -347,5 +416,170 @@ mod tests {
         config.disabled.push(PLUGIN_ID.to_string());
         crate::agent::plugin::save_plugin_config(&config).unwrap();
         assert!(!settings().enabled);
+    }
+
+    /// 真实子进程占位（池条目需要 Child 句柄；kill_on_drop 兜底清理）。
+    fn spawn_test_child() -> tokio::process::Child {
+        #[cfg(target_os = "windows")]
+        let mut command = {
+            let mut c = tokio::process::Command::new("cmd");
+            c.args(["/C", "ping -n 6 127.0.0.1 >nul"]);
+            c
+        };
+        #[cfg(not(target_os = "windows"))]
+        let mut command = {
+            let mut c = tokio::process::Command::new("sh");
+            c.args(["-c", "sleep 5"]);
+            c
+        };
+        command
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        command.spawn().unwrap()
+    }
+
+    fn clear_pool(focus: Option<&str>) {
+        let mut guard = pool().lock().unwrap_or_else(|e| e.into_inner());
+        guard.focus = focus.map(str::to_string);
+        kill_all(&mut guard);
+    }
+
+    /// 评审 P1-2：插池复查——池满或插件禁用即杀刚 spawn 的进程、不入池
+    /// （spawn 与插池之间事件交错的兜底）。
+    #[test]
+    fn insert_spawned_rechecks_capacity_and_enabled() {
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        clear_pool(Some("D:/p"));
+
+        let enabled = Settings {
+            enabled: true,
+            max_pool: 1,
+        };
+        let child_a = spawn_test_child();
+        assert!(insert_spawned(&enabled, "D:/p", "sig-a".into(), child_a));
+        assert_eq!(pool().lock().unwrap().entries.len(), 1);
+
+        // 池满：第二条必须被杀掉拒插（评审 P1-2 容量复查）。
+        let child_b = spawn_test_child();
+        assert!(!insert_spawned(&enabled, "D:/p", "sig-b".into(), child_b));
+        assert_eq!(pool().lock().unwrap().entries.len(), 1);
+
+        // 焦点漂移：同样拒插。
+        let child_c = spawn_test_child();
+        assert!(!insert_spawned(
+            &enabled,
+            "D:/other",
+            "sig-c".into(),
+            child_c
+        ));
+
+        // 禁用闸：关闸后拒插。
+        let disabled = Settings {
+            enabled: false,
+            max_pool: 8,
+        };
+        let child_d = spawn_test_child();
+        assert!(!insert_spawned(&disabled, "D:/p", "sig-d".into(), child_d));
+        assert_eq!(pool().lock().unwrap().entries.len(), 1);
+
+        clear_pool(None);
+    }
+
+    /// 构造 PiRpc 形态的回合（真实首连形态：无 native_session_id）。
+    fn pi_rpc_turn(agent_id: &str) -> PreparedAcpTurn {
+        PreparedAcpTurn {
+            agent_id: agent_id.into(),
+            project_path: "D:/p".into(),
+            gui_session_id: None,
+            native_session_id: None,
+            message: String::new(),
+            command: crate::agent::AcpCommandSpec {
+                program: "node".into(),
+                args: vec!["--mode".into(), "rpc".into()],
+                envs: vec![],
+            },
+            transport: crate::agent::TransportSurface::PiRpc,
+            resolved_session_prompt_injection: None,
+        }
+    }
+
+    /// 评审 P2-⑤：接管判定按 PRECONNECTABLE 能力位——声明者可接管，
+    /// 未声明者拒（能力化替代 agent id 硬编码分支）。
+    #[test]
+    fn take_for_turn_gates_on_preconnectable_capability() {
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let registry = std::sync::Arc::new(AgentRegistry::new());
+
+        // 能力声明基线：jishu-self 声明、codex 未声明。
+        assert!(registry
+            .get("jishu-self")
+            .unwrap()
+            .capabilities()
+            .contains(crate::agent::AgentCapabilities::PRECONNECTABLE));
+        assert!(!registry
+            .get("codex")
+            .unwrap()
+            .capabilities()
+            .contains(crate::agent::AgentCapabilities::PRECONNECTABLE));
+
+        // 无能力 → 拒（同 PiRpc 形态，仅 agent 未声明能力位）。
+        assert!(take_for_turn(&registry, &pi_rpc_turn("codex")).is_none());
+
+        // 有能力 → 池中有同项目、同签名、活条目即可接管。
+        clear_pool(Some("D:/p"));
+        let turn = pi_rpc_turn("jishu-self");
+        let signature = agent_runtime::acp_command_signature(&turn.command).unwrap();
+        let child = spawn_test_child();
+        let enabled = Settings {
+            enabled: true,
+            max_pool: 3,
+        };
+        assert!(insert_spawned(&enabled, "D:/p", signature, child));
+        assert!(
+            take_for_turn(&registry, &turn).is_some(),
+            "声明 PRECONNECTABLE 且签名匹配应接管"
+        );
+        assert_eq!(pool().lock().unwrap().entries.len(), 0, "接管即弹出");
+        clear_pool(None);
+    }
+
+    /// 评审 P2-⑥：池收缩杀最老（队首 remove(0)）、保留队尾新进程——
+    /// 插入 a、b 两条后收缩到 maxPool=1，幸存者必须是后插的 sig-b。
+    #[test]
+    fn pool_shrink_kills_oldest_keeps_newest() {
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", home.path());
+        // maxPool 配置为 1 → 两条目必触发收缩。
+        let mut values = std::collections::HashMap::new();
+        values.insert("maxPool".to_string(), serde_json::json!(1));
+        crate::agent::plugin_options::set_values(PLUGIN_ID, values).unwrap();
+
+        let registry = std::sync::Arc::new(AgentRegistry::new());
+        clear_pool(Some("D:/p"));
+        let enabled = Settings {
+            enabled: true,
+            max_pool: 2,
+        };
+        let child_a = spawn_test_child();
+        let child_b = spawn_test_child();
+        assert!(insert_spawned(&enabled, "D:/p", "sig-a".into(), child_a));
+        assert!(insert_spawned(&enabled, "D:/p", "sig-b".into(), child_b));
+        assert_eq!(pool().lock().unwrap().entries.len(), 2);
+
+        // 焦点未变 → ensure_focus 走收缩分支：杀队首最老（sig-a）。
+        ensure_focus(&registry, "D:/p");
+
+        let guard = pool().lock().unwrap_or_else(|e| e.into_inner());
+        let signatures: Vec<&str> = guard.entries.iter().map(|e| e.signature.as_str()).collect();
+        assert_eq!(signatures, ["sig-b"], "收缩必须杀队首最老、保留队尾新进程");
+        drop(guard);
+        clear_pool(None);
     }
 }

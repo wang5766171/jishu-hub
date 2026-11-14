@@ -80,7 +80,10 @@ fn heal_once_if_needed(record_path: &Path) {
             let mut healed_record = record;
             healed_record.healed = true;
             if let Ok(body) = serde_json::to_string_pretty(&healed_record) {
-                let _ = std::fs::write(record_path, body);
+                // 评审 P2-⑨：记录文件原子写（tempfile 替换）——崩溃窗口不落
+                // 半截 JSON（半截记录会被 read_recorded_version 判损坏触发
+                // 不必要的整包重装）。
+                let _ = crate::util::atomic_write(record_path, body.as_bytes());
             }
         }
         Err(e) => log::warn!("[agent-runtime] workspace link heal deferred: {e}"),
@@ -88,7 +91,7 @@ fn heal_once_if_needed(record_path: &Path) {
 }
 
 /// 需求8 修复A：写记录（含 healed 标志）——安装完成后 heal 过即置 true，
-/// Ready 路径不再重复 heal。
+/// Ready 路径不再重复 heal。评审 P2-⑨：原子写（tempfile 替换）。
 fn write_record(record_path: &Path, version: &str, healed: bool) -> Result<(), String> {
     if let Some(parent) = record_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create record dir: {e}"))?;
@@ -98,7 +101,8 @@ fn write_record(record_path: &Path, version: &str, healed: bool) -> Result<(), S
         healed,
     })
     .map_err(|e| e.to_string())?;
-    std::fs::write(record_path, body).map_err(|e| format!("write runtime record: {e}"))
+    crate::util::atomic_write(record_path, body.as_bytes())
+        .map_err(|e| format!("write runtime record: {e}"))
 }
 
 fn emit_progress(app: &tauri::AppHandle, stage: &str, detail: &str) {
@@ -125,9 +129,21 @@ fn bundled_runtime_zip(resource_dir: &Path) -> Result<PathBuf, String> {
 
 /// 把 zip 解压到 `%TEMP%/jishu-agent-init-<uuid>/`（防穿越：拒绝绝对路径与
 /// `..` 段；解压结果即 pi-bundle 根：packages/ bin/ node_modules/ …）。
+/// 评审 P2-④：任何失败路径统一清理临时目录（显式双路径——闭包 Err 即清，
+/// 成功时目录是返回值，由调用方安装完成后清理，见 `install_runtime_locked`
+/// 的双路径兜底），不留半截解压产物占 %TEMP%。
 pub(crate) fn extract_zip_to_temp(zip_path: &Path) -> Result<PathBuf, String> {
     let dest = std::env::temp_dir().join(format!("jishu-agent-init-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dest).map_err(|e| format!("create temp dir: {e}"))?;
+    let extracted = extract_zip_entries(zip_path, &dest);
+    if extracted.is_err() {
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+    extracted.map(|_| dest)
+}
+
+/// 逐条目解压（仅做 IO，不负责临时目录生命周期——清理归 [`extract_zip_to_temp`]）。
+fn extract_zip_entries(zip_path: &Path, dest: &Path) -> Result<(), String> {
     let file =
         std::fs::File::open(zip_path).map_err(|e| format!("open {}: {e}", zip_path.display()))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("open zip: {e}"))?;
@@ -138,7 +154,6 @@ pub(crate) fn extract_zip_to_temp(zip_path: &Path) -> Result<PathBuf, String> {
         // mangled_name 是归档内原始名（不跟随符号链接/盘符变体），用它做穿越判定。
         let raw_name = entry.name().to_string();
         if raw_name.contains("..") || raw_name.starts_with('/') || raw_name.starts_with('\\') {
-            let _ = std::fs::remove_dir_all(&dest);
             return Err(format!("zip entry escapes destination: {raw_name}"));
         }
         let Some(enclosed) = entry.enclosed_name() else {
@@ -160,7 +175,7 @@ pub(crate) fn extract_zip_to_temp(zip_path: &Path) -> Result<PathBuf, String> {
             .map_err(|e| format!("read {raw_name}: {e}"))?;
         std::io::Write::write_all(&mut out, &buf).map_err(|e| format!("write {raw_name}: {e}"))?;
     }
-    Ok(dest)
+    Ok(())
 }
 
 /// 幂等确保 agent 运行时就绪（唯一触发点在 `.setup`；IPC `agent_runtime_init`

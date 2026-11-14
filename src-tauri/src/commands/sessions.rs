@@ -66,9 +66,7 @@ fn preview_kind_for_ext(ext: &str) -> PreviewFileKind {
 
 /// v0.9.7 需求14：会话锁定模型读取（None=跟全局 active）。
 #[tauri::command]
-pub(crate) fn session_model_get(
-    session_id: String,
-) -> Result<Option<(String, String)>, String> {
+pub(crate) fn session_model_get(session_id: String) -> Result<Option<(String, String)>, String> {
     Ok(crate::session_models::get_session_model(&session_id))
 }
 
@@ -90,8 +88,11 @@ pub(crate) fn validate_preview_file(
 ) -> Result<PreviewFileKind, String> {
     let _ = session_id; // 预留：校验语义目前与会话无关（基准=project_root）
     let file = std::path::PathBuf::from(&path);
+    // 错误串带机器前缀（前端契约：[not_found]/[out_of_scope]/[too_large]/
+    // [unsupported]，前端按前缀优先匹配、回退中文子串；评审十八）。中文正文
+    // 原样保留。
     if !file.is_file() {
-        return Err(format!("文件不存在: {path}"));
+        return Err(format!("[not_found] 文件不存在: {path}"));
     }
     let canonical_file = canonicalize_stripped(&file);
     // 基准目录：项目根 + 任务产物区（任务卡「打开」的产物在 .jishu-hub/tasks 下）。
@@ -107,7 +108,7 @@ pub(crate) fn validate_preview_file(
         f == b || f.starts_with(&format!("{b}\\"))
     });
     if !in_bounds {
-        return Err(format!("引用超出项目范围，已拦截: {path}"));
+        return Err(format!("[out_of_scope] 引用超出项目范围，已拦截: {path}"));
     }
     let ext = file
         .extension()
@@ -121,10 +122,15 @@ pub(crate) fn validate_preview_file(
         PreviewFileKind::Html | PreviewFileKind::Markdown | PreviewFileKind::Text => {
             ARTIFACT_TEXT_PREVIEW_MAX_BYTES
         }
-        PreviewFileKind::Unsupported => u64::MAX, // 大小不拦，面板给新窗口按钮
+        // 不支持类型：大小不拦、返回 Ok(Unsupported)——面板按类别给
+        // 「新窗口打开」按钮；[unsupported] 前缀留给未来出现的错误路径
+        // （本命令当前对不支持类型不报错）。
+        PreviewFileKind::Unsupported => u64::MAX,
     };
     if size > limit {
-        return Err(format!("文件 {size} 字节超过预览上限（{limit} 字节）"));
+        return Err(format!(
+            "[too_large] 文件过大：{size} 字节超过预览上限（{limit} 字节）"
+        ));
     }
     Ok(kind)
 }
@@ -539,7 +545,7 @@ mod tests {
         .unwrap();
         assert!(matches!(png, PreviewFileKind::Image));
 
-        // 项目外文件：拒绝。
+        // 项目外文件：拒绝（评审十八：错误串带机器前缀 + 中文正文保留）。
         let outside =
             std::env::temp_dir().join(format!("jishu-preview-out-{}.html", uuid::Uuid::new_v4()));
         std::fs::write(&outside, "<html></html>").unwrap();
@@ -549,17 +555,34 @@ mod tests {
             None,
         )
         .unwrap_err();
+        assert!(err.starts_with("[out_of_scope]"), "unexpected: {err}");
         assert!(err.contains("超出项目范围"), "unexpected: {err}");
 
-        // 不存在的文件：拒绝。
-        assert!(super::validate_preview_file(
+        // 不存在的文件：拒绝（[not_found] 前缀）。
+        let err = super::validate_preview_file(
             root.join("docs/missing.html")
                 .to_string_lossy()
                 .into_owned(),
             root.to_string_lossy().into_owned(),
             None,
         )
-        .is_err());
+        .unwrap_err();
+        assert!(err.starts_with("[not_found]"), "unexpected: {err}");
+        assert!(err.contains("文件不存在"), "unexpected: {err}");
+
+        // 超大文本文件：拒绝（[too_large] 前缀，中文正文含「文件过大」回退子串）。
+        let big = root.join("docs/big.md");
+        let big_body = vec![b'a'; super::ARTIFACT_TEXT_PREVIEW_MAX_BYTES as usize + 1];
+        std::fs::write(&big, big_body).unwrap();
+        let err = super::validate_preview_file(
+            big.to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.starts_with("[too_large]"), "unexpected: {err}");
+        assert!(err.contains("文件过大"), "unexpected: {err}");
+        let _ = std::fs::remove_file(&big);
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(&outside);

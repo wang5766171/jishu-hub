@@ -167,7 +167,9 @@ pub fn load_state() -> Result<AppState, Box<dyn std::error::Error>> {
 
 /// v0.9.7 需求4：首启引导完成标志（Some(true) 即已完成）。
 pub fn get_onboarded() -> bool {
-    load_state().map(|s| s.onboarded == Some(true)).unwrap_or(false)
+    load_state()
+        .map(|s| s.onboarded == Some(true))
+        .unwrap_or(false)
 }
 
 /// 标记引导完成（幂等）。

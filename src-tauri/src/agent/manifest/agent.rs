@@ -170,9 +170,7 @@ impl AgentManifest for ManifestAgent {
         // 需求14 M3（R6）：显式候选路径优先（私有路径安装的 CLI 探测不到的
         // 盲区）；未声明时维持 PATH 查找（候选=[命令名] 自身）。
         let candidates: Vec<&str> = match &probe.paths {
-            Some(paths) if !paths.is_empty() => {
-                paths.iter().map(|p| p.as_str()).collect()
-            }
+            Some(paths) if !paths.is_empty() => paths.iter().map(|p| p.as_str()).collect(),
             _ => vec![name],
         };
         match crate::agent::discovery::probe_binary_sync(name, &candidates) {

@@ -411,6 +411,9 @@ impl AgentManifest for JishuSelfAgent {
             | AgentCapabilities::CONTEXT_COMPACT
             // v0.7.4 需求3 M2：任务工作模式（任务图编排会话）。
             | AgentCapabilities::TASK_MODE
+            // 评审 P2-⑤ 用户裁决：预连接池接管/补池对象改按能力位判定
+            // （preconnect 经 registry 查此位，替代 agent id 硬编码分支）。
+            | AgentCapabilities::PRECONNECTABLE
             // v0.8.0 需求1 P-2：逐次工具审批——fork 内置 jishu-tool-approval
             // 扩展经 beforeToolCall 阻塞/放行（APPROVAL_REQUEST 声明审批事件
             // 通道；PRE_EXECUTION_INTERCEPTION 自 v0.7.x 定义以来首次被真实
@@ -860,7 +863,8 @@ fn template_default_tools(extra: &[&'static str]) -> Vec<&'static str> {
         // 扩展）registerTool 注册的三工具——pi 的 --tools 是硬白名单，不进
         // 名单则 agent 不可见（实测复现）。runner 是任务模式底座，与
         // read/bash 同级常驻，不挂任何插件 toml 声明（task-plan 需求3 后
-        // 可能未物化，不能依赖它）。
+        // 可能未物化，不能依赖它）。白名单例外条款见 DEVELOP_READ §16.4a
+        //（评审成文）。
         "update_steps",
         "ask_user",
         "dispatch_to_node",

@@ -139,7 +139,9 @@ pub fn acp_command_signature(command: &crate::agent::AcpCommandSpec) -> Option<S
             continue;
         }
         hasher.update(arg.as_bytes());
-        hasher.update(b"");
+        // 显式 escape 防编辑器剥控制字符（评审 P1-1）：args 间以 0x1f 分隔，
+        // 否则 ["--model","abc"] 与 ["--modelabc"] 拼接后同串、签名碰撞。
+        hasher.update(b"\x1f");
     }
     hasher.update(b"\x00envs\x00");
     let mut envs: Vec<&(String, String)> = command.envs.iter().collect();
@@ -151,7 +153,8 @@ pub fn acp_command_signature(command: &crate::agent::AcpCommandSpec) -> Option<S
         hasher.update(key.as_bytes());
         hasher.update(b"=");
         hasher.update(value.as_bytes());
-        hasher.update(b"");
+        // 显式 escape 防编辑器剥控制字符（评审 P1-1）：env 间以 0x1e 分隔。
+        hasher.update(b"\x1e");
     }
     Some(format!("{:x}", hasher.finalize()))
 }
@@ -443,11 +446,16 @@ where
 {
     let mut command = build_tokio_command_from_spec(&turn.command, &turn.project_path);
 
-    // v0.9.7 需求12：预连接接管——新会话首连（jishu-self、PiRpc、无
-    // native_session_id）优先从预连接池取现成进程，跳过冷启动（扩展装载/
-    // MCP 连接已在池中完成）。resume/fork 轮（--session-id 定死于启动参数）
-    // 与其余 transport 不接管。
-    let reused = crate::preconnect::take_for_turn(&turn);
+    // v0.9.7 需求12：预连接接管——新会话首连（PiRpc、无 native_session_id、
+    // 目标 agent 声明 PRECONNECTABLE——评审 P2-⑤ 能力化替代 agent id 分支）
+    // 优先从预连接池取现成进程，跳过冷启动（扩展装载/MCP 连接已在池中完成）。
+    // resume/fork 轮（--session-id 定死于启动参数）与其余 transport 不接管。
+    let reused = app
+        .try_state::<std::sync::Mutex<crate::AppState>>()
+        .and_then(|state| {
+            let s = state.lock().ok()?;
+            crate::preconnect::take_for_turn(&s.registry, &turn)
+        });
     let took_preconnect = reused.is_some();
     let child = match reused {
         Some(child) => child,
@@ -1270,6 +1278,18 @@ mod signature_tests {
         assert_ne!(
             acp_turn_signature(&a).unwrap(),
             acp_turn_signature(&b).unwrap()
+        );
+    }
+
+    /// 评审 P1-1：分隔符恢复回归——无分隔符时 ["--model","abc"] 与
+    /// ["--modelabc"] 拼接后同串导致签名碰撞；显式 0x1f 分隔后必须不同。
+    #[test]
+    fn signature_separator_prevents_arg_concat_collision() {
+        let split = acp_prepared(vec!["--model".into(), "abc".into()], vec![]);
+        let joined = acp_prepared(vec!["--modelabc".into()], vec![]);
+        assert_ne!(
+            acp_turn_signature(&split).unwrap(),
+            acp_turn_signature(&joined).unwrap()
         );
     }
 }

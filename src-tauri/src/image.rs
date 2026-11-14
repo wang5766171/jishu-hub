@@ -57,12 +57,15 @@ fn session_files_dir(project_path: &str) -> PathBuf {
 
 /// v0.9.7 需求5 E5：默认空间的上传按会话分目录（`session_files/<session_id>/`，
 /// 同空间各会话不混）；真实项目维持现状（按批次平铺）。新会话首传尚无
-/// session_id（None）→ 沿用平铺（边界：首条消息带附件先于会话创建）。
+/// session_id（None）或 id 尚为临时形态（pending-* / new_session_*，评审
+/// P2-⑦：临时 id 不落盘建目录——会话解析后这些目录无人认领，且真实 id
+/// 落地时会另建正确目录）→ 沿用平铺（边界：首条消息带附件先于会话创建）。
 fn session_batch_dir(project_path: &str, session_id: Option<&str>) -> PathBuf {
     let base = session_files_dir(project_path);
     match session_id {
         Some(sid)
             if !sid.is_empty()
+                && !crate::agent::command_config::is_transient_session_id(sid)
                 && crate::project::is_default_workspace(std::path::Path::new(project_path)) =>
         {
             base.join(sid)

@@ -153,6 +153,41 @@ pub async fn run_install_command(
     }
 }
 
+// -------------------- powershell 捕获执行（runtime_update 共用） --------------------
+
+/// powershell 执行并取 stdout（补用户级 PATH + 无窗口）。评审 P2-①：执行层
+/// 下沉 os_adapter 统一接口（此前 runtime_update.rs 私有一份裸 `powershell`
+/// 构造，与 run_install_command 同型不同源）。评审 P1-4：阻塞 `.output()`
+/// 经 spawn_blocking 包装（不占死 tokio worker），整体按 `timeout_secs`
+/// 限时——超时错误含「超时」并指引用户走官网下载页兜底。注意超时仅放弃
+/// 等待，powershell 子进程可能仍在后台跑完（无法跨进程安全吊销，可接受）。
+pub async fn run_powershell_capture(script: &str, timeout_secs: u64) -> Result<String, String> {
+    let script = script.to_string();
+    let execution = tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = StdCommand::new("powershell");
+        cmd.args(["-NoProfile", "-Command", &script]);
+        let cmd = crate::process_command::extend_path_for_child_std(&mut cmd);
+        crate::process_command::std_no_window(cmd).output()
+    });
+    let output = match timeout(Duration::from_secs(timeout_secs), execution).await {
+        Ok(join) => join
+            .map_err(|e| format!("powershell task failed: {e}"))?
+            .map_err(|e| format!("failed to spawn powershell: {e}"))?,
+        Err(_) => {
+            return Err(format!(
+                "powershell 执行超时（>{timeout_secs}s），已中止等待；请前往官网下载页手动下载安装"
+            ));
+        }
+    };
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(if stderr.is_empty() { stdout } else { stderr })
+    }
+}
+
 // -------------------- chocolatey 提权安装（Windows） --------------------
 
 /// 仅 `choco install/upgrade <安全包名> [-y|--yes]` 允许进入提权路径。

@@ -60,16 +60,21 @@ pub fn orchestrator_validate_proposal(
 
     // v0.9.2 需求5：提前取 TaskInstance——派发 prompt 需要需求文档上下文。
     // v0.9.7 需求2：requirement_file 列退场，按任务目录约定解析。
+    // 评审 P2-⑧：拼路径后加 is_file 校验（对齐 revise.rs 同款）——文件不
+    // 存在则不带该段，避免派发 prompt 引用一个必然不存在的需求文档死路径。
     let instance = ti_instance(&req.project_root, &req.task_id)?;
-    let requirement_path = instance.as_ref().map(|inst| {
-        PathBuf::from(&req.project_root)
+    let requirement_path = instance.as_ref().and_then(|inst| {
+        let p = PathBuf::from(&req.project_root)
             .join(".jishu-hub")
             .join("tasks")
             .join(&inst.task_id)
             .join("requirements")
-            .join("requirements.md")
-            .to_string_lossy()
-            .into_owned()
+            .join("requirements.md");
+        if p.is_file() {
+            Some(p.to_string_lossy().into_owned())
+        } else {
+            None
+        }
     });
 
     // 2. 构建 GraphSnapshot

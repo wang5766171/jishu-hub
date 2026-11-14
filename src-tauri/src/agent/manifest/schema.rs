@@ -259,7 +259,15 @@ pub struct InfoSection {
 /// 分类枚举合法值（与前端 PLUGIN_CATEGORIES 一致；fail loud 防拼错静默落错 tab）。
 /// 需求14 M2：appearance = 外观（主题插件，03 §2 场景 10 新增分类）。
 pub const PLUGIN_CATEGORY_VALUES: &[&str] = &[
-    "agent", "core", "session", "pipeline", "mcp", "skill", "cli", "custom", "appearance",
+    "agent",
+    "core",
+    "session",
+    "pipeline",
+    "mcp",
+    "skill",
+    "cli",
+    "custom",
+    "appearance",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -709,8 +717,8 @@ mod tests {
                 display_name: "Demo".to_string(),
                 icon: String::new(),
                 install_hint: None,
-            category: None,
-            description: None,
+                category: None,
+                description: None,
             },
             probe: None,
             transport: Some(TransportSection {

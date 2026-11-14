@@ -13,6 +13,7 @@
 //! 会话不存在则查不到）。
 
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 #[cfg(test)]
 use crate::agent::manifest::env_test_lock;
@@ -21,6 +22,15 @@ type SessionModel = (String, String); // (provider, model)
 
 fn config_path() -> std::path::PathBuf {
     super::agent::manifest::hub_home().join("session-models.json")
+}
+
+/// 进程内写锁（评审 P1-5 短期方案）：串行化本表的 load-modify-write——
+/// JSON 单文件改表须整文件重写，两个会话并发切模型会互相覆盖（丢更新）。
+/// 读取端不加锁：写入走 atomic_write（tempfile 替换），读到的恒为完整
+/// 旧版或新版。SQLite 迁移为后续架构轮（评审 P1-5 短期方案）。
+fn write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn load_all() -> HashMap<String, serde_json::Value> {
@@ -54,6 +64,8 @@ pub fn set_session_model(session_id: &str, provider: &str, model: &str) -> Resul
     if session_id.trim().is_empty() {
         return Err("session_id is required".to_string());
     }
+    // 评审 P1-5：写锁内完成 load-modify-write（并发写串行化，防丢更新）。
+    let _guard = write_lock().lock().unwrap_or_else(|e| e.into_inner());
     let mut all = load_all();
     if model.trim().is_empty() {
         all.remove(session_id);
@@ -70,10 +82,7 @@ pub fn set_session_model(session_id: &str, provider: &str, model: &str) -> Resul
 
 /// 发送/签名构建的统一注入口：显式 override（节点/委派链）优先，其次会话
 /// 锁定，末了 None=全局 active。
-pub fn resolve_override(
-    session_id: &str,
-    explicit: Option<SessionModel>,
-) -> Option<SessionModel> {
+pub fn resolve_override(session_id: &str, explicit: Option<SessionModel>) -> Option<SessionModel> {
     explicit.or_else(|| get_session_model(session_id))
 }
 

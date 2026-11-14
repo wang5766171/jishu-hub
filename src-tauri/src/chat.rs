@@ -1445,7 +1445,8 @@ fn truncate_lines_after_last_user(lines: &[&str], expect_text: &str) -> Result<u
             .get("content")
             .and_then(|c| c.as_array())
             .and_then(|arr| {
-                arr.iter().find(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                arr.iter()
+                    .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
             })
             .and_then(|b| b.get("text"))
             .and_then(|t| t.as_str())
@@ -1463,6 +1464,33 @@ fn truncate_lines_after_last_user(lines: &[&str], expect_text: &str) -> Result<u
     Err("会话中未找到用户消息".to_string())
 }
 
+/// session_info 行判定（pi jsonl：`{"type":"session_info",…}`——会话命名/
+/// 标题条目）。
+fn is_session_info_line(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line)
+        .ok()
+        .and_then(|v| {
+            v.get("type")
+                .and_then(|t| t.as_str())
+                .map(|t| t == "session_info")
+        })
+        .unwrap_or(false)
+}
+
+/// 构造截断后的内容：保留行 + 将删区段中的 session_info 行重新追加。
+/// 评审 P1-3b：命名条目落在会话尾部，直接截断会把它们一并删掉，导致标题
+/// 反复重生成；截断后回补，使命名幂等闸（已命名不再重命名）持续有效。
+fn truncated_content(lines: &[&str], keep: usize) -> String {
+    let mut kept: Vec<&str> = lines[..keep].to_vec();
+    kept.extend(
+        lines[keep..]
+            .iter()
+            .copied()
+            .filter(|l| is_session_info_line(l)),
+    );
+    format!("{}\n", kept.join("\n"))
+}
+
 /// 定位会话 jsonl（root/<项目目录>/<ts>_<sid>.jsonl 两层扫描）并执行截断。
 fn truncate_session_after_last_user(
     session_id: &str,
@@ -1471,12 +1499,18 @@ fn truncate_session_after_last_user(
     let root = agent::jishu_self::pi_session::pi_sessions_root()?;
     let suffix = format!("_{session_id}.jsonl");
     let mut found: Option<std::path::PathBuf> = None;
-    for dir in std::fs::read_dir(&root).map_err(|e| e.to_string())?.flatten() {
+    for dir in std::fs::read_dir(&root)
+        .map_err(|e| e.to_string())?
+        .flatten()
+    {
         let dir_path = dir.path();
         if !dir_path.is_dir() {
             continue;
         }
-        for f in std::fs::read_dir(&dir_path).map_err(|e| e.to_string())?.flatten() {
+        for f in std::fs::read_dir(&dir_path)
+            .map_err(|e| e.to_string())?
+            .flatten()
+        {
             if f.file_name().to_string_lossy().ends_with(&suffix) {
                 found = Some(f.path());
                 break;
@@ -1495,9 +1529,7 @@ fn truncate_session_after_last_user(
     backup.push(".edit-bak");
     let backup = std::path::PathBuf::from(backup);
     std::fs::copy(&file, &backup).map_err(|e| format!("备份失败: {e}"))?;
-    let kept = format!("{}
-", lines[..keep].join("
-"));
+    let kept = truncated_content(&lines, keep);
     crate::util::atomic_write(&file, kept.as_bytes())
         .map_err(|e| format!("写入截断会话失败: {e}"))?;
     log::info!(
@@ -1517,22 +1549,25 @@ pub(crate) async fn edit_last_user_message(
     session_id: String,
     expect_text: String,
 ) -> Result<(), String> {
-    // 先截断（数据操作失败即返回，不动进程）。
-    truncate_session_after_last_user(&session_id, &expect_text)?;
-    // 回收进程：shutdown（优雅收口）→ 有限等待 → 条目清理（resume 重拉由
-    // 下一次 send 触发）。
+    // 评审 P1-3：先杀进程再截断——顺序对调的取舍：若先截断，进行中的流式
+    // 回复仍持有文件句柄继续追加，新写入内容会越过截断点（旧回复「复活」
+    // 或 JSONL 半行损坏）；进程死透后再截断，杜绝流式追加写穿截断点。
+    // shutdown 无返回值（内部自行收口，无失败面可告警）；wait_finished
+    // 限时等待——进程死透后再截断。
     if let Some(process) = existing_chat_process(&app, &session_id, &agent_id) {
         if let Some(acp) = process.acp.as_ref() {
-            let _ = acp.shutdown().await;
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), acp.wait_finished()).await;
+            acp.shutdown().await;
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(3), acp.wait_finished()).await;
         }
         let chat_state = app.state::<Mutex<ChatState>>();
         let mut s = chat_state.lock().map_err(|e| e.to_string())?;
         remove_process_entries_from(&mut s, Some(process.process_id), Some(&session_id));
     }
+    // 再截断（数据操作失败即返回；进程已回收，重发走常规发送链）。
+    truncate_session_after_last_user(&session_id, &expect_text)?;
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1561,9 +1596,14 @@ mod tests {
         // 正常：截到 BBB 前（保留 3 行）。
         assert_eq!(truncate_lines_after_last_user(&lines, "BBB").unwrap(), 3);
         // 工具注入块后缀差异：startsWith 容错。
-        let injected = msg_line("c2", "b", "user", "BBB
+        let injected = msg_line(
+            "c2",
+            "b",
+            "user",
+            "BBB
 
-[JISHU-TOOLS:x]");
+[JISHU-TOOLS:x]",
+        );
         let lines2: Vec<&str> = vec![&info, &u1, &injected];
         assert_eq!(truncate_lines_after_last_user(&lines2, "BBB").unwrap(), 2);
         // 文本不符：拒绝。
@@ -1576,5 +1616,34 @@ mod tests {
         let a2 = msg_line("b", "s0", "assistant", "x");
         let no_user: Vec<&str> = vec![&info, &a2];
         assert!(truncate_lines_after_last_user(&no_user, "A").is_err());
-}
+    }
+
+    /// 评审 P1-3b：尾部 session_info（命名条目）不随截断丢失——构造含命名
+    /// 条目的会话，截断后 session_info 必须仍在（命名幂等闸持续有效）。
+    #[test]
+    fn truncate_keeps_tail_session_info_entries() {
+        let info = r#"{"type":"session_info","id":"s0"}"#.to_string();
+        let u1 = msg_line("a", "s0", "user", "AAA");
+        let r1 = msg_line("b", "a", "assistant", "回复");
+        let u2 = msg_line("c", "b", "user", "BBB");
+        let r2 = msg_line("d", "c", "assistant", "bbb-reply");
+        // 命名条目落在会话尾部（位于截断将删区段内）。
+        let title = r#"{"type":"session_info","id":"s0","title":"标题"}"#.to_string();
+        let lines: Vec<&str> = vec![&info, &u1, &r1, &u2, &r2, &title];
+        let keep = truncate_lines_after_last_user(&lines, "BBB").unwrap();
+        assert_eq!(keep, 3);
+        let kept = truncated_content(&lines, keep);
+        let kept_lines: Vec<&str> = kept.lines().collect();
+        // 消息截断生效：BBB 及其后的回复被删（3 行保留 + 回补 1 条命名）。
+        assert_eq!(kept_lines.len(), 4);
+        assert!(!kept.contains("bbb-reply"), "被截断的消息必须删除");
+        assert!(!kept.contains("\"BBB\""), "被截断的用户消息必须删除");
+        // 命名条目回补仍在（含标题内容）。
+        assert!(
+            kept_lines
+                .iter()
+                .any(|l| is_session_info_line(l) && l.contains("标题")),
+            "尾部 session_info 必须回补保留"
+        );
+    }
 }
