@@ -123,10 +123,16 @@ async fn fetch_list() -> Result<Vec<PiindexEntry>, String> {
 /// 不够，当日磁盘缓存仍会短路命中，刷新变成空转）。
 async fn fetch_list_inner(force: bool) -> Result<Vec<PiindexEntry>, String> {
     if !force {
-        let guard = cache().lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((at, list)) = guard.as_ref() {
-            if at.elapsed() < LIST_TTL && list.len() >= MIN_EXPECTED_CARDS {
-                return Ok(list.clone());
+        // 注意作用域：内存锁必须在此块内释放——下方磁盘命中分支要再次
+        // lock 同一 Mutex，std::Mutex 不可重入，合并作用域 = 自锁死锁
+        //（15:02 包「扩展生态一直转圈」根因：应用启动首次打开 + 当日磁盘
+        // 缓存有效即触发，IPC 永不返回）。
+        {
+            let guard = cache().lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((at, list)) = guard.as_ref() {
+                if at.elapsed() < LIST_TTL && list.len() >= MIN_EXPECTED_CARDS {
+                    return Ok(list.clone());
+                }
             }
         }
         // 内存缓存缺失：当日磁盘缓存命中直接用（不碰网络）。
@@ -614,6 +620,11 @@ pub async fn skillhub_check_update(slug: &str) -> Result<SkillUpdateStatus, Stri
 mod tests {
     use super::*;
 
+    /// 磁盘缓存文件类测试串行锁（Rust 测试默认并行——两个测试并发读写
+    /// 同一 piindex-cache.json 会互踩：一个删文件，另一个落入真实网络
+    /// 请求导致超时假失败）。
+    static CACHE_TESTS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// 清单解析：npm/git 卡收录（主题卡同收）、curl/无命令卡跳过、
     /// git 卡 detail_url 兜底站内检索页、安装命令照录。
     #[test]
@@ -675,11 +686,50 @@ mod tests {
         assert_eq!(th.npm_package.as_deref(), Some("pi-tokyo-night"));
     }
 
+    /// 死锁回归（15:02 包事故）：内存缓存空 + 当日 schema:2 磁盘缓存 →
+    /// 磁盘命中分支须能再次拿锁并返回（std::Mutex 不可重入；此前内存锁
+    /// 作用域与磁盘分支合并 = 同线程自锁，IPC 永久挂起=扩展生态转圈）。
+    /// 哨兵式：5s 超时即视为死锁失败。
+    #[tokio::test]
+    async fn fetch_list_disk_hit_path_does_not_deadlock() {
+        let _serial = CACHE_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = PiindexEntry {
+            name: "pi-x".to_string(),
+            description: String::new(),
+            npm_package: Some("pi-x".to_string()),
+            github_url: None,
+            install_command: "pi install npm:pi-x".to_string(),
+            category: String::new(),
+            kind_label: String::new(),
+            detail_url: None,
+            stars: None,
+            weekly_downloads: None,
+            download_trend: None,
+            search_text: String::new(),
+        };
+        let path = disk_cache_path();
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        let current = serde_json::json!({
+            "schema": CACHE_SCHEMA,
+            "fetchedAt": chrono::Local::now().to_rfc3339(),
+            "entries": vec![entry; MIN_EXPECTED_CARDS],
+        });
+        std::fs::write(&path, current.to_string()).unwrap();
+        *cache().lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let outcome =
+            tokio::time::timeout(std::time::Duration::from_secs(5), fetch_list_inner(false)).await;
+        assert!(outcome.is_ok(), "fetch_list_inner 超时——磁盘缓存命中路径自锁死锁");
+        assert!(outcome.unwrap().is_ok());
+        *cache().lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// 磁盘缓存 schema 闸：旧版负载（无 schema 标记）整体拒收——否则新增
     /// Option 字段在旧缓存上静默读出 None，同日跨版本装包后新数据永不出现
     /// （六轮收版实测回归锚点）。
     #[test]
     fn disk_cache_schema_gates_old_payloads() {
+        let _serial = CACHE_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let entry = PiindexEntry {
             name: "pi-x".to_string(),
             description: String::new(),
