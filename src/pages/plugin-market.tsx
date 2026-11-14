@@ -77,6 +77,8 @@ interface PiindexEntry {
   description: string;
   npmPackage: string | null;
   githubUrl: string | null;
+  /** 完整安装命令原文（npm:/git: 源卡都有；安装按钮取命令尾段作源）。 */
+  installCommand: string;
   category: string;
   kindLabel: string;
   detailUrl: string | null;
@@ -99,7 +101,71 @@ interface SkillUpdateStatus {
   hasUpdate: boolean;
 }
 
-const PAGE_SIZE = 20;
+/** 已装源串与 piindex 条目匹配（npm 源按包名前缀；git 源归一 https
+ * 前缀后比对安装命令尾段）——已装卡说明/查看来源的元数据来源。 */
+function installedSourceMatchesPiindex(src: string, entry: PiindexEntry): boolean {
+  if (entry.npmPackage) {
+    const prefix = "npm:" + entry.npmPackage;
+    if (src === prefix || src.startsWith(prefix + "@")) return true;
+  }
+  if (entry.installCommand.startsWith("pi install git:")) {
+    const cmdSource = entry.installCommand.replace(/^pi install /, "");
+    const norm = (s: string) => s.replace(/^git:https?:\/\//, "git:");
+    return norm(src) === norm(cmdSource);
+  }
+  return false;
+}
+
+const PAGE_SIZE_OPTIONS = [20, 50, 100];
+
+/** 分页条（在线扩展库客户端分页 / 技能市场服务端分页共用——
+ * 页码 + 总数 + 每页条数选择，最大 100）。 */
+function MarketPager({
+  page,
+  pageCount,
+  total,
+  pageSize,
+  onPage,
+  onPageSize,
+  disabled,
+}: {
+  page: number;
+  pageCount: number;
+  total: number;
+  pageSize: number;
+  onPage: (p: number) => void;
+  onPageSize: (n: number) => void;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-xs text-muted-foreground">
+      <Button variant="outline" size="sm" disabled={disabled || page <= 1} onClick={() => onPage(page - 1)}>
+        {t("market.prevPage", "上一页")}
+      </Button>
+      <span>
+        {t("market.pageInfo", "第 {{page}} / {{pages}} 页 · 共 {{total}} 项", { page, pages: pageCount, total })}
+      </span>
+      <Button variant="outline" size="sm" disabled={disabled || page >= pageCount} onClick={() => onPage(page + 1)}>
+        {t("market.nextPage", "下一页")}
+      </Button>
+      <label className="ml-1 inline-flex items-center gap-1">
+        {t("market.pageSize", "每页")}
+        <select
+          value={pageSize}
+          onChange={(e) => onPageSize(Number(e.target.value))}
+          className="h-7 rounded-md border border-border/60 bg-background px-1.5 text-xs outline-none focus:border-primary/50"
+        >
+          {PAGE_SIZE_OPTIONS.map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
+  );
+}
 
 export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
   const { t } = useTranslation();
@@ -108,6 +174,11 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
   const [scene, setScene] = useState<string>("all");
   const [keyword, setKeyword] = useState("");
   const [page, setPage] = useState(1);
+  // 需求3 六轮：完整分页（在线扩展客户端切片 / 技能市场服务端参数），
+  // 每页条数可设（20/50/100）。
+  const [extPage, setExtPage] = useState(1);
+  const [extPageSize, setExtPageSize] = useState(20);
+  const [skillPageSize, setSkillPageSize] = useState(20);
 
   const [curated, setCurated] = useState<MarketEntry[]>([]);
   const [extensions, setExtensions] = useState<PiPackageEntry[]>([]);
@@ -158,6 +229,16 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
     if (!piindex) return null;
     return extCategory === "all" ? piindex : piindex.filter((e) => e.category.split("/").some((c) => c.trim() === extCategory));
   }, [piindex, extCategory]);
+  // 客户端分页（在线库全量 ~170 条）：过滤结果切片，页码/过滤变化自动对齐。
+  const extTotal = filteredPiindex?.length ?? 0;
+  const extPageCount = Math.max(1, Math.ceil(extTotal / extPageSize));
+  useEffect(() => {
+    if (extPage > extPageCount) setExtPage(1);
+  }, [extPage, extPageCount]);
+  const pagedPiindex = useMemo(
+    () => (filteredPiindex ?? []).slice((extPage - 1) * extPageSize, extPage * extPageSize),
+    [filteredPiindex, extPage, extPageSize],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -206,13 +287,20 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
         ]);
         setOnlineInstalled(sources ?? []);
         setSkillInstalled(installedSkills ?? {});
+        // 已装卡说明/查看来源来自 piindex 元数据（缓存廉价；失败不阻塞本页）。
+        try {
+          const results = await invokeCommand<PiindexEntry[]>("piindex_search", { keyword: null });
+          setPiindex(results ?? []);
+        } catch {
+          /* piindex 不可达时已装卡无说明区 */
+        }
       } else if (source === "skills") {
         const kw = keyword.trim() || null;
         const result = await invokeCommand<SkillhubListResult>("skillhub_list", {
           scene: sceneArg,
           keyword: kw,
           page,
-          pageSize: PAGE_SIZE,
+          pageSize: skillPageSize,
         });
         setSkills(result);
         const installed = await invokeCommand<Record<string, string>>("skillhub_installed");
@@ -223,7 +311,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
     } finally {
       setLoading(false);
     }
-  }, [source, scene, keyword, page, onlineKw, refreshInstalled]);
+  }, [source, scene, keyword, page, onlineKw, skillPageSize, refreshInstalled]);
 
   useEffect(() => {
     void load();
@@ -580,7 +668,10 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
               <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
               <input
                 value={onlineKw}
-                onChange={(e) => setOnlineKw(e.target.value)}
+                onChange={(e) => {
+                  setOnlineKw(e.target.value);
+                  setExtPage(1);
+                }}
                 placeholder={t("market.onlineSearch", "搜索扩展名…")}
                 className="h-7 w-48 rounded-md border border-border/60 bg-background pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50"
               />
@@ -592,7 +683,10 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                 <button
                   key={c}
                   type="button"
-                  onClick={() => setExtCategory(c)}
+                  onClick={() => {
+                    setExtCategory(c);
+                    setExtPage(1);
+                  }}
                   className={
                     "rounded-full border px-2.5 py-0.5 text-[11px] transition-colors " +
                     (extCategory === c
@@ -605,71 +699,99 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
               ))}
             </div>
           )}
-          {/* Pi Index 目录卡片（主源） */}
+          {/* Pi Index 目录卡片（主源；npm/git 源都可装——git 卡安装命令尾段即源） */}
           {piindex && (
-            <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
-              {(filteredPiindex ?? piindex!).slice(0, 36).map((entry) => {
-                const pkg = entry.npmPackage;
-                const installed = !!pkg && onlineInstalled.some(
-                  (src) => src === "npm:" + pkg || src.startsWith("npm:" + pkg + "@"),
-                );
-                return (
-                  <div key={entry.name + (entry.githubUrl ?? "")} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
-                    <div className="flex items-center gap-2">
-                      <Package className="h-4 w-4 shrink-0 text-primary/70" />
-                      <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={entry.name}>{entry.name}</span>
-                      <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">{entry.category}</span>
-                    </div>
-                    <p className="line-clamp-2 text-[11px] leading-relaxed text-muted-foreground" title={entry.description}>{entry.description || "-"}</p>
-                    <div className="mt-auto flex items-center gap-1 pt-1 text-[10px] text-muted-foreground/70">
-                      {entry.stars != null && <span title="GitHub Star">★ {entry.stars}</span>}
-                      {entry.weeklyDownloads != null && (
-                        <span title="npm 周下载">↓ {entry.weeklyDownloads >= 10000 ? Math.round(entry.weeklyDownloads / 1000) / 10 + "万" : entry.weeklyDownloads}</span>
-                      )}
-                      <span className="flex-1" />
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 px-1.5 text-[10px] text-muted-foreground"
-                        aria-label={t("market.detail", "详情")}
-                        onClick={() => setExtDetailEntry(entry)}
-                      >
-                        <Info className="h-3 w-3" />
-                      </Button>
-
-                      {pkg && installed && <span className="text-muted-foreground">{t("market.installed")}</span>}
-                      {pkg && !installed && (
+            <>
+              <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
+                {pagedPiindex.map((entry) => {
+                  // 安装源：npm 卡 npm:<pkg>；git 卡取安装命令尾段（git:github.com/…）。
+                  const source = entry.npmPackage
+                    ? "npm:" + entry.npmPackage
+                    : entry.installCommand.replace(/^pi install /, "");
+                  const installed =
+                    !!source &&
+                    onlineInstalled.some((src) =>
+                      source.startsWith("npm:")
+                        ? src === source || src.startsWith(source + "@")
+                        : // git 源 pi 落盘形态可能带 https:// 前缀——归一比对。
+                          src === source || src === source.replace("git:github.com/", "git:https://github.com/"),
+                    );
+                  return (
+                    <div key={entry.name + (entry.githubUrl ?? "")} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
+                      <div className="flex items-center gap-2">
+                        <Package className="h-4 w-4 shrink-0 text-primary/70" />
+                        <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={entry.name}>{entry.name}</span>
+                        <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">{entry.category}</span>
+                      </div>
+                      <p className="line-clamp-2 text-[11px] leading-relaxed text-muted-foreground" title={entry.description}>{entry.description || "-"}</p>
+                      <div className="mt-auto flex items-center gap-1 pt-1 text-[10px] text-muted-foreground/70">
+                        {entry.stars != null && <span title="GitHub Star">★ {entry.stars}</span>}
+                        {entry.weeklyDownloads != null && (
+                          <span title="npm 周下载">↓ {entry.weeklyDownloads >= 10000 ? Math.round(entry.weeklyDownloads / 1000) / 10 + "万" : entry.weeklyDownloads}</span>
+                        )}
+                        <span className="flex-1" />
                         <Button
+                          variant="ghost"
                           size="sm"
-                          className="h-6 px-2 text-[10px]"
-                          disabled={busyId === pkg}
-                          onClick={() =>
-                            void (async () => {
-                              setActionError(null);
-                              setBusyId(pkg);
-                              try {
-                                // 安装走 pi 包管理器（npm 装载 + settings.json
-                                // 注册一步完成，装完 hub 提示启用）。
-                                await invokeCommand<string>("pi_package_install_online", { source: "npm:" + pkg });
-                                await load();
-                                onChanged?.();
-                              } catch (e) {
-                                setActionError(String(e));
-                              } finally {
-                                setBusyId(null);
-                              }
-                            })()
-                          }
+                          className="h-6 px-1.5 text-[10px] text-muted-foreground"
+                          aria-label={t("market.detail", "详情")}
+                          onClick={() => setExtDetailEntry(entry)}
                         >
-                          {busyId === pkg ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
-                          <span className="ml-0.5">{t("market.install", "安装")}</span>
+                          <Info className="h-3 w-3" />
                         </Button>
-                      )}
+
+                        {source && installed && <span className="text-muted-foreground">{t("market.installed")}</span>}
+                        {source && !installed && (
+                          <Button
+                            size="sm"
+                            className="h-6 px-2 text-[10px]"
+                            disabled={busyId === source}
+                            onClick={() =>
+                              void (async () => {
+                                setActionError(null);
+                                setBusyId(source);
+                                try {
+                                  // 安装走 pi 包管理器（npm/git 装载 + settings.json
+                                  // 注册一步完成，装完 hub 提示启用）。
+                                  await invokeCommand<string>("pi_package_install_online", { source });
+                                  await load();
+                                  onChanged?.();
+                                } catch (e) {
+                                  setActionError(String(e));
+                                } finally {
+                                  setBusyId(null);
+                                }
+                              })()
+                            }
+                          >
+                            {busyId === source ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                            <span className="ml-0.5">{t("market.install", "安装")}</span>
+                          </Button>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+                {extTotal === 0 && (
+                  <p className="col-span-full py-6 text-center text-xs text-muted-foreground">
+                    {t("market.onlineEmpty", "没有匹配的 pi 扩展包")}
+                  </p>
+                )}
+              </div>
+              {extTotal > 0 && (
+                <MarketPager
+                  page={extPage}
+                  pageCount={extPageCount}
+                  total={extTotal}
+                  pageSize={extPageSize}
+                  onPage={setExtPage}
+                  onPageSize={(n) => {
+                    setExtPageSize(n);
+                    setExtPage(1);
+                  }}
+                />
+              )}
+            </>
           )}
           {/* npm 检索兜底卡片（piindex 不可达时 online 非空才渲染） */}
           {online && (
@@ -850,6 +972,8 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                   const pkg = m?.[1] ?? src.replace(/^npm:/, "");
                   const ver = m?.[2] ?? "";
                   const upd = extUpdates?.find((u) => u.package === pkg) ?? extCardUpdate[pkg];
+                  // piindex 元数据命中（说明/分类/查看来源；内置扩展在目录有对应卡）。
+                  const pi = piindex?.find((e) => installedSourceMatchesPiindex(src, e));
                   return (
                     <div key={src} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
                       <div className="flex items-center gap-2">
@@ -857,6 +981,11 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                         <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium" title={pkg}>{pkg}</span>
                         <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{ver ? `v${ver}` : ""}</span>
                       </div>
+                      {pi && pi.description ? (
+                        <p className="line-clamp-2 text-[11px] leading-relaxed text-muted-foreground" title={pi.description}>
+                          {pi.description}
+                        </p>
+                      ) : null}
                       <div className="mt-auto flex items-center gap-1 pt-1 text-[10px] text-muted-foreground/70">
                         {upd?.hasUpdate ? (
                           <>
@@ -917,6 +1046,17 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                               <span className="ml-0.5">{t("market.checkUpdate", "检查更新")}</span>
                             </Button>
                           </>
+                        )}
+                        {pi && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-1.5 text-[10px] text-muted-foreground"
+                            aria-label={t("market.detail", "详情")}
+                            onClick={() => setExtDetailEntry(pi)}
+                          >
+                            <Info className="h-3 w-3" />
+                          </Button>
                         )}
                       </div>
                     </div>
@@ -1089,23 +1229,19 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
               );
             })}
           </div>
-          {/* 分页 */}
-          <div className="flex items-center justify-center gap-3 text-xs text-muted-foreground">
-            <Button variant="outline" size="sm" disabled={(skills?.page ?? 1) <= 1 || loading} onClick={() => setPage((p) => Math.max(1, p - 1))}>
-              {t("market.prevPage", "上一页")}
-            </Button>
-            <span>
-              {skills?.page ?? 1} / {Math.max(1, Math.ceil((skills?.total ?? 0) / PAGE_SIZE))}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={loading || (skills ? skills.page * PAGE_SIZE >= skills.total : true)}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              {t("market.nextPage", "下一页")}
-            </Button>
-          </div>
+          {/* 分页（服务端分页 + 每页条数） */}
+          <MarketPager
+            page={skills?.page ?? 1}
+            pageCount={Math.max(1, Math.ceil((skills?.total ?? 0) / skillPageSize))}
+            total={skills?.total ?? 0}
+            pageSize={skillPageSize}
+            onPage={setPage}
+            onPageSize={(n) => {
+              setSkillPageSize(n);
+              setPage(1);
+            }}
+            disabled={loading}
+          />
         </>
       )}
       {/* 扩展详情弹窗（叹号入口——说明+查看来源）。 */}
@@ -1114,9 +1250,10 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
           {extDetailEntry ? (
             <>
               <DialogHeader>
-                <DialogTitle className="flex items-center gap-2">
-                  <Package className="h-4 w-4 text-primary/70" />
-                  <span className="min-w-0 truncate">{extDetailEntry.name}</span>
+                <DialogTitle className="flex items-start gap-2">
+                  <Package className="mt-0.5 h-4 w-4 shrink-0 text-primary/70" />
+                  {/* 包名可能很长（@scope/pkg）——允许换行显示全名，不截断。 */}
+                  <span className="min-w-0 break-all">{extDetailEntry.name}</span>
                 </DialogTitle>
               </DialogHeader>
               <div className="space-y-3 text-sm">
@@ -1140,6 +1277,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                     className="h-7 text-xs"
                     onClick={() =>
                       void invokeCommand("open_url", {
+                        // 查看来源优先 piindex（详情页/站内检索），目录缺卡才落 GitHub。
                         url: extDetailEntry.detailUrl ?? extDetailEntry.githubUrl,
                       })
                     }

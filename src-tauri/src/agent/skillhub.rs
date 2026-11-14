@@ -144,7 +144,8 @@ pub async fn skillhub_list(
     page_size: u32,
 ) -> Result<SkillhubListResult, String> {
     let page = page.max(1);
-    let page_size = page_size.clamp(1, 50);
+    // 上限 100（上游 API 实测接受；前端每页条数选择器最大档）。
+    let page_size = page_size.clamp(1, 100);
     let mut url = format!("{API_BASE}/api/skills?sortBy=score&page={page}&pageSize={page_size}");
     if let Some(category) = scene.and_then(skillhub_category_for_scene) {
         url.push_str(&format!("&category={category}"));

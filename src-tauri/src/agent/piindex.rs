@@ -1,11 +1,12 @@
 //! Pi Index 在线目录与扩展/技能更新（v0.9.7 需求3 补充，2026-11-13 二轮）。
 //!
 //! 数据源：`GET https://piindex.dev/zh/`（Pi 社区资源目录中文页）——静态
-//! HTML 全量内嵌 192 条资源卡片（其中 133 条扩展包 data-kind=packages），
-//! 带**中文说明/中文分类/星数/周下载量/安装命令/详情页链接**，一次 GET
-//! 即结构化清单（站点无 JSON API——页面即接口；robots 允许抓取）。
-//! 解析规则移植自用户调研文档《pi-extension-api-spec.md》§11.4（regex
-//! 卡片提取）；失败回落 npm pi-package 检索（前端兜底）。
+//! HTML 全量内嵌 194 条资源卡片，其中带 `pi install npm:/git:` 安装命令的
+//! ≈170 条（扩展包+主题等 pi 包）全量收录，带**中文说明/中文分类/星数/
+//! 周下载量/安装命令/piindex 链接**，一次 GET 即结构化清单（站点无 JSON
+//! API——页面即接口；robots 允许抓取）。解析规则移植自用户调研文档
+//! 《pi-extension-api-spec.md》§11.4（regex 卡片提取）；失败回落 npm
+//! pi-package 检索（前端兜底）。
 //!
 //! 更新机制（skill 与扩展统一）：
 //! - **检测更新**：已装清单 → 各源并发查 latest（扩展=npm registry
@@ -33,11 +34,15 @@ pub struct PiindexEntry {
     pub description: String,
     pub npm_package: Option<String>,
     pub github_url: Option<String>,
+    /// 完整安装命令原文（`pi install npm:<pkg>` / `pi install git:github.com/…`）；
+    /// git 源卡无 npm 包名，前端安装按钮直接取命令尾段作安装源。
+    pub install_command: String,
     /// 中文分类（resource-tag data-label；多分类以「/」连接）。
     pub category: String,
     /// 资源类型中文名（扩展包/主题等）。
     pub kind_label: String,
-    /// piindex 详情页（相对路径 /zh/packages/<slug>/ → 绝对 URL）。
+    /// piindex 页面链接：详情页 /zh/packages/<slug>/（仅少数卡有）→
+    /// 站内检索页 /zh/?q=<name>（站点 JS 读 ?q= 参数，全卡可定位）。
     pub detail_url: Option<String>,
     pub stars: Option<u64>,
     pub weekly_downloads: Option<u64>,
@@ -173,8 +178,24 @@ fn html_unescape(s: &str) -> String {
         .replace("&#39;", "'")
 }
 
-/// 解析 `<article class="resource">` 卡片（只留扩展包 data-kind=packages）。
-/// 字段提取表见模块头引用的调研文档 §11.3。
+/// 查询串百分号编码（RFC 3986 非保留字符直通；UTF-8 字节逐个转义——
+/// 作用域包名 `@scope/pkg` 的 @ 与 / 也编码，避免拼进 ?q= 被截断）。
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// 解析 `<article class="resource">` 卡片（收录全部带 `pi install npm:/git:`
+/// 安装命令的资源卡——扩展包 131 + 主题 35 + 其余 4 ≈ 170 条；curl 安装/
+/// 无命令卡与 pi 无关不收）。字段提取表见模块头引用的调研文档 §11.3。
 fn parse_piindex_html(body: &str) -> Vec<PiindexEntry> {
     let card_re = match regex::Regex::new(r#"(?s)<article class="resource"([^>]*)>(.*?)</article>"#)
     {
@@ -185,7 +206,18 @@ fn parse_piindex_html(body: &str) -> Vec<PiindexEntry> {
     for caps in card_re.captures_iter(body) {
         let attrs = caps.get(1).map(|m| m.as_str()).unwrap_or("");
         let inner = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-        if attr_of(attrs, "data-kind").as_deref() != Some("packages") {
+        // 安装命令（data-copy；缺失回退 code 文本）。
+        let install = attr_of(inner, "data-copy")
+            .or_else(|| {
+                regex::Regex::new(r"(?s)<code>(.*?)</code>")
+                    .ok()
+                    .and_then(|re| re.captures(inner))
+                    .and_then(|c| c.get(1))
+                    .map(|m| html_unescape(m.as_str().trim()))
+            })
+            .unwrap_or_default();
+        // 收录闸：pi 包管理器可安装（npm:/git: 源）。本地路径等其余形态跳过。
+        if !(install.starts_with("pi install npm:") || install.starts_with("pi install git:")) {
             continue;
         }
         // 名称：package-link 文本 → 标题链接 data-package（132/135 卡是 GitHub
@@ -197,16 +229,6 @@ fn parse_piindex_html(body: &str) -> Vec<PiindexEntry> {
             .and_then(|c| c.get(1))
             .map(|m| html_unescape(m.as_str().trim()))
             .or_else(|| attr_of(inner, "data-package"));
-        // 安装命令（data-copy；缺失回退 code 文本）。
-        let install = attr_of(inner, "data-copy")
-            .or_else(|| {
-                regex::Regex::new(r"(?s)<code>(.*?)</code>")
-                    .ok()
-                    .and_then(|re| re.captures(inner))
-                    .and_then(|c| c.get(1))
-                    .map(|m| html_unescape(m.as_str().trim()))
-            })
-            .unwrap_or_default();
         let name = name.unwrap_or_else(|| {
             install
                 .split_whitespace()
@@ -274,12 +296,16 @@ fn parse_piindex_html(body: &str) -> Vec<PiindexEntry> {
             .ok()
             .and_then(|re| re.captures(inner))
             .and_then(|c| c.get(1))
-            .map(|m| format!("https://piindex.dev{}", m.as_str()));
+            .map(|m| format!("https://piindex.dev{}", m.as_str()))
+            // 无详情页的卡（绝大多数）落 piindex 站内检索页——站点 JS 读
+            // ?q= 参数预填搜索框，打开即定位到该卡（查看来源恒落 piindex）。
+            .or_else(|| Some(format!("https://piindex.dev/zh/?q={}", url_encode(&name))));
         out.push(PiindexEntry {
             name,
             description,
             npm_package,
             github_url,
+            install_command: install,
             category,
             kind_label,
             detail_url,
@@ -571,7 +597,8 @@ pub async fn skillhub_check_update(slug: &str) -> Result<SkillUpdateStatus, Stri
 mod tests {
     use super::*;
 
-    /// 清单解析：分类跟随 + npm 包名提取 + 描述剥离（非 npm 形态照录）。
+    /// 清单解析：npm/git 卡收录（主题卡同收）、curl/无命令卡跳过、
+    /// git 卡 detail_url 兜底站内检索页、安装命令照录。
     #[test]
     fn parses_piindex_cards() {
         let body = r#"<article class="resource" id="pi-web-access-x" data-kind="packages" data-stars="1779" data-downloads="295964" data-search="pi-web-access 网页与搜索 pi install npm:pi-web-access">
@@ -581,12 +608,27 @@ mod tests {
           <a href="https://github.com/nicobailon/pi-web-access" data-repo-link="true">查看项目</a>
           <div class="install-command"><code>pi install npm:pi-web-access</code><button data-copy="pi install npm:pi-web-access"></button></div>
         </article>
-        <article class="resource" data-kind="themes" data-stars="1" data-downloads="2"><h3><a class="package-link" href="/zh/packages/t/">theme-x</a></h3></article>"#;
+        <article class="resource" data-kind="packages" data-search="pi-websearch git">
+          <h3><a class="package-link" href="https://github.com/code-yeongyu/pi-websearch" data-package="@code-yeongyu/pi-websearch">@code-yeongyu/pi-websearch</a></h3>
+          <div class="resource-categories"><a class="resource-kind" data-label="扩展包">扩展包</a></div>
+          <div class="install-command"><code>pi install git:github.com/code-yeongyu/pi-websearch</code><button data-copy="pi install git:github.com/code-yeongyu/pi-websearch"></button></div>
+        </article>
+        <article class="resource" data-kind="themes" data-search="tokyo night 主题">
+          <h3><a class="package-link" href="https://github.com/x/pi-tokyo-night" data-package="pi-tokyo-night">pi-tokyo-night</a></h3>
+          <div class="resource-categories"><a class="resource-kind" data-label="主题">主题</a><a class="resource-tag" data-label="暗色主题">暗色主题</a></div>
+          <div class="install-command"><code>pi install npm:pi-tokyo-night</code><button data-copy="pi install npm:pi-tokyo-night"></button></div>
+        </article>
+        <article class="resource" data-kind="clients" data-search="curl 客户端">
+          <h3><a class="package-link" href="https://github.com/x/some-client" data-package="some-client">some-client</a></h3>
+          <div class="install-command"><code>curl -fsSL https://example.com | sh</code></div>
+        </article>
+        <article class="resource" data-kind="themes"><h3><a class="package-link" href="/zh/packages/t/">theme-x</a></h3></article>"#;
         let list = parse_piindex_html(body);
-        assert_eq!(list.len(), 1, "只留 packages 卡");
+        assert_eq!(list.len(), 3, "npm/git 卡收（含主题），curl/无命令卡跳过");
         let e = &list[0];
         assert_eq!(e.name, "pi-web-access");
         assert_eq!(e.npm_package.as_deref(), Some("pi-web-access"));
+        assert_eq!(e.install_command, "pi install npm:pi-web-access");
         assert!(e.description.contains("Web 搜索"));
         assert_eq!(e.category, "网页与搜索");
         assert_eq!(e.kind_label, "扩展包");
@@ -598,6 +640,20 @@ mod tests {
             .unwrap_or("")
             .ends_with("/zh/packages/pi-web-access/"));
         assert!(e.github_url.as_deref().unwrap_or("").contains("github.com"));
+        // git 源卡：npm 包名缺失、命令照录、详情页兜底站内检索（?q= 编码）。
+        let g = &list[1];
+        assert_eq!(g.name, "@code-yeongyu/pi-websearch");
+        assert_eq!(g.npm_package, None);
+        assert_eq!(g.install_command, "pi install git:github.com/code-yeongyu/pi-websearch");
+        assert_eq!(
+            g.detail_url.as_deref(),
+            Some("https://piindex.dev/zh/?q=%40code-yeongyu%2Fpi-websearch")
+        );
+        // 主题 npm 卡同收，类型徽标保留。
+        let th = &list[2];
+        assert_eq!(th.name, "pi-tokyo-night");
+        assert_eq!(th.kind_label, "主题");
+        assert_eq!(th.npm_package.as_deref(), Some("pi-tokyo-night"));
     }
 
     /// settings.json 条目拆分（npm:pkg@ver）。

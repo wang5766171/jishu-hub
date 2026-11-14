@@ -1379,13 +1379,14 @@ pub(crate) fn pi_package_installed_sources() -> Result<Vec<String>, String> {
         .unwrap_or_default())
 }
 
-/// 在线包安装/卸载（npm 源直达；不走 curated 插件闸门——装的是 pi 扩展包
-/// 本体，非 hub 插件条目）。
+/// 在线包安装/卸载（npm/git 源直达；不走 curated 插件闸门——装的是 pi
+/// 扩展包本体，非 hub 插件条目）。git 源形如 git:github.com/owner/repo
+/// （piindex 目录 GitHub 直装卡）。
 #[tauri::command]
 pub(crate) async fn pi_package_install_online(source: String) -> Result<String, String> {
     let source = source.trim().to_string();
-    if !source.starts_with("npm:") {
-        return Err("仅支持 npm: 前缀源（如 npm:pi-fireworks@0.1.2）".to_string());
+    if !(source.starts_with("npm:") || source.starts_with("git:")) {
+        return Err("仅支持 npm:/git: 前缀源（如 npm:pi-fireworks@0.1.2）".to_string());
     }
     agent::jishu_self::JishuSelfAgent::run_pi_package_command("install", &source)
         .await

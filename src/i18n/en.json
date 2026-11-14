@@ -1710,6 +1710,8 @@
     "needsApiKey": "Requires API key",
     "prevPage": "Prev",
     "nextPage": "Next",
+    "pageInfo": "Page {{page}} / {{pages}} · {{total}} items",
+    "pageSize": "Per page",
     "onlineLib": "Online extensions (pi ecosystem)",
     "onlineSearch": "Search extensions…",
     "onlineEmpty": "No matching pi extensions",
