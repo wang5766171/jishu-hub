@@ -169,14 +169,45 @@ pub(crate) fn dir_source_skills(plugin_root: &Path, plugin_id: &str) -> Vec<Skil
             continue;
         };
         // frontmatter description 简析（status/提示展示用；缺失不阻断部署）。
-        let description = content
-            .lines()
-            .skip_while(|l| !l.starts_with("---"))
-            .skip(1)
-            .take_while(|l| !l.starts_with("---"))
-            .find_map(|l| l.strip_prefix("description:"))
-            .map(|v| v.trim().to_string())
-            .unwrap_or_default();
+        // 评审修复：YAML 块标量（`description: |-` / `|` / `>` / `>-`）取后续
+        // 缩进行拼接——此前把记号「|-」当值显示在技能卡上（评审 P2-15）。
+        let description = {
+            let lines: Vec<&str> = content
+                .lines()
+                .skip_while(|l| !l.starts_with("---"))
+                .skip(1)
+                .take_while(|l| !l.starts_with("---"))
+                .collect();
+            let idx = lines.iter().position(|l| l.trim_start().starts_with("description:"));
+            match idx {
+                Some(i) => {
+                    let raw = lines[i].splitn(2, "description:").nth(1).unwrap_or("").trim();
+                    if matches!(raw, "|" | "|-" | ">" | ">-") {
+                        // 块标量：收集后续比 description 行缩进更深的行。
+                        let indent = lines[i].len() - lines[i].trim_start().len();
+                        let joined: Vec<String> = lines[i + 1..]
+                            .iter()
+                            .take_while(|l| {
+                                let t = l.trim();
+                                !t.is_empty()
+                                    && (l.len() - l.trim_start().len()) > indent
+                                    && !l.trim_start().starts_with("---")
+                            })
+                            .map(|l| l.trim().to_string())
+                            .collect();
+                        if joined.is_empty() {
+                            String::new()
+                        } else {
+                            let sep = if raw.starts_with('|') { "\n" } else { " " };
+                            joined.join(sep)
+                        }
+                    } else {
+                        raw.to_string()
+                    }
+                }
+                None => String::new(),
+            }
+        };
         out.push(SkillDeclEntry {
             dir_name: skill_dir_name(plugin_id, &name),
             description,
@@ -1066,6 +1097,23 @@ body",
         assert_eq!(decls[0].dir_name, "p1__foo");
         assert_eq!(decls[0].description, "目录源示例");
         assert!(decls[0].content.starts_with("---\nname: foo\n"));
+    }
+
+    /// 评审 P2-15：SKILL.md frontmatter 的 YAML 块标量 description（`|-`）
+    /// 取后续缩进行拼接——此前把记号「|-」当值显示在技能卡上。
+    #[test]
+    fn dir_source_skills_block_scalar_description() {
+        let root = tempfile::tempdir().unwrap();
+        let foo = root.path().join("skills").join("foo");
+        std::fs::create_dir_all(&foo).unwrap();
+        std::fs::write(
+            foo.join("SKILL.md"),
+            "---\nname: foo\ndescription: |-\n  第一行说明。\n  第二行说明。\nversion: \"1.0\"\n---\n\n正文。\n",
+        )
+        .unwrap();
+        let decls = dir_source_skills(root.path(), "p1");
+        assert_eq!(decls.len(), 1);
+        assert_eq!(decls[0].description, "第一行说明。\n第二行说明。");
     }
 
     #[test]

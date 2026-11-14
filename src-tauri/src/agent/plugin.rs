@@ -969,7 +969,10 @@ pub fn assemble(
 }
 
 /// 工具/能力插件的中文说明来源：[tool].description（注入用完整描述，取
-/// 首句前的主句——通常本身即一句说明）优先，[skill]/[[skill]] 声明描述次之。
+/// 首句前的主句——通常本身即一句说明）优先，[skill]/[[skill]] 声明描述次之，
+/// [info].description 再次（评审 P2-15：skillhub 生成的目录形式 manifest
+/// 只带 [info].description，无 [tool]/[skill]——此前该形态说明恒空、回退
+/// 到 SKILL.md frontmatter 时曾把块标量记号「|-」当值显示）。
 fn manifest_plugin_description(file: &super::manifest::schema::AgentManifestFile) -> String {
     if let Some(tool) = file.tool.as_ref() {
         let first_sentence = tool
@@ -982,6 +985,12 @@ fn manifest_plugin_description(file: &super::manifest::schema::AgentManifestFile
     if let Some(skill) = file.skill.as_ref() {
         if let Some((_name, description, _body)) = skill.entries().into_iter().next() {
             return description.to_string();
+        }
+    }
+    if let Some(info_desc) = file.info.description.as_deref() {
+        let trimmed = info_desc.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
         }
     }
     String::new()
@@ -1582,3 +1591,32 @@ mod tests {
 }
 
 // ── agent-tool 物化与冲突检查（v0.9.5 需求1（原需求26）6b/6c——方向四）──
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    /// 评审 P2-15：skillhub 生成的目录形式 manifest 只带 [info].description
+    /// （无 [tool]/[skill]）——说明取 [info].description，不再回退 SKILL.md
+    /// frontmatter（曾把块标量记号「|-」当值显示在技能卡上）。
+    #[test]
+    fn manifest_plugin_description_prefers_info_description() {
+        let file: super::super::manifest::schema::AgentManifestFile =
+            toml::from_str(
+                r#"
+schema = 1
+kind = "tool"
+
+[info]
+id = "multi-search-engine"
+display_name = "多引擎搜索"
+icon = ""
+description = "通过公开搜索URL在16个搜索引擎中做跨引擎检索。"
+"#,
+            )
+            .unwrap();
+        assert!(file.tool.is_none());
+        let desc = manifest_plugin_description(&file);
+        assert_eq!(desc, "通过公开搜索URL在16个搜索引擎中做跨引擎检索。");
+    }
+}
