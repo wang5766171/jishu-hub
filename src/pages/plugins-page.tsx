@@ -78,6 +78,9 @@ interface PluginDescriptor {
   /** 需求14 M4（G10 分类显式化）：清单显式声明的业务分类（A 家族
    * [info].category / 组合家族 [plugin].category）——声明值优先于推断链。 */
   category?: string | null;
+  /** v0.9.7 需求3（2026-11-14 标签裁决）：[info].form 形态显式声明
+   *（session/sidebar/floating/none）；未声明按挂载位推导兜底。 */
+  form?: string | null;
 }
 
 interface PluginListResult {
@@ -194,12 +197,72 @@ function implKindOf(p: PluginDescriptor): ImplKind {
   return "config";
 }
 
+/** v0.9.7 需求3 标签三类体系（2026-11-14 裁决）——身份·实现方式·形态。
+ * 身份四值：市场台账在册 → 市场安装；核心引擎 tab 成员 → 核心引擎；
+ * 系统随包件 → 内置插件；其余用户件 → 自建。 */
+function identityOf(
+  p: PluginDescriptor,
+  inMarketLedger: boolean,
+): "core" | "builtin" | "market" | "custom" {
+  if (inMarketLedger) return "market";
+  if (categoryOf(p) === "core") return "core";
+  if (p.system) return "builtin";
+  return "custom";
+}
+
+const IDENTITY_BADGE: Record<
+  "core" | "builtin" | "market" | "custom",
+  { key: string; fallback: string; cls: string }
+> = {
+  core: { key: "plugins.identityCore", fallback: "核心引擎", cls: "border-primary/40 bg-primary/10 text-primary" },
+  builtin: { key: "plugins.identityBuiltin", fallback: "内置插件", cls: "border-border/60 text-muted-foreground" },
+  market: { key: "plugins.identityMarket", fallback: "市场安装", cls: "border-primary/40 text-primary" },
+  custom: { key: "plugins.identityCustom", fallback: "自建", cls: "border-emerald-500/40 text-emerald-600" },
+};
+
+/** 挂载位 → 形态推导映射（无显式 [info].form 声明时的兜底）。 */
+const MOUNT_FORM_MAP: Record<string, "session" | "sidebar" | "floating"> = {
+  "block-renderer": "session",
+  "sidebar-panel": "sidebar",
+  "dock-panel": "sidebar",
+  "rail-widget": "floating",
+  "composer-trailing": "floating",
+};
+
+/** 形态三值+兜底：显式声明优先 → 会话插件主挂载位推导 → 统一「无 UI
+ * 呈现」（MCP/Skill/CLI 等无挂载位件）。 */
+function formOf(p: PluginDescriptor): "session" | "sidebar" | "floating" | "none" {
+  if (p.form === "session" || p.form === "sidebar" || p.form === "floating" || p.form === "none") {
+    return p.form;
+  }
+  if (p.kind === "session") {
+    const mounts = [
+      ...new Set(listSessionPlugins().find((x) => x.id === p.id)?.mounts.map((m) => m.kind) ?? []),
+    ];
+    for (const m of mounts) {
+      const f = MOUNT_FORM_MAP[m];
+      if (f) return f;
+    }
+  }
+  return "none";
+}
+
+const FORM_BADGE: Record<
+  "session" | "sidebar" | "floating" | "none",
+  { key: string; fallback: string }
+> = {
+  session: { key: "plugins.formSession", fallback: "会话" },
+  sidebar: { key: "plugins.formSidebar", fallback: "侧边栏" },
+  floating: { key: "plugins.formFloating", fallback: "悬浮窗" },
+  none: { key: "plugins.formNone", fallback: "无 UI 呈现" },
+};
+
 /** 实现徽标（颜色对应 v3 原型：绿配置/紫代码/灰内置/橙组合）。 */
 const IMPL_BADGE: Record<ImplKind, { key: string; fallback: string; cls: string }> = {
-  config: { key: "plugins.implConfig", fallback: "配置", cls: "border-emerald-500/40 text-emerald-600" },
-  code: { key: "plugins.implCode", fallback: "代码", cls: "border-fuchsia-500/40 text-fuchsia-600" },
+  config: { key: "plugins.implConfig", fallback: "配置实现", cls: "border-emerald-500/40 text-emerald-600" },
+  code: { key: "plugins.implCode", fallback: "代码实现", cls: "border-fuchsia-500/40 text-fuchsia-600" },
   builtin: { key: "plugins.implBuiltin", fallback: "内置", cls: "border-slate-400/40 text-slate-500" },
-  combo: { key: "plugins.implCombo", fallback: "组合", cls: "border-amber-500/40 text-amber-600" },
+  combo: { key: "plugins.implCombo", fallback: "混合实现", cls: "border-amber-500/40 text-amber-600" },
 };
 
 /** v0.9.3 需求11：分类改横向 tab（顺序按用户口径，智能体置首）。 */
@@ -501,7 +564,10 @@ export function PluginsPage({
     }
   };
   // 批次2：实现维度筛选（与业务 tab 正交——双视角管理，v3 双维度设计）。
-  const [implFilter, setImplFilter] = useState<ImplKind | "all">("all");
+  // v0.9.7 需求3 二版（2026-11-14 裁决「检索标签对应」）：实现筛选与实现
+  // 徽章三值一一对应（内置件无实现徽章，不参与实现筛选）。
+  type ImplFilter = Exclude<ImplKind, "builtin"> | "all";
+  const [implFilter, setImplFilter] = useState<ImplFilter>("all");
   // 需求14 M4（G8 搜索）：跨分类搜索（id/名称/描述/路径/接管语言集命中）；
   // 非空时网格展示全库命中项（忽略当前 tab），实现维度筛选仍叠加。
   const [search, setSearch] = useState("");
@@ -636,43 +702,40 @@ export function PluginsPage({
                   {tr("plugins.pendingBadge", "待确认")}
                 </Badge>
               )}
-              {/* v0.9.7 需求3（2026-11-14 裁决）：来源徽章——市场安装（技能
-                  台账在册即 SkillHub 市场件）与内置形成区分。 */}
-              {skillLedger[plugin.id] && (
-                <Badge variant="outline" className="border-primary/40 px-1 py-0 text-[9px] text-primary">
-                  {tr("plugins.badgeMarket", "市场安装")}
-                </Badge>
-              )}
-              {/* 批次2：会话插件显示实现维度徽标（配置/代码/内置/组合，双维度
-                  X 轴）——取代原「内置」kind 徽标（组合式被误标内置的问题顺带
-                  修复）；非会话插件保持原 kind 徽标（实现维度无信息增益）。 */}
-              {plugin.kind === "session" ? (
-                (() => {
-                  const b = IMPL_BADGE[implKindOf(plugin)];
-                  return (
-                    <Badge variant="outline" className={cn("px-1 py-0 text-[9px]", b.cls)}>
-                      {tr(b.key, b.fallback)}
-                    </Badge>
-                  );
-                })()
-              ) : plugin.kind === "builtin" ? (
-                <Badge variant="secondary" className="px-1 py-0 text-[9px]">
-                  {tr("plugins.kindBuiltin", "内置")}
-                </Badge>
-              ) : plugin.kind === "tool" ? (
-                <Badge variant="secondary" className="px-1 py-0 text-[9px]">
-                  {tr("plugins.kindTool", "工具")}
-                </Badge>
-              ) : (
-                <Badge variant="secondary" className="px-1 py-0 text-[9px]">
-                  {tr("plugins.kindManifest", "声明式")}
-                </Badge>
-              )}
-              {plugin.system && (
-                <Badge variant="outline" className="px-1 py-0 text-[9px]">
-                  {tr("plugins.systemBadge", "系统")}
-                </Badge>
-              )}
+              {/* v0.9.7 需求3 标签三类体系（2026-11-14 裁决）：身份四值 →
+                  实现方式三值（内置件不标实现）→ 插件形态（显式声明优先/
+                  挂载位推导/无 UI 呈现兜底）；样式按类统一。 */}
+              {(() => {
+                const identity = IDENTITY_BADGE[identityOf(plugin, !!skillLedger[plugin.id])];
+                return (
+                  <Badge variant="outline" className={cn("px-1 py-0 text-[9px]", identity.cls)}>
+                    {tr(identity.key, identity.fallback)}
+                  </Badge>
+                );
+              })()}
+              {(() => {
+                // 实现方式只标创建件（市场安装/自建）——内置件（核心引擎/
+                // 内置插件身份）随包分发，实现维度对用户无意义（口径：
+                // 2026-11-14 标签裁决）。
+                if (identityOf(plugin, !!skillLedger[plugin.id]) === "core"
+                  || identityOf(plugin, !!skillLedger[plugin.id]) === "builtin") return null;
+                const impl = implKindOf(plugin);
+                if (impl === "builtin") return null;
+                const b = IMPL_BADGE[impl];
+                return (
+                  <Badge variant="outline" className={cn("px-1 py-0 text-[9px]", b.cls)}>
+                    {tr(b.key, b.fallback)}
+                  </Badge>
+                );
+              })()}
+              {(() => {
+                const f = FORM_BADGE[formOf(plugin)];
+                return (
+                  <Badge variant="outline" className="border-border/60 px-1 py-0 text-[9px] text-muted-foreground">
+                    {tr(f.key, f.fallback)}
+                  </Badge>
+                );
+              })()}
               {plugin.has_mcp && (
                 <Badge variant="outline" className="px-1 py-0 text-[9px]">
                   {tr("plugins.mcpBadge", "MCP")}
@@ -1265,98 +1328,107 @@ export function PluginsPage({
         </div>
       )}
 
-      {/* v0.9.7 需求3 已安装统一页（2026-11-14 裁决）：在线更新条——市场
-          技能+扩展包（含内置件）统一检查/全部更新；批量走全局 store，
-          离开页面不打断。 */}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 px-2.5 text-xs"
-          disabled={checkingUpdates || batchUpdates.extensionRunning || batchUpdates.skillRunning}
-          onClick={() =>
-            void (async () => {
-              setCheckingUpdates(true);
-              try {
-                const [ext, skill] = await Promise.all([
-                  invokeCommand<ExtensionUpdateStatus[]>(
-                    "extension_check_updates",
-                  ).catch(() => null),
-                  invokeCommand<SkillUpdateStatus[]>(
-                    "skillhub_check_updates",
-                  ).catch(() => null),
-                ]);
-                setExtUpdates(ext);
-                setSkillUpdates(skill);
-              } finally {
-                setCheckingUpdates(false);
-              }
-            })()
-          }
-        >
-          {checkingUpdates ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-          <span className="ml-1">{tr("market.checkUpdates", "检查更新")}</span>
-        </Button>
-        {(extUpdates?.some((u) => u.has_update) ||
-          skillUpdates?.some((u) => u.has_update) ||
-          batchUpdates.extensionRunning ||
-          batchUpdates.skillRunning) && (
-          <Button
-            size="sm"
-            className="h-7 px-2.5 text-xs"
-            disabled={batchUpdates.extensionRunning || batchUpdates.skillRunning}
-            onClick={() => {
-              if (extUpdates?.some((u) => u.has_update)) startExtensionUpdateAll();
-              if (skillUpdates?.some((u) => u.has_update)) startSkillUpdateAll();
-              // 批量完成后刷新本页数据（页面还开着时；全局 store 离开不打断）。
-              void (async () => {
-                while (updatesPending()) await new Promise((r) => setTimeout(r, 800));
-                try {
-                  const [sources, latest, skillsLatest, ledger] = await Promise.all([
-                    invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
-                    invokeCommand<ExtensionUpdateStatus[]>(
-                      "extension_check_updates",
-                    ).catch(() => null),
-                    invokeCommand<SkillUpdateStatus[]>(
-                      "skillhub_check_updates",
-                    ).catch(() => null),
-                    invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>),
-                  ]);
-                  setExtInstalled(sources ?? []);
-                  if (latest) setExtUpdates(latest);
-                  if (skillsLatest) setSkillUpdates(skillsLatest);
-                  setSkillLedger(ledger ?? {});
-                  await refresh();
-                  // 批量失败项如实呈现（评审修复轮关切：failed 不能无前端消费）。
-                  const failures = marketUpdateFailures();
-                  if (failures.length > 0) {
-                    void alertDialog({
-                      title: tr("env.updateFailed", "更新失败"),
-                      description: tr("market.updateFailedItems", "以下项更新失败：{{names}}").replace(
-                        "{{names}}",
-                        failures.join("、"),
-                      ),
-                    });
+      {/* v0.9.7 需求3 已装页优化二版（2026-11-14 裁决）：更新检查按当前
+          tab 范围——仅技能/扩展包 tab 有更新语义；当前 tab 无可更新内容
+          （无市场件/无包）不显示检查更新；全部更新仅在检出新版或批量进行
+          中出现。 */}
+      {(() => {
+        const updatableCount =
+          activeTab === "skill"
+            ? (result?.plugins ?? []).filter((p) => skillLedger[p.id]).length
+            : activeTab === "extension"
+              ? extInstalled.length
+              : 0;
+        if (updatableCount === 0) return null;
+        const isSkillTab = activeTab === "skill";
+        const anyUpdate = isSkillTab
+          ? !!skillUpdates?.some((u) => u.has_update)
+          : !!extUpdates?.some((u) => u.has_update);
+        const batchRunning = isSkillTab ? batchUpdates.skillRunning : batchUpdates.extensionRunning;
+        const showUpdateAll = anyUpdate || batchRunning;
+        return (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-2.5 text-xs"
+              disabled={checkingUpdates || batchRunning}
+              onClick={() =>
+                void (async () => {
+                  setCheckingUpdates(true);
+                  try {
+                    if (isSkillTab) {
+                      const skill = await invokeCommand<SkillUpdateStatus[]>("skillhub_check_updates").catch(() => null);
+                      setSkillUpdates(skill);
+                    } else {
+                      const ext = await invokeCommand<ExtensionUpdateStatus[]>("extension_check_updates").catch(() => null);
+                      setExtUpdates(ext);
+                    }
+                  } finally {
+                    setCheckingUpdates(false);
                   }
-                } catch { /* 完成刷新失败静默 */ }
-              })();
-            }}
-          >
-            {batchUpdates.extensionRunning || batchUpdates.skillRunning ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Download className="h-3.5 w-3.5" />
+                })()
+              }
+            >
+              {checkingUpdates ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              <span className="ml-1">{tr("market.checkUpdates", "检查更新")}</span>
+            </Button>
+            {showUpdateAll && (
+              <Button
+                size="sm"
+                className="h-7 px-2.5 text-xs"
+                disabled={batchRunning}
+                onClick={() => {
+                  if (isSkillTab) startSkillUpdateAll();
+                  else startExtensionUpdateAll();
+                  // 批量完成后刷新本页数据（全局 store 离开不打断）。
+                  void (async () => {
+                    while (updatesPending()) await new Promise((r) => setTimeout(r, 800));
+                    try {
+                      if (isSkillTab) {
+                        const [skillsLatest, ledger] = await Promise.all([
+                          invokeCommand<SkillUpdateStatus[]>("skillhub_check_updates").catch(() => null),
+                          invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>),
+                        ]);
+                        if (skillsLatest) setSkillUpdates(skillsLatest);
+                        setSkillLedger(ledger ?? {});
+                      } else {
+                        const [sources, latest] = await Promise.all([
+                          invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
+                          invokeCommand<ExtensionUpdateStatus[]>("extension_check_updates").catch(() => null),
+                        ]);
+                        setExtInstalled(sources ?? []);
+                        if (latest) setExtUpdates(latest);
+                      }
+                      await refresh();
+                      // 批量失败项如实呈现（评审修复轮关切：failed 不能无前端消费）。
+                      const failures = marketUpdateFailures();
+                      if (failures.length > 0) {
+                        void alertDialog({
+                          title: tr("env.updateFailed", "更新失败"),
+                          description: tr("market.updateFailedItems", "以下项更新失败：{{names}}").replace(
+                            "{{names}}",
+                            failures.join("、"),
+                          ),
+                        });
+                      }
+                    } catch { /* 完成刷新失败静默 */ }
+                  })();
+                }}
+              >
+                {batchRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                <span className="ml-1">
+                  {batchRunning
+                    ? tr("market.updatingProgress", "更新中 {{d}}/{{n}}")
+                        .replace("{{d}}", String(isSkillTab ? batchUpdates.skillDone : batchUpdates.extensionDone))
+                        .replace("{{n}}", String(isSkillTab ? batchUpdates.skillTotal : batchUpdates.extensionTotal))
+                    : tr("market.updateAll", "全部更新")}
+                </span>
+              </Button>
             )}
-            <span className="ml-1">
-              {batchUpdates.extensionRunning || batchUpdates.skillRunning
-                ? tr("market.updatingProgress", "更新中 {{d}}/{{n}}")
-                    .replace("{{d}}", String(batchUpdates.extensionDone + batchUpdates.skillDone))
-                    .replace("{{n}}", String(batchUpdates.extensionTotal + batchUpdates.skillTotal))
-                : tr("market.updateAll", "全部更新")}
-            </span>
-          </Button>
-        )}
-      </div>
+          </div>
+        );
+      })()}
 
       {/* v0.9.3 需求11：分类横向 tab（胶囊形态）——业务 tab（Y 轴：在哪用）
           × 实现筛选（X 轴：怎么造）双视角（批次2）+ 需求14 搜索框（G8）。 */}
@@ -1398,10 +1470,11 @@ export function PluginsPage({
             className="h-7 w-52 rounded-md border border-border/60 bg-background pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50"
           />
         </div>
-        {/* 批次2：实现维度筛选 chips（X 轴：怎么造的/能不能改；🔒内置只读）。 */}
+        {/* 实现方式筛选 chips——与实现徽章三值对应（配置实现/代码实现/
+            混合实现；内置件身份维度表达，不在此筛）。 */}
         <div className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
           <span className="mr-0.5">{tr("plugins.implFilterLabel", "实现")}</span>
-          {(["all", "config", "code", "builtin", "combo"] as const).map((k) => (
+          {(["all", "config", "code", "combo"] as const).map((k) => (
             <button
               key={k}
               type="button"

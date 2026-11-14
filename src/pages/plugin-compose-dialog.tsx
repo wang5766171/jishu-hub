@@ -83,7 +83,16 @@ export function PluginComposeDialog({
   const renderer = renderers.find((r) => r.key === component);
   const exportFormatsAvailable = renderer?.capabilities?.exportFormats ?? [];
 
-  const id = useMemo(() => `session.${slugify(name, "custom")}`, [name]);
+  /** 挂载位 → 插件形态（v0.9.7 需求3 标签三类·形态；写入 [plugin].form）。 */
+const FORM_OF_MOUNT: Record<string, string> = {
+  "block-renderer": "session",
+  "sidebar-panel": "sidebar",
+  "dock-panel": "sidebar",
+  "rail-widget": "floating",
+  "composer-trailing": "floating",
+};
+
+const id = useMemo(() => `session.${slugify(name, "custom")}`, [name]);
 
   if (!open) return null;
 
@@ -96,6 +105,8 @@ export function PluginComposeDialog({
     lines.push(`name = ${tomlStr(name.trim() || "自定义插件")}`);
     if (description.trim()) lines.push(`description = ${tomlStr(description.trim())}`);
     lines.push('kind = "session-composed"');
+    // v0.9.7 需求3 标签裁决：形态显式声明（挂载位 → session/sidebar/floating）。
+    lines.push(`form = ${tomlStr(FORM_OF_MOUNT[mount] ?? "none")}`);
     lines.push("");
     lines.push("[source]");
     lines.push(`type = ${tomlStr(sourceType)}`);

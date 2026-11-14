@@ -254,7 +254,16 @@ pub struct InfoSection {
     /// 字段（deny_unknown_fields 下照抄装不上），补位使模板合法且卡片有说明。
     #[serde(default)]
     pub description: Option<String>,
+    /// v0.9.7 需求3（2026-11-14 标签裁决）：**插件形态显式声明**——创建时
+    /// 智能体显式写明「创建到哪个位置」（用户裁决：需要增加字段）。枚举
+    /// 见 PLUGIN_FORM_VALUES；未声明由前端按挂载位推导兜底。
+    #[serde(default)]
+    pub form: Option<String>,
 }
+
+/// 插件形态枚举（标签三类体系的第三类）：会话/侧边栏/悬浮窗/无 UI 呈现
+///（无挂载位的 MCP/Skill/CLI 等统一标注）。
+pub const PLUGIN_FORM_VALUES: &[&str] = &["session", "sidebar", "floating", "none"];
 
 /// 分类枚举合法值（与前端 PLUGIN_CATEGORIES 一致；fail loud 防拼错静默落错 tab）。
 /// 需求14 M2：appearance = 外观（主题插件，03 §2 场景 10 新增分类）。
@@ -400,6 +409,15 @@ impl AgentManifestFile {
                 return Err(format!(
                     "info.category 无效：{category:?}（合法：{}）",
                     PLUGIN_CATEGORY_VALUES.join("/")
+                ));
+            }
+        }
+        // v0.9.7 需求3 标签裁决：形态声明枚举校验（同 category fail loud 口径）。
+        if let Some(form) = &self.info.form {
+            if !PLUGIN_FORM_VALUES.contains(&form.as_str()) {
+                return Err(format!(
+                    "info.form 无效：{form:?}（合法：{}）",
+                    PLUGIN_FORM_VALUES.join("/")
                 ));
             }
         }
@@ -719,6 +737,7 @@ mod tests {
                 install_hint: None,
                 category: None,
                 description: None,
+                form: None,
             },
             probe: None,
             transport: Some(TransportSection {
@@ -744,6 +763,19 @@ mod tests {
     #[test]
     fn valid_manifest_passes() {
         assert!(base_manifest().validate().is_ok());
+    }
+
+    /// v0.9.7 需求3 标签裁决：[info].form 形态枚举校验（拼错 fail loud，
+    /// 与 category 同口径）。
+    #[test]
+    fn form_field_enum_validation() {
+        let mut m = base_manifest();
+        m.info.form = Some("sidebar".to_string());
+        assert!(m.validate().is_ok());
+        m.info.form = Some("无 UI 呈现".to_string());
+        assert!(m.validate().is_err(), "中文值应拒绝（枚举为英文键）");
+        m.info.form = Some("panel".to_string());
+        assert!(m.validate().is_err(), "拼错/超集值应拒绝");
     }
 
     /// 目录形式 skill 骨架（v0.9.4 需求3 落盘产物：剥离 [skill] 段后无任何

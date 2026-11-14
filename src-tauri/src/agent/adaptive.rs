@@ -97,6 +97,7 @@ mod tests {
                 install_hint: None,
                 category: None,
                 description: None,
+                form: None,
             },
             probe: None,
             transport: None,

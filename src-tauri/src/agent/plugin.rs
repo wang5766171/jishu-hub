@@ -106,6 +106,9 @@ pub struct PluginDescriptor {
     /// / 组合家族 [plugin].category）。None = 未声明，前端按推断链兜底；
     /// 显式声明优先于一切推断（CORE_ENGINE 前端硬编码名单由此退役）。
     pub category: Option<String>,
+    /// v0.9.7 需求3（2026-11-14 标签裁决）：[info].form 形态显式声明
+    ///（session/sidebar/floating/none）。None = 未声明，前端按挂载位推导。
+    pub form: Option<String>,
 }
 
 /// [panel] 声明的 UI 投影（v0.9.0 需求8）。
@@ -476,6 +479,7 @@ pub fn session_plugin_descriptors(disabled: &HashSet<String>) -> Vec<PluginDescr
             composed: false,
             has_pipeline: false,
             category: None,
+            form: None,
         })
         .collect()
 }
@@ -912,6 +916,7 @@ pub fn assemble(
             composed: false,
             has_pipeline: false,
             category: None,
+            form: None,
         });
     }
 
@@ -962,6 +967,7 @@ pub fn assemble(
             composed: false,
             has_pipeline: false,
             category: file.info.category.clone(),
+        form: file.info.form.clone(),
         });
     }
 
@@ -1043,6 +1049,7 @@ pub fn tool_descriptor(plugin: &super::tool_plugin::ToolPlugin) -> PluginDescrip
         composed: false,
         has_pipeline: false,
         category: plugin.file.info.category.clone(),
+        form: plugin.file.info.form.clone(),
     }
 }
 
@@ -1248,6 +1255,7 @@ mod tests {
                 icon: String::new(),
                 install_hint: None,
                 category: None,
+            form: None,
                 description: None,
             },
             probe: None,

@@ -682,6 +682,9 @@ pub fn composed_session_plugin_specs(disabled: &HashSet<String>) -> Vec<PluginDe
                 has_pipeline: manifest.get("pipeline").is_some(),
                 // 需求14 M4（G10 分类显式化）：显式声明优先于前端推断链。
                 category: get_str("category"),
+                // v0.9.7 需求3：组合家族 [plugin].form 形态声明（与 A 家族
+                // [info].form 同语义；未声明前端按挂载位推导）。
+                form: get_str("form"),
             }
         })
         .collect()

@@ -40,6 +40,9 @@ description: 创建/安装 Jishu Hub 插件前必读——用户想改变客户�
 
 所有会话侧插件的 id **必须以 `session.` 开头**。智能体侧（agents/）无此限制。
 
+**插件形态显式声明（v0.9.7）**：`[info]` 段写 `form` 字段，明确插件创建到哪个位置——
+`"session"`（会话内渲染）/ `"sidebar"`（侧边栏面板）/ `"floating"`（悬浮窗挂件）/ `"none"`（无 UI 呈现：CLI/MCP/Skill 等纯能力件）。组合式家族写在 `[plugin]` 段同名 `form`。未声明时按挂载位推导，但**创建时应显式写明**。
+
 ### 模板 1：CLI 工具（智能体侧，agents/<id>.toml）
 
 ```toml
@@ -51,6 +54,7 @@ name = "二维码生成"
 description = "把文本/URL 生成二维码 PNG。用户要求生成二维码时使用。"
 kind = "tool"
 icon = "qr"
+form = "none"
 
 [tool]
 usage = "qrencode -o {{output}} -s 10 {{text}}"
