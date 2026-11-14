@@ -391,6 +391,20 @@ export function PluginsPage({
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updateBusy, setUpdateBusy] = useState<string | null>(null);
   const batchUpdates = useMarketUpdates();
+  /** 单卡检查更新结果并入全局更新状态（十二轮裁决：全部检查与单独检查
+   * 联动——单查结果即时反映到版本箭头/全部更新按钮可见性）。 */
+  const mergeExtUpdate = (status: ExtensionUpdateStatus) =>
+    setExtUpdates((prev) =>
+      prev?.some((u) => u.package === status.package)
+        ? prev.map((u) => (u.package === status.package ? status : u))
+        : [...(prev ?? []), status],
+    );
+  const mergeSkillUpdate = (status: SkillUpdateStatus) =>
+    setSkillUpdates((prev) =>
+      prev?.some((u) => u.slug === status.slug)
+        ? prev.map((u) => (u.slug === status.slug ? status : u))
+        : [...(prev ?? []), status],
+    );
   const [extDetailMeta, setExtDetailMeta] = useState<{
     name: string; description: string; detail_url: string | null; category: string;
   } | null>(null);
@@ -866,37 +880,74 @@ export function PluginsPage({
                 </Button>
               )}
               <span className="flex-1" />
-              {/* v0.9.7 需求3：市场技能在线更新（检出新版时出现）。 */}
+              {/* v0.9.7 需求3 十三轮：市场技能单卡检查更新（恢复——市场已装
+                  子页并入统一页时丢失）+检出新版时的更新按钮；与全部检查联动
+                  （全局检查每卡转圈，单查结果并入全局更新状态）。 */}
               {(() => {
+                if (!skillLedger[plugin.id]) return null;
                 const upd = skillUpdates?.find((u) => u.slug === plugin.id);
-                if (!skillLedger[plugin.id] || !upd?.has_update) return null;
                 const busyCard = updateBusy === plugin.id || batchUpdates.skillRunning;
                 return (
-                  <Button
-                    size="sm"
-                    className="h-6 px-2 text-[10px]"
-                    disabled={busyCard}
-                    onClick={() =>
-                      void (async () => {
-                        setUpdateBusy(plugin.id);
-                        try {
-                          await invokeCommand("skillhub_update", { slugs: [plugin.id] });
-                          const latest = await invokeCommand<
-                            SkillUpdateStatus[]
-                          >("skillhub_check_updates").catch(() => null);
-                          if (latest) setSkillUpdates(latest);
-                          await refresh();
-                        } catch (e) {
-                          console.warn("skillhub_update failed:", e);
-                        } finally {
-                          setUpdateBusy(null);
+                  <>
+                    {upd?.has_update && (
+                      <Button
+                        size="sm"
+                        className="h-6 px-2 text-[10px]"
+                        disabled={busyCard}
+                        onClick={() =>
+                          void (async () => {
+                            setUpdateBusy(plugin.id);
+                            try {
+                              await invokeCommand("skillhub_update", { slugs: [plugin.id] });
+                              const status = await invokeCommand<SkillUpdateStatus>(
+                                "skillhub_check_update",
+                                { slug: plugin.id },
+                              );
+                              mergeSkillUpdate(status);
+                              await refresh();
+                            } catch (e) {
+                              console.warn("skillhub_update failed:", e);
+                              void alertDialog({ title: tr("plugins.actionFailed", "操作失败"), description: String(e) });
+                            } finally {
+                              setUpdateBusy(null);
+                            }
+                          })()
                         }
-                      })()
-                    }
-                  >
-                    {busyCard ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
-                    <span className="ml-0.5">{tr("market.updateOne", "更新")} v{upd.latest}</span>
-                  </Button>
+                      >
+                        {busyCard ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                        <span className="ml-0.5">{tr("market.updateOne", "更新")} v{upd.latest}</span>
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-[10px]"
+                      disabled={busyCard || checkingUpdates}
+                      onClick={() =>
+                        void (async () => {
+                          setUpdateBusy(plugin.id);
+                          try {
+                            const status = await invokeCommand<SkillUpdateStatus>("skillhub_check_update", {
+                              slug: plugin.id,
+                            });
+                            mergeSkillUpdate(status);
+                          } catch (e) {
+                            console.warn("skillhub_check_update failed:", e);
+                            void alertDialog({ title: tr("plugins.actionFailed", "操作失败"), description: String(e) });
+                          } finally {
+                            setUpdateBusy(null);
+                          }
+                        })()
+                      }
+                    >
+                      {busyCard || checkingUpdates ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-3 w-3" />
+                      )}
+                      <span className="ml-0.5">{tr("market.checkUpdate", "检查更新")}</span>
+                    </Button>
+                  </>
                 );
               })()}
               <Button
@@ -1014,18 +1065,14 @@ export function PluginsPage({
       const busyCard = updateBusy === pkg || batchUpdates.extensionRunning;
       // 还原生效条件：内置件且当前版本偏离钉版快照（更新过/缺失版本）。
       const canRestore = !!pin && ver !== pin.version;
-      const runPkg = (action: () => Promise<unknown>) => void (async () => {
+      const runPkg = (action: () => Promise<unknown>, refreshSources = true) => void (async () => {
         setUpdateBusy(pkg);
         try {
           await action();
-          const [sources, latest] = await Promise.all([
-            invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
-            invokeCommand<ExtensionUpdateStatus[]>(
-              "extension_check_updates",
-            ).catch(() => null),
-          ]);
-          setExtInstalled(sources ?? []);
-          if (latest) setExtUpdates(latest);
+          if (refreshSources) {
+            const sources = await invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]);
+            setExtInstalled(sources ?? []);
+          }
         } catch (e) {
           console.warn("ext action failed:", e);
           void alertDialog({ title: tr("plugins.actionFailed", "操作失败"), description: String(e) });
@@ -1033,6 +1080,12 @@ export function PluginsPage({
           setUpdateBusy(null);
         }
       })();
+      // 单卡检查：结果并入全局更新状态（与全部检查联动）。
+      const checkOne = () =>
+        runPkg(
+          () => invokeCommand<ExtensionUpdateStatus>("extension_check_update", { package: pkg }).then(mergeExtUpdate),
+          false,
+        );
       return (
         <div key={src} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
           <div className="flex items-center gap-2">
@@ -1097,18 +1150,18 @@ export function PluginsPage({
                 <span className="ml-0.5">{tr("market.updateOne", "更新")}</span>
               </Button>
             )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-[10px]"
+              disabled={busyCard || checkingUpdates}
+              onClick={checkOne}
+            >
+              {busyCard || checkingUpdates ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              <span className="ml-0.5">{tr("market.checkUpdate", "检查更新")}</span>
+            </Button>
             {!pin && (
               <>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 px-2 text-[10px]"
-                  disabled={busyCard || checkingUpdates}
-                  onClick={() => runPkg(() => invokeCommand("extension_check_update", { package: pkg }))}
-                >
-                  {busyCard || checkingUpdates ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                  <span className="ml-0.5">{tr("market.checkUpdate", "检查更新")}</span>
-                </Button>
                 <Button
                   variant="ghost"
                   size="icon"
