@@ -28,7 +28,9 @@
     "daysAgo": "{{count}} days ago"
   },
   "nav": {
-    "config": "Manage"
+    "config": "Manage",
+    "appearance": "Appearance",
+    "appearanceSettings": "Appearance settings"
   },
   "titlebar": {
     "closeProject": "Close current project",
@@ -53,6 +55,7 @@
     "menuCommands": "Quick Commands",
     "menuEnv": "Environment Check",
     "menuOnboarding": "Setup Guide",
+    "menuAppearance": "Appearance",
     "menuBackups": "Config Backups",
     "pageDescBackups": "Restore configuration snapshots, or import/export configs",
     "onboardingTitle": "Setup Guide",
@@ -267,6 +270,9 @@
       "chat": "Chat mode",
       "task": "Task mode"
     },
+    "taskNoAsk": "No questions",
+    "taskNoAskOn": "No-questions is on: in this task session the agent won't ask and will act on recommendations (click to turn off)",
+    "taskNoAskOff": "Turn on no-questions for this task session: the agent won't ask and will act on recommendations (normal chats are unaffected)",
     "newSession": "New chat",
     "refresh": "Refresh list",
     "refreshDisabledWhileStreaming": "Cannot refresh while the agent is streaming — wait for the turn to finish",
@@ -363,6 +369,10 @@
     "renderSourceBuiltin": "Builtin render",
     "activeModel": "Pick model",
     "imageOnlyBubble": "📎 Attachment sent",
+    "imageOnlyEditPlaceholder": "(image message)",
+    "toolPillRemove": "Remove this tool call (won't be included on resend)",
+    "taskUnreadFailed": "Unread failed result",
+    "taskUnreadDone": "Unread completed result",
     "scrollToBottom": "Scroll to bottom",
     "stagingDrag": "Drag to reorder"
   },
@@ -1712,9 +1722,9 @@
     "nextPage": "Next",
     "pageInfo": "Page {{page}} / {{pages}} · {{total}} items",
     "pageSize": "Per page",
-    "onlineLib": "Online extensions (pi ecosystem)",
+    "onlineLib": "Online extensions",
     "onlineSearch": "Search extensions…",
-    "onlineEmpty": "No matching pi extensions",
+    "onlineEmpty": "No matching extensions",
     "onlineLibPiindex": "Online Extensions (Pi Index)",
     "checkUpdates": "Check updates",
     "updateAll": "Update all",
@@ -1732,7 +1742,10 @@
     "updateOne": "Update",
     "viewSource": "View source",
     "updatingShort": "Updating",
-    "updatingProgress": "Updating {{d}}/{{n}}"
+    "updatingProgress": "Updating {{d}}/{{n}}",
+    "githubStars": "GitHub stars",
+    "npmWeeklyDownloads": "npm weekly downloads",
+    "perWeek": "/wk"
   },
   "onboarding": {
     "initTitle": "Preparing your agent",
@@ -1782,6 +1795,12 @@
   },
   "taskSteps": {
     "title": "Task steps",
-    "awaitingAnswer": "Waiting for your decision"
+    "awaitingAnswer": "Waiting for your decision",
+    "status": {
+      "running": "Running",
+      "done": "Done",
+      "failed": "Failed",
+      "todo": "Pending"
+    }
   }
 }

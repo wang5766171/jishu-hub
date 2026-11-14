@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { Blocks, X } from "lucide-react";
 
@@ -62,6 +63,8 @@ export function EmbeddedToolPills({
    * 移除按钮（删除本次重发不再携带该工具调用；不传=静态展示）。 */
   onRemove?: (id: string) => void;
 }) {
+  // 评审 P1-11 修复：移除钮 title 直出中文改 t()（hook 须在提前 return 之前）。
+  const { t } = useTranslation();
   if (toolIds.length === 0) return null;
   return (
     <span className="mr-1 inline-flex flex-wrap items-center gap-1 align-baseline">
@@ -78,7 +81,7 @@ export function EmbeddedToolPills({
               type="button"
               onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRemove(id); }}
               className="-mr-0.5 ml-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm text-muted-foreground/70 hover:bg-destructive/15 hover:text-destructive"
-              title="删除此工具调用（重发不再携带）"
+              title={t("sessions.toolPillRemove", "删除此工具调用（重发不再携带）")}
             >
               <X className="h-2.5 w-2.5" />
             </button>

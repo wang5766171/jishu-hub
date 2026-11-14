@@ -61,6 +61,24 @@ export function repairEatenSeparator(path: string): string {
   return path;
 }
 
+/** 评审 P2-8 修复：后端错误串机器标记分流——错误正文中文不变，前缀带机器
+ * 标记 `[not_found]`/`[out_of_scope]`/`[too_large]`/`[unsupported]`。优先
+ * 匹配前缀标记，无标记回退现有中文子串匹配（向后兼容旧后端/旧错误串）。 */
+export type ArtifactErrorKind = "not_found" | "out_of_scope" | "too_large" | "unsupported";
+
+export function artifactErrorKind(err: string): ArtifactErrorKind | null {
+  if (err.startsWith("[not_found]")) return "not_found";
+  if (err.startsWith("[out_of_scope]")) return "out_of_scope";
+  if (err.startsWith("[too_large]")) return "too_large";
+  if (err.startsWith("[unsupported]")) return "unsupported";
+  // 无标记回退：中文子串（旧后端兼容）。
+  if (err.includes("文件不存在")) return "not_found";
+  if (err.includes("超出项目范围")) return "out_of_scope";
+  if (err.includes("文件过大")) return "too_large";
+  if (err.includes("不支持")) return "unsupported";
+  return null;
+}
+
 /** 共享处理器：校验（validate_preview_file）通过才发 file-preview-request。
  * 需求9 #2：①坏链修复启发式（repairEatenSeparator）；② projectPath 缺失
  *（refresh 掉线/恢复窗口瞬态）回落默认工作空间根——默认空间会话的引用
@@ -97,7 +115,8 @@ export async function openArtifactReference(
     // 引用却按项目相对 `tasks/…` 写（少一段 .jishu-hub——runner 纪律示例
     // 即此形态）。首次校验「文件不存在」时补 `.jishu-hub/` 段再试（校验
     // 基准本就含产物区，sessions.rs in_bounds 两基准）。
-    if (!String(e).includes("文件不存在")) {
+    // 评审 P2-8：判定走前缀标记优先、中文子串回退（artifactErrorKind）。
+    if (artifactErrorKind(String(e)) !== "not_found") {
       return { ok: false, error: String(e) };
     }
     const sep = projectPath.includes("\\") ? "\\" : "/";
@@ -162,12 +181,17 @@ export function ArtifactLink({ href, children, className, ...rest }: ArtifactLin
     if (!result.ok) {
       // 项目无 toast 库：链接旁短暂标红提示（3s 自愈），面板保持不动。
       // 需求9 #2：按后端错误区分提示（原单一文案把「文件不存在」也说成
-      // 「超出项目范围」，误导排查）。
+      // 「超出项目范围」，误导排查）。评审 P2-8：优先匹配机器标记前缀，
+      // 无标记回退中文子串（向后兼容）。
       const err = result.error ?? "";
+      const kind =
+        err === "no-project" || err === "empty"
+          ? "not_found"
+          : artifactErrorKind(err);
       setFailedMsg(
-        err.includes("文件不存在") || err === "no-project" || err === "empty"
+        kind === "not_found"
           ? t("sessions.artifactLinkNotFound", "文件不存在或已被移动")
-          : err.includes("超出项目范围")
+          : kind === "out_of_scope"
             ? t("sessions.artifactLinkFailed")
             : t("sessions.artifactLinkTooLarge", "文件过大或无法预览"),
       );

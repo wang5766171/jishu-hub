@@ -533,7 +533,11 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
   const [editWidth, setEditWidth] = useState<number | null>(null);
   // 收版反馈：编辑态工具可删可留（重发只带保留的工具调用）。
   const [draftToolIds, setDraftToolIds] = useState<string[]>([]);
-  const display = stripImagePrompt(text) || (text.includes("JISHU_HUB_IMAGES") ? t("sessions.imageOnlyBubble", "📎 发送了附件") : text);
+  const stripped = stripImagePrompt(text);
+  const display = stripped || (text.includes("JISHU_HUB_IMAGES") ? t("sessions.imageOnlyBubble", "📎 发送了附件") : text);
+  // 评审 P2-9 修复：纯附件消息（剥图片标记后为空）编辑时置空草稿+占位
+  // 文案（原回填整段 JISHU_HUB_IMAGES 标记原文）；不禁用编辑（文本可补充）。
+  const imageOnlyEdit = !stripped && text.includes("JISHU_HUB_IMAGES");
   return (
     <div className="w-full flex justify-end" data-user-message="true">
       <div className="max-w-[88%] min-w-0 flex flex-col items-end">
@@ -566,6 +570,7 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 rows={Math.min(10, Math.max(2, draft.split("\n").length + 1))}
+                placeholder={imageOnlyEdit ? t("sessions.imageOnlyEditPlaceholder", "（图片消息）") : undefined}
                 className="w-full resize-none rounded-md bg-transparent px-1 py-0.5 font-[inherit] text-[inherit] leading-normal outline-none focus:ring-1 focus:ring-primary/60"
               />
               <div className="flex justify-end gap-1.5">
@@ -600,7 +605,9 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
             onClick={(e) => {
               e.stopPropagation();
               if (bubbleRef.current) setEditWidth(bubbleRef.current.offsetWidth);
-              setDraft(stripImagePrompt(text) || text);
+              // 评审 P2-9 修复：剥图片标记后的文本进草稿（纯附件消息为空串
+              // +占位文案），不再回填标记原文。
+              setDraft(stripped);
               setDraftToolIds(toolIds);
               setEditing(true);
             }}

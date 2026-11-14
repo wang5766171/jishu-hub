@@ -7,6 +7,12 @@
  *   来源/版本/发布者认证/是否需要密钥；装后各智能体立即可用）。
  * - 已装判定：精选/扩展 = plugin_list 交集；技能 = skillhub_installed 台账。
  * - 文案不暴露内部引擎代号（§7）：三源页签名为 精选/扩展生态/技能市场。
+ *
+ * 评审 P2-12 处置说明（不拆分）：已安装+批量更新分区与四源页签共享状态机
+ * 11 处（extUpdates/skillUpdates/extCardUpdate/skillCardUpdate/cardBusy/
+ * checkingUpdates/batchUpdates/onlineInstalled/skillInstalled/piindex/
+ * actionError）+ load/onChanged 回调——拆出需整包 props 转移，耦合>收益，
+ * 随 chat-page 拆分方向后续处理。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -71,22 +77,23 @@ interface PiOnlinePackage {
 }
 
 /** 需求3 补充（2026-11-13）：Pi Index 在线目录条目（piindex.dev——
- * awesome-pi 清单）与更新状态形态。 */
+ * awesome-pi 清单）与更新状态形态。评审 #13 修复：字段名与后端 serde
+ * snake_case 冻结形态对齐（跨端统一，camelCase 曾致整卡 undefined）。 */
 interface PiindexEntry {
   name: string;
   description: string;
-  npmPackage: string | null;
-  githubUrl: string | null;
+  npm_package: string | null;
+  github_url: string | null;
   /** 完整安装命令原文（npm:/git: 源卡都有；安装按钮取命令尾段作源）。 */
-  installCommand: string;
+  install_command: string;
   category: string;
-  kindLabel: string;
-  detailUrl: string | null;
+  kind_label: string;
+  detail_url: string | null;
   stars: number | null;
-  weeklyDownloads: number | null;
+  weekly_downloads: number | null;
   /** 周下载量涨跌（「▼30%」/「▲1%」；部分卡缺）。 */
-  downloadTrend: string | null;
-  searchText: string;
+  download_trend: string | null;
+  search_text: string;
 }
 
 interface ExtensionUpdateStatus {
@@ -106,12 +113,12 @@ interface SkillUpdateStatus {
 /** 已装源串与 piindex 条目匹配（npm 源按包名前缀；git 源归一 https
  * 前缀后比对安装命令尾段）——已装卡说明/查看来源的元数据来源。 */
 function installedSourceMatchesPiindex(src: string, entry: PiindexEntry): boolean {
-  if (entry.npmPackage) {
-    const prefix = "npm:" + entry.npmPackage;
+  if (entry.npm_package) {
+    const prefix = "npm:" + entry.npm_package;
     if (src === prefix || src.startsWith(prefix + "@")) return true;
   }
-  if (entry.installCommand.startsWith("pi install git:")) {
-    const cmdSource = entry.installCommand.replace(/^pi install /, "");
+  if (entry.install_command.startsWith("pi install git:")) {
+    const cmdSource = entry.install_command.replace(/^pi install /, "");
     const norm = (s: string) => s.replace(/^git:https?:\/\//, "git:");
     return norm(src) === norm(cmdSource);
   }
@@ -119,6 +126,10 @@ function installedSourceMatchesPiindex(src: string, entry: PiindexEntry): boolea
 }
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100];
+
+/** 评审 P1-13 修复②：load 世代号（模块级递增）——await 返回后 runId 不匹配
+ * 即丢弃 setState，防 keyword/onlineKw 快慢响应交错覆盖新结果。 */
+let marketLoadRunId = 0;
 
 /** 计数缩写（对齐 piindex 呈现）：≥1万保留 1 位小数以万计，不足显示整数。 */
 function formatCount(n: number): string {
@@ -223,6 +234,19 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
+  // 评审 P1-13 修复①：搜索关键词 300ms 防抖（局部 state + 定时器，卸载清理
+  // 由 effect 返回）——不再每击键立即触发 load 发 IPC。
+  const [debouncedKeyword, setDebouncedKeyword] = useState(keyword);
+  const [debouncedOnlineKw, setDebouncedOnlineKw] = useState(onlineKw);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedKeyword(keyword), 300);
+    return () => clearTimeout(timer);
+  }, [keyword]);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedOnlineKw(onlineKw), 300);
+    return () => clearTimeout(timer);
+  }, [onlineKw]);
+
   const refreshInstalled = useCallback(async () => {
     try {
       const result = await invokeCommand<{ plugins: Array<{ id: string; enabled: boolean }> }>("plugin_list");
@@ -258,6 +282,8 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
   );
 
   const load = useCallback(async () => {
+    // 评审 P1-13 修复②：仅最新一次 load 允许落地 setState。
+    const runId = ++marketLoadRunId;
     setLoading(true);
     setError(null);
     try {
@@ -266,31 +292,39 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
       const curatedEntries = await invokeCommand<MarketEntry[]>("market_list_curated", {
         scene: source === "curated" ? sceneArg : null,
       });
+      if (runId !== marketLoadRunId) return;
       setCurated(curatedEntries ?? []);
       if (source !== "skills") {
         await refreshInstalled();
+        if (runId !== marketLoadRunId) return;
       }
       if (source === "extensions") {
         const entries = await invokeCommand<PiPackageEntry[]>("pi_package_catalog");
+        if (runId !== marketLoadRunId) return;
         setExtensions(entries ?? []);
         // 需求3 补充：在线库主源换 Pi Index（piindex.dev/awesome-pi 清单），
         // npm pi-package 检索为兜底（piindex 不可达时回落）。
         const sources = await invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]);
+        if (runId !== marketLoadRunId) return;
         setOnlineInstalled(sources ?? []);
         try {
           const results = await invokeCommand<PiindexEntry[]>("piindex_search", {
-            keyword: onlineKw.trim() || null,
+            keyword: debouncedOnlineKw.trim() || null,
           });
+          if (runId !== marketLoadRunId) return;
           setPiindex(results ?? []);
           setOnline(null);
         } catch {
+          if (runId !== marketLoadRunId) return;
           setPiindex(null);
           try {
             const results = await invokeCommand<PiOnlinePackage[]>("pi_package_search", {
-              keyword: onlineKw.trim() || null,
+              keyword: debouncedOnlineKw.trim() || null,
             });
+            if (runId !== marketLoadRunId) return;
             setOnline(results ?? []);
           } catch (e) {
+            if (runId !== marketLoadRunId) return;
             setError(String(e));
           }
         }
@@ -302,33 +336,38 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
           invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
           invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>),
         ]);
+        if (runId !== marketLoadRunId) return;
         setOnlineInstalled(sources ?? []);
         setSkillInstalled(installedSkills ?? {});
         // 已装卡说明/查看来源来自 piindex 元数据（缓存廉价；失败不阻塞本页）。
         try {
           const results = await invokeCommand<PiindexEntry[]>("piindex_search", { keyword: null });
+          if (runId !== marketLoadRunId) return;
           setPiindex(results ?? []);
         } catch {
           /* piindex 不可达时已装卡无说明区 */
         }
       } else if (source === "skills") {
-        const kw = keyword.trim() || null;
+        const kw = debouncedKeyword.trim() || null;
         const result = await invokeCommand<SkillhubListResult>("skillhub_list", {
           scene: sceneArg,
           keyword: kw,
           page,
           pageSize: skillPageSize,
         });
+        if (runId !== marketLoadRunId) return;
         setSkills(result);
         const installed = await invokeCommand<Record<string, string>>("skillhub_installed");
+        if (runId !== marketLoadRunId) return;
         setSkillInstalled(installed ?? {});
       }
     } catch (e) {
+      if (runId !== marketLoadRunId) return;
       setError(String(e));
     } finally {
-      setLoading(false);
+      if (runId === marketLoadRunId) setLoading(false);
     }
-  }, [source, scene, keyword, page, onlineKw, skillPageSize, refreshInstalled]);
+  }, [source, scene, debouncedKeyword, page, debouncedOnlineKw, skillPageSize, refreshInstalled]);
 
   useEffect(() => {
     void load();
@@ -563,6 +602,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                         className="h-6 w-6 text-destructive hover:text-destructive"
                         disabled={busyId === entry.id}
                         aria-label={t("market.uninstall", "卸载")}
+                        title={t("market.uninstall", "卸载")}
                         onClick={() => void act(entry.id, "uninstall")}
                       >
                         {busyId === entry.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
@@ -626,6 +666,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                         className="h-6 w-6 text-destructive hover:text-destructive"
                         disabled={busyId === pkg.plugin_id}
                         aria-label={t("market.uninstall", "卸载")}
+                        title={t("market.uninstall", "卸载")}
                         onClick={() => void act(pkg.plugin_id, "uninstall")}
                       >
                         {busyId === pkg.plugin_id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
@@ -656,7 +697,8 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
             <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
               {piindex
                 ? t("market.onlineLibPiindex", "在线扩展库（Pi Index）")
-                : t("market.onlineLib", "在线扩展库（pi 生态）")}
+                // 评审 P1-12 修复：fallback 与 zh.json 同步去引擎代号（§7）。
+                : t("market.onlineLib", "在线扩展库")}
               <Button
                 variant="ghost"
                 size="sm"
@@ -722,9 +764,9 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
               <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
                 {pagedPiindex.map((entry) => {
                   // 安装源：npm 卡 npm:<pkg>；git 卡取安装命令尾段（git:github.com/…）。
-                  const source = entry.npmPackage
-                    ? "npm:" + entry.npmPackage
-                    : entry.installCommand.replace(/^pi install /, "");
+                  const source = entry.npm_package
+                    ? "npm:" + entry.npm_package
+                    : entry.install_command.replace(/^pi install /, "");
                   const installed =
                     !!source &&
                     onlineInstalled.some((src) =>
@@ -733,8 +775,15 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                         : // git 源 pi 落盘形态可能带 https:// 前缀——归一比对。
                           src === source || src === source.replace("git:github.com/", "git:https://github.com/"),
                     );
+                  // 评审需求16：系统内置判定（pi_package_catalog 且 curated 标记
+                  // required 的 5 包）——内置项不出现卸载钮。
+                  const builtin = installed && extensions.some(
+                    (pkg) =>
+                      curated.find((c) => c.id === pkg.plugin_id)?.required &&
+                      installedSourceMatchesPiindex(pkg.source, entry),
+                  );
                   return (
-                    <div key={entry.name + (entry.githubUrl ?? "")} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
+                    <div key={entry.name + (entry.github_url ?? "")} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
                       <div className="flex items-center gap-2">
                         <Package className="h-4 w-4 shrink-0 text-primary/70" />
                         <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={entry.name}>{entry.name}</span>
@@ -742,17 +791,18 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                       </div>
                       <p className="line-clamp-2 text-[11px] leading-relaxed text-muted-foreground" title={entry.description}>{entry.description || "-"}</p>
                       <div className="mt-auto flex items-center gap-1 pt-1 text-[10px] text-muted-foreground/70">
+                        {/* 评审 P1-11 修复：悬浮提示直出中文改 t()。 */}
                         {entry.stars != null && (
-                          <span className="inline-flex items-center gap-0.5" title="GitHub Star 数">
+                          <span className="inline-flex items-center gap-0.5" title={t("market.githubStars", "GitHub Star 数")}>
                             <Star className="h-3 w-3" />
                             {entry.stars}
                           </span>
                         )}
-                        {entry.weeklyDownloads != null && (
-                          <span className="inline-flex items-center gap-0.5" title="npm 每周下载量">
+                        {entry.weekly_downloads != null && (
+                          <span className="inline-flex items-center gap-0.5" title={t("market.npmWeeklyDownloads", "npm 每周下载量")}>
                             <ArrowDownToLine className="h-3 w-3" />
-                            {formatCount(entry.weeklyDownloads)}/周
-                            {entry.downloadTrend && <span className={trendClass(entry.downloadTrend)}>{entry.downloadTrend}</span>}
+                            {formatCount(entry.weekly_downloads)}{t("market.perWeek", "/周")}
+                            {entry.download_trend && <span className={trendClass(entry.download_trend)}>{entry.download_trend}</span>}
                           </span>
                         )}
                         <span className="flex-1" />
@@ -761,12 +811,47 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                           size="sm"
                           className="h-6 px-1.5 text-[10px] text-muted-foreground"
                           aria-label={t("market.detail", "详情")}
+                          title={t("market.detail", "详情")}
                           onClick={() => setExtDetailEntry(entry)}
                         >
                           <Info className="h-3 w-3" />
                         </Button>
 
-                        {source && installed && <span className="text-muted-foreground">{t("market.installed")}</span>}
+                        {source && installed && (
+                          <>
+                            <span className="text-muted-foreground">{t("market.installed")}</span>
+                            {/* 评审需求16：在线生态卡已装项补卸载（系统内置除外
+                                ——source 构造与安装同源 npm:/git:）。 */}
+                            {!builtin && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 text-destructive hover:text-destructive"
+                                disabled={busyId === source}
+                                aria-label={t("market.uninstall", "卸载")}
+                                title={t("market.uninstall", "卸载")}
+                                onClick={() =>
+                                  void (async () => {
+                                    setActionError(null);
+                                    setBusyId(source);
+                                    try {
+                                      await invokeCommand<string>("pi_package_uninstall_online", { source });
+                                      await load();
+                                      await refreshInstalled();
+                                      onChanged?.();
+                                    } catch (e) {
+                                      setActionError(String(e));
+                                    } finally {
+                                      setBusyId(null);
+                                    }
+                                  })()
+                                }
+                              >
+                                {busyId === source ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                              </Button>
+                            )}
+                          </>
+                        )}
                         {source && !installed && (
                           <Button
                             size="sm"
@@ -800,7 +885,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                 })}
                 {extTotal === 0 && (
                   <p className="col-span-full py-6 text-center text-xs text-muted-foreground">
-                    {t("market.onlineEmpty", "没有匹配的 pi 扩展包")}
+                    {t("market.onlineEmpty", "没有匹配的扩展包")}
                   </p>
                 )}
               </div>
@@ -851,6 +936,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                           className="h-6 w-6 text-destructive hover:text-destructive"
                           disabled={busyId === pkg.name}
                           aria-label={t("market.uninstall", "卸载")}
+                          title={t("market.uninstall", "卸载")}
                           onClick={() =>
                             void (async () => {
                               setActionError(null);
@@ -901,7 +987,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
             })}
             {online.length === 0 && (
               <p className="col-span-full py-6 text-center text-xs text-muted-foreground">
-                {t("market.onlineEmpty", "没有匹配的 pi 扩展包")}
+                {t("market.onlineEmpty", "没有匹配的扩展包")}
               </p>
             )}
           </div>
@@ -1079,6 +1165,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                             size="sm"
                             className="h-6 px-1.5 text-[10px] text-muted-foreground"
                             aria-label={t("market.detail", "详情")}
+                            title={t("market.detail", "详情")}
                             onClick={() => setExtDetailEntry(pi)}
                           >
                             <Info className="h-3 w-3" />
@@ -1225,6 +1312,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                       className="h-6 px-1.5 text-[10px] text-muted-foreground"
                       onClick={() => void openSkillDetail(skill.slug)}
                       aria-label={t("market.detail", "详情")}
+                      title={t("market.detail", "详情")}
                     >
                       <Info className="h-3 w-3" />
                     </Button>
@@ -1239,6 +1327,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                           className="h-6 w-6 text-destructive hover:text-destructive"
                           disabled={busyId === skill.slug}
                           aria-label={t("market.uninstall", "卸载")}
+                          title={t("market.uninstall", "卸载")}
                           onClick={() => void uninstallSkill(skill.slug)}
                         >
                           {busyId === skill.slug ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
@@ -1290,8 +1379,8 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
               <div className="space-y-3 text-sm">
                 <p className="leading-relaxed text-muted-foreground">{extDetailEntry.description || "-"}</p>
                 <div className="flex flex-wrap gap-1.5 text-[11px]">
-                  {extDetailEntry.kindLabel && (
-                    <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">{extDetailEntry.kindLabel}</span>
+                  {extDetailEntry.kind_label && (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">{extDetailEntry.kind_label}</span>
                   )}
                   {extDetailEntry.category && (
                     <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">{extDetailEntry.category}</span>
@@ -1302,17 +1391,17 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                       {extDetailEntry.stars}
                     </span>
                   )}
-                  {extDetailEntry.weeklyDownloads != null && (
+                  {extDetailEntry.weekly_downloads != null && (
                     <span className="inline-flex items-center gap-0.5 rounded bg-muted px-1.5 py-0.5">
                       <ArrowDownToLine className="h-3 w-3" />
-                      {formatCount(extDetailEntry.weeklyDownloads)}/周
-                      {extDetailEntry.downloadTrend && (
-                        <span className={trendClass(extDetailEntry.downloadTrend)}>{extDetailEntry.downloadTrend}</span>
+                      {formatCount(extDetailEntry.weekly_downloads)}{t("market.perWeek", "/周")}
+                      {extDetailEntry.download_trend && (
+                        <span className={trendClass(extDetailEntry.download_trend)}>{extDetailEntry.download_trend}</span>
                       )}
                     </span>
                   )}
                 </div>
-                {(extDetailEntry.detailUrl || extDetailEntry.githubUrl) && (
+                {(extDetailEntry.detail_url || extDetailEntry.github_url) && (
                   <Button
                     variant="outline"
                     size="sm"
@@ -1320,7 +1409,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                     onClick={() =>
                       void invokeCommand("open_url", {
                         // 查看来源优先 piindex（详情页/站内检索），目录缺卡才落 GitHub。
-                        url: extDetailEntry.detailUrl ?? extDetailEntry.githubUrl,
+                        url: extDetailEntry.detail_url ?? extDetailEntry.github_url,
                       })
                     }
                   >

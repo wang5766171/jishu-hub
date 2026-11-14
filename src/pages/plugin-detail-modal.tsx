@@ -34,6 +34,7 @@ import { cn } from "@/lib/utils";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { CodeEditor } from "@/components/code-editor";
 import { FolderOpen } from "lucide-react";
+import { generalizeEngineCodename } from "./plugins-page";
 
 /** plugins-page 的描述符投影（避免循环依赖：仅取模态所需字段）。 */
 export interface DrawerPluginInfo {
@@ -685,7 +686,10 @@ export function PluginDetailModal({
 
   const description = plugin.kind === "session"
     ? sessionDescriptor?.descriptionFallback ?? plugin.display_name
-    : plugin.description || t("plugins.descFallbackBuiltin", "内置智能体适配器");
+    // 评审 P1-12 修复：描述经展示面泛化（去引擎代号，与列表卡同源）。
+    : plugin.description
+      ? generalizeEngineCodename(plugin.description)
+      : t("plugins.descFallbackBuiltin", "内置智能体适配器");
 
   return (
     <UniModal open onClose={onClose} preventClose={dirty} size="xl" fixedHeight label={plugin.display_name}>

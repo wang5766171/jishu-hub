@@ -28,7 +28,9 @@
     "daysAgo": "{{count}} 天前"
   },
   "nav": {
-    "config": "管理"
+    "config": "管理",
+    "appearance": "外观",
+    "appearanceSettings": "外观设置"
   },
   "titlebar": {
     "closeProject": "关闭当前项目",
@@ -53,6 +55,7 @@
     "menuCommands": "快捷命令",
     "menuEnv": "环境检测",
     "menuOnboarding": "安装引导",
+    "menuAppearance": "外观",
     "menuBackups": "配置备份",
     "pageDescBackups": "配置快照的恢复，以及配置的导入导出",
     "onboardingTitle": "安装引导",
@@ -267,6 +270,9 @@
       "chat": "会话模式",
       "task": "任务模式"
     },
+    "taskNoAsk": "不询问",
+    "taskNoAskOn": "不询问已开启：本任务会话内不再提问，全部按推荐执行（点击关闭）",
+    "taskNoAskOff": "任务会话内开启不询问：开启后本会话不再提问，全部按推荐执行（普通对话不受影响）",
     "newSession": "新对话",
     "refresh": "刷新列表",
     "refreshDisabledWhileStreaming": "输出中无法刷新，请等待本轮结束",
@@ -363,6 +369,10 @@
     "renderSourceBuiltin": "内置渲染",
     "activeModel": "选择模型",
     "imageOnlyBubble": "📎 发送了附件",
+    "imageOnlyEditPlaceholder": "（图片消息）",
+    "toolPillRemove": "删除此工具调用（重发不再携带）",
+    "taskUnreadFailed": "有失败结果未读",
+    "taskUnreadDone": "有完成结果未读",
     "scrollToBottom": "滚动到底部",
     "stagingDrag": "拖动调整顺序"
   },
@@ -1712,9 +1722,9 @@
     "nextPage": "下一页",
     "pageInfo": "第 {{page}} / {{pages}} 页 · 共 {{total}} 项",
     "pageSize": "每页",
-    "onlineLib": "在线扩展库（pi 生态）",
+    "onlineLib": "在线扩展库",
     "onlineSearch": "搜索扩展名…",
-    "onlineEmpty": "没有匹配的 pi 扩展包",
+    "onlineEmpty": "没有匹配的扩展包",
     "onlineLibPiindex": "在线扩展库（Pi Index）",
     "checkUpdates": "检查更新",
     "updateAll": "全部更新",
@@ -1732,7 +1742,10 @@
     "updateOne": "更新",
     "viewSource": "查看来源",
     "updatingShort": "更新中",
-    "updatingProgress": "更新中 {{d}}/{{n}}"
+    "updatingProgress": "更新中 {{d}}/{{n}}",
+    "githubStars": "GitHub Star 数",
+    "npmWeeklyDownloads": "npm 每周下载量",
+    "perWeek": "/周"
   },
   "onboarding": {
     "initTitle": "正在准备你的智能体",
@@ -1782,6 +1795,12 @@
   },
   "taskSteps": {
     "title": "任务步骤",
-    "awaitingAnswer": "等待你的决定"
+    "awaitingAnswer": "等待你的决定",
+    "status": {
+      "running": "进行中",
+      "done": "已完成",
+      "failed": "失败",
+      "todo": "待开始"
+    }
   }
 }

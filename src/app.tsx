@@ -286,10 +286,11 @@ function TitleBar({
         <button
           onClick={cycleTheme}
           className="h-7 px-3 rounded-md flex items-center gap-1.5 text-xs transition-fast text-muted-foreground hover:bg-accent/30 hover:text-foreground"
-          title="外观设置"
+          title={t("nav.appearanceSettings", "外观设置")}
         >
           <Palette className="h-3.5 w-3.5 text-[var(--icon-theme)]" />
-          <span>外观</span>
+          {/* 评审 P1-11 修复：直出中文改 t()（英文界面曾仍显中文）。 */}
+          <span>{t("nav.appearance", "外观")}</span>
         </button>
         </div>
       </div>

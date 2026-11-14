@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { repairEatenSeparator, artifactDisplayName, decodeArtifactRel } from "./artifact-link";
+import { repairEatenSeparator, artifactDisplayName, decodeArtifactRel, artifactErrorKind } from "./artifact-link";
 
 // 需求6 反馈（2026-11-11）：模型把链接目标中文文件名写成 percent-编码——
 // 路径消费（打开校验/悬停）统一解码；非法编码序列保留原串不抛错。
@@ -56,5 +56,28 @@ describe("artifactDisplayName", () => {
   it("空文本 → 文件名兜底", () => {
     expect(artifactDisplayName("jishu-artifact://a/b/c.md", ""))
       .toBe("c.md");
+  });
+});
+
+// 评审 P2-8：错误码分流——优先匹配机器标记前缀，无标记回退中文子串
+// （向后兼容旧后端错误串），未知错误返回 null。
+describe("artifactErrorKind", () => {
+  it("机器标记前缀优先命中", () => {
+    expect(artifactErrorKind("[not_found] 文件不存在: tasks/a.md")).toBe("not_found");
+    expect(artifactErrorKind("[out_of_scope] 路径越出项目根")).toBe("out_of_scope");
+    expect(artifactErrorKind("[too_large] 文件超过预览上限")).toBe("too_large");
+    expect(artifactErrorKind("[unsupported] 二进制类型不支持预览")).toBe("unsupported");
+  });
+
+  it("无标记回退中文子串匹配（旧后端兼容）", () => {
+    expect(artifactErrorKind("校验失败：文件不存在或已被移动")).toBe("not_found");
+    expect(artifactErrorKind("目标超出项目范围")).toBe("out_of_scope");
+    expect(artifactErrorKind("文件过大，无法预览")).toBe("too_large");
+    expect(artifactErrorKind("该类型不支持预览")).toBe("unsupported");
+  });
+
+  it("未知错误串返回 null", () => {
+    expect(artifactErrorKind("permission denied")).toBeNull();
+    expect(artifactErrorKind("")).toBeNull();
   });
 });

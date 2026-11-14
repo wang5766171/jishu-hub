@@ -53,7 +53,7 @@ import type {
 } from "@/features/session-kernel/plugins/types";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
 import { RenameTaskSessionDialog } from "@/components/sessions/rename-task-session-dialog";
-import { ChatInput, type ChatInputHandle, type StagedGuideApi } from "@/components/sessions/chat-input";
+import { ChatInput, extractToolTokens, type ChatInputHandle, type StagedGuideApi } from "@/components/sessions/chat-input";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { clearImageCache, InlineImages, stripImagePrompt } from "@/components/sessions/inline-image";
 // 会话二级树（T3）：侧边栏任务会话区
@@ -833,14 +833,37 @@ export function ChatPage({
     const kept = cut >= 0 ? msgs.slice(0, cut) : msgs;
     // 任务前缀重包装：用户编辑的是剥前缀原话，重发保持任务会话语义。
     const prefixMatch = rawText.match(/^(\/jishu-task (?:dev|research) )/);
-    const outgoing = prefixMatch ? prefixMatch[1] + newText : newText;
+    let outgoing = prefixMatch ? prefixMatch[1] + newText : newText;
+    // 评审 P1-15 修复：编辑重发与发送链同构——过单源 token 管线（复用
+    // chat-input 导出的 extractToolTokens；顺序对齐发送链：先前缀包装后
+    // 剥离）。修前编辑时补写的 @[token] 以原文进 prompt、无 pill、无注入。
+    let tokenToolIds: string[] = [];
+    try {
+      const tools = await invokeCommand<Array<{ id: string; display_name: string }>>(
+        "session_tool_list",
+        { sessionId: sid },
+      );
+      const composed = extractToolTokens(outgoing, tools ?? []);
+      outgoing = composed.text;
+      tokenToolIds = composed.toolIds;
+    } catch (err) {
+      // 工具清单拉取失败不阻塞重发（token 按原文发送；同 composeOutgoing
+      // 的失败策略——阻塞会导致普通消息也发不出）。
+      console.warn("session_tool_list before edit resend failed:", err);
+    }
     // 收版反馈（2026-11-13 用户裁决「编辑的时候能编辑工具」）：编辑态删除/
     // 保留工具调用——重发前把会话工具集覆写为保留集（send 侧按此注入），
-    // 本地提交的 pill 元数据同步。
-    const finalToolIds = remainingToolIds !== undefined ? remainingToolIds : editedToolIds;
-    if (remainingToolIds !== undefined) {
+    // 本地提交的 pill 元数据同步。评审 P1-15：覆写语义不变，token 派生 id
+    // 并入同一次覆写（与发送链「token 追加」一致）；无 token 时写集与原
+    // 逻辑完全一致。
+    const keptToolIds = remainingToolIds !== undefined ? remainingToolIds : editedToolIds;
+    const finalToolIds =
+      keptToolIds || tokenToolIds.length > 0
+        ? [...new Set([...(keptToolIds ?? []), ...tokenToolIds])]
+        : undefined;
+    if (remainingToolIds !== undefined || tokenToolIds.length > 0) {
       try {
-        await invokeCommand("session_set_tools", { sessionId: sid, toolIds: remainingToolIds });
+        await invokeCommand("session_set_tools", { sessionId: sid, toolIds: finalToolIds ?? [] });
       } catch (err) {
         console.warn("session_set_tools after edit failed:", err);
       }

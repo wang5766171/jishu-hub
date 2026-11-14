@@ -32,6 +32,10 @@ export function AgentRuntimeBanner() {
   const [banner, setBanner] = useState<BannerState | null>(null);
   const [updating, setUpdating] = useState(false);
   const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 评审 P2-5 修复：轮询闭包经 ref 读最新横幅态（原直接闭包捕获首次渲染的
+  // banner——stale 闭包，done 态判定失真导致轮询不歇）。
+  const bannerRef = useRef<BannerState | null>(null);
+  bannerRef.current = banner;
 
   useEffect(() => {
     let cancelled = false;
@@ -53,13 +57,14 @@ export function AgentRuntimeBanner() {
     void refresh();
     // 更新进行中周期对账（事件驱动为主，轮询兜底 5s）。
     const poll = setInterval(() => {
-      if (!cancelled && (banner === null || banner.kind !== "done")) void refresh();
+      const current = bannerRef.current;
+      if (!cancelled && (current === null || current.kind !== "done")) void refresh();
     }, 5000);
     return () => {
       cancelled = true;
       clearInterval(poll);
     };
-    // banner 故意不入依赖：轮询闭包内读最新即可，避免重建定时器。
+    // banner 故意不入依赖：轮询闭包经 bannerRef 读最新即可，避免重建定时器。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

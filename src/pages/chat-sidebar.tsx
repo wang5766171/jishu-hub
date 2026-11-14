@@ -434,7 +434,7 @@ export function ChatSidebar(props: ChatSidebarProps) {
                         /* 补充⑫（2026-11-07 用户裁决）：未读绿/红点统一移到行首
                            （原在标题后，与进行中蓝点位置不一致）；行首三态互斥——
                            流式蓝呼吸 / 未读绿红 / 空闲占位，宽度恒定。 */
-                        <span className="flex h-3.5 w-3 shrink-0 items-center justify-center" title={sessionUnread[session.id] === "failed" ? "有失败结果未读" : "有完成结果未读"}>
+                        <span className="flex h-3.5 w-3 shrink-0 items-center justify-center" title={sessionUnread[session.id] === "failed" ? t("sessions.taskUnreadFailed", "有失败结果未读") : t("sessions.taskUnreadDone", "有完成结果未读")}>
                           <span className={cn("h-1.5 w-1.5 rounded-full", sessionUnread[session.id] === "failed" ? "bg-red-500" : "bg-emerald-500")} />
                         </span>
                       ) : (

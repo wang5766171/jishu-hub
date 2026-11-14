@@ -12,9 +12,11 @@
  *    兼作手动重装入口）。
  * ② 场景选择：6 张粗粒度卡多选（plugin-scenes 单一真源）+ 自定义（跳过）。
  * ③ 场景推荐：插件（market_list_curated 非 required 可装件）+ 技能
- *    （SkillHub 按场景拉取，断网只显插件 + 重试）；勾选安装（逐项状态）；
+ *    （SkillHub 按场景拉取，断网只显插件 + 重试）；勾选安装（逐项状态）。
+ * ④ 安装所选 + 开始使用（进入即逐项安装；零选中直接开始）——
  *    「开始使用」→ onComplete（落默认空间由 app 兜底 effect 承接，Q11）。
- * 无「先逛逛」（Q1：装完才进主界面）；「进入工作台」只在步骤③出现。
+ * 全程四步（评审 P2-11 修复：头注释对齐实现，原只列到③）；无「先逛逛」
+ *（Q1：装完才进主界面）；「进入工作台」只在步骤④出现。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -634,6 +636,11 @@ function RecommendStep({
   // 收版反馈⑤：选了场景 → 推荐项默认勾上；「自定义（跳过推荐）」进入 →
   // 不默认勾（用户自选）。
   const preselect = scenes.length > 0;
+  // 评审 P2-6 修复：preselect 只在首次 load 生效——重试/返回重进不再重置
+  // 勾选（knownPicks 记录已出过的推荐项，仅合并首次出现的新项，用户手改
+  // 的勾选状态保留）。修前每次 load 全量 setPicked 覆盖，用户取消勾选后
+  // 点「重试」勾选被悄悄加回。
+  const knownPicksRef = useRef<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     setSkillError(false);
@@ -657,7 +664,19 @@ function RecommendStep({
       }
       const pickedList = scenes.length > 0 ? all : shuffle(all).slice(0, 6);
       setPlugins(pickedList);
-      if (preselect) setPicked(new Set(pickedList.map((e) => `plugin::${e.id}`)));
+      if (preselect) {
+        // 评审 P2-6：只合并首次出现的新项（首次 load=全量勾选，后续 load
+        // 保留用户已有勾选）。
+        setPicked((prev) => {
+          const next = new Set(prev);
+          for (const e of pickedList) {
+            const key = `plugin::${e.id}`;
+            if (!knownPicksRef.current.has(key)) next.add(key);
+          }
+          return next;
+        });
+        for (const e of pickedList) knownPicksRef.current.add(`plugin::${e.id}`);
+      }
     } catch {
       /* 插件源内嵌不会失败 */
     }
@@ -682,11 +701,17 @@ function RecommendStep({
       const skillList = scenes.length > 0 ? collected : shuffle(collected).slice(0, 6);
       setSkills(skillList);
       if (preselect) {
+        // 评审 P2-6：与插件同规则——只合并首次出现的新项，不回加用户已
+        // 取消勾选的技能。
         setPicked((prev) => {
           const next = new Set(prev);
-          for (const s of skillList) next.add(`skill::${s.slug}`);
+          for (const s of skillList) {
+            const key = `skill::${s.slug}`;
+            if (!knownPicksRef.current.has(key)) next.add(key);
+          }
           return next;
         });
+        for (const s of skillList) knownPicksRef.current.add(`skill::${s.slug}`);
       }
     } catch {
       setSkillError(true);

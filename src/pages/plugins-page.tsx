@@ -135,6 +135,13 @@ const CATEGORY_VALUES: ReadonlySet<string> = new Set([
   "core", "session", "mcp", "skill", "cli", "custom", "agent", "appearance",
 ]);
 
+/** 评审 P1-12 修复（§7 引擎代号不暴露）：核心引擎卡描述来自后端内置对照表
+ * （plugin.rs 含「Pi 引擎」字样；后端并行改数据源）——展示面兜底泛化，
+ * 防旧缓存/回放数据泄漏。导出供详情弹窗（plugin-detail-modal）同源消费。 */
+export function generalizeEngineCodename(desc: string): string {
+  return desc.replace(/内嵌 ?Pi 引擎/g, "内嵌引擎").replace(/Pi 引擎/g, "引擎");
+}
+
 function categoryOf(p: PluginDescriptor): PluginCategory {
   // 显式声明优先（拼错值由后端 fail loud 拒绝装载，此处再滤一道防御）。
   if (p.category && CATEGORY_VALUES.has(p.category)) return p.category as PluginCategory;
@@ -660,7 +667,8 @@ export function PluginsPage({
               {plugin.kind === "session"
                 ? tr(`sessionPlugins.${plugin.id.replace("session.", "")}.description`, plugin.display_name)
                 : plugin.description
-                  || tr(
+                  ? generalizeEngineCodename(plugin.description)
+                  : tr(
                       plugin.kind === "builtin"
                         ? "plugins.descFallbackBuiltin"
                         : plugin.kind === "manifest"

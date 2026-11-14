@@ -229,3 +229,40 @@ describe("v0.9.4 需求10：会话阶段文案", () => {
     expect(screen.getByText(/Processing/)).toBeTruthy();
   });
 });
+
+// 评审 P2-9：纯附件消息编辑——剥图片标记后为空时置空草稿+占位文案
+//（原回填整段 JISHU_HUB_IMAGES 标记原文）；不禁用编辑（文本可补充）。
+describe("纯附件消息编辑草稿（P2-9）", () => {
+  it("图片-only 消息点编辑：textarea 置空+占位文案，不含标记原文", () => {
+    render(
+      <FileViewerProvider>
+        <StreamingMessage
+          sessionId={sessionId}
+          userMessage={"<!--JISHU_HUB_IMAGES_BEGIN-->file: a.png<!--JISHU_HUB_IMAGES_END-->"}
+          onEditUserMessage={() => {}}
+        />
+      </FileViewerProvider>
+    );
+    fireEvent.click(screen.getByTitle("Edit & resend (clears replies after this message)"));
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textarea.value).toBe("");
+    expect(textarea.value).not.toContain("JISHU_HUB_IMAGES");
+    expect(textarea.placeholder).toBe("(image message)");
+  });
+
+  it("普通文本消息编辑：草稿仍回填原文（占位不出现）", () => {
+    render(
+      <FileViewerProvider>
+        <StreamingMessage
+          sessionId={sessionId}
+          userMessage="regular question"
+          onEditUserMessage={() => {}}
+        />
+      </FileViewerProvider>
+    );
+    fireEvent.click(screen.getByTitle("Edit & resend (clears replies after this message)"));
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textarea.value).toBe("regular question");
+    expect(textarea.placeholder).toBe("");
+  });
+});

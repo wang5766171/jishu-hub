@@ -124,9 +124,10 @@ const TaskRow = memo(function TaskRow({
               }
               if (unread) {
                 return (
+                  // 评审 P1-11 修复：状态点悬停文案直出中文改 t()。
                   <span
                     className="flex h-3.5 w-3 shrink-0 items-center justify-center"
-                    title={unread === "failed" ? "有失败结果未读" : "有完成结果未读"}
+                    title={unread === "failed" ? t("sessions.taskUnreadFailed", "有失败结果未读") : t("sessions.taskUnreadDone", "有完成结果未读")}
                   >
                     <span className={cn("h-1.5 w-1.5 rounded-full", unread === "failed" ? "bg-red-500" : "bg-emerald-500")} />
                   </span>

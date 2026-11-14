@@ -79,7 +79,14 @@ export function useModelPicker(
       if (!agentId) return;
       const [provider, ...rest] = value.split("/");
       const model = rest.join("/");
-      const perSession = !!sessionKey && sessionKey !== "new";
+      // 评审 P2-7 修复：pending- 前缀是发送期临时 id（会话尚未落盘）——
+      // 不写后端会话锁键（session_model_get/set 找不到会话，键成孤儿）。
+      const perSession =
+        !!sessionKey && sessionKey !== "new" && !sessionKey.startsWith("pending-");
+      // 评审 P2-10 修复：乐观更新前先存原值——写入失败回滚（修前失败后
+      // UI 停留在未生效的新模型上）。
+      const prevSession = sessionModel;
+      const prevActive = activeValue;
       setSessionModel(perSession ? value : null);
       if (!perSession) setActiveValue(value);
       try {
@@ -96,10 +103,13 @@ export function useModelPicker(
         }
         onModelChanged?.();
       } catch (err) {
+        // 评审 P2-10：失败回滚到原值（乐观更新撤回），警告保留供回溯。
+        setSessionModel(prevSession);
+        if (!perSession) setActiveValue(prevActive);
         console.warn(perSession ? "session_model_set failed:" : "set_active failed:", err);
       }
     },
-    [agentId, onModelChanged, sessionKey],
+    [agentId, activeValue, onModelChanged, sessionKey, sessionModel],
   );
 
   const shownValue = sessionModel ?? activeValue;

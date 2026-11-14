@@ -42,10 +42,18 @@ interface SessionTool {
  * 用后 reset，避免 lastIndex 残留（有 /g 标志时 test 会推进状态）。 */
 const TOOL_TOKEN_RE = /@\[([^\]]+)\]/g;
 
+/** 工具 token 管线的最小条目（id + display_name 子集；session_tool_list
+ * 返回形态即满足）——评审 P1-15 修复：导出供 chat-page 编辑重发复用同一
+ * 剥离/归一实现（单源），组件内 SessionTool 结构兼容可直接传入。 */
+export interface ToolTokenSource {
+  id: string;
+  display_name: string;
+}
+
 /** 解析消息中的工具 token：剥离文本并把显示名归一为插件 id
  * （35ee638a P0：归一缺失会让后端 set_session_tools 拒绝未知 id）。
  * 未匹配任何插件的 token 原样保留（避免吞字）。 */
-function extractToolTokens(text: string, tools: SessionTool[]): { text: string; toolIds: string[] } {
+export function extractToolTokens(text: string, tools: ToolTokenSource[]): { text: string; toolIds: string[] } {
   const ids: string[] = [];
   const replaced = text.replace(TOOL_TOKEN_RE, (match, name: string) => {
     const tool = tools.find((t) => t.display_name === name);
@@ -1646,10 +1654,16 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                 </div>
               )}
               {workModeValue === "task" && onTaskNoAskChange && (
+                // 评审 P1-11 修复：直出中文改 t()；评审 #17 配合后端作用域
+                // 收窄——文案明确「仅任务会话生效，普通对话不受影响」。
                 <button
                   type="button"
                   disabled={disabled || sending || isStreaming}
-                  title={taskNoAsk ? "不询问模式已开启：不再提问，全部按推荐执行（点击关闭）" : "开启不询问模式：agent 不再提问，全部按推荐执行"}
+                  title={
+                    taskNoAsk
+                      ? t("sessions.taskNoAskOn", "不询问已开启：本任务会话内不再提问，全部按推荐执行（点击关闭）")
+                      : t("sessions.taskNoAskOff", "任务会话内开启不询问：开启后本会话不再提问，全部按推荐执行（普通对话不受影响）")
+                  }
                   onClick={() => onTaskNoAskChange(!taskNoAsk)}
                   className={cn(
                     "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs transition-fast disabled:cursor-not-allowed disabled:opacity-50",
@@ -1659,7 +1673,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                   )}
                 >
                   <Zap className="h-3.5 w-3.5" />
-                  <span className="whitespace-nowrap">不询问</span>
+                  <span className="whitespace-nowrap">{t("sessions.taskNoAsk", "不询问")}</span>
                 </button>
               )}
               {accessModeLabel && (

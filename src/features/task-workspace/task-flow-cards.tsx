@@ -65,17 +65,18 @@ export interface RunnerStepView {
   status: "todo" | "running" | "done" | "failed";
 }
 
-/** runner 步骤卡状态视觉（灯语言：蓝呼吸=进行中/绿=完成/红=失败/灰=待开始）。 */
+/** runner 步骤卡状态视觉（灯语言：蓝呼吸=进行中/绿=完成/红=失败/灰=待开始）。
+ * 评审 P1-11 修复：直出中文 label 改 i18n key（taskSteps.status.*），渲染点 t()。 */
 function runnerStepVisual(status: RunnerStepView["status"]) {
   switch (status) {
     case "running":
-      return { cls: "text-blue-500 animate-pulse", label: "进行中" };
+      return { cls: "text-blue-500 animate-pulse", labelKey: "taskSteps.status.running" };
     case "done":
-      return { cls: "text-emerald-500", label: "已完成" };
+      return { cls: "text-emerald-500", labelKey: "taskSteps.status.done" };
     case "failed":
-      return { cls: "text-red-500", label: "失败" };
+      return { cls: "text-red-500", labelKey: "taskSteps.status.failed" };
     default:
-      return { cls: "text-muted-foreground/40", label: "待开始" };
+      return { cls: "text-muted-foreground/40", labelKey: "taskSteps.status.todo" };
   }
 }
 
@@ -125,7 +126,7 @@ export function TaskStepsCard({
                     step.status === "failed" && "bg-red-500",
                     step.status === "todo" && "bg-muted-foreground/40",
                   )}
-                  title={visual.label}
+                  title={t(visual.labelKey)}
                 />
                 <span
                   className={cn(
@@ -138,7 +139,7 @@ export function TaskStepsCard({
                   {step.title}
                 </span>
                 <span className="shrink-0 text-[9px] text-muted-foreground/50">
-                  {visual.label}
+                  {t(visual.labelKey)}
                 </span>
               </div>
             );
