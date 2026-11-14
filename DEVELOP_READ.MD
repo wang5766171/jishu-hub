@@ -219,7 +219,7 @@ npx vitest run test/<相关文件>.test.ts
 
 **装配管线**：`builtin_plugin_specs()`（工厂清单，顺序稳定）→ `manifest::load_manifests()`（只读扫 `~/.jishu-hub/agents/*.toml`，单文件失败局部化）→ `plugin::assemble()`（纯函数，无 IO）。`assemble` 按 `plugins.json` 的 disabled 集合过滤（core 插件恒装载，双层拒绝：API 层 + 装配层）。启停/卸载/重载/创建统一经 `rebuild_registry` 热生效（锁内替换 Arc + `retain_health_from` 保留旧健康缓存 + 广播 `plugins-changed`）。
 
-**内建自适应插件**（task-requirements / task-plan）：hub 二进制内嵌 TOML，启动时 `ensure_builtin_adaptive_plugins()` 幂等部署到 `~/.jishu-hub/agents/`。与用户自建走同一装载管线，但不可卸载（managed 级别，v1 靠启动覆写保证存在）。
+**内建自适应插件**（task-requirements / task-plan，v0.9.7 C3.4 收敛语义）：hub 二进制内嵌 TOML，但**默认不物化**——两者作为插件市场精选名单（curated.json）的编程场景推荐件按需装卸；启动不覆写、GUI/CLI 可编辑卸载。用户裁决（v0.9.7 评审期同步）：定位从「阶段关卡」改为「编程场景可选能力」；`SYSTEM_PLUGIN_IDS` 的 11 件内置注册不变（注册≠落盘）。默认安装集（required 名单，当前 20 件）以 curated.json 为单一真源，required 拒绝禁用/卸载（GUI 与 CLI 同守卫）。
 
 ### 16.2 Manifest Schema（schema = 1）
 
@@ -298,7 +298,7 @@ GUI（插件页 + 创建/编辑对话框）与 CLI（`jishu-cli plugins add/list
 - **集合写入键同源**（M0）：`session_set_tools` 的写入键必须与 `send_message` 携带的 sessionId 同源（`nextPendingId`）——修前写暂存键导致注入永不命中。语义为本条 token 集合覆盖（所见即所得，用户裁决）。
 - **消息组装单源**（M5）：所有用户消息出口（发送/引导/steer）必须经 `composeOutgoing`，禁止各自拼装标记或另走旁路。
 - **渲染单源**（M5）：用户消息展示一律用 `UserTextWithPills`，禁止裸渲染含标记文本。
-- **内建自适应插件不可编辑卸载**：task-requirements / task-plan 由启动管线幂等覆写，GUI/CLI 编辑会被回滚——v1 如实接受（编辑这两个插件无意义），v2 加 managed 标志。
+- **内建自适应插件收敛**（v0.9.7 C3.4 + 用户裁决）：task-requirements / task-plan 改为 curated 精选推荐件——默认不物化、可经市场装卸、启动不覆写（原「幂等覆写不可卸载」条款退役）；required 名单件（20 件）仍拒禁用/卸载，守卫与 curated.json 单一真源对齐（见 §16.1）。
 - **无 [tool] 段插件不参与注入**（M3）：`render_tool_block` 跳过 PiOnly 形态（schema 允许 kind=tool 仅含 `[pi_extension]`），消费层不得假设 `[tool]` 段必存在。
 
 ### 16.9 会话能力插件（v0.9.2）
@@ -330,7 +330,7 @@ GUI（插件页 + 创建/编辑对话框）与 CLI（`jishu-cli plugins add/list
 
 - **内核零任务语义**：任务/流程能力一律经「任务流程」插件的挂载点进入，内核不含任务分支。
 - **插件作用域**：一切会话域易变状态（引导占位等）必须按会话 key 作用域，禁止跨会话泄漏。
-- **扩展工具注入**：pi 扩展工具必须经 §16.4 闸门声明注入；hub spawn 白名单聚合是唯一通道，禁止旁路直改 pi 工具集。
+- **扩展工具注入**：pi 扩展工具必须经 §16.4 闸门声明注入；hub spawn 白名单聚合是唯一通道，禁止旁路直改 pi 工具集。**白名单例外（v0.9.7 需求2 成文）**：任务 runner 三工具（`runner_update_steps`/`runner_ask_user`/`runner_dispatch_to_node`）由 `jishu_self/mod.rs` spawn 时硬编码并入白名单——它们是任务模式的引擎底座能力（随 hub 分发、`task_plan.rs` 无条件部署扩展文件，无虚假能力），不占 `[pi_extension].tools` 闸门；新增底座级工具须同款评审成文，禁止业务插件效仿。
 - **会话状态文案按阶段准确**（v0.9.4 需求10，用户裁决话术）：流式状态按真实阶段区分显示——连接中（agent 正在赶来）/等待模型响应（思考中）/思考生成（深度思考中）/工具调用中/回复生成（处理中）；切换信号以 session_resolved（连接建立）与首个内容事件为准，禁止一律「思考中」误导。禁止把「send IPC 返回」当作连接建立的信号（spawn 未完成时为时过早）。
 
 ### 16.11 dev 日志中心（v0.9.4）
