@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { PLUGIN_SCENES } from "@/lib/plugin-scenes";
-import { Bot, Check, Download, ExternalLink, Info, Loader2, Package, RefreshCw, Search, ShieldCheck, Sparkles, Trash2 } from "lucide-react";
+import { ArrowDownToLine, Bot, Check, Download, ExternalLink, Info, Loader2, Package, RefreshCw, Search, ShieldCheck, Sparkles, Star, Trash2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { startExtensionUpdateAll, startSkillUpdateAll, updatesPending, useMarketUpdates } from "./plugin-market-updates";
 
@@ -84,6 +84,8 @@ interface PiindexEntry {
   detailUrl: string | null;
   stars: number | null;
   weeklyDownloads: number | null;
+  /** 周下载量涨跌（「▼30%」/「▲1%」；部分卡缺）。 */
+  downloadTrend: string | null;
   searchText: string;
 }
 
@@ -117,6 +119,17 @@ function installedSourceMatchesPiindex(src: string, entry: PiindexEntry): boolea
 }
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100];
+
+/** 计数缩写（对齐 piindex 呈现）：≥1万保留 1 位小数以万计，不足显示整数。 */
+function formatCount(n: number): string {
+  if (!Number.isFinite(n)) return "-";
+  return n >= 10000 ? `${Math.round(n / 1000) / 10}万` : String(Math.floor(n));
+}
+
+/** 周下载涨跌着色（▲升 ▼跌）。 */
+function trendClass(trend: string): string {
+  return trend.includes("▲") ? "text-emerald-600" : "text-red-500";
+}
 
 /** 分页条（在线扩展库客户端分页 / 技能市场服务端分页共用——
  * 页码 + 总数 + 每页条数选择，最大 100）。 */
@@ -725,9 +738,18 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                       </div>
                       <p className="line-clamp-2 text-[11px] leading-relaxed text-muted-foreground" title={entry.description}>{entry.description || "-"}</p>
                       <div className="mt-auto flex items-center gap-1 pt-1 text-[10px] text-muted-foreground/70">
-                        {entry.stars != null && <span title="GitHub Star">★ {entry.stars}</span>}
+                        {entry.stars != null && (
+                          <span className="inline-flex items-center gap-0.5" title="GitHub Star 数">
+                            <Star className="h-3 w-3" />
+                            {entry.stars}
+                          </span>
+                        )}
                         {entry.weeklyDownloads != null && (
-                          <span title="npm 周下载">↓ {entry.weeklyDownloads >= 10000 ? Math.round(entry.weeklyDownloads / 1000) / 10 + "万" : entry.weeklyDownloads}</span>
+                          <span className="inline-flex items-center gap-0.5" title="npm 每周下载量">
+                            <ArrowDownToLine className="h-3 w-3" />
+                            {formatCount(entry.weeklyDownloads)}/周
+                            {entry.downloadTrend && <span className={trendClass(entry.downloadTrend)}>{entry.downloadTrend}</span>}
+                          </span>
                         )}
                         <span className="flex-1" />
                         <Button
@@ -1181,7 +1203,12 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground/80">
                     <span className="font-mono">{skill.slug}</span>
                     {skill.version && <span>v{skill.version}</span>}
-                    {skill.score != null && <span>★ {String(skill.score)}</span>}
+                    {skill.score != null && (
+                      <span className="inline-flex items-center gap-0.5">
+                        <Star className="h-3 w-3" />
+                        {formatCount(Number(skill.score))}
+                      </span>
+                    )}
                     {skill.requires_api_key && (
                       <span className="text-amber-600">{t("market.needsApiKey", "需要 API Key")}</span>
                     )}
@@ -1265,9 +1292,20 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                   {extDetailEntry.category && (
                     <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">{extDetailEntry.category}</span>
                   )}
-                  {extDetailEntry.stars != null && <span className="rounded bg-muted px-1.5 py-0.5">★ {extDetailEntry.stars}</span>}
+                  {extDetailEntry.stars != null && (
+                    <span className="inline-flex items-center gap-0.5 rounded bg-muted px-1.5 py-0.5">
+                      <Star className="h-3 w-3" />
+                      {extDetailEntry.stars}
+                    </span>
+                  )}
                   {extDetailEntry.weeklyDownloads != null && (
-                    <span className="rounded bg-muted px-1.5 py-0.5">↓ {extDetailEntry.weeklyDownloads >= 10000 ? Math.round(extDetailEntry.weeklyDownloads / 1000) / 10 + "万/周" : extDetailEntry.weeklyDownloads + "/周"}</span>
+                    <span className="inline-flex items-center gap-0.5 rounded bg-muted px-1.5 py-0.5">
+                      <ArrowDownToLine className="h-3 w-3" />
+                      {formatCount(extDetailEntry.weeklyDownloads)}/周
+                      {extDetailEntry.downloadTrend && (
+                        <span className={trendClass(extDetailEntry.downloadTrend)}>{extDetailEntry.downloadTrend}</span>
+                      )}
+                    </span>
                   )}
                 </div>
                 {(extDetailEntry.detailUrl || extDetailEntry.githubUrl) && (

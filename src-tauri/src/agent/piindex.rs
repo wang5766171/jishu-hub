@@ -46,6 +46,8 @@ pub struct PiindexEntry {
     pub detail_url: Option<String>,
     pub stars: Option<u64>,
     pub weekly_downloads: Option<u64>,
+    /// 周下载量涨跌（站点预拼文本，如「▼30%」/「▲1%」；部分卡缺）。
+    pub download_trend: Option<String>,
     /// 站点预拼接的中英文检索全文（data-search）。
     #[serde(default)]
     pub search_text: String,
@@ -311,6 +313,12 @@ fn parse_piindex_html(body: &str) -> Vec<PiindexEntry> {
             detail_url,
             stars: attr_of(attrs, "data-stars").and_then(|v| v.parse().ok()),
             weekly_downloads: attr_of(attrs, "data-downloads").and_then(|v| v.parse().ok()),
+            // 周下载涨跌（▼30%/▲1%，stats 区 trend span；缺失为 None）。
+            download_trend: regex::Regex::new(r#"class="trend (?:up|down)">([^<]+)<"#)
+                .ok()
+                .and_then(|re| re.captures(inner))
+                .and_then(|c| c.get(1))
+                .map(|m| html_unescape(m.as_str().trim())),
             search_text: attr_of(attrs, "data-search").unwrap_or_default(),
         });
     }
@@ -606,6 +614,7 @@ mod tests {
           <div class="resource-description"><p>Web 搜索、URL 获取与 PDF 提取。</p></div>
           <div class="resource-categories"><a class="resource-kind" data-label="扩展包">扩展包</a><a class="resource-tag" data-label="网页与搜索">网页与搜索</a></div>
           <a href="https://github.com/nicobailon/pi-web-access" data-repo-link="true">查看项目</a>
+          <span class="resource-stats"><span class="stat" title="npm 每周下载量"><svg></svg>29.6万/周<span class="trend down">▼30%</span></span></span>
           <div class="install-command"><code>pi install npm:pi-web-access</code><button data-copy="pi install npm:pi-web-access"></button></div>
         </article>
         <article class="resource" data-kind="packages" data-search="pi-websearch git">
@@ -634,6 +643,7 @@ mod tests {
         assert_eq!(e.kind_label, "扩展包");
         assert_eq!(e.stars, Some(1779));
         assert_eq!(e.weekly_downloads, Some(295964));
+        assert_eq!(e.download_trend.as_deref(), Some("▼30%"));
         assert!(e
             .detail_url
             .as_deref()
