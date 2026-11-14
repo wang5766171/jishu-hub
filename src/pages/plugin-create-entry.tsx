@@ -36,7 +36,8 @@ export type CreateEntryChoice =
 
 export type SessionPluginFace = "panel" | "widget" | "render" | "action";
 
-/** 分类卡（与已安装八类对齐；核心引擎不在创建面）。 */
+/** 分类卡（v0.9.7 需求3 五类口径：自建智能体暂不支持——用户裁决 2026-11-14，
+ * 智能体卡撤除，此类意图并入自定义模板；核心引擎不在创建面）。 */
 const CATEGORY_CARDS: Array<{
   key: string;
   icon: typeof Bot;
@@ -45,14 +46,6 @@ const CATEGORY_CARDS: Array<{
   descFallback: string;
   template: string;
 }> = [
-  {
-    key: "agent",
-    icon: Bot,
-    titleKey: "plugins.typeAgent",
-    titleFallback: "智能体",
-    descFallback: "接入新智能体 / 给 AI 新能力",
-    template: "我想创建一个智能体相关插件（接入新智能体或给 AI 新能力）。",
-  },
   {
     key: "session",
     icon: LayoutDashboard,

@@ -24,7 +24,6 @@ import { cn } from "@/lib/utils";
 import { PLUGIN_SCENES } from "@/lib/plugin-scenes";
 import { ArrowDownToLine, Bot, Check, Download, ExternalLink, Info, Loader2, Package, RefreshCw, Search, ShieldCheck, Sparkles, Star, Trash2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { marketUpdateFailures, startExtensionUpdateAll, startSkillUpdateAll, updatesPending, useMarketUpdates } from "./plugin-market-updates";
 
 interface MarketEntry {
   id: string;
@@ -65,7 +64,7 @@ interface SkillhubListResult {
   page_size: number;
 }
 
-type MarketSource = "curated" | "extensions" | "skills" | "installed";
+type MarketSource = "curated" | "extensions" | "skills";
 
 /** 需求7 修1a：扩展生态在线库条目（npm pi-package 检索）。 */
 interface PiOnlinePackage {
@@ -94,20 +93,6 @@ interface PiindexEntry {
   /** 周下载量涨跌（「▼30%」/「▲1%」；部分卡缺）。 */
   download_trend: string | null;
   search_text: string;
-}
-
-interface ExtensionUpdateStatus {
-  package: string;
-  installed: string;
-  latest: string;
-  has_update: boolean;
-}
-
-interface SkillUpdateStatus {
-  slug: string;
-  installed: string;
-  latest: string;
-  has_update: boolean;
 }
 
 /** 已装源串与 piindex 条目匹配（npm 源按包名前缀；git 源归一 https
@@ -215,17 +200,9 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
   const [onlineInstalled, setOnlineInstalled] = useState<string[]>([]);
   // 需求3 补充：piindex 检索结果（在线库主源；npm 检索为兜底）；更新检查。
   const [piindex, setPiindex] = useState<PiindexEntry[] | null>(null);
-  const [extUpdates, setExtUpdates] = useState<ExtensionUpdateStatus[] | null>(null);
-  const [skillUpdates, setSkillUpdates] = useState<SkillUpdateStatus[] | null>(null);
-  const [checkingUpdates, setCheckingUpdates] = useState(false);
-  const [updatingAll] = useState(false);
-  // 需求3 四轮：分类过滤 / 重新加载 / 单卡检查更新。
-  const batchUpdates = useMarketUpdates();
+  // 需求3 四轮：分类过滤 / 重新加载。
   const [extCategory, setExtCategory] = useState<string>("all");
   const [reloading, setReloading] = useState(false);
-  const [extCardUpdate, setExtCardUpdate] = useState<Record<string, ExtensionUpdateStatus>>({});
-  const [skillCardUpdate, setSkillCardUpdate] = useState<Record<string, SkillUpdateStatus>>({});
-  const [cardBusy, setCardBusy] = useState<string | null>(null);
   const [skills, setSkills] = useState<SkillhubListResult | null>(null);
   const [skillInstalled, setSkillInstalled] = useState<Record<string, string>>({});
   const [installedIds, setInstalledIds] = useState<Set<string>>(new Set());
@@ -327,25 +304,6 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
             if (runId !== marketLoadRunId) return;
             setError(String(e));
           }
-        }
-      } else if (source === "installed") {
-        // 需求3 补充二轮：已安装子页——已装扩展+技能集中呈现，检查更新/
-        // 全部更新只在本页提供。
-        await refreshInstalled();
-        const [sources, installedSkills] = await Promise.all([
-          invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
-          invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>),
-        ]);
-        if (runId !== marketLoadRunId) return;
-        setOnlineInstalled(sources ?? []);
-        setSkillInstalled(installedSkills ?? {});
-        // 已装卡说明/查看来源来自 piindex 元数据（缓存廉价；失败不阻塞本页）。
-        try {
-          const results = await invokeCommand<PiindexEntry[]>("piindex_search", { keyword: null });
-          if (runId !== marketLoadRunId) return;
-          setPiindex(results ?? []);
-        } catch {
-          /* piindex 不可达时已装卡无说明区 */
         }
       } else if (source === "skills") {
         const kw = debouncedKeyword.trim() || null;
@@ -469,7 +427,6 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
     { key: "curated", icon: Sparkles, label: t("market.sourceCurated", "精选") },
     { key: "extensions", icon: Package, label: t("market.sourceExtensions", "扩展生态") },
     { key: "skills", icon: Bot, label: t("market.sourceSkills", "技能市场") },
-    { key: "installed", icon: Package, label: t("market.sourceInstalled", "已安装") },
   ];
 
   return (
@@ -992,290 +949,6 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
             )}
           </div>
           )}
-        </div>
-      )}
-
-      {/* 已安装（需求3 补充二轮：检查更新/全部更新只在本页） */}
-      {source === "installed" && !error && (
-        <div className="space-y-5">
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 px-2.5 text-xs"
-              disabled={checkingUpdates || updatingAll}
-              onClick={() =>
-                void (async () => {
-                  setCheckingUpdates(true);
-                  setActionError(null);
-                  try {
-                    const [ext, skill] = await Promise.all([
-                      invokeCommand<ExtensionUpdateStatus[]>("extension_check_updates"),
-                      invokeCommand<SkillUpdateStatus[]>("skillhub_check_updates"),
-                    ]);
-                    setExtUpdates(ext);
-                    setSkillUpdates(skill);
-                  } catch (e) {
-                    setActionError(String(e));
-                  } finally {
-                    setCheckingUpdates(false);
-                  }
-                })()
-              }
-            >
-              {checkingUpdates ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-              <span className="ml-1">{t("market.checkUpdates", "检查更新")}</span>
-            </Button>
-{(extUpdates?.some((u) => u.has_update) || skillUpdates?.some((u) => u.has_update) || batchUpdates.extensionRunning || batchUpdates.skillRunning) && (
-              <Button
-                size="sm"
-                className="h-7 px-2.5 text-xs"
-                disabled={batchUpdates.extensionRunning || batchUpdates.skillRunning}
-                onClick={() => {
-                  setActionError(null);
-                  // 全局 store 执行（离开页面不打断）；本页订阅恢复进度显示。
-                  if (extUpdates?.some((u) => u.has_update)) startExtensionUpdateAll();
-                  if (skillUpdates?.some((u) => u.has_update)) startSkillUpdateAll();
-                  // 批量完成后刷新本页数据（页面还开着时）。
-                  void (async () => {
-                    while (updatesPending()) await new Promise((r) => setTimeout(r, 800));
-                    const failures = marketUpdateFailures();
-                    if (failures.length) {
-                      setActionError(t("market.updateFailedItems", "以下项更新失败：{{names}}", { names: failures.join("、") }));
-                    }
-                    try {
-                      const [sources, installedSkills] = await Promise.all([
-                        invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
-                        invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>),
-                      ]);
-                      setOnlineInstalled(sources ?? []);
-                      setSkillInstalled(installedSkills ?? {});
-                      const [ext, skill] = await Promise.all([
-                        invokeCommand<ExtensionUpdateStatus[]>("extension_check_updates"),
-                        invokeCommand<SkillUpdateStatus[]>("skillhub_check_updates"),
-                      ]);
-                      setExtUpdates(ext);
-                      setSkillUpdates(skill);
-                      onChanged?.();
-                    } catch { /* 完成刷新失败静默 */ }
-                  })();
-                }}
-              >
-                {batchUpdates.extensionRunning || batchUpdates.skillRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                <span className="ml-1">
-                  {batchUpdates.extensionRunning || batchUpdates.skillRunning
-                    ? t("market.updatingProgress", "更新中 {{d}}/{{n}}", {
-                        d: batchUpdates.extensionDone + batchUpdates.skillDone,
-                        n: batchUpdates.extensionTotal + batchUpdates.skillTotal,
-                      })
-                    : t("market.updateAll", "全部更新")}
-                </span>
-              </Button>
-            )}
-          </div>
-
-          {/* 已装扩展 */}
-          <div>
-            <div className="mb-2 text-xs font-medium text-muted-foreground">
-              {t("market.installedExtensions", "已装扩展")}（{onlineInstalled.length}）
-            </div>
-            {onlineInstalled.length === 0 ? (
-              <p className="py-3 text-xs text-muted-foreground/60">{t("market.none", "暂无")}</p>
-            ) : (
-              <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
-                {onlineInstalled.map((src) => {
-                  const m = src.match(/^npm:(.+?)@(.+)$/);
-                  const pkg = m?.[1] ?? src.replace(/^npm:/, "");
-                  const ver = m?.[2] ?? "";
-                  const upd = extUpdates?.find((u) => u.package === pkg) ?? extCardUpdate[pkg];
-                  // piindex 元数据命中（说明/分类/查看来源；内置扩展在目录有对应卡）。
-                  const pi = piindex?.find((e) => installedSourceMatchesPiindex(src, e));
-                  return (
-                    <div key={src} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
-                      <div className="flex items-center gap-2">
-                        <Package className="h-4 w-4 shrink-0 text-primary/70" />
-                        <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium" title={pkg}>{pkg}</span>
-                        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{ver ? `v${ver}` : ""}</span>
-                      </div>
-                      {pi && pi.description ? (
-                        <p className="line-clamp-2 text-[11px] leading-relaxed text-muted-foreground" title={pi.description}>
-                          {pi.description}
-                        </p>
-                      ) : null}
-                      <div className="mt-auto flex items-center gap-1 pt-1 text-[10px] text-muted-foreground/70">
-                        {upd?.has_update ? (
-                          <>
-                            <span className="text-amber-600">→ v{upd!.latest}</span>
-                            <span className="flex-1" />
-                            <Button
-                              size="sm"
-                              className="h-6 px-2 text-[10px]"
-                              disabled={cardBusy === pkg || batchUpdates.extensionRunning}
-                              onClick={() =>
-                                void (async () => {
-                                  setCardBusy(pkg);
-                                  setActionError(null);
-                                  try {
-                                    const rep = await invokeCommand<{ updated?: string[]; failed?: Array<{ name: string; error: string }> }>("extension_update", { packages: [pkg] });
-                                    if (rep?.failed?.length) {
-                                      setActionError(t("market.updateFailedItems", "以下项更新失败：{{names}}", { names: rep.failed.map((f) => `${f.name}（${f.error}）`).join("、") }));
-                                    }
-                                    const status = await invokeCommand<ExtensionUpdateStatus>("extension_check_update", { package: pkg });
-                                    setExtCardUpdate((prev) => ({ ...prev, [pkg]: status }));
-                                    const sources = await invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]);
-                                    setOnlineInstalled(sources ?? []);
-                                    onChanged?.();
-                                  } catch (e) {
-                                    setActionError(String(e));
-                                  } finally {
-                                    setCardBusy(null);
-                                  }
-                                })()
-                              }
-                            >
-                              {cardBusy === pkg || batchUpdates.extensionRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
-                              <span className="ml-0.5">{batchUpdates.extensionRunning ? t("market.updatingShort", "更新中") : t("market.updateOne", "更新")}</span>
-                            </Button>
-                          </>
-                        ) : (
-                          <>
-                            {upd ? <span>{t("market.upToDate", "最新")}</span> : null}
-                            <span className="flex-1" />
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-6 px-2 text-[10px]"
-                              disabled={cardBusy === pkg || checkingUpdates || batchUpdates.extensionRunning}
-                              onClick={() =>
-                                void (async () => {
-                                  setCardBusy(pkg);
-                                  setActionError(null);
-                                  try {
-                                    const status = await invokeCommand<ExtensionUpdateStatus>("extension_check_update", { package: pkg });
-                                    setExtCardUpdate((prev) => ({ ...prev, [pkg]: status }));
-                                  } catch (e) {
-                                    setActionError(String(e));
-                                  } finally {
-                                    setCardBusy(null);
-                                  }
-                                })()
-                              }
-                            >
-                              {cardBusy === pkg || checkingUpdates || batchUpdates.extensionRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                              <span className="ml-0.5">{t("market.checkUpdate", "检查更新")}</span>
-                            </Button>
-                          </>
-                        )}
-                        {pi && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-1.5 text-[10px] text-muted-foreground"
-                            aria-label={t("market.detail", "详情")}
-                            title={t("market.detail", "详情")}
-                            onClick={() => setExtDetailEntry(pi)}
-                          >
-                            <Info className="h-3 w-3" />
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* 已装技能 */}
-          <div>
-            <div className="mb-2 text-xs font-medium text-muted-foreground">
-              {t("market.installedSkills", "已装技能")}（{Object.keys(skillInstalled).length}）
-            </div>
-            {Object.keys(skillInstalled).length === 0 ? (
-              <p className="py-3 text-xs text-muted-foreground/60">{t("market.none", "暂无")}</p>
-            ) : (
-              <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
-                {Object.entries(skillInstalled).map(([slug, ver]) => {
-                  const upd = skillUpdates?.find((u) => u.slug === slug) ?? skillCardUpdate[slug];
-                  const has_update = upd?.has_update;
-                  return (
-                    <div key={slug} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
-                      <div className="flex items-center gap-2">
-                        <Bot className="h-4 w-4 shrink-0 text-primary/70" />
-                        <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium" title={slug}>{slug}</span>
-                        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{ver ? `v${ver}` : ""}</span>
-                      </div>
-                      <div className="mt-auto flex items-center gap-1 pt-1 text-[10px] text-muted-foreground/70">
-                        {has_update ? (
-                          <>
-                            <span className="text-amber-600">→ v{upd!.latest}</span>
-                            <span className="flex-1" />
-                            <Button
-                              size="sm"
-                              className="h-6 px-2 text-[10px]"
-                              disabled={cardBusy === slug || batchUpdates.skillRunning}
-                              onClick={() =>
-                                void (async () => {
-                                  setCardBusy(slug);
-                                  setActionError(null);
-                                  try {
-                                    const rep = await invokeCommand<{ updated?: string[]; failed?: Array<{ name: string; error: string }> }>("skillhub_update", { slugs: [slug] });
-                                    if (rep?.failed?.length) {
-                                      setActionError(t("market.updateFailedItems", "以下项更新失败：{{names}}", { names: rep.failed.map((f) => `${f.name}（${f.error}）`).join("、") }));
-                                    }
-                                    const status = await invokeCommand<SkillUpdateStatus>("skillhub_check_update", { slug });
-                                    setSkillCardUpdate((prev) => ({ ...prev, [slug]: status }));
-                                    const installedSkills = await invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>);
-                                    setSkillInstalled(installedSkills ?? {});
-                                    onChanged?.();
-                                  } catch (e) {
-                                    setActionError(String(e));
-                                  } finally {
-                                    setCardBusy(null);
-                                  }
-                                })()
-                              }
-                            >
-                              {cardBusy === slug || batchUpdates.skillRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
-                              <span className="ml-0.5">{batchUpdates.skillRunning ? t("market.updatingShort", "更新中") : t("market.updateOne", "更新")}</span>
-                            </Button>
-                          </>
-                        ) : (
-                          <>
-                            {upd ? <span>{t("market.upToDate", "最新")}</span> : null}
-                            <span className="flex-1" />
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-6 px-2 text-[10px]"
-                              disabled={cardBusy === slug || checkingUpdates || batchUpdates.skillRunning}
-                              onClick={() =>
-                                void (async () => {
-                                  setCardBusy(slug);
-                                  setActionError(null);
-                                  try {
-                                    const status = await invokeCommand<SkillUpdateStatus>("skillhub_check_update", { slug });
-                                    setSkillCardUpdate((prev) => ({ ...prev, [slug]: status }));
-                                  } catch (e) {
-                                    setActionError(String(e));
-                                  } finally {
-                                    setCardBusy(null);
-                                  }
-                                })()
-                              }
-                            >
-                              {cardBusy === slug || checkingUpdates || batchUpdates.skillRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                              <span className="ml-0.5">{t("market.checkUpdate", "检查更新")}</span>
-                            </Button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
         </div>
       )}
 

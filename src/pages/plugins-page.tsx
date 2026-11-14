@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { AlertCircle, Download, Loader2, Pencil, Plus, RefreshCw, Search, ShieldAlert, Trash2 , Bug as BugIcon } from "lucide-react";
+import { AlertCircle, Download, ExternalLink, Loader2, Pencil, Plus, RefreshCw, Search, ShieldAlert, Trash2 , Bug as BugIcon, Package } from "lucide-react";
 import type { AgentStatus } from "@/agents/types";
 import { PluginCreateDialog } from "./plugin-create-dialog";
 import { PluginDetailModal, type DrawerPluginInfo } from "./plugin-detail-modal";
@@ -25,6 +25,7 @@ import { PluginThemeWizard } from "./plugin-theme-wizard";
 import { PluginCreateEntry } from "./plugin-create-entry";
 // v0.9.7 需求3 C2：插件市场面板（精选/扩展生态/技能市场三源一套交互）。
 import { PluginMarketPanel } from "./plugin-market";
+import { marketUpdateFailures, startExtensionUpdateAll, startSkillUpdateAll, updatesPending, useMarketUpdates, type ExtensionUpdateStatus, type SkillUpdateStatus } from "./plugin-market-updates";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
 import { composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
 import { Info, Settings2, FileCode2, LayoutGrid, Pin, Bell, MousePointerClick, Palette, Layers, Rocket, Wrench } from "lucide-react";
@@ -84,11 +85,24 @@ interface PluginListResult {
   manifest_errors: [string, string][];
 }
 
-/** 需求19 第二轮：管理页分类（与创建页类型三分同构 + 核心引擎类）。
- * 需求14 M4（G10/G11 分类显式化）：清单可显式声明 category（八类枚举，
- * A 家族 [info].category / 组合家族 [plugin].category），声明值优先于
- * 推断链；CORE_ENGINE 前端硬编码名单退役（5 个核心插件已声明 core）。 */
-type PluginCategory = "core" | "session" | "mcp" | "skill" | "cli" | "custom" | "agent" | "appearance";
+/** 需求19 第二轮：管理页分类。v0.9.7 需求3（2026-11-14 用户裁决）分类重整
+ * 为**五类**：核心引擎/技能/MCP/扩展包/自定义与外观——智能体与系统能力
+ * 归核心引擎；CLI 工具（代码开发+配置的混合场景）与自建智能体归自定义；
+ * **兜底规则：无法明确归为技能、MCP、扩展包的插件一律归自定义**。
+ * 旧八类声明值（存量清单 [info].category）经 LEGACY_CATEGORY_MAP 归一。 */
+type PluginCategory = "core" | "skill" | "mcp" | "extension" | "custom";
+
+/** 旧八类声明值 → 五类归一（存量清单兼容）。 */
+const LEGACY_CATEGORY_MAP: Record<string, PluginCategory> = {
+  core: "core",
+  skill: "skill",
+  mcp: "mcp",
+  custom: "custom",
+  appearance: "custom",
+  cli: "custom",
+  agent: "custom",
+  session: "custom",
+};
 
 /** 需求14 M4-5（06 §5.3 △ 兑现）：呈现位徽标——会话插件卡片右上挂载位小
  *  图标组（title 中文呈现位），「装完即知在哪用」。 */
@@ -133,28 +147,35 @@ function MountFaces({ pluginId }: { pluginId: string }) {
 }
 
 const CATEGORY_VALUES: ReadonlySet<string> = new Set([
-  "core", "session", "mcp", "skill", "cli", "custom", "agent", "appearance",
+  "core", "skill", "mcp", "extension", "custom",
 ]);
 
+/** 五类口径归类（2026-11-14 用户裁决，见 00-原始需求「已安装统一页与分类
+ * 重整」）：显式声明优先（五类直用/旧八类归一）→ 系统能力（内置智能体/
+ * 核心引擎/系统插件/内置会话能力）归核心引擎 → 技能/MCP 按声明段 →
+ * 其余（CLI/面板/流水线/自建智能体/自建会话能力）兜底自定义。 */
 function categoryOf(p: PluginDescriptor): PluginCategory {
-  // 显式声明优先（拼错值由后端 fail loud 拒绝装载，此处再滤一道防御）。
   if (p.category && CATEGORY_VALUES.has(p.category)) return p.category as PluginCategory;
-  // v0.9.2 需求1：会话能力插件（前端注册表实现，此处统一管理面启停）。
-  // v0.9.5 需求1（原需求26）1d：声明 pipeline 的组合式插件归独立「流水线」
-  // tab（video-maker 等编排形态，原混在「会话能力」里不可辨）。
-  if (p.kind === "session") return p.has_pipeline ? "custom" : "session";
-  if (p.core) return "core";
+  // 旧「session」声明值按内置性分流（内置会话能力=系统能力归核心引擎，
+  // 自建会话能力归自定义）；其余旧值静态归一。
+  if (p.category && p.category !== "session" && LEGACY_CATEGORY_MAP[p.category]) {
+    return LEGACY_CATEGORY_MAP[p.category];
+  }
+  // 核心引擎归属边界（用户裁决 2026-11-14 三轮）：声明 core 件（解析器/
+  // 任务件/指南）+ 内置智能体（builtin）+ 内置会话核心功能（implKind=
+  // builtin 的 session 件）。系统闸门件（包治理/预览治理等 system 标记
+  // 件）**不**因此进核心引擎——按兜底规则留自定义（归属只增加智能体，
+  // 其他不变）。
+  if (p.kind === "builtin" || p.core) return "core";
+  if (p.kind === "session") return implKindOf(p) === "builtin" ? "core" : "custom";
   if (p.kind === "tool") {
     if (p.has_mcp) return "mcp";
     if (p.has_skill) return "skill";
-    // 声明式能力插件（需求19 第八轮）：[panel] 管理面板声明（解析器面板
-    // 已被核心引擎判定截获）与 [pi_extension] 自适应插件归「自定义插件」。
-    if (p.has_panel || p.has_pi_extension) return "custom";
-    return "cli";
+    // CLI/面板/pi_extension/流水线——代码开发+配置的混合场景，归自定义。
+    return "custom";
   }
-  // 自建 manifest 智能体单列「自定义插件」（独立插拔），与内置智能体分列。
-  if (p.kind === "manifest") return "custom";
-  return "agent";
+  // 自建 manifest 智能体（用户让 hub 做的）属自定义。
+  return "custom";
 }
 
 /** v0.9.5 需求1 GUI 改造 批次2：实现维度（双维度 X 轴）——业务 tab 之外的第二
@@ -182,19 +203,14 @@ const IMPL_BADGE: Record<ImplKind, { key: string; fallback: string; cls: string 
 };
 
 /** v0.9.3 需求11：分类改横向 tab（顺序按用户口径，智能体置首）。 */
-// 需求7 修1c：分类统一八类（用户口径）——智能体/核心引擎/会话能力/MCP/
-// skill工具/CLI工具/自定义插件/外观；流水线并入「自定义插件」（核心引擎
-// 仅筛选不可新建——创建入口不出现该类）。
+// v0.9.7 需求3（2026-11-14 用户裁决）：分类五类——核心引擎（含智能体与
+// 系统能力）/ 技能 / MCP / 扩展包（pi 生态 npm/git 件）/ 自定义与外观。
 const PLUGIN_CATEGORIES: Array<{ key: PluginCategory; labelKey: string; fallback: string }> = [
-  { key: "agent", labelKey: "plugins.typeAgent", fallback: "智能体" },
   { key: "core", labelKey: "plugins.catCore", fallback: "核心引擎" },
-  { key: "session", labelKey: "plugins.catSession", fallback: "会话能力" },
+  { key: "skill", labelKey: "plugins.catSkill", fallback: "技能" },
   { key: "mcp", labelKey: "plugins.typeMcp", fallback: "MCP" },
-  { key: "skill", labelKey: "plugins.typeSkill", fallback: "skill 工具" },
-  { key: "cli", labelKey: "plugins.typeCli", fallback: "CLI 工具" },
-  { key: "custom", labelKey: "plugins.catCustom", fallback: "自定义插件" },
-  // 需求14 M2（03 §2 场景 10）：外观分类——主题插件（[theme] 段声明）。
-  { key: "appearance", labelKey: "plugins.catAppearance", fallback: "外观" },
+  { key: "extension", labelKey: "plugins.catExtension", fallback: "扩展包" },
+  { key: "custom", labelKey: "plugins.catCustomGroup", fallback: "自定义与外观" },
 ];
 
 export function PluginsPage({
@@ -261,6 +277,24 @@ export function PluginsPage({
   // 无快照/会话未跑过 → 空表不显示徽标——安装态与运行态不再错位）。
   const [mcpHealth, setMcpHealth] = useState<Record<string, { status: string; error: string | null }>>({});
 
+  // v0.9.7 需求3 已安装统一页（2026-11-14 裁决）：扩展包/市场技能的更新
+  // 与还原数据面（市场「已安装」子页并入本页）。
+  const [extInstalled, setExtInstalled] = useState<string[]>([]);
+  const [extPins, setExtPins] = useState<Array<{ source: string; package: string; version: string }>>([]);
+  const [skillLedger, setSkillLedger] = useState<Record<string, string>>({});
+  const [piindexMeta, setPiindexMeta] = useState<Array<{
+    name: string; description: string; npm_package: string | null; install_command: string;
+    detail_url: string | null; category: string;
+  }> | null>(null);
+  const [extUpdates, setExtUpdates] = useState<ExtensionUpdateStatus[] | null>(null);
+  const [skillUpdates, setSkillUpdates] = useState<SkillUpdateStatus[] | null>(null);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updateBusy, setUpdateBusy] = useState<string | null>(null);
+  const batchUpdates = useMarketUpdates();
+  const [extDetailMeta, setExtDetailMeta] = useState<{
+    name: string; description: string; detail_url: string | null; category: string;
+  } | null>(null);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
@@ -281,6 +315,21 @@ export function PluginsPage({
     } catch {
       setMcpHealth({}); // 只读展示位：失败静默（不显徽标）
     }
+    // 扩展包（pi 生态件）/技能台账/钉版快照/目录元数据（失败静默——
+    // 各自独立展示位，不阻塞插件清单）。
+    const [sources, pins, ledger, piindex] = await Promise.all([
+      invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
+      invokeCommand<Array<{ source: string; package: string; version: string }>>("pi_package_builtin_pins").catch(() => []),
+      invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>),
+      invokeCommand<Array<{
+        name: string; description: string; npm_package: string | null; install_command: string;
+        detail_url: string | null; category: string;
+      }>>("piindex_search", { keyword: null }).catch(() => null),
+    ]);
+    setExtInstalled(sources ?? []);
+    setExtPins(pins ?? []);
+    setSkillLedger(ledger ?? {});
+    setPiindexMeta(piindex ?? []);
   }, []);
 
   useEffect(() => {
@@ -437,10 +486,11 @@ export function PluginsPage({
   const tr = (key: string, fallback: string) => (t(key) === key ? fallback : t(key));
 
   // v0.9.3 需求11：分类改横向 tab（替换需求20 的折叠分区），记忆最后选择。
+  // v0.9.7 五类化：旧八类存量记忆值直接回落默认「core」。
   const TAB_KEY = "plugins-center-tab";
   const [activeTab, setActiveTab] = useState<PluginCategory>(() => {
     const saved = localStorage.getItem(TAB_KEY);
-    return PLUGIN_CATEGORIES.some((c) => c.key === saved) ? (saved as PluginCategory) : "agent";
+    return PLUGIN_CATEGORIES.some((c) => c.key === saved) ? (saved as PluginCategory) : "core";
   });
   const switchTab = (key: PluginCategory) => {
     setActiveTab(key);
@@ -586,6 +636,13 @@ export function PluginsPage({
                   {tr("plugins.pendingBadge", "待确认")}
                 </Badge>
               )}
+              {/* v0.9.7 需求3（2026-11-14 裁决）：来源徽章——市场安装（技能
+                  台账在册即 SkillHub 市场件）与内置形成区分。 */}
+              {skillLedger[plugin.id] && (
+                <Badge variant="outline" className="border-primary/40 px-1 py-0 text-[9px] text-primary">
+                  {tr("plugins.badgeMarket", "市场安装")}
+                </Badge>
+              )}
               {/* 批次2：会话插件显示实现维度徽标（配置/代码/内置/组合，双维度
                   X 轴）——取代原「内置」kind 徽标（组合式被误标内置的问题顺带
                   修复）；非会话插件保持原 kind 徽标（实现维度无信息增益）。 */}
@@ -707,6 +764,39 @@ export function PluginsPage({
                 </Button>
               )}
               <span className="flex-1" />
+              {/* v0.9.7 需求3：市场技能在线更新（检出新版时出现）。 */}
+              {(() => {
+                const upd = skillUpdates?.find((u) => u.slug === plugin.id);
+                if (!skillLedger[plugin.id] || !upd?.has_update) return null;
+                const busyCard = updateBusy === plugin.id || batchUpdates.skillRunning;
+                return (
+                  <Button
+                    size="sm"
+                    className="h-6 px-2 text-[10px]"
+                    disabled={busyCard}
+                    onClick={() =>
+                      void (async () => {
+                        setUpdateBusy(plugin.id);
+                        try {
+                          await invokeCommand("skillhub_update", { slugs: [plugin.id] });
+                          const latest = await invokeCommand<
+                            SkillUpdateStatus[]
+                          >("skillhub_check_updates").catch(() => null);
+                          if (latest) setSkillUpdates(latest);
+                          await refresh();
+                        } catch (e) {
+                          console.warn("skillhub_update failed:", e);
+                        } finally {
+                          setUpdateBusy(null);
+                        }
+                      })()
+                    }
+                  >
+                    {busyCard ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                    <span className="ml-0.5">{tr("market.updateOne", "更新")} v{upd.latest}</span>
+                  </Button>
+                );
+              })()}
               <Button
                 variant="ghost"
                 size="icon"
@@ -801,9 +891,177 @@ export function PluginsPage({
         );
   };
 
+  /** v0.9.7 需求3（2026-11-14 裁决）：扩展包 tab 卡片——pi 生态件（npm/git）
+   * 统一呈现：内置钉版件带「内置」徽章，支持更新与**还原原生版本**（钉版
+   * 快照=hub 分发时版本）；市场安装件支持更新与卸载。说明来自 piindex。 */
+  const renderExtCards = () => {
+    if (extInstalled.length === 0) {
+      return (
+        <p className="col-span-full py-8 text-center text-sm text-muted-foreground">
+          {tr("plugins.extEmpty", "暂无扩展包——可在插件市场「扩展生态」安装")}
+        </p>
+      );
+    }
+    return extInstalled.map((src) => {
+      const m = src.match(/^npm:(.+?)@(.+)$/);
+      const pkg = m?.[1] ?? src.replace(/^npm:/, "");
+      const ver = m?.[2] ?? "";
+      const pin = extPins.find((p) => p.package === pkg);
+      const meta = piindexMeta?.find((e) => e.npm_package === pkg);
+      const upd = extUpdates?.find((u) => u.package === pkg);
+      const busyCard = updateBusy === pkg || batchUpdates.extensionRunning;
+      // 还原生效条件：内置件且当前版本偏离钉版快照（更新过/缺失版本）。
+      const canRestore = !!pin && ver !== pin.version;
+      const runPkg = (action: () => Promise<unknown>) => void (async () => {
+        setUpdateBusy(pkg);
+        try {
+          await action();
+          const [sources, latest] = await Promise.all([
+            invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
+            invokeCommand<ExtensionUpdateStatus[]>(
+              "extension_check_updates",
+            ).catch(() => null),
+          ]);
+          setExtInstalled(sources ?? []);
+          if (latest) setExtUpdates(latest);
+        } catch (e) {
+          console.warn("ext action failed:", e);
+        } finally {
+          setUpdateBusy(null);
+        }
+      })();
+      return (
+        <div key={src} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
+          <div className="flex items-center gap-2">
+            <Package className="h-4 w-4 shrink-0 text-primary/70" />
+            <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium" title={pkg}>{pkg}</span>
+            {pin ? (
+              <Badge variant="secondary" className="shrink-0 px-1 py-0 text-[9px]">{tr("plugins.kindBuiltin", "内置")}</Badge>
+            ) : (
+              <Badge variant="outline" className="shrink-0 border-primary/40 px-1 py-0 text-[9px] text-primary">
+                {tr("plugins.badgeMarket", "市场安装")}
+              </Badge>
+            )}
+            <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{ver ? `v${ver}` : ""}</span>
+          </div>
+          {meta?.description ? (
+            <p className="line-clamp-2 min-h-[26px] text-[10px] leading-[13px] text-muted-foreground/80" title={meta.description}>
+              {meta.description}
+            </p>
+          ) : (
+            <div className="min-h-[26px]" />
+          )}
+          <div className="mt-auto flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/70">
+            {upd?.has_update ? (
+              <span className="text-amber-600">→ v{upd.latest}</span>
+            ) : upd ? (
+              <span>{tr("market.upToDate", "最新")}</span>
+            ) : null}
+            <span className="flex-1" />
+            {meta && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6"
+                aria-label={tr("plugins.viewDetails", "详情")}
+                title={tr("plugins.viewDetails", "详情")}
+                onClick={() => setExtDetailMeta(meta)}
+              >
+                <Info className="h-3 w-3" />
+              </Button>
+            )}
+            {canRestore && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 px-2 text-[10px]"
+                disabled={busyCard}
+                title={tr("plugins.restoreNativeHint", "还原为系统原生版本") + ` v${pin!.version}`}
+                onClick={() => runPkg(() => invokeCommand("pi_package_install_online", { source: pin!.source }))}
+              >
+                {busyCard ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                <span className="ml-0.5">{tr("plugins.restoreNative", "还原")}</span>
+              </Button>
+            )}
+            {upd?.has_update && (
+              <Button
+                size="sm"
+                className="h-6 px-2 text-[10px]"
+                disabled={busyCard}
+                onClick={() => runPkg(() => invokeCommand("extension_update", { packages: [pkg] }))}
+              >
+                {busyCard ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                <span className="ml-0.5">{tr("market.updateOne", "更新")}</span>
+              </Button>
+            )}
+            {!pin && (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-[10px]"
+                  disabled={busyCard || checkingUpdates}
+                  onClick={() => runPkg(() => invokeCommand("extension_check_update", { package: pkg }))}
+                >
+                  {busyCard || checkingUpdates ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                  <span className="ml-0.5">{tr("market.checkUpdate", "检查更新")}</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 text-destructive hover:text-destructive"
+                  disabled={busyCard}
+                  aria-label={tr("plugins.remove", "卸载")}
+                  title={tr("plugins.remove", "卸载")}
+                  onClick={() => runPkg(() => invokeCommand("pi_package_uninstall_online", { name: pkg }))}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    });
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-6">
       {dialogNode}
+      {/* v0.9.7 需求3：扩展包详情弹窗（已装卡叹号——说明+查看来源）。 */}
+      <Dialog open={!!extDetailMeta} onOpenChange={(open) => !open && setExtDetailMeta(null)}>
+        <DialogContent className="max-w-md">
+          {extDetailMeta ? (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-start gap-2">
+                  <Package className="mt-0.5 h-4 w-4 shrink-0 text-primary/70" />
+                  <span className="min-w-0 break-all">{extDetailMeta.name}</span>
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3 text-sm">
+                <p className="leading-relaxed text-muted-foreground">{extDetailMeta.description || "-"}</p>
+                {extDetailMeta.category && (
+                  <div className="flex flex-wrap gap-1.5 text-[11px]">
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">{extDetailMeta.category}</span>
+                  </div>
+                )}
+                {extDetailMeta.detail_url && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => void invokeCommand("open_url", { url: extDetailMeta.detail_url })}
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    <span className="ml-1">{tr("market.viewSource", "查看来源")}</span>
+                  </Button>
+                )}
+              </div>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
       <PluginComposeDialog open={composeOpen} onOpenChange={setComposeOpen} onCreated={refresh} />
       <PluginHybridWizard open={hybridOpen} onOpenChange={setHybridOpen} onCreated={refresh} presetMount={hybridPresetMount} />
       <PluginPipelineWizard open={pipelineOpen} onOpenChange={setPipelineOpen} onCreated={refresh} />
@@ -1006,12 +1264,107 @@ export function PluginsPage({
         </div>
       )}
 
+      {/* v0.9.7 需求3 已安装统一页（2026-11-14 裁决）：在线更新条——市场
+          技能+扩展包（含内置件）统一检查/全部更新；批量走全局 store，
+          离开页面不打断。 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 px-2.5 text-xs"
+          disabled={checkingUpdates || batchUpdates.extensionRunning || batchUpdates.skillRunning}
+          onClick={() =>
+            void (async () => {
+              setCheckingUpdates(true);
+              try {
+                const [ext, skill] = await Promise.all([
+                  invokeCommand<ExtensionUpdateStatus[]>(
+                    "extension_check_updates",
+                  ).catch(() => null),
+                  invokeCommand<SkillUpdateStatus[]>(
+                    "skillhub_check_updates",
+                  ).catch(() => null),
+                ]);
+                setExtUpdates(ext);
+                setSkillUpdates(skill);
+              } finally {
+                setCheckingUpdates(false);
+              }
+            })()
+          }
+        >
+          {checkingUpdates ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+          <span className="ml-1">{tr("market.checkUpdates", "检查更新")}</span>
+        </Button>
+        {(extUpdates?.some((u) => u.has_update) ||
+          skillUpdates?.some((u) => u.has_update) ||
+          batchUpdates.extensionRunning ||
+          batchUpdates.skillRunning) && (
+          <Button
+            size="sm"
+            className="h-7 px-2.5 text-xs"
+            disabled={batchUpdates.extensionRunning || batchUpdates.skillRunning}
+            onClick={() => {
+              if (extUpdates?.some((u) => u.has_update)) startExtensionUpdateAll();
+              if (skillUpdates?.some((u) => u.has_update)) startSkillUpdateAll();
+              // 批量完成后刷新本页数据（页面还开着时；全局 store 离开不打断）。
+              void (async () => {
+                while (updatesPending()) await new Promise((r) => setTimeout(r, 800));
+                try {
+                  const [sources, latest, skillsLatest, ledger] = await Promise.all([
+                    invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
+                    invokeCommand<ExtensionUpdateStatus[]>(
+                      "extension_check_updates",
+                    ).catch(() => null),
+                    invokeCommand<SkillUpdateStatus[]>(
+                      "skillhub_check_updates",
+                    ).catch(() => null),
+                    invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>),
+                  ]);
+                  setExtInstalled(sources ?? []);
+                  if (latest) setExtUpdates(latest);
+                  if (skillsLatest) setSkillUpdates(skillsLatest);
+                  setSkillLedger(ledger ?? {});
+                  await refresh();
+                  // 批量失败项如实呈现（评审修复轮关切：failed 不能无前端消费）。
+                  const failures = marketUpdateFailures();
+                  if (failures.length > 0) {
+                    void alertDialog({
+                      title: tr("env.updateFailed", "更新失败"),
+                      description: tr("market.updateFailedItems", "以下项更新失败：{{names}}").replace(
+                        "{{names}}",
+                        failures.join("、"),
+                      ),
+                    });
+                  }
+                } catch { /* 完成刷新失败静默 */ }
+              })();
+            }}
+          >
+            {batchUpdates.extensionRunning || batchUpdates.skillRunning ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Download className="h-3.5 w-3.5" />
+            )}
+            <span className="ml-1">
+              {batchUpdates.extensionRunning || batchUpdates.skillRunning
+                ? tr("market.updatingProgress", "更新中 {{d}}/{{n}}")
+                    .replace("{{d}}", String(batchUpdates.extensionDone + batchUpdates.skillDone))
+                    .replace("{{n}}", String(batchUpdates.extensionTotal + batchUpdates.skillTotal))
+                : tr("market.updateAll", "全部更新")}
+            </span>
+          </Button>
+        )}
+      </div>
+
       {/* v0.9.3 需求11：分类横向 tab（胶囊形态）——业务 tab（Y 轴：在哪用）
           × 实现筛选（X 轴：怎么造）双视角（批次2）+ 需求14 搜索框（G8）。 */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-3">
         <div className="flex flex-wrap items-center gap-1.5">
         {PLUGIN_CATEGORIES.map((cat) => {
-          const items = (result?.plugins ?? []).filter((x) => categoryOf(x) === cat.key);
+          const items = cat.key === "extension"
+            ? extInstalled
+            : (result?.plugins ?? []).filter((x) => categoryOf(x) === cat.key);
           const active = activeTab === cat.key;
           return (
             <button
@@ -1076,6 +1429,9 @@ export function PluginsPage({
         {/* 需求11 追加三 A：原生 MCP 服务管理区（jishu 直连条目，键级管
             mcp.json 非 jishu-hub 用户条目；与聚合插件互补）。 */}
         {activeTab === "mcp" && !search.trim() && <NativeMcpSection />}
+        {/* v0.9.7 需求3：扩展包 tab——pi 生态件（npm/git）专页；搜索态下
+            插件全库命中不含生态件（与旧市场已装子页口径一致）。 */}
+        {activeTab === "extension" && !search.trim() && renderExtCards()}
         {(result?.plugins ?? [])
           .filter((x) =>
             search.trim()

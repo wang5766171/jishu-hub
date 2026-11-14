@@ -12,6 +12,22 @@
 import { useSyncExternalStore } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 
+/** 跨端冻结契约（snake_case，与 piindex.rs 逐字段一致——锚定见
+ *  cross-boundary-contract.test.ts；2026-11-14 需求3 已装统一页消费）。 */
+export interface ExtensionUpdateStatus {
+  package: string;
+  installed: string;
+  latest: string;
+  has_update: boolean;
+}
+
+export interface SkillUpdateStatus {
+  slug: string;
+  installed: string;
+  latest: string;
+  has_update: boolean;
+}
+
 export interface MarketUpdateState {
   extensionRunning: boolean;
   extensionTotal: number;

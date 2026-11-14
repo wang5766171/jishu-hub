@@ -1412,6 +1412,32 @@ pub(crate) fn pi_package_installed_sources() -> Result<Vec<String>, String> {
         .unwrap_or_default())
 }
 
+/// 内置 pi 扩展钉版清单（v0.9.7 需求3 已安装统一页）：hub 分发时的版本
+/// 快照——「还原系统原生版本」的锚点（编译期常量随包走，升级即新快照）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BuiltinPin {
+    pub source: String,
+    pub package: String,
+    pub version: String,
+}
+
+#[tauri::command]
+pub(crate) fn pi_package_builtin_pins() -> Result<Vec<BuiltinPin>, String> {
+    Ok(agent::jishu_self::PI_EXTENSION_PACKAGES
+        .iter()
+        .map(|(source, _dir)| {
+            let body = source.strip_prefix("npm:").unwrap_or(source);
+            let (package, version) = body.rsplit_once('@').unwrap_or((body, ""));
+            BuiltinPin {
+                source: source.to_string(),
+                package: package.to_string(),
+                version: version.to_string(),
+            }
+        })
+        .collect())
+}
+
 /// 在线包安装/卸载（npm/git 源直达；不走 curated 插件闸门——装的是 pi
 /// 扩展包本体，非 hub 插件条目）。git 源形如 git:github.com/owner/repo
 /// （piindex 目录 GitHub 直装卡）。

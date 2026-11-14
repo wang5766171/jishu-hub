@@ -665,7 +665,14 @@
     "modalTabSource": "Source",
     "removeTitle": "Uninstall \"{{name}}\"?",
     "removeDesc": "The plugin will no longer be available. You can install it again later.",
-    "removeConfirm": "Uninstall"
+    "removeConfirm": "Uninstall",
+    "badgeMarket": "Market",
+    "catExtension": "Extensions",
+    "catCustomGroup": "Custom & Appearance",
+    "restoreNative": "Restore",
+    "restoreNativeHint": "Restore to bundled native version",
+    "extEmpty": "No extensions yet — install from Market → Extensions",
+    "catSkill": "Skills"
   },
   "config": {
     "title": "Configuration",

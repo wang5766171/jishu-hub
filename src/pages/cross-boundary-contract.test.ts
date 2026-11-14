@@ -15,6 +15,7 @@ import { join } from "node:path";
 const repoRoot = join(__dirname, "..", "..");
 const piindexRs = readFileSync(join(repoRoot, "src-tauri", "src", "agent", "piindex.rs"), "utf-8");
 const marketPageTs = readFileSync(join(repoRoot, "src", "pages", "plugin-market.tsx"), "utf-8");
+const updatesTs = readFileSync(join(repoRoot, "src", "pages", "plugin-market-updates.ts"), "utf-8");
 
 /** 提取 Rust struct 的字段名（`pub name: Type,` → name）。 */
 function rustStructFields(rs: string, struct: string): string[] {
@@ -26,19 +27,19 @@ function rustStructFields(rs: string, struct: string): string[] {
 /** 提取前端 TS interface 的字段名。 */
 function tsInterfaceFields(ts: string, iface: string): string[] {
   const m = ts.match(new RegExp(`interface ${iface} \\{([^}]*)\\}`));
-  if (!m) throw new Error(`interface ${iface} not found in plugin-market.tsx`);
+  if (!m) throw new Error(`interface ${iface} not found`);
   return [...m[1].matchAll(/^\s*(\w+)[?]?:/gm)].map((x) => x[1]);
 }
 
 describe("跨端契约：piindex 更新状态字段（snake_case 冻结口径）", () => {
   it("ExtensionUpdateStatus：Rust ↔ TS 逐字段一致", () => {
-    expect(tsInterfaceFields(marketPageTs, "ExtensionUpdateStatus")).toEqual(
+    expect(tsInterfaceFields(updatesTs, "ExtensionUpdateStatus")).toEqual(
       rustStructFields(piindexRs, "ExtensionUpdateStatus"),
     );
   });
 
   it("SkillUpdateStatus：Rust ↔ TS 逐字段一致", () => {
-    expect(tsInterfaceFields(marketPageTs, "SkillUpdateStatus")).toEqual(
+    expect(tsInterfaceFields(updatesTs, "SkillUpdateStatus")).toEqual(
       rustStructFields(piindexRs, "SkillUpdateStatus"),
     );
   });

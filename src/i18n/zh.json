@@ -665,7 +665,14 @@
     "modalTabSource": "源码",
     "removeTitle": "卸载「{{name}}」？",
     "removeDesc": "卸载后插件不再可用，可重新安装恢复。",
-    "removeConfirm": "卸载"
+    "removeConfirm": "卸载",
+    "badgeMarket": "市场安装",
+    "catExtension": "扩展包",
+    "catCustomGroup": "自定义与外观",
+    "restoreNative": "还原",
+    "restoreNativeHint": "还原为系统原生版本",
+    "extEmpty": "暂无扩展包——可在插件市场「扩展生态」安装",
+    "catSkill": "技能"
   },
   "config": {
     "title": "配置管理",
