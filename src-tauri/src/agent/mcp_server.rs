@@ -1029,14 +1029,48 @@ struct LateConnections {
     inflight: std::collections::HashSet<String>,
 }
 
-/// 收割判活：ping 一次——Ok 或 JSON-RPC error（子 server 未实现 ping，
-/// 文案特征 `plugin \`x\` error:`）都算活；io 类失败（write/read failed、
-/// 超时）= 子进程已死。死连接收编会永远占 Live 位（call_tool 对 Live 失败
-/// 不重连），必须在这里丢弃。
+/// 收割判活：ping 一次——**白名单**（评审 P1-6）：`Ok` = 活；`Err` 文案含
+/// `error:`（子 server 未实现 ping 的 JSON-RPC error，经 message_result
+/// 格式化为 `plugin \`x\` error:`）= 连接仍在、进程未死，算活；其余 Err
+/// （write/read failed、`plugin \`x\` exited`、超时）一律判死。旧黑名单
+/// 写法（排除 failed/timed out）会把未知错误形态误判活。死连接收编会永远
+/// 占 Live 位（call_tool 对 Live 失败不重连），必须在这里丢弃。
 fn connection_alive(t: &mut dyn PluginTransport) -> bool {
     match t.request("ping", json!({})) {
         Ok(_) => true,
-        Err(e) => !(e.contains("failed") || e.contains("timed out") || e.contains("超时")),
+        Err(e) => e.contains("error:"),
+    }
+}
+
+/// 收割判活 ping 的截止时长：spawn 路径有 `SPAWN_DEADLINE`，收割路径同样
+/// 要有——挂死连接的 ping（阻塞 read 无超时）不设上界会拖住整轮 refresh。
+const HARVEST_PING_DEADLINE: Duration = Duration::from_secs(4);
+
+/// 收割判活结果（带截止包装）。
+enum HarvestPing {
+    /// ping 通过，可收编入 children。
+    Alive(LivePlugin),
+    /// ping 明确失败（白名单判死），调用方就地 kill。
+    Dead(LivePlugin),
+    /// 到点未归：判死；连接所有权仍滞留在 ping 线程的阻塞 read 上。
+    TimedOut,
+}
+
+/// connection_alive 的带截止包装（评审 P2）：`PluginTransport::request` 是
+/// 阻塞 IO（StdioChild::request 无超时参数，write/read 直接等），连接所有权
+/// 暂移 ping 线程，主线程 `recv_timeout` 到点未归 = 判死。滞留线程归位时
+/// 接收端已关闭、send 失败，连接随线程退出 drop（stdin 关闭，子进程随之
+/// 退出）兜底回收——「不丢连接」纪律的镜像：这里要的就是让它死。
+fn connection_alive_with_deadline(mut live: LivePlugin, deadline: Duration) -> HarvestPing {
+    let (tx, rx) = std::sync::mpsc::channel::<(LivePlugin, bool)>();
+    std::thread::spawn(move || {
+        let alive = connection_alive(live.transport.as_mut());
+        let _ = tx.send((live, alive));
+    });
+    match rx.recv_timeout(deadline) {
+        Ok((live, true)) => HarvestPing::Alive(live),
+        Ok((live, false)) => HarvestPing::Dead(live),
+        Err(_) => HarvestPing::TimedOut,
     }
 }
 
@@ -1159,22 +1193,40 @@ impl McpServer {
         });
         // 需求8 修复B：收割 late 收留池——上一轮截止后仍在握手的线程若已
         // 连好，连接在这里转正（替换该插件的 Failed 占位/冷却）。已禁用或
-        // 闲置期间已死（io 失败）的连接丢弃（drop = kill 子进程）；JSON-RPC
-        // 错误（如子 server 未实现 ping）不代表连接死，照常收编。
+        // 闲置期间已死（io 失败/ping 超时）的连接丢弃（kill / drop 兜底）；
+        // JSON-RPC 错误（如子 server 未实现 ping）不代表连接死，照常收编。
+        // 评审 P2：判活 ping 带截止（spawn 路径有 SPAWN_DEADLINE，收割路径
+        // 同样要有）——挂死连接不会拖住整轮 refresh。
         {
             let late = self.late.clone();
             let mut guard = late.lock().unwrap_or_else(|e| e.into_inner());
             let pooled: Vec<(String, LivePlugin)> = guard.pool.drain().collect();
             drop(guard);
-            for (plugin_id, mut live) in pooled {
+            for (plugin_id, live) in pooled {
                 let still_enabled = decls.iter().any(|d| d.plugin_id() == plugin_id);
-                let responsive = still_enabled && connection_alive(live.transport.as_mut());
-                if responsive {
-                    log::info!("[hub-mcp] late 连接收割：{plugin_id}");
-                    self.children.retain(|c| c.plugin_id() != plugin_id);
-                    self.children.push(PluginChild::Live(live));
-                } else {
+                if !still_enabled {
+                    let mut live = live;
                     live.transport.kill();
+                    continue;
+                }
+                match connection_alive_with_deadline(live, HARVEST_PING_DEADLINE) {
+                    HarvestPing::Alive(live) => {
+                        log::info!("[hub-mcp] late 连接收割：{plugin_id}");
+                        self.children.retain(|c| c.plugin_id() != plugin_id);
+                        self.children.push(PluginChild::Live(live));
+                    }
+                    HarvestPing::Dead(mut live) => {
+                        live.transport.kill();
+                    }
+                    HarvestPing::TimedOut => {
+                        // 超时判死；连接所有权滞留在 ping 线程的阻塞 read 上，
+                        // 无法就地 kill——ping 线程归位时接收端已关、send 失败，
+                        // 连接随线程退出 drop 兜底回收。
+                        log::warn!(
+                            "[hub-mcp] late 连接判活 ping 超时（>{}s），判死丢弃：{plugin_id}",
+                            HARVEST_PING_DEADLINE.as_secs()
+                        );
+                    }
                 }
             }
         }
@@ -1963,6 +2015,92 @@ process.stdin.on('data', d => {
         assert!(
             msg.contains("hub_mcp_list"),
             "未知插件错误应提示先查目录: {msg}"
+        );
+    }
+
+    /// 判活测试用传输桩：按脚本返回固定结果（可带延迟模拟挂死）。
+    struct MockTransport {
+        reply: Result<Value, String>,
+        delay: Option<Duration>,
+    }
+
+    impl PluginTransport for MockTransport {
+        fn request(&mut self, _method: &str, _params: Value) -> Result<Value, String> {
+            if let Some(d) = self.delay {
+                std::thread::sleep(d);
+            }
+            self.reply.clone()
+        }
+    }
+
+    fn mock_live(reply: Result<Value, String>, delay: Option<Duration>) -> LivePlugin {
+        LivePlugin {
+            plugin_id: "mock".to_string(),
+            transport: Box::new(MockTransport { reply, delay }),
+            tools: Vec::new(),
+        }
+    }
+
+    /// 评审 P1-6：判活白名单——Ok 活；JSON-RPC error（未实现 ping，文案
+    /// 特征 `error:`）活；io 失败 / exited / 超时一律死（旧黑名单会把未知
+    /// 错误形态误判活）。
+    #[test]
+    fn connection_alive_whitelist() {
+        assert!(connection_alive(&mut MockTransport {
+            reply: Ok(json!({})),
+            delay: None,
+        }));
+        // 子 server 未实现 ping → JSON-RPC error（message_result 格式）= 活。
+        assert!(connection_alive(&mut MockTransport {
+            reply: Err("plugin `x` error: Method not found".to_string()),
+            delay: None,
+        }));
+        // 死征样例：io 失败 / 进程退出 / 超时。
+        for dead in [
+            "plugin `x` exited",
+            "write to plugin `x` failed: broken pipe",
+            "read from plugin `x` failed: eof",
+            "request timed out",
+        ] {
+            assert!(
+                !connection_alive(&mut MockTransport {
+                    reply: Err(dead.to_string()),
+                    delay: None,
+                }),
+                "must be dead: {dead}"
+            );
+        }
+    }
+
+    /// 评审 P2：收割判活带截止——快回按结果归位；到点未归 = TimedOut
+    /// （判死），且调用不阻塞超过截止附近量级。
+    #[test]
+    fn connection_alive_with_deadline_times_out() {
+        // 快回：活 / 死两路。
+        assert!(matches!(
+            connection_alive_with_deadline(mock_live(Ok(json!({})), None), Duration::from_secs(1)),
+            HarvestPing::Alive(_)
+        ));
+        assert!(matches!(
+            connection_alive_with_deadline(
+                mock_live(Err("plugin `x` exited".to_string()), None),
+                Duration::from_secs(1),
+            ),
+            HarvestPing::Dead(_)
+        ));
+        // 挂死：ping 线程 300ms 后才回，截止 50ms → TimedOut。
+        let start = std::time::Instant::now();
+        assert!(matches!(
+            connection_alive_with_deadline(
+                mock_live(Ok(json!({})), Some(Duration::from_millis(300))),
+                Duration::from_millis(50),
+            ),
+            HarvestPing::TimedOut
+        ));
+        assert!(
+            start.elapsed() < Duration::from_millis(250),
+            "超时分支应在截止附近返回，实测 {:?}",
+            start.elapsed()
         );
     }
 }

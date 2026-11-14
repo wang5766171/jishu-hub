@@ -326,6 +326,10 @@ fn add_hybrid(dir_path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| CliError::InvalidArg("plugin.toml missing [plugin].id".to_string()))?
         .to_string();
+    // 评审 P1-19：组合件三段守卫（菜单 ≤5 / agent-tool 名唯一 / 语言接管
+    // 互斥）在写盘前过闸——与 save_composed_manifest 同源守卫（抽取版），
+    // 失败给中文错误（fail loud，exit 2），不产生半装目录。
+    agent::plugin::validate_composed_guards(&id, &value).map_err(CliError::InvalidArg)?;
     // 确认卡展示元数据（name/mount 兜底同 composed_session_plugin_specs）。
     let name = value
         .get("plugin")
@@ -363,6 +367,14 @@ fn add_hybrid(dir_path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
         if !code.contains("JishuPlugin.register") {
             return Err(CliError::InvalidArg(
                 "component.js missing \"JishuPlugin.register\" (code contract)".to_string(),
+            ));
+        }
+        // 评审九（装链补查）：API 版本声明与 CLI validate 基础校验同款——
+        // component.js 须声明 version: 1（当前 PLUGIN_API_VERSION），缺失
+        // fail loud（文案对齐 validate 既有中文提示）。
+        if !code.contains("version: 1") && !code.contains("version:1") {
+            return Err(CliError::InvalidArg(
+                "component.js 应声明 version: 1（当前 PLUGIN_API_VERSION）".to_string(),
             ));
         }
     }
@@ -784,6 +796,10 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
             std::fs::remove_dir_all(&dir).map_err(|e| {
                 CliError::InvalidArg(format!("cannot remove {}: {e}", dir.display()))
             })?;
+            // 评审十：skillhub 台账收尾——对齐 GUI 卸载链「先 plugin_remove
+            // 后清台账」语义（skillhub_install 注册的 hub 插件目录形态，
+            // id 即台账 slug；无条目幂等无操作）。
+            agent::skillhub::skillhub_forget(id);
             if ctx.json {
                 println!(
                     "{}",
@@ -811,6 +827,8 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
             std::fs::remove_dir_all(&composed_dir).map_err(|e| {
                 CliError::InvalidArg(format!("cannot remove {}: {e}", composed_dir.display()))
             })?;
+            // 评审十：skillhub 台账收尾（同上——卸载链先删目录后清台账）。
+            agent::skillhub::skillhub_forget(id);
             if ctx.json {
                 println!(
                     "{}",
@@ -854,6 +872,9 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
         })?;
     }
     agent::plugin::forget_plugin_disabled(id); // 清 disabled 引用（T16：id 已离 known 集时 set_enabled 静默失败残留死键）
+                                               // 评审十：skillhub 台账收尾——对齐 GUI 卸载链「先 plugin_remove 后清
+                                               // 台账」语义（无条目幂等无操作）。
+    agent::skillhub::skillhub_forget(id);
 
     if ctx.json {
         println!(
@@ -1523,6 +1544,124 @@ mount = \"block-renderer\"
             .disabled
             .iter()
             .any(|x| x == "session.get-me"));
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// 评审 P1-19：add-hybrid 安装前组合件守卫——同语言双装（用户插件之间
+    /// 语言集相交）在写盘前拒绝（中文错误、不产生半装目录）。
+    #[test]
+    fn add_hybrid_rejects_same_language_double_install() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let hybrid_toml = |id: &str| {
+            format!(
+                r#"[plugin]
+id = "{id}"
+name = "渲染件"
+kind = "session-composed"
+[source]
+type = "code-block"
+languages = ["mermaid"]
+[render]
+component = "@file:component.js"
+mount = "block-renderer"
+"#
+            )
+        };
+        let component = "JishuPlugin.register({ version: 1 });";
+        let dir_a = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir_a.path().join("plugin.toml"),
+            hybrid_toml("session.cli-lang-a"),
+        )
+        .unwrap();
+        std::fs::write(dir_a.path().join("component.js"), component).unwrap();
+        add_hybrid(dir_a.path().to_str().unwrap(), &ctx()).expect("首装放行");
+        assert!(composed_dir("session.cli-lang-a")
+            .join("plugin.toml")
+            .is_file());
+        // 语言守卫只对启用集校验（禁用件不占语言位）——CLI 装的件默认禁用
+        //（确认卡安全阀），先启用 A 再装同语言 B 才触发冲突。
+        agent::plugin::set_plugin_enabled("session.cli-lang-a", true).unwrap();
+        // 同语言第二件：写盘前拒绝（中文错误）。
+        let dir_b = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir_b.path().join("plugin.toml"),
+            hybrid_toml("session.cli-lang-b"),
+        )
+        .unwrap();
+        std::fs::write(dir_b.path().join("component.js"), component).unwrap();
+        let err =
+            add_hybrid(dir_b.path().to_str().unwrap(), &ctx()).expect_err("同语言双装必须拒绝");
+        let msg = match err {
+            CliError::InvalidArg(m) => m,
+            other => format!("{other:?}"),
+        };
+        assert!(msg.contains("语言接管冲突"), "got: {msg}");
+        assert!(msg.contains("已由插件"), "错误须指认接管者: {msg}");
+        // 守卫在写盘前——半装目录不产生。
+        assert!(!composed_dir("session.cli-lang-b").exists());
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// 评审九（装链补查）：add-hybrid 的 component.js 须声明 version: 1
+    ///（与 CLI validate 基础校验同款；缺失 fail loud）。
+    #[test]
+    fn add_hybrid_requires_version_declaration() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let toml_src = r#"[plugin]
+id = "session.cli-ver"
+name = "v"
+kind = "session-composed"
+[source]
+type = "code-block"
+languages = ["toml-demo"]
+[render]
+component = "@file:component.js"
+mount = "block-renderer"
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("plugin.toml"), toml_src).unwrap();
+        // 缺版本声明 → 拒。
+        std::fs::write(dir.path().join("component.js"), "JishuPlugin.register({});").unwrap();
+        let err = add_hybrid(dir.path().to_str().unwrap(), &ctx()).expect_err("缺 version 拒绝");
+        let msg = match err {
+            CliError::InvalidArg(m) => m,
+            other => format!("{other:?}"),
+        };
+        assert!(msg.contains("version: 1"), "got: {msg}");
+        assert!(!composed_dir("session.cli-ver").exists());
+        // 声明在位 → 放行。
+        std::fs::write(
+            dir.path().join("component.js"),
+            "JishuPlugin.register({ version: 1 });",
+        )
+        .unwrap();
+        add_hybrid(dir.path().to_str().unwrap(), &ctx()).expect("version: 1 在位放行");
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// 评审十：CLI remove 收尾清 skillhub 台账——台账含 slug → remove →
+    /// 台账无（对齐 GUI 卸载链「先 plugin_remove 后清台账」）。
+    #[test]
+    fn remove_clears_skillhub_ledger_entry() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let id = "session.cli-rm-ledger";
+        agent::plugin::save_composed_manifest(id, &composed_toml(id, "台账件")).unwrap();
+        // 伪造台账条目（skillhub_install 注册的 hub 插件目录形态，id 即 slug）。
+        std::fs::write(
+            tmp.path().join("skillhub-installed.json"),
+            format!(r#"{{"{id}": "1.0.0"}}"#),
+        )
+        .unwrap();
+        assert!(agent::skillhub::skillhub_installed().contains_key(id));
+        remove(id, &ctx()).expect("remove ok");
+        assert!(!agent::skillhub::skillhub_installed().contains_key(id));
         std::env::remove_var("JISHU_HUB_HOME");
     }
 }

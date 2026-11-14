@@ -2,7 +2,7 @@
 //! 默认安装集收敛的权威模块。
 //!
 //! - `curated.json`（include_str 内嵌）同时驱动：市场精选列表、required
-//!   19 件默认安装集（`ensure_*` 收敛的物化范围、`plugin_set_enabled`
+//!   20 件默认安装集（`ensure_*` 收敛的物化范围、`plugin_set_enabled`
 //!   的拒绝禁用名单）、需求4 首启场景推荐（`scenes[]`）。
 //! - 安装/卸载按 kind 分派：composed（+theme）/ agent（agents 清单形态）/
 //!   pi-package（toml + npm 包）/ builtin-ts（编译内置，启停即装卸）。
@@ -13,7 +13,12 @@ use super::*;
 
 const CURATED_JSON: &str = include_str!("../../../resources/plugin-market/curated.json");
 
+/// 评审 P2：结构守卫——deny_unknown_fields 把 curated.json 拼写漂移（字段
+/// 改名/required 拼错/多出未知字段）从「静默按默认值吞掉」变成启动/首次
+/// 调用期 fail loud（市场是单一真源，静默漂移会连锁破坏默认安装集与场景
+/// 推荐——如 required 拼错即该件退出默认安装集且无任何征兆）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MarketEntry {
     pub id: String,
     /// agent | pi-package | composed | composed-theme | builtin-ts
@@ -27,6 +32,7 @@ pub struct MarketEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CuratedFile {
     #[serde(default)]
     _meta: serde_json::Value,
@@ -37,7 +43,11 @@ fn curated() -> &'static Vec<MarketEntry> {
     static CURATED: std::sync::OnceLock<Vec<MarketEntry>> = std::sync::OnceLock::new();
     CURATED.get_or_init(|| {
         serde_json::from_str::<CuratedFile>(CURATED_JSON)
-            .unwrap_or_else(|e| panic!("curated.json parse failed: {e}"))
+            .unwrap_or_else(|e| {
+                panic!(
+                "curated.json 结构非法（市场单一真源解析失败，检查 _meta/entries 字段拼写）: {e}"
+            )
+            })
             .entries
     })
 }
@@ -206,4 +216,56 @@ fn remove_agent_toml(id: &str) -> Result<(), String> {
 fn pinned_source_for_plugin(id: &str) -> Option<String> {
     let (_, pkg) = PI_PACKAGE_PLUGIN_MAP.iter().find(|(pid, _)| *pid == id)?;
     super::super::jishu_self::JishuSelfAgent::pinned_source_for_package(pkg).map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 内嵌真源必须可解析（deny_unknown_fields 闸常开——发布前兜底）。
+    #[test]
+    fn embedded_curated_json_parses_strict() {
+        let file: CuratedFile = serde_json::from_str(CURATED_JSON).expect("curated.json 结构非法");
+        assert!(!file.entries.is_empty());
+        assert!(
+            file.entries.iter().filter(|e| e.required).count() >= 1,
+            "required 默认安装集不能为空"
+        );
+    }
+
+    /// 评审 P2：结构守卫——正常负载过、多未知字段拒、required 拼错拒。
+    #[test]
+    fn curated_strict_parse_guards() {
+        let normal = r#"{
+            "_meta": {"comment": "x"},
+            "entries": [
+                {"id": "a", "kind": "agent", "title": "A", "description": "d",
+                 "category": "c", "scenes": ["programming"], "required": true}
+            ]
+        }"#;
+        assert!(serde_json::from_str::<CuratedFile>(normal).is_ok());
+
+        // 条目多未知字段 → 拒（拼写漂移不再静默吞默认值）。
+        let unknown_field = r#"{
+            "entries": [
+                {"id": "a", "kind": "agent", "title": "A", "description": "d",
+                 "category": "c", "required": true, "requiredd": false}
+            ]
+        }"#;
+        let err = serde_json::from_str::<CuratedFile>(unknown_field).expect_err("未知字段必须拒绝");
+        assert!(err.to_string().contains("unknown field"), "got: {err}");
+
+        // required 拼错 → 同样拒（该字段必填，缺失/改名都会在解析期暴露）。
+        let typo_required = r#"{
+            "entries": [
+                {"id": "a", "kind": "agent", "title": "A", "description": "d",
+                 "category": "c", "reqired": true}
+            ]
+        }"#;
+        assert!(serde_json::from_str::<CuratedFile>(typo_required).is_err());
+
+        // 顶层未知字段 → 拒。
+        let top_unknown = r#"{"entires": []}"#;
+        assert!(serde_json::from_str::<CuratedFile>(top_unknown).is_err());
+    }
 }

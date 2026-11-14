@@ -26,8 +26,11 @@ const LIST_TTL: Duration = Duration::from_secs(10 * 60);
 /// 预期卡片量级（站点改版/解析漂移的告警线——低于此值视为解析失败回落）。
 const MIN_EXPECTED_CARDS: usize = 100;
 
+/// 评审八（camelCase→snake_case 统一）：全仓 JSON 字段口径收敛为
+/// snake_case——多词字段源码名本就是 snake_case，仅删 rename 属性即随
+/// serde 默认（字段名原样）序列化。磁盘缓存负载随之变 snake（旧 camel
+/// 负载由 CACHE_SCHEMA 版本闸整体拒收重拉，见下方注释）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct PiindexEntry {
     pub name: String,
     /// 中文说明（piindex 中文页，176/192 有；缺失为空串——前端兜底英文）。
@@ -79,8 +82,11 @@ fn disk_cache_path() -> std::path::PathBuf {
     crate::agent::manifest::hub_home().join("piindex-cache.json")
 }
 
-/// 当前缓存结构版本（v1=无 schema 标记的历史负载）。
-const CACHE_SCHEMA: u64 = 2;
+/// 当前缓存结构版本（v1=无 schema 标记的历史负载；v2=camelCase 字段；
+/// v3=snake_case 字段——评审八：PiindexEntry 去掉 rename_all 后负载字段
+/// 全变 snake_case，旧 camel 负载靠此闸整体拒收走网络重拉，不依赖反序列化
+/// 恰好失败）。
+const CACHE_SCHEMA: u64 = 3;
 
 /// 磁盘缓存快照：(当日新鲜, 条目)。schema 不符/条目过少/解析失败 → None。
 fn disk_cache_snapshot() -> Option<(bool, Vec<PiindexEntry>)> {
@@ -368,8 +374,8 @@ pub async fn piindex_search(keyword: Option<&str>) -> Result<Vec<PiindexEntry>, 
 
 // ── 扩展（pi packages）检测/批量更新 ──
 
+/// 评审八：字段口径随全仓统一为 snake_case（has_update 等），删 rename 属性。
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ExtensionUpdateStatus {
     pub package: String,
     pub installed: String,
@@ -423,6 +429,57 @@ fn split_package(entry: &str) -> Option<(&str, &str)> {
     pkg.rsplit_once('@').filter(|(name, _)| !name.is_empty())
 }
 
+/// 版本不等判定（评审 P2：替代字符串不等，对齐项目既有 byVersionDesc 风格
+/// ——按 `.` 分段数值比较，段缺失补 0；任一段非数字则回退字符串不等）。
+/// 修复两误报："1.0" vs "1.0.0"（字符串不等 → 误报有更新）、
+/// "1.2.10" vs "1.2.9"（字符串比较 10 < 9 → 误报无更新）。
+fn version_ne(a: &str, b: &str) -> bool {
+    let segs_a: Vec<&str> = a.trim().split('.').collect();
+    let segs_b: Vec<&str> = b.trim().split('.').collect();
+    let parsed = |segs: &[&str]| -> Option<Vec<u64>> {
+        segs.iter().map(|s| s.parse::<u64>().ok()).collect()
+    };
+    match (parsed(&segs_a), parsed(&segs_b)) {
+        (Some(va), Some(vb)) => {
+            let len = va.len().max(vb.len());
+            (0..len).any(|i| va.get(i).copied().unwrap_or(0) != vb.get(i).copied().unwrap_or(0))
+        }
+        // 非数字段（预发布后缀/元数据）无法数值化——回退字符串不等。
+        _ => a != b,
+    }
+}
+
+/// 批量更新报告（评审 P2：partial failure 可见——前端按字段渲染；跨端
+/// 契约字段名冻结 updated/failed/name/error。partial failure 仍完成可完成
+/// 的项，失败项带原因出现在 failed，不再整批 Err / 静默丢失）。
+#[derive(Debug, Serialize)]
+pub struct BatchUpdateReport {
+    /// 成功更新的包名/slug 列表。
+    pub updated: Vec<String>,
+    /// 失败项（name + 原因）。
+    pub failed: Vec<BatchUpdateFailure>,
+}
+
+/// 单个失败项（字段名跨端冻结：name/error）。
+#[derive(Debug, Serialize)]
+pub struct BatchUpdateFailure {
+    pub name: String,
+    pub error: String,
+}
+
+/// 逐项结果 → 报告（纯函数可单测；保序）。
+fn batch_report(results: Vec<(String, Result<String, String>)>) -> BatchUpdateReport {
+    let mut updated = Vec::new();
+    let mut failed = Vec::new();
+    for (name, outcome) in results {
+        match outcome {
+            Ok(_) => updated.push(name),
+            Err(error) => failed.push(BatchUpdateFailure { name, error }),
+        }
+    }
+    BatchUpdateReport { updated, failed }
+}
+
 /// 检测更新：settings.json 钉定版本 vs npm latest（并发）。
 pub async fn extension_check_updates() -> Result<Vec<ExtensionUpdateStatus>, String> {
     let packages = read_packages()?;
@@ -435,7 +492,7 @@ pub async fn extension_check_updates() -> Result<Vec<ExtensionUpdateStatus>, Str
                     Ok(latest) => ExtensionUpdateStatus {
                         package: pkg.to_string(),
                         installed: ver.to_string(),
-                        has_update: latest != ver,
+                        has_update: version_ne(&latest, &ver),
                         latest,
                     },
                     Err(e) => {
@@ -456,10 +513,9 @@ pub async fn extension_check_updates() -> Result<Vec<ExtensionUpdateStatus>, Str
 
 /// 批量更新：把给定包（空=全部有更新的）钉到 npm latest，原子写回
 /// settings.json。pi 进程下次启动按新钉定版本自装；运行中的旧进程由
-/// 签名漂移/新会话自然换代。
-pub async fn extension_update(
-    packages: Option<Vec<String>>,
-) -> Result<Vec<ExtensionUpdateStatus>, String> {
+/// 签名漂移/新会话自然换代。评审 P2：返回 {updated, failed} 双列报告——
+/// partial failure 仍完成可完成的项，失败项不再整批 Err 或静默丢失。
+pub async fn extension_update(packages: Option<Vec<String>>) -> Result<BatchUpdateReport, String> {
     let statuses = extension_check_updates().await?;
     let targets: Vec<_> = statuses
         .iter()
@@ -472,41 +528,34 @@ pub async fn extension_update(
         .filter(|s| s.has_update)
         .collect();
     if targets.is_empty() {
-        return Ok(Vec::new());
+        return Ok(BatchUpdateReport {
+            updated: Vec::new(),
+            failed: Vec::new(),
+        });
     }
     // 走 pi 包管理器安装到新版本（npm 装载 + settings.json 钉定注册一步
     // 完成——与安装链 pi_package_install_online 同机制，比我方手改
     // settings.json 更可靠：pi 的 managed install 同步维护 npm/package.json）。
-    // 单包失败记 warn 继续（批量语义），全部失败才 Err。
-    let mut updated: Vec<ExtensionUpdateStatus> = Vec::new();
-    let mut failures: Vec<String> = Vec::new();
+    // 单包失败记 warn 继续（批量语义），失败随 failed 列如实上报。
+    let mut results: Vec<(String, Result<String, String>)> = Vec::new();
     for status in &targets {
         let source = format!("npm:{}@{}", status.package, status.latest);
-        match crate::agent::jishu_self::JishuSelfAgent::run_pi_package_command("install", &source)
-            .await
-        {
-            Ok(_) => updated.push(ExtensionUpdateStatus {
-                package: status.package.clone(),
-                installed: status.latest.clone(),
-                latest: status.latest.clone(),
-                has_update: false,
-            }),
-            Err(e) => {
-                log::warn!("[piindex] 扩展更新失败 {}: {e}", status.package);
-                failures.push(format!("{}: {e}", status.package));
-            }
+        let outcome =
+            crate::agent::jishu_self::JishuSelfAgent::run_pi_package_command("install", &source)
+                .await
+                .map(|_| status.latest.clone());
+        if let Err(e) = &outcome {
+            log::warn!("[piindex] 扩展更新失败 {}: {e}", status.package);
         }
+        results.push((status.package.clone(), outcome));
     }
-    if updated.is_empty() && !failures.is_empty() {
-        return Err(failures.join("; "));
-    }
-    Ok(updated)
+    Ok(batch_report(results))
 }
 
 // ── 技能（SkillHub）检测/批量更新 ──
 
+/// 评审八：字段口径随全仓统一为 snake_case（has_update 等），删 rename 属性。
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SkillUpdateStatus {
     pub slug: String,
     pub installed: String,
@@ -535,7 +584,7 @@ pub async fn skillhub_check_updates() -> Result<Vec<SkillUpdateStatus>, String> 
                 };
                 SkillUpdateStatus {
                     slug,
-                    has_update: latest != ver,
+                    has_update: version_ne(&latest, &ver),
                     installed: ver,
                     latest,
                 }
@@ -546,10 +595,11 @@ pub async fn skillhub_check_updates() -> Result<Vec<SkillUpdateStatus>, String> 
 }
 
 /// 批量更新：逐项覆盖安装（skillhub_install 幂等——重下 zip 覆盖落盘 +
-/// 台账刷新版本）。空=全部有更新的。
-pub async fn skillhub_update(slugs: Option<Vec<String>>) -> Result<Vec<SkillUpdateStatus>, String> {
+/// 台账刷新版本）。空=全部有更新的。评审 P2：与 extension_update 同形状
+/// 返回 {updated, failed}；partial failure 仍完成可完成的项。
+pub async fn skillhub_update(slugs: Option<Vec<String>>) -> Result<BatchUpdateReport, String> {
     let statuses = skillhub_check_updates().await?;
-    let mut updated = Vec::new();
+    let mut results: Vec<(String, Result<String, String>)> = Vec::new();
     for status in statuses {
         if !status.has_update {
             continue;
@@ -559,17 +609,13 @@ pub async fn skillhub_update(slugs: Option<Vec<String>>) -> Result<Vec<SkillUpda
                 continue;
             }
         }
-        match super::skillhub::skillhub_install(&status.slug).await {
-            Ok(_) => updated.push(SkillUpdateStatus {
-                slug: status.slug,
-                installed: status.latest.clone(),
-                latest: status.latest,
-                has_update: false,
-            }),
-            Err(e) => log::warn!("[piindex] skill 更新失败 {}: {e}", status.slug),
+        let outcome = super::skillhub::skillhub_install(&status.slug).await;
+        if let Err(e) = &outcome {
+            log::warn!("[piindex] skill 更新失败 {}: {e}", status.slug);
         }
+        results.push((status.slug, outcome));
     }
-    Ok(updated)
+    Ok(batch_report(results))
 }
 
 /// 单包检测更新（已安装页卡片独立检查）。
@@ -584,7 +630,7 @@ pub async fn extension_check_update(package: &str) -> Result<ExtensionUpdateStat
     Ok(ExtensionUpdateStatus {
         package: pkg.to_string(),
         installed: ver.to_string(),
-        has_update: latest != ver,
+        has_update: version_ne(&latest, &ver),
         latest,
     })
 }
@@ -610,7 +656,7 @@ pub async fn skillhub_check_update(slug: &str) -> Result<SkillUpdateStatus, Stri
     }
     Ok(SkillUpdateStatus {
         slug: slug.to_string(),
-        has_update: latest != ver,
+        has_update: version_ne(&latest, &ver),
         installed: ver,
         latest,
     })
@@ -622,7 +668,9 @@ mod tests {
 
     /// 磁盘缓存文件类测试串行锁（Rust 测试默认并行——两个测试并发读写
     /// 同一 piindex-cache.json 会互踩：一个删文件，另一个落入真实网络
-    /// 请求导致超时假失败）。
+    /// 请求导致超时假失败）。评审 P1-18（M7）：锁内测试同时持有
+    /// crate 级 env_test_lock 共享锁——碰 JISHU_HUB_HOME 的测试跨模块互斥，
+    /// 防其它模块的 env 测试与本组测试竞态改写 home。
     static CACHE_TESTS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// 清单解析：npm/git 卡收录（主题卡同收）、curl/无命令卡跳过、
@@ -674,7 +722,10 @@ mod tests {
         let g = &list[1];
         assert_eq!(g.name, "@code-yeongyu/pi-websearch");
         assert_eq!(g.npm_package, None);
-        assert_eq!(g.install_command, "pi install git:github.com/code-yeongyu/pi-websearch");
+        assert_eq!(
+            g.install_command,
+            "pi install git:github.com/code-yeongyu/pi-websearch"
+        );
         assert_eq!(
             g.detail_url.as_deref(),
             Some("https://piindex.dev/zh/?q=%40code-yeongyu%2Fpi-websearch")
@@ -693,6 +744,10 @@ mod tests {
     #[tokio::test]
     async fn fetch_list_disk_hit_path_does_not_deadlock() {
         let _serial = CACHE_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        // P1-18（M7）：碰 disk_cache_path（JISHU_HUB_HOME）的测试持共享 env 锁。
+        let _env = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let entry = PiindexEntry {
             name: "pi-x".to_string(),
             description: String::new(),
@@ -718,7 +773,10 @@ mod tests {
         *cache().lock().unwrap_or_else(|e| e.into_inner()) = None;
         let outcome =
             tokio::time::timeout(std::time::Duration::from_secs(5), fetch_list_inner(false)).await;
-        assert!(outcome.is_ok(), "fetch_list_inner 超时——磁盘缓存命中路径自锁死锁");
+        assert!(
+            outcome.is_ok(),
+            "fetch_list_inner 超时——磁盘缓存命中路径自锁死锁"
+        );
         assert!(outcome.unwrap().is_ok());
         *cache().lock().unwrap_or_else(|e| e.into_inner()) = None;
         let _ = std::fs::remove_file(&path);
@@ -730,6 +788,10 @@ mod tests {
     #[test]
     fn disk_cache_schema_gates_old_payloads() {
         let _serial = CACHE_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        // P1-18（M7）：碰 disk_cache_path（JISHU_HUB_HOME）的测试持共享 env 锁。
+        let _env = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let entry = PiindexEntry {
             name: "pi-x".to_string(),
             description: String::new(),
@@ -779,5 +841,49 @@ mod tests {
             Some(("pi-lens", "4.3.0"))
         );
         assert_eq!(split_package("git:https://x"), None);
+    }
+
+    /// 评审 P2：版本数值段比较器——段缺失补 0（"1.0"=="1.0.0" 不误报有
+    /// 更新）、数值序正确（"1.2.10"≠"1.2.9" 不误判相等）、非数字段回退
+    /// 字符串不等。
+    #[test]
+    fn version_ne_numeric_segment_compare() {
+        // 等价版本不误报（字符串不等曾误报的两类）。
+        assert!(!version_ne("1.0", "1.0.0"));
+        assert!(!version_ne("4.3", "4.3.0.0"));
+        assert!(!version_ne("1.2.10", "1.2.10"));
+        // 真实差异不漏报（含数值序：字符串比较 10 < 9 的反例）。
+        assert!(version_ne("1.2.10", "1.2.9"));
+        assert!(version_ne("1.2.9", "1.2.10"));
+        assert!(version_ne("2.0.0", "1.9.9"));
+        // 非数字段（预发布/元数据）回退字符串不等。
+        assert!(version_ne("1.0.0-beta", "1.0.0"));
+        assert!(version_ne("abc", "abd"));
+        assert!(!version_ne("abc", "abc"));
+    }
+
+    /// 评审 P2：批量更新报告——updated/failed 双列如实分装、保序、
+    /// partial failure 不丢失败项也不拦成功项。
+    #[test]
+    fn batch_report_splits_updated_and_failed() {
+        let results = vec![
+            ("a".to_string(), Ok("1.0".to_string())),
+            ("b".to_string(), Err("boom".to_string())),
+            ("c".to_string(), Ok("2.0".to_string())),
+            ("d".to_string(), Err("slow".to_string())),
+        ];
+        let report = batch_report(results);
+        assert_eq!(report.updated, vec!["a".to_string(), "c".to_string()]);
+        assert_eq!(report.failed.len(), 2);
+        assert_eq!(report.failed[0].name, "b");
+        assert_eq!(report.failed[0].error, "boom");
+        assert_eq!(report.failed[1].name, "d");
+        assert_eq!(report.failed[1].error, "slow");
+        // 全成功 / 全失败两极。
+        let all_ok = batch_report(vec![("x".to_string(), Ok(String::new()))]);
+        assert!(all_ok.failed.is_empty() && all_ok.updated == vec!["x".to_string()]);
+        let all_bad = batch_report(vec![("y".to_string(), Err("e".to_string()))]);
+        assert!(all_bad.updated.is_empty() && all_bad.failed.len() == 1);
+        assert_eq!(batch_report(Vec::new()).updated.len(), 0);
     }
 }

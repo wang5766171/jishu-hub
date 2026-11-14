@@ -20,6 +20,33 @@ use serde::{Deserialize, Serialize};
 
 const API_BASE: &str = "https://api.skillhub.cn";
 
+/// 安装包下载大小上限（50MB）：请求前查 Content-Length 拒超限，下载中
+/// 累计字节超限中止（防无 Content-Length 的流式响应撑爆内存）。
+const MAX_SKILL_ZIP_BYTES: usize = 50 * 1024 * 1024;
+
+/// slug 白名单守卫（评审 P1-5）：`^[A-Za-z0-9][A-Za-z0-9._-]*$` 且不含
+/// `..`——禁 `/`、`\`、`..` 等路径穿越形态。slug 会拼进 API URL path/query
+/// 与落盘目录名（plugins/<slug>/），detail/install/uninstall 三个入口统一
+/// 过闸，不匹配即 Err（fail loud）。
+fn ensure_slug_safe(slug: &str) -> Result<(), String> {
+    let ok = !slug.is_empty()
+        && slug
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        && !slug.contains("..");
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "slug 非法: {slug:?}（只允许字母/数字开头，含字母、数字、.、_、-，且不含连续 ..）"
+        ))
+    }
+}
+
 /// 场景 id → SkillHub category（与前端 plugin-scenes.ts、curated.json scenes
 /// 共用同一组场景 id；映射依据 场景分类与插件推荐.md §2）。
 pub fn skillhub_category_for_scene(scene: &str) -> Option<&'static str> {
@@ -196,7 +223,10 @@ pub async fn skillhub_list(
 
 /// 详情（含版本历史首项即最新版）。
 pub async fn skillhub_detail(slug: &str) -> Result<SkillhubEntry, String> {
-    let url = format!("{API_BASE}/api/v1/skills/{slug}");
+    ensure_slug_safe(slug)?;
+    // slug 经白名单守卫后已是安全字符集，仍走 urlencode（评审 P2：与
+    // download query 同款防御，URL 元字符注入零容忍）。
+    let url = format!("{API_BASE}/api/v1/skills/{}", urlencode(slug));
     let response = client()
         .map_err(|e| e.to_string())?
         .get(&url)
@@ -244,7 +274,11 @@ fn load_installed() -> BTreeMap<String, String> {
 fn save_installed(map: &BTreeMap<String, String>) {
     let path = installed_registry_path();
     if let Ok(json) = serde_json::to_string_pretty(map) {
-        let _ = std::fs::write(path, json);
+        // 评审 P2：台账原子写（对齐 piindex.rs 磁盘缓存同款 atomic_write）
+        // ——半写文件会被 load_installed 静默吞成空台账，已装态全丢。
+        if let Err(e) = crate::util::atomic_write(&path, json.as_bytes()) {
+            log::warn!("[skillhub] 安装台账写入失败: {e}");
+        }
     }
 }
 
@@ -268,28 +302,90 @@ fn skill_target_dirs() -> Vec<PathBuf> {
     targets
 }
 
+/// SKILL.md frontmatter description 简析（缺失/为空返回空串，调用方回退）。
+/// 形态覆盖：单行 `description: xxx`（可带引号）与 YAML 块标量
+/// `description: |` / `|-` / `>` / `>-`（后续缩进行剥缩进拼接为单行）。
+/// 块标量泄漏根因：naive 解析只取键后同行文本，`|-` 字面被原样当值。
+fn description_from_skill_md(text: &str) -> String {
+    let mut lines = text.lines().skip_while(|l| !l.starts_with("---"));
+    lines.next(); // 消费首个 `---`（frontmatter 开始）
+    let mut out = String::new();
+    let mut in_block = false;
+    for line in lines {
+        if line.starts_with("---") {
+            break; // frontmatter 结束
+        }
+        if in_block {
+            // 块标量续行：比键更深缩进；回到顶层键即块结束。
+            if line.starts_with(' ') || line.starts_with('\t') {
+                if !out.is_empty() {
+                    out.push(' ');
+                }
+                out.push_str(line.trim());
+                continue;
+            }
+            break;
+        }
+        if let Some(v) = line.strip_prefix("description:") {
+            let v = v.trim();
+            if matches!(v, "|" | "|-" | ">" | ">-") {
+                in_block = true;
+            } else if !v.is_empty() {
+                return v.trim_matches('"').trim_matches('\'').to_string();
+            }
+        }
+    }
+    out
+}
+
 /// 安装：下载 zip → 校验（拒穿越 + 必含 SKILL.md）→ 解压到各 agent 技能
 /// 目录 `<dir>/<slug>/` → 记台账。
 pub async fn skillhub_install(slug: &str) -> Result<String, String> {
+    ensure_slug_safe(slug)?;
     let detail = skillhub_detail(slug).await?;
     let version = if detail.version.is_empty() {
         "latest".to_string()
     } else {
         detail.version
     };
-    let url = format!("{API_BASE}/api/v1/download?slug={slug}&source=dsh");
-    let bytes = client()
+    let url = format!(
+        "{API_BASE}/api/v1/download?slug={}&source=dsh",
+        urlencode(slug)
+    );
+    let response = client()
         .map_err(|e| e.to_string())?
         .get(&url)
         .send()
         .await
         .map_err(|e| format!("下载失败: {e}"))?
         .error_for_status()
-        .map_err(|e| format!("下载失败: {e}"))?
-        .bytes()
+        .map_err(|e| format!("下载失败: {e}"))?;
+    // 评审 P2：下载大小上限——Content-Length 超限直接拒（不发全量请求体）。
+    if let Some(len) = response.content_length() {
+        if len as usize > MAX_SKILL_ZIP_BYTES {
+            return Err(format!(
+                "安装包超过大小上限（{len} 字节 > {}MB），已拒绝",
+                MAX_SKILL_ZIP_BYTES / (1024 * 1024)
+            ));
+        }
+    }
+    // 分块读取累计计数——无 Content-Length 的流也兜底（读到一半才发现超限
+    // 即中止，不再继续缓冲）。
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut response = response;
+    while let Some(chunk) = response
+        .chunk()
         .await
         .map_err(|e| format!("下载失败: {e}"))?
-        .to_vec();
+    {
+        if bytes.len() + chunk.len() > MAX_SKILL_ZIP_BYTES {
+            return Err(format!(
+                "安装包超过大小上限（{}MB），已中止下载",
+                MAX_SKILL_ZIP_BYTES / (1024 * 1024)
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     // 解压到内存结构（先校验后落盘）。
     let reader = std::io::Cursor::new(&bytes);
     let mut archive = zip::ZipArchive::new(reader).map_err(|e| format!("安装包损坏: {e}"))?;
@@ -344,7 +440,9 @@ pub async fn skillhub_install(slug: &str) -> Result<String, String> {
         .min_by_key(|n| n.matches('/').count())
         .ok_or("安装包缺少 SKILL.md，已拒绝（不是有效技能）")?
         .to_string();
-    let root_prefix = skill_md_path.rsplit_once('/').map(|(parent, _)| parent.to_string());
+    let root_prefix = skill_md_path
+        .rsplit_once('/')
+        .map(|(parent, _)| parent.to_string());
     let root_files: Vec<(String, Vec<u8>)> = files
         .into_iter()
         .filter_map(|(name, content)| {
@@ -383,14 +481,33 @@ pub async fn skillhub_install(slug: &str) -> Result<String, String> {
         let _ = std::fs::remove_dir_all(&stage);
         write_skill_files(&stage, &root_files)?;
         let description = if detail.description.len() > 1000 {
-            format!("{}…", detail.description.chars().take(998).collect::<String>())
+            format!(
+                "{}…",
+                detail.description.chars().take(998).collect::<String>()
+            )
         } else {
             detail.description.clone()
         };
+        // 评审追加（「|-」YAML 块标量根因·后端半边）：[info] description 从
+        // SKILL.md frontmatter 解析（含块标量），缺失回退市场 API description
+        // ——前端无 frontmatter 解析器，manifest 缺该字段时技能卡会把 SKILL.md
+        // 原始串兜底显示（「|-」字面泄漏）。超长截断对齐上方 1000 字符惯例。
+        let from_md = description_from_skill_md(&skill_md_text);
+        let info_description = if from_md.is_empty() {
+            description.clone()
+        } else if from_md.chars().count() > 1000 {
+            format!("{}…", from_md.chars().take(998).collect::<String>())
+        } else {
+            from_md
+        };
+        let mut info = serde_json::json!({ "id": slug, "display_name": detail.name });
+        if !info_description.is_empty() {
+            info["description"] = serde_json::Value::String(info_description);
+        }
         let manifest = serde_json::json!({
             "schema": 1,
             "kind": "tool",
-            "info": { "id": slug, "display_name": detail.name },
+            "info": info,
             "skill": { "description": description, "body": "installed from SkillHub" }
         });
         let mut file: super::manifest::schema::AgentManifestFile =
@@ -419,7 +536,10 @@ pub async fn skillhub_install(slug: &str) -> Result<String, String> {
 }
 
 /// 技能文件落盘到目标目录（清旧覆写；路径安全校验同安装链）。
-fn write_skill_files(target_root: &std::path::Path, files: &[(String, Vec<u8>)]) -> Result<(), String> {
+fn write_skill_files(
+    target_root: &std::path::Path,
+    files: &[(String, Vec<u8>)],
+) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(target_root);
     std::fs::create_dir_all(target_root).map_err(|e| e.to_string())?;
     for (name, content) in files {
@@ -437,12 +557,15 @@ fn write_skill_files(target_root: &std::path::Path, files: &[(String, Vec<u8>)])
 
 /// 技能对应的 hub 目录形式插件根（存在即已注册形态）。
 pub fn hub_plugin_root(slug: &str) -> Option<std::path::PathBuf> {
-    let root = crate::agent::manifest::hub_home().join("plugins").join(slug);
+    let root = crate::agent::manifest::hub_home()
+        .join("plugins")
+        .join(slug);
     root.join("plugin.toml").is_file().then_some(root)
 }
 
 /// 卸载：从各 agent 技能目录移除 + 销台账。
 pub fn skillhub_uninstall(slug: &str) -> Result<String, String> {
+    ensure_slug_safe(slug)?;
     // hub 插件形态：插件目录与分发由命令层走 plugin_remove 统一回收，
     // 此处只清台账；旧直写装法（无 hub 插件）残留的各 agent 目录就地清理。
     if hub_plugin_root(slug).is_none() {
@@ -458,6 +581,15 @@ pub fn skillhub_uninstall(slug: &str) -> Result<String, String> {
     installed.remove(slug);
     save_installed(&installed);
     Ok(format!("{slug} 已卸载"))
+}
+
+/// 仅清台账条目（CLI `plugins remove` 等统一卸载链的收尾——对齐 GUI 卸载链
+/// 「先 plugin_remove 后清台账」语义；幂等，无条目无操作）。
+pub fn skillhub_forget(slug: &str) {
+    let mut installed = load_installed();
+    if installed.remove(slug).is_some() {
+        save_installed(&installed);
+    }
 }
 
 fn common_top_dir<'a>(names: &[&'a str]) -> Option<String> {
@@ -524,5 +656,105 @@ mod tests {
         assert!(e.requires_api_key);
         assert!(e.publisher_verified);
         assert_eq!(e.publisher_name, "官方");
+    }
+
+    /// 评审 P1-5：slug 白名单守卫——路径穿越样例全部拒绝，正常样例放行。
+    #[test]
+    fn slug_guard_rejects_traversal_and_accepts_normal() {
+        // 穿越/危险形态（拒）。
+        for bad in [
+            "../etc", "..", "a/b", "a\\b", "/abs", "a..b", "..hidden", "-lead", "_lead", "", "a b",
+            "a?b",
+        ] {
+            let err = super::ensure_slug_safe(bad).unwrap_err();
+            assert!(err.contains("slug 非法"), "sample {bad:?} → {err}");
+        }
+        // 正常形态（过）。
+        for good in [
+            "demo",
+            "wps-office-suite",
+            "demo_v2",
+            "demo.v2",
+            "a1-b2_c3.d4",
+        ] {
+            super::ensure_slug_safe(good).unwrap_or_else(|e| panic!("sample {good:?} → {e}"));
+        }
+    }
+
+    /// 台账写读回（P2 原子写链路 + skillhub_forget 幂等清理）。
+    #[test]
+    fn installed_ledger_roundtrip_and_forget() {
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let mut ledger = super::load_installed();
+        ledger.insert("demo".to_string(), "1.0.0".to_string());
+        super::save_installed(&ledger);
+        assert_eq!(
+            super::skillhub_installed().get("demo").map(String::as_str),
+            Some("1.0.0")
+        );
+        super::skillhub_forget("demo");
+        assert!(!super::skillhub_installed().contains_key("demo"));
+        // 幂等：重复清无副作用。
+        super::skillhub_forget("demo");
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// 评审追加（「|-」块标量根因）：frontmatter description 解析——单行/
+    /// 块标量（|- 与 |）/引号值/缺失四态，块标量不再泄漏字面标记。
+    #[test]
+    fn description_from_skill_md_parses_block_scalar() {
+        // 块标量 |-：多行缩进拼接为单行（泄漏样例原文）。
+        let strip_block = "---
+name: demo
+description: |-
+  第一行说明
+  第二行说明
+version: 1.0.0
+---
+
+正文";
+        assert_eq!(
+            super::description_from_skill_md(strip_block),
+            "第一行说明 第二行说明"
+        );
+        // 块标量 |（clip）同款处理；块在下一个顶层键处终止。
+        let clip_block = "---
+description: |
+  line one
+  line two
+name: demo
+---
+body";
+        assert_eq!(
+            super::description_from_skill_md(clip_block),
+            "line one line two"
+        );
+        // 单行值（含引号剥离）。
+        let inline = "---
+name: demo
+description: \"简短说明\"
+---
+";
+        assert_eq!(super::description_from_skill_md(inline), "简短说明");
+        let plain = "---
+description: 裸值说明
+---
+";
+        assert_eq!(super::description_from_skill_md(plain), "裸值说明");
+        // 缺失 → 空串（调用方回退市场 API description）。
+        assert_eq!(
+            super::description_from_skill_md(
+                "---
+name: x
+---
+"
+            ),
+            ""
+        );
+        assert_eq!(super::description_from_skill_md("no frontmatter"), "");
     }
 }

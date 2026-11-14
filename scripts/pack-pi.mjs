@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, rmSync, existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync, createWriteStream, realpathSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve, join, relative } from "node:path";
 import archiver from "archiver";
 import { fixShebang, readRuntimeDeps } from "./lib/pi-common.mjs";
 
@@ -164,19 +164,27 @@ const remaining = collectLinkEntries(piBundle);
 if (remaining.length > 0) {
   console.error(
     `[pack-pi] FAILED: ${remaining.length} symlink/junction entries remain after dereference:\n` +
-      remaining.slice(0, 10).map(([p, real]) => `  ${p} -> ${real}`).join("\n")
+      remaining.slice(0, 10).map(([p, real]) => `  ${p} -> ${real}`).join("\n") +
+      `\n[pack-pi] 提示：若仓库/构建路径本身含符号链接（subst、网盘同步、junction 挂载），` +
+      `请改用真实路径重跑；连续两轮仍残留多为解引用失败（权限/占用）。`
   );
   process.exit(1);
 }
 
-// 全树收集链接条目（realpath 与自身 resolve 路径不一致 = symlink/junction；
-// Windows 上 lstat 对 junction 不报 isSymbolicLink，只能靠 realpath 比对）。
+// 全树收集链接条目。评审十一修复误判：判定改为「realpath 相对**父目录
+// realpath** 的子路径名 ≠ 自身名」——只有条目自身是 symlink/junction 才会
+// 指向别处。旧实现拿整路径 realpath 与字面量比对，仓库路径本身含符号链接
+// （subst/网盘同步/junction 挂载的构建目录）时父段永远不一致 → 全树皆
+// 假阳性、解引用死循环式报错。Windows junction 不报 lstat.isSymbolicLink，
+// 必须靠 realpath 比对（大小写不敏感）。
 // 返回 [fullPath, realPath][]；不递归进链接本体（避免重复遍历目标内容）。
 function collectLinkEntries(rootDir) {
   const links = [];
   const walk = (dir) => {
+    let parentReal;
     let items;
     try {
+      parentReal = realpathSync(dir);
       items = readdirSync(dir, { withFileTypes: true });
     } catch {
       return;
@@ -189,7 +197,9 @@ function collectLinkEntries(rootDir) {
       } catch {
         continue; // 失效链接（目标不存在）留给步骤 6 清理
       }
-      if (real.toLowerCase() !== resolve(full).toLowerCase()) {
+      // 非链接条目的 realpath 必为 <父realpath>/<自身名>——偏离（含 ../ 逃逸、
+      // 指向兄弟/外部）即条目自身是链接。
+      if (relative(parentReal, real).toLowerCase() !== item.name.toLowerCase()) {
         links.push([full, real]);
         continue;
       }

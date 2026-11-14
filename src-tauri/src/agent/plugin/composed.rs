@@ -88,7 +88,7 @@ const BUILTIN_THEME_PLUGINS: &[(&str, &str, &str)] = &[(
 )];
 
 /// 幂等部署内置组合清单（lib.rs 启动调用）。
-/// v0.9.7 需求3 C3：**只物化 curated required 集**（默认安装 19 件中的
+/// v0.9.7 需求3 C3：**只物化 curated required 集**（默认安装 20 件中的
 /// composed 形态）——非必需件不落盘 = 不在 plugin_list = 市场可见可装；
 /// 用户已物化的非必需件**不覆盖**（尊重改造）、不删除；必需件保留覆写
 /// 自愈（系统语义）。phase-divider 随需求2 去阶段化退出默认集（已物化
@@ -98,13 +98,13 @@ pub fn ensure_builtin_composed_manifests() {
     for (id, toml) in BUILTIN_COMPOSED_MANIFESTS {
         let dir = composed_plugins_root().join(id);
         let target = dir.join("plugin.toml");
-        // 非必需件且未物化 → 跳过（不落盘）；已物化 → 不覆盖（用户可能改造）。
+        // 非必需件 → 跳过（不落盘、已物化的原样保留不覆盖不删除——尊重
+        // 用户改造）；required 件保留覆写自愈（系统语义）。
+        // （评审 P2：原「!is_required && !target.is_file() 先 continue」分支
+        // 被下方无条件 continue 完全覆盖，属死代码，删除。）
         let is_required = required.contains(id);
-        if !is_required && !target.is_file() {
-            continue;
-        }
         if !is_required {
-            continue; // 已存在的非必需件：原样保留
+            continue;
         }
         let _ = std::fs::create_dir_all(&dir);
         if let Ok(existing) = std::fs::read_to_string(&target) {
@@ -122,9 +122,6 @@ pub fn ensure_builtin_composed_manifests() {
         let dir = composed_plugins_root().join(id);
         let target = dir.join("plugin.toml");
         let is_required = required.contains(id);
-        if !is_required && !target.is_file() {
-            continue;
-        }
         if !is_required {
             continue;
         }
@@ -413,26 +410,13 @@ pub fn clear_pending_confirm_marker(id: &str) {
     }
 }
 
-/// 用户组合清单保存（需求13 C3 向导落点）：校验可解析 + id 一致 + 非内置，
-/// 原子写 ~/.jishu-hub/plugins/<id>/plugin.toml。
-pub fn save_composed_manifest(id: &str, toml: &str) -> Result<(), String> {
-    if id.trim().is_empty() || !id.starts_with("session.") {
-        return Err("组合插件 id 须以 session. 开头".to_string());
-    }
-    // v0.9.7 需求3 C3.2：覆盖拒绝仅对 curated required 内置件保留；
-    // 非必需内置件（如午夜蓝主题）允许被用户另存覆盖（市场可还原）。
-    if is_builtin_composed(id) && market::is_required_plugin(id) {
-        return Err(format!("内置组合插件 {id} 不可覆盖（可另存新 id）"));
-    }
-    let value: toml::Value = toml.parse().map_err(|e| format!("TOML 解析失败: {e}"))?;
-    let decl_id = value
-        .get("plugin")
-        .and_then(|p| p.get("id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if decl_id != id {
-        return Err(format!("清单 id ({decl_id:?}) 与目标 id ({id:?}) 不一致"));
-    }
+/// 组合件安装/保存共用的三段守卫（评审 P1-19：抽取自
+/// save_composed_manifest，守卫逻辑零改动仅搬家）——CLI add-hybrid 浅拷贝
+/// 写盘前与 save 同闸，失败给中文错误（fail loud，exit 2）：
+/// ①[menu] 段校验（label/prompt 非空 + 启用菜单插件 ≤5）；
+/// ②[[agent-tool]] 名全局唯一；
+/// ③code-block 语言接管冲突（用户插件之间语言集不得相交）。
+pub fn validate_composed_guards(id: &str, value: &toml::Value) -> Result<(), String> {
     // 需求7 修1d：[menu] 段校验——label/prompt 非空 + 启用菜单插件总数 ≤5
     //（保存期 fail loud；页面不提示上限，超额报错即用户要求的交互）。
     if let Some(menu) = value.get("menu") {
@@ -513,6 +497,31 @@ pub fn save_composed_manifest(id: &str, toml: &str) -> Result<(), String> {
             }
         }
     }
+    Ok(())
+}
+
+/// 用户组合清单保存（需求13 C3 向导落点）：校验可解析 + id 一致 + 非内置 +
+/// 三段守卫（见 [`validate_composed_guards`]），原子写
+/// ~/.jishu-hub/plugins/<id>/plugin.toml。
+pub fn save_composed_manifest(id: &str, toml: &str) -> Result<(), String> {
+    if id.trim().is_empty() || !id.starts_with("session.") {
+        return Err("组合插件 id 须以 session. 开头".to_string());
+    }
+    // v0.9.7 需求3 C3.2：覆盖拒绝仅对 curated required 内置件保留；
+    // 非必需内置件（如午夜蓝主题）允许被用户另存覆盖（市场可还原）。
+    if is_builtin_composed(id) && market::is_required_plugin(id) {
+        return Err(format!("内置组合插件 {id} 不可覆盖（可另存新 id）"));
+    }
+    let value: toml::Value = toml.parse().map_err(|e| format!("TOML 解析失败: {e}"))?;
+    let decl_id = value
+        .get("plugin")
+        .and_then(|p| p.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if decl_id != id {
+        return Err(format!("清单 id ({decl_id:?}) 与目标 id ({id:?}) 不一致"));
+    }
+    validate_composed_guards(id, &value)?;
     let dir = composed_plugins_root().join(id);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     crate::util::atomic_write(&dir.join("plugin.toml"), toml.as_bytes())

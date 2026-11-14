@@ -33,15 +33,15 @@ const pkgsToUpdate = [
   "packages/ai/package.json",
   "packages/coding-agent/package.json",
   "packages/tui/package.json",
-  "packages/server/package.json",
-  // v0.85.0 起进入 coding-agent 运行时闭包的包（chord/client/protocol/telemetry）；
+  // v0.85.0 起进入 coding-agent 运行时闭包的包（chord/telemetry）；
   // v1.1.0 起新增 codemode/mcp（运行时闭包）；durable/env 不入闭包不发布，
   // 但作为 workspace 包同样统一版本号。
+  // （评审十二清理：packages/client、packages/protocol、packages/server
+  // 目录仍在 fork，但上游已移除其 package.json（实测 2026-11-14），原条目
+  // 被 existsSync 静默跳过——死条目删除。）
   "packages/chord/package.json",
   "packages/codemode/package.json",
   "packages/mcp/package.json",
-  "packages/client/package.json",
-  "packages/protocol/package.json",
   "packages/telemetry/package.json",
   "packages/evals/package.json",
   // v1.4.0-14 补：durable/env 同为 workspace 包统一版本号（其内部互相
@@ -54,6 +54,35 @@ const pkgsToUpdate = [
   // 后果（ETARGET）。
   "packages/schema/package.json",
 ];
+
+// fork packages/ 实际目录与清单一致性告警（console.warn 级，不阻断）：
+// 上游增删包导致漂移时提示维护者同步本脚本（实测机制：目录存在但
+// package.json 已被上游移除 = 死条目，同样纳入比对）。
+const actualPkgDirs = new Set(
+  fs
+    .readdirSync(PACKAGES_DIR, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+);
+const listedPkgDirs = new Set(
+  pkgsToUpdate
+    .filter((p) => p.startsWith("packages/"))
+    .map((p) => p.split("/")[1])
+);
+for (const name of actualPkgDirs) {
+  if (!listedPkgDirs.has(name)) {
+    console.warn(
+      `⚠️ fork packages/${name} 不在 pkgsToUpdate 清单——若为新增 workspace 包（有 package.json）请补入，避免版本漂移 ETARGET`
+    );
+  }
+}
+for (const name of listedPkgDirs) {
+  if (!actualPkgDirs.has(name)) {
+    console.warn(
+      `⚠️ packages/${name} 在 pkgsToUpdate 清单但 fork 目录已不存在——死条目，请清理 upgrade-version.mjs`
+    );
+  }
+}
 
 for (const pkgPath of pkgsToUpdate) {
   const fullPath = path.join(ROOT_DIR, pkgPath);
@@ -68,15 +97,14 @@ for (const pkgPath of pkgsToUpdate) {
     json.version = newVersion;
     
     // Also update cross-dependencies within the workspace
+    // （评审十二同步：pi-server/pi-client/pi-protocol 已随上游移除，现存
+    // workspace package.json 零引用（实测 grep 2026-11-14）——死条目删除。）
     const internalDeps = [
       "@earendil-works/pi-agent-core",
       "@earendil-works/pi-ai",
       "@earendil-works/pi-tui",
       "@earendil-works/pi-coding-agent",
-      "@earendil-works/pi-server",
       "@earendil-works/chord",
-      "@earendil-works/pi-client",
-      "@earendil-works/pi-protocol",
       "@earendil-works/pi-telemetry",
       // v1.4.0-14 补：运行时闭包新增包与 workspace 互引（同上遗漏后果）。
       "@earendil-works/pi-codemode",

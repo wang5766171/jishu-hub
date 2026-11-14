@@ -34,7 +34,7 @@ pub use composed::{
     composed_session_manifests, composed_session_plugin_specs, delete_composed_plugin,
     ensure_builtin_composed_manifests, is_builtin_composed, materialize_builtin_composed,
     pending_confirm_extras, pending_confirm_list, resolve_pipeline_stages, save_composed_manifest,
-    PendingAssetInfo, PendingHybridPlugin,
+    validate_composed_guards, PendingAssetInfo, PendingHybridPlugin,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -206,6 +206,26 @@ pub fn plan_packages_sync(existing: &[String], enabled_packages: &[(&str, bool)]
     out
 }
 
+/// pi-package 插件 → (包名, 启用) 表。评审 P1-7：启用判据 = 不在 disabled
+/// 集 **且 manifest toml 存在**——pi-package 形态的市场卸载
+/// （market_uninstall）撤 toml 后走 forget_plugin_disabled，disabled 集里
+/// 没有它，旧判据（只看 disabled 集）会在下次 sync 时把被卸载的包重新写回
+/// settings.json packages（「卸载复活」）。toml 不在 = 未安装 = 按禁用。
+/// manifest_dir 参数化便于单测注入虚拟目录（prod 传 manifest_dir()——真值
+/// 依赖用户 home，不可在测试直调 sync 全函数）。
+fn pi_package_enabled_states(
+    manifest_dir: &std::path::Path,
+    disabled: &[String],
+) -> Vec<(&'static str, bool)> {
+    PI_PACKAGE_PLUGIN_MAP
+        .iter()
+        .map(|(id, name)| {
+            let toml_present = manifest_dir.join(format!("{id}.toml")).is_file();
+            (*name, toml_present && !disabled.iter().any(|d| d == id))
+        })
+        .collect()
+}
+
 /// packages 注册与插件启停对齐（启动与 rebuild_registry 调用；幂等——
 /// 目标态与现状一致则不写盘）。
 pub fn sync_pi_packages_with_plugins() {
@@ -231,10 +251,7 @@ pub fn sync_pi_packages_with_plugins() {
         })
         .unwrap_or_default();
     let disabled = load_plugin_config().disabled;
-    let enabled_packages: Vec<(&str, bool)> = PI_PACKAGE_PLUGIN_MAP
-        .iter()
-        .map(|(id, name)| (*name, !disabled.iter().any(|d| d == id)))
-        .collect();
+    let enabled_packages = pi_package_enabled_states(&super::manifest::manifest_dir(), &disabled);
     let next = plan_packages_sync(&existing, &enabled_packages);
     if next == existing {
         return;
@@ -800,7 +817,9 @@ pub fn ensure_builtin_adaptive_plugins() {
             Err(_) => true,
         };
         if needs_write {
-            if let Err(e) = std::fs::write(&target, toml) {
+            // 评审 P2：required 自愈改原子写（与全仓 atomic_write 惯例对齐，
+            // pi 进程并发读取不致读到半写 manifest）。
+            if let Err(e) = crate::util::atomic_write(&target, toml.as_bytes()) {
                 log::warn!("[plugin] cannot deploy builtin system plugin {id}: {e}");
             }
         }
@@ -1467,6 +1486,41 @@ mod tests {
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
         std::fs::write(plugin_config_path(), "{not json").unwrap();
         assert!(load_plugin_config().disabled.is_empty());
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// 评审 P1-7：pi-package「卸载复活」回归——toml 被市场卸载撤除后，
+    /// sync 判据必须把它当禁用（不回写 settings.json packages）；toml 在
+    /// 位（已安装/required 自愈）时恢复钉定源条目。
+    #[test]
+    fn pi_package_sync_treats_missing_toml_as_disabled() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let manifest_dir = super::super::manifest::manifest_dir();
+        std::fs::create_dir_all(&manifest_dir).unwrap();
+        // 市场卸载后盘面：settings.json 仍有条目、toml 已撤、disabled 无记录。
+        let existing = vec!["npm:pi-lens@4.3.0".to_string()];
+        let states = pi_package_enabled_states(&manifest_dir, &[]);
+        let lens_state = states.iter().find(|(name, _)| *name == "pi-lens").unwrap();
+        assert!(!lens_state.1, "toml 缺失时 pi-lens 必须判禁用");
+        // sync 目标态：条目被摘除（不复活）。
+        let plan = plan_packages_sync(&existing, &states);
+        assert!(
+            !plan.iter().any(|v| v.contains("pi-lens")),
+            "卸载后不得回写 packages，got {plan:?}"
+        );
+        // toml 在位（重新安装/自愈）→ 恢复钉定源条目。
+        std::fs::write(manifest_dir.join("pi-lens.toml"), "schema = 1").unwrap();
+        let states = pi_package_enabled_states(&manifest_dir, &[]);
+        let plan = plan_packages_sync(&existing, &states);
+        assert!(
+            plan.contains(&"npm:pi-lens@4.3.0".to_string()),
+            "toml 在位应恢复钉定源，got {plan:?}"
+        );
+        // disabled 集优先：toml 在位但显式禁用 → 仍摘除。
+        let states = pi_package_enabled_states(&manifest_dir, &["pi-lens".to_string()]);
+        assert!(states.iter().all(|(_, enabled)| !enabled));
         std::env::remove_var("JISHU_HUB_HOME");
     }
 

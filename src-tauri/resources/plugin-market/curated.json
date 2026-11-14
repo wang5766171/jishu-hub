@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "comment": "v0.9.7 需求3 C2-①/C3/C4 单一真源：默认安装集（required=19）+ 市场精选 + 场景推荐。场景 id 与前端 src/lib/plugin-scenes.ts 共用（programming/office/education/video/data/content）。名单依据 docs/v0.9.7/插件清单-待决策.md §2（用户 2026-11-08 勾选定案）。",
+    "comment": "v0.9.7 需求3 C2-①/C3/C4 单一真源：默认安装集（required=20，2026-11-14 实测对齐）+ 市场精选 + 场景推荐。场景 id 与前端 src/lib/plugin-scenes.ts 共用（programming/office/education/video/data/content）。名单依据 docs/v0.9.7/插件清单-待决策.md §2（用户 2026-11-08 勾选定案）。",
     "scenes": ["programming", "office", "education", "video", "data", "content", "custom"]
   },
   "entries": [

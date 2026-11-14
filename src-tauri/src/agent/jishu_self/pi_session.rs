@@ -102,8 +102,9 @@ struct ParseCacheEntry {
 }
 
 fn parse_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, ParseCacheEntry>> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, ParseCacheEntry>>> =
-        std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, ParseCacheEntry>>,
+    > = std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -130,7 +131,14 @@ fn session_parse_cache_put(path: &Path, messages: Vec<crate::session::Message>) 
     if cache.len() >= 64 && !cache.contains_key(path) {
         cache.clear();
     }
-    cache.insert(path.to_path_buf(), ParseCacheEntry { mtime, size, messages });
+    cache.insert(
+        path.to_path_buf(),
+        ParseCacheEntry {
+            mtime,
+            size,
+            messages,
+        },
+    );
 }
 
 pub(crate) fn load_pi_session_messages(
