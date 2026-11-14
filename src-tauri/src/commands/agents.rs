@@ -1235,15 +1235,30 @@ pub(crate) fn skillhub_installed() -> Result<std::collections::BTreeMap<String, 
     Ok(agent::skillhub::skillhub_installed())
 }
 
-/// C2-③ 技能市场：安装（下载→校验→落各 agent 技能目录→记台账）。
+/// C2-③ 技能市场：安装（下载→校验→注册为 hub 目录形式插件→分发→记台账；
+/// 2026-11-14 用户裁决：安装导入 jishu hub 已安装，走 hub 插件链）。
 #[tauri::command]
-pub(crate) async fn skillhub_install(slug: String) -> Result<String, String> {
-    agent::skillhub::skillhub_install(&slug).await
+pub(crate) async fn skillhub_install(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
+    slug: String,
+) -> Result<String, String> {
+    let result = agent::skillhub::skillhub_install(&slug).await?;
+    // 插件清单/分发即时刷新（对齐 plugin_create_skill_folder 的安装后处理）。
+    rebuild_registry(&app, &state);
+    Ok(result)
 }
 
-/// C2-③ 技能市场：卸载。
+/// C2-③ 技能市场：卸载（hub 插件形态走统一卸载链，另清台账）。
 #[tauri::command]
-pub(crate) fn skillhub_uninstall(slug: String) -> Result<String, String> {
+pub(crate) fn skillhub_uninstall(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
+    slug: String,
+) -> Result<String, String> {
+    if agent::skillhub::hub_plugin_root(&slug).is_some() {
+        plugin_remove(app, state, slug.clone())?;
+    }
     agent::skillhub::skillhub_uninstall(&slug)
 }
 

@@ -324,57 +324,134 @@ pub async fn skillhub_install(slug: &str) -> Result<String, String> {
         let first = files.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>();
         common_top_dir(&first).filter(|top| !files.iter().any(|(n, _)| n == top))
     };
-    let mut targets_written = 0;
-    for dir in skill_target_dirs() {
-        let target_root = dir.join(slug);
-        // 幂等：重装先清旧目录。
-        if target_root.exists() {
-            let _ = std::fs::remove_dir_all(&target_root);
-        }
-        let mut ok = true;
-        for (name, content) in &files {
+    // 归一化到「技能根」：SKILL.md 必须位于根（更深的嵌套取其父目录为根；
+    // 技能根之外的顶层杂项不进分发目录）。
+    let files: Vec<(String, Vec<u8>)> = files
+        .into_iter()
+        .filter_map(|(name, content)| {
             let rel = strip_prefix
                 .as_ref()
                 .and_then(|p| name.strip_prefix(&format!("{p}/")))
-                .unwrap_or(name);
-            let out = target_root.join(rel);
-            if !out.starts_with(&target_root) {
-                ok = false;
-                break;
-            }
-            if let Some(parent) = out.parent() {
-                if std::fs::create_dir_all(parent).is_err() {
-                    ok = false;
-                    break;
-                }
-            }
-            if std::fs::write(&out, content).is_err() {
-                ok = false;
-                break;
-            }
-        }
-        if ok {
-            targets_written += 1;
-        }
+                .unwrap_or(&name)
+                .to_string();
+            Some((rel, content))
+        })
+        .collect();
+    let skill_md_path = files
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .filter(|n| *n == "SKILL.md" || n.ends_with("/SKILL.md"))
+        .min_by_key(|n| n.matches('/').count())
+        .ok_or("安装包缺少 SKILL.md，已拒绝（不是有效技能）")?
+        .to_string();
+    let root_prefix = skill_md_path.rsplit_once('/').map(|(parent, _)| parent.to_string());
+    let root_files: Vec<(String, Vec<u8>)> = files
+        .into_iter()
+        .filter_map(|(name, content)| {
+            let rel = match &root_prefix {
+                Some(p) => name.strip_prefix(&format!("{p}/"))?.to_string(),
+                None => name,
+            };
+            Some((rel, content))
+        })
+        .collect();
+    let skill_md_text = String::from_utf8_lossy(
+        root_files
+            .iter()
+            .find(|(n, _)| n == "SKILL.md")
+            .map(|(_, c)| c.as_slice())
+            .unwrap_or_default(),
+    )
+    .to_string();
+
+    // 注册进 jishu hub（用户裁决 2026-11-14：技能市场安装导入 hub 已安装，
+    // 走 hub 插件链而非直写各 agent 目录）——目录形式插件
+    // `plugins/<slug>/plugin.toml` + `skills/<slug>/`，分发/启停/卸载统一
+    // 走 hub 插件机制（附属文件随目录源镜像同步）。
+    let plugin_root = crate::agent::manifest::hub_home()
+        .join("plugins")
+        .join(slug);
+    let ledger_had = load_installed().contains_key(slug);
+    if plugin_root.join("plugin.toml").exists() && ledger_had {
+        // 更新（目录源「文件即权威」语义）：覆写 skills/<slug>/，manifest 不动。
+        let skill_dir = plugin_root.join("skills").join(slug);
+        write_skill_files(&skill_dir, &root_files)?;
+    } else {
+        // 首装：暂存技能目录 → 目录形式插件安装（id 冲突由
+        // ensure_plugin_id_free 守门；装完 hub 侧重建/分发由命令层触发）。
+        let stage = std::env::temp_dir().join(format!("jishu-skillhub-{slug}"));
+        let _ = std::fs::remove_dir_all(&stage);
+        write_skill_files(&stage, &root_files)?;
+        let description = if detail.description.len() > 1000 {
+            format!("{}…", detail.description.chars().take(998).collect::<String>())
+        } else {
+            detail.description.clone()
+        };
+        let manifest = serde_json::json!({
+            "schema": 1,
+            "kind": "tool",
+            "info": { "id": slug, "display_name": detail.name },
+            "skill": { "description": description, "body": "installed from SkillHub" }
+        });
+        let mut file: super::manifest::schema::AgentManifestFile =
+            serde_json::from_value(manifest).map_err(|e| format!("manifest 构造失败: {e}"))?;
+        file.validate()?;
+        // [skill] 段剥离（目录源文件即权威，对齐 plugin_create_skill_folder）。
+        file.skill = None;
+        let content_toml =
+            toml::to_string_pretty(&file).map_err(|e| format!("manifest 序列化失败: {e}"))?;
+        let skill_md = if skill_md_text.trim().is_empty() {
+            return Err("安装包缺少 SKILL.md，已拒绝（不是有效技能）".to_string());
+        } else {
+            skill_md_text
+        };
+        super::plugin::install_skill_folder_plugin(&file, &content_toml, &stage, slug, &skill_md)
+            .map_err(|e| format!("注册进 jishu hub 失败: {e}"))?;
+        let _ = std::fs::remove_dir_all(&stage);
     }
-    if targets_written == 0 {
-        return Err("技能目录均不可写，安装失败".to_string());
-    }
+    // 分发同步（命令层 rebuild_registry 也会触发，此处覆盖批量更新等
+    // 直调路径——幂等）。
+    let _ = super::skill_deploy::sync_skill_deployments(false);
     let mut installed = load_installed();
     installed.insert(slug.to_string(), version.clone());
     save_installed(&installed);
-    Ok(format!(
-        "{slug}@{version} 已安装（{targets_written} 个智能体目录）"
-    ))
+    Ok(format!("{slug}@{version} 已安装并注册到 jishu hub"))
+}
+
+/// 技能文件落盘到目标目录（清旧覆写；路径安全校验同安装链）。
+fn write_skill_files(target_root: &std::path::Path, files: &[(String, Vec<u8>)]) -> Result<(), String> {
+    let _ = std::fs::remove_dir_all(target_root);
+    std::fs::create_dir_all(target_root).map_err(|e| e.to_string())?;
+    for (name, content) in files {
+        let out = target_root.join(name);
+        if !out.starts_with(target_root) {
+            return Err(format!("安装包含可疑路径，已拒绝: {name}"));
+        }
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&out, content).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 技能对应的 hub 目录形式插件根（存在即已注册形态）。
+pub fn hub_plugin_root(slug: &str) -> Option<std::path::PathBuf> {
+    let root = crate::agent::manifest::hub_home().join("plugins").join(slug);
+    root.join("plugin.toml").is_file().then_some(root)
 }
 
 /// 卸载：从各 agent 技能目录移除 + 销台账。
 pub fn skillhub_uninstall(slug: &str) -> Result<String, String> {
-    for dir in skill_target_dirs() {
-        let target = dir.join(slug);
-        if target.exists() {
-            std::fs::remove_dir_all(&target)
-                .map_err(|e| format!("remove {}: {e}", target.display()))?;
+    // hub 插件形态：插件目录与分发由命令层走 plugin_remove 统一回收，
+    // 此处只清台账；旧直写装法（无 hub 插件）残留的各 agent 目录就地清理。
+    if hub_plugin_root(slug).is_none() {
+        for dir in skill_target_dirs() {
+            let target = dir.join(slug);
+            if target.exists() {
+                std::fs::remove_dir_all(&target)
+                    .map_err(|e| format!("remove {}: {e}", target.display()))?;
+            }
         }
     }
     let mut installed = load_installed();
