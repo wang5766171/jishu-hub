@@ -926,6 +926,7 @@ export function PluginsPage({
           if (latest) setExtUpdates(latest);
         } catch (e) {
           console.warn("ext action failed:", e);
+          void alertDialog({ title: tr("plugins.actionFailed", "操作失败"), description: String(e) });
         } finally {
           setUpdateBusy(null);
         }
@@ -1013,7 +1014,7 @@ export function PluginsPage({
                   disabled={busyCard}
                   aria-label={tr("plugins.remove", "卸载")}
                   title={tr("plugins.remove", "卸载")}
-                  onClick={() => runPkg(() => invokeCommand("pi_package_uninstall_online", { name: pkg }))}
+                  onClick={() => runPkg(() => invokeCommand("pi_package_uninstall_online", { source: pkg }))}
                 >
                   <Trash2 className="h-3 w-3" />
                 </Button>
