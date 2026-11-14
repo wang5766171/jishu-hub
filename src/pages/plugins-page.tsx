@@ -684,6 +684,23 @@ export function PluginsPage({
       .includes(q);
   }, [search]);
 
+  /** 扩展包搜索匹配（十四轮：搜索「pi-subagents」搜不到——生态件不在
+   * plugin_list 且搜索态被隐藏；并入全库检索：包名/piindex 说明）。 */
+  const pkgOfSource = useCallback((src: string) => {
+    const m = src.match(/^npm:(.+?)@(.+)$/);
+    return m?.[1] ?? src.replace(/^npm:/, "");
+  }, []);
+  const matchesExtSearch = useCallback(
+    (src: string) => {
+      const q = search.trim().toLowerCase();
+      if (!q) return true;
+      const pkg = pkgOfSource(src);
+      const meta = piindexMeta?.find((e) => e.npm_package === pkg);
+      return [pkg, meta?.description ?? ""].join(" ").toLowerCase().includes(q);
+    },
+    [search, piindexMeta, pkgOfSource],
+  );
+
   // v0.9.0 需求1 二期：MCP 解析器（mcp-resolver 系统插件）启用态——新建
   // 插件对话框的 MCP 区门控（列表未加载完成前按启用放行，避免首开误锁）。
   const mcpResolverEnabled = result
@@ -1047,15 +1064,15 @@ export function PluginsPage({
   /** v0.9.7 需求3（2026-11-14 裁决）：扩展包 tab 卡片——pi 生态件（npm/git）
    * 统一呈现：内置钉版件带「内置」徽章，支持更新与**还原原生版本**（钉版
    * 快照=hub 分发时版本）；市场安装件支持更新与卸载。说明来自 piindex。 */
-  const renderExtCards = () => {
-    if (extInstalled.length === 0) {
+  const renderExtCards = (sources: string[] = extInstalled) => {
+    if (sources.length === 0) {
       return (
         <p className="col-span-full py-8 text-center text-sm text-muted-foreground">
           {tr("plugins.extEmpty", "暂无扩展包——可在插件市场「扩展生态」安装")}
         </p>
       );
     }
-    return extInstalled.map((src) => {
+    return sources.map((src) => {
       const m = src.match(/^npm:(.+?)@(.+)$/);
       const pkg = m?.[1] ?? src.replace(/^npm:/, "");
       const ver = m?.[2] ?? "";
@@ -1621,9 +1638,10 @@ export function PluginsPage({
         {/* 需求11 追加三 A：原生 MCP 服务管理区（jishu 直连条目，键级管
             mcp.json 非 jishu-hub 用户条目；与聚合插件互补）。 */}
         {activeTab === "mcp" && !search.trim() && <NativeMcpSection />}
-        {/* v0.9.7 需求3：扩展包 tab——pi 生态件（npm/git）专页；搜索态下
-            插件全库命中不含生态件（与旧市场已装子页口径一致）。 */}
+{/* v0.9.7 需求3 十四轮：扩展包参与检索——扩展包 tab 无搜索显示全量；
+    搜索态生态件命中卡并入全库结果（插件全库命中 + 扩展包命中）。 */}
         {activeTab === "extension" && !search.trim() && renderExtCards()}
+        {search.trim() && extInstalled.filter(matchesExtSearch).length > 0 && renderExtCards(extInstalled.filter(matchesExtSearch))}
         {(result?.plugins ?? [])
           .filter((x) =>
             search.trim()
@@ -1640,7 +1658,7 @@ export function PluginsPage({
               && (formFilter === "all" || formOf(x) === formFilter)
           : categoryOf(x) === activeTab && (implFilter === "all" || implKindOf(x) === implFilter)
               && (formFilter === "all" || formOf(x) === formFilter),
-      ).length === 0 && (
+      ).length === 0 && extInstalled.filter(matchesExtSearch).length === 0 && (
         <p className="py-10 text-center text-sm text-muted-foreground">
           {search.trim()
             ? tr("plugins.searchEmpty", "无匹配插件")
