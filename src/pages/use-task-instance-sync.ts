@@ -73,6 +73,22 @@ export function useTaskInstanceSync(deps: TaskInstanceSyncDeps) {
       }
     })(),
   ));
+  // 评审 P2-14 修复：台账有界化——每轮同步时剔除「已不处于 failed」的任务 id
+  // （任务修复/重跑/删除后不再占台账），防集合只增不减无限膨胀（§9：记录类
+  // 数据长期应落 SQLite，本处为显示层幂等辅助，有界化后量级恒小）。
+  const pruneNotified = useCallback((items: TaskLaunchInstanceSummary[]) => {
+    const stillFailed = new Set(
+      items.filter((i) => i.status === "failed").map((i) => i.task_id),
+    );
+    const kept = [...notifiedFailedTaskIdsRef.current].filter((id) => stillFailed.has(id));
+    if (kept.length === notifiedFailedTaskIdsRef.current.size) return;
+    notifiedFailedTaskIdsRef.current = new Set(kept);
+    try {
+      localStorage.setItem(NOTIFIED_KEY, JSON.stringify(kept));
+    } catch {
+      /* 存储异常静默——通知幂等非关键 */
+    }
+  }, []);
   const markNotified = (taskId: string) => {
     notifiedFailedTaskIdsRef.current.add(taskId);
     try {
@@ -82,6 +98,7 @@ export function useTaskInstanceSync(deps: TaskInstanceSyncDeps) {
     }
   };
   const notifyTaskFailureUnread = useCallback((items: TaskLaunchInstanceSummary[]) => {
+    pruneNotified(items);
     for (const item of items) {
       if (item.status !== "failed") continue;
       if (notifiedFailedTaskIdsRef.current.has(item.task_id)) continue;
@@ -101,7 +118,7 @@ export function useTaskInstanceSync(deps: TaskInstanceSyncDeps) {
       markNotified(item.task_id);
       setUnread(sid, "failed");
     }
-  }, [selectedSessionRef]);
+  }, [selectedSessionRef, pruneNotified]);
   const [nodeSessionIds, setNodeSessionIds] = useState<string[]>([]);
   const activeTaskResolvedRef = useRef(deps.activeTaskResolved);
   activeTaskResolvedRef.current = deps.activeTaskResolved;
