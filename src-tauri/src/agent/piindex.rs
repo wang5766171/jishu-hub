@@ -69,20 +69,44 @@ fn http() -> Result<reqwest::Client, String> {
 }
 
 /// 磁盘缓存（需求3 四轮裁决：扩展列表 DB 缓存，每日首次打开比对更新）：
-///  = { fetchedAt, entries }。
+///  = { schema, fetchedAt, entries }。
+///
+/// **schema 版本闸**：字段增删即 +1——旧版负载（无标记或版本不符）整体
+/// 视为无缓存走网络重拉。否则新增 Option 字段（如 downloadTrend）在旧
+/// 缓存上静默反序列化为 None，「重新加载」也救不回来（六轮收版实测：
+/// 同日跨版本装包后涨跌数据永不出现，根因即此）。
 fn disk_cache_path() -> std::path::PathBuf {
     crate::agent::manifest::hub_home().join("piindex-cache.json")
 }
 
-fn read_disk_cache() -> Option<Vec<PiindexEntry>> {
+/// 当前缓存结构版本（v1=无 schema 标记的历史负载）。
+const CACHE_SCHEMA: u64 = 2;
+
+/// 磁盘缓存快照：(当日新鲜, 条目)。schema 不符/条目过少/解析失败 → None。
+fn disk_cache_snapshot() -> Option<(bool, Vec<PiindexEntry>)> {
     let content = std::fs::read_to_string(disk_cache_path()).ok()?;
     let value: serde_json::Value = serde_json::from_str(&content).ok()?;
+    if value.get("schema").and_then(|v| v.as_u64()) != Some(CACHE_SCHEMA) {
+        return None;
+    }
     let entries: Vec<PiindexEntry> = serde_json::from_value(value.get("entries")?.clone()).ok()?;
-    (entries.len() >= MIN_EXPECTED_CARDS).then_some(entries)
+    if entries.len() < MIN_EXPECTED_CARDS {
+        return None;
+    }
+    let fresh = value
+        .get("fetchedAt")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .is_some_and(|at| {
+            // 本地日历日内视为新鲜（每日首次打开触发比对更新）。
+            at.with_timezone(&chrono::Local).date_naive() == chrono::Local::now().date_naive()
+        });
+    Some((fresh, entries))
 }
 
 fn write_disk_cache(entries: &[PiindexEntry]) {
     let payload = serde_json::json!({
+        "schema": CACHE_SCHEMA,
         "fetchedAt": chrono::Utc::now().to_rfc3339(),
         "entries": entries,
     });
@@ -91,38 +115,22 @@ fn write_disk_cache(entries: &[PiindexEntry]) {
     }
 }
 
-fn disk_cache_fresh_today() -> bool {
-    let Ok(content) = std::fs::read_to_string(disk_cache_path()) else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return false;
-    };
-    let fetched = value
-        .get("fetchedAt")
-        .and_then(|v| v.as_str())
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
-    match fetched {
-        // 本地日历日内的缓存视为新鲜（每日首次打开触发比对更新）。
-        Some(at) => {
-            at.with_timezone(&chrono::Local).date_naive() == chrono::Local::now().date_naive()
-        }
-        None => false,
-    }
+async fn fetch_list() -> Result<Vec<PiindexEntry>, String> {
+    fetch_list_inner(false).await
 }
 
-async fn fetch_list() -> Result<Vec<PiindexEntry>, String> {
-    {
+/// `force=true` 绕过两级缓存直连网络（「重新加载」按钮——只清内存缓存
+/// 不够，当日磁盘缓存仍会短路命中，刷新变成空转）。
+async fn fetch_list_inner(force: bool) -> Result<Vec<PiindexEntry>, String> {
+    if !force {
         let guard = cache().lock().unwrap_or_else(|e| e.into_inner());
         if let Some((at, list)) = guard.as_ref() {
             if at.elapsed() < LIST_TTL && list.len() >= MIN_EXPECTED_CARDS {
                 return Ok(list.clone());
             }
         }
-    }
-    // 内存缓存缺失：当日磁盘缓存命中直接用（不碰网络）。
-    if disk_cache_fresh_today() {
-        if let Some(entries) = read_disk_cache() {
+        // 内存缓存缺失：当日磁盘缓存命中直接用（不碰网络）。
+        if let Some((true, entries)) = disk_cache_snapshot() {
             *cache().lock().unwrap_or_else(|e| e.into_inner()) =
                 Some((Instant::now(), entries.clone()));
             return Ok(entries);
@@ -325,10 +333,11 @@ fn parse_piindex_html(body: &str) -> Vec<PiindexEntry> {
     out
 }
 
-/// 手动触发刷新（「重新加载」按钮）：清两级缓存 → 强制网络拉取 → 写盘。
+/// 手动触发刷新（「重新加载」按钮）：清内存缓存 → 绕过磁盘缓存强制网络
+/// 拉取 → 写盘（两级缓存都换新）。
 pub async fn piindex_refresh() -> Result<Vec<PiindexEntry>, String> {
     *cache().lock().unwrap_or_else(|e| e.into_inner()) = None;
-    fetch_list().await
+    fetch_list_inner(true).await
 }
 
 /// 检索：关键词命中站点预拼的中文英文全文（data-search）+ 名称/包名
@@ -664,6 +673,48 @@ mod tests {
         assert_eq!(th.name, "pi-tokyo-night");
         assert_eq!(th.kind_label, "主题");
         assert_eq!(th.npm_package.as_deref(), Some("pi-tokyo-night"));
+    }
+
+    /// 磁盘缓存 schema 闸：旧版负载（无 schema 标记）整体拒收——否则新增
+    /// Option 字段在旧缓存上静默读出 None，同日跨版本装包后新数据永不出现
+    /// （六轮收版实测回归锚点）。
+    #[test]
+    fn disk_cache_schema_gates_old_payloads() {
+        let entry = PiindexEntry {
+            name: "pi-x".to_string(),
+            description: String::new(),
+            npm_package: Some("pi-x".to_string()),
+            github_url: None,
+            install_command: "pi install npm:pi-x".to_string(),
+            category: String::new(),
+            kind_label: String::new(),
+            detail_url: None,
+            stars: None,
+            weekly_downloads: None,
+            download_trend: None,
+            search_text: String::new(),
+        };
+        let path = disk_cache_path();
+        let dir = path.parent().unwrap().to_path_buf();
+        let _ = std::fs::create_dir_all(&dir);
+        // 旧版负载（无 schema 标记，其余字段齐备且当日）→ None。
+        let legacy = serde_json::json!({
+            "fetchedAt": chrono::Local::now().to_rfc3339(),
+            "entries": vec![entry.clone(); MIN_EXPECTED_CARDS],
+        });
+        std::fs::write(&path, legacy.to_string()).unwrap();
+        assert!(disk_cache_snapshot().is_none(), "旧 schema 负载必须拒收");
+        // 当前 schema → 命中。
+        let current = serde_json::json!({
+            "schema": CACHE_SCHEMA,
+            "fetchedAt": chrono::Local::now().to_rfc3339(),
+            "entries": vec![entry; MIN_EXPECTED_CARDS],
+        });
+        std::fs::write(&path, current.to_string()).unwrap();
+        let (fresh, entries) = disk_cache_snapshot().expect("当前 schema 应命中");
+        assert!(fresh, "当日 fetchedAt 应视为新鲜");
+        assert_eq!(entries.len(), MIN_EXPECTED_CARDS);
+        let _ = std::fs::remove_file(&path);
     }
 
     /// settings.json 条目拆分（npm:pkg@ver）。
