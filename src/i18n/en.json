@@ -653,10 +653,7 @@
     "entryGoChat": "Create in chat",
     "entrySuggestPrefix": "Prefer DIY? Suggested type: ",
     "entryTitleV2": "Create plugin",
-    "entryHintV2": [
-      "点选分类，AI 帮你把插件做出来（跳到会话继续）；也可以直接输入描述",
-      "Pick a category and the AI builds it (continues in chat); or just type what you want"
-    ],
+    "entryHintV2": "Pick a category and the AI builds it (continues in chat); or just type what you want",
     "entryManualExpand": "Prefer DIY? Expand manual wizards",
     "entryManualCollapse": "Collapse manual wizards",
     "actionFailed": "Action failed",

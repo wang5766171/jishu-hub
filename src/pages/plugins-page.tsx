@@ -1692,7 +1692,16 @@ export function PluginsPage({
               && (formFilter === "all" || formOf(x) === formFilter)
           : categoryOf(x) === activeTab && (implFilter === "all" || implOfCard(x) === implFilter)
               && (formFilter === "all" || formOf(x) === formFilter),
-      ).length === 0 && (!filtersIdle || extInstalled.filter(matchesExtSearch).length === 0) && (
+      ).length === 0 &&
+        // v0.9.7 第三轮评审修复 P1-4：空态误判——旧条件把「装过扩展包」
+        //（extInstalled 全局非空）当成「当前视图有内容」，但扩展卡只在
+        // 扩展包 tab（或搜索态）渲染：装过扩展包的用户切到无插件分类看到
+        // 整片空白无提示。按「当前视图实际会渲染的区块」判断：tab 模式下
+        // 非扩展包 tab 不看 extInstalled；扩展包 tab 且筛选 idle 时才以
+        // 扩展卡有无为准（筛选激活时扩展卡隐藏，视为无内容）。
+        (search.trim()
+          ? !filtersIdle || extInstalled.filter(matchesExtSearch).length === 0
+          : activeTab !== "extension" || !filtersIdle || extInstalled.length === 0) && (
         <p className="py-10 text-center text-sm text-muted-foreground">
           {search.trim()
             ? tr("plugins.searchEmpty", "无匹配插件")

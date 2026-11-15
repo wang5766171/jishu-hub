@@ -653,10 +653,7 @@
     "entryGoChat": "去会话创建",
     "entrySuggestPrefix": "想自己配？推荐类型：",
     "entryTitleV2": "创建插件",
-    "entryHintV2": [
-      "点选分类，AI 帮你把插件做出来（跳到会话继续）；也可以直接输入描述",
-      "Pick a category and the AI builds it (continues in chat); or just type what you want"
-    ],
+    "entryHintV2": "点选分类，AI 帮你把插件做出来（跳到会话继续）；也可以直接输入描述",
     "entryManualExpand": "想自己配？展开手动向导",
     "entryManualCollapse": "收起手动向导",
     "actionFailed": "操作失败",

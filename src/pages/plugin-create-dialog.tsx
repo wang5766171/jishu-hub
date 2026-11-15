@@ -29,6 +29,7 @@ import {
   mcpNameToId,
   buildManifest,
   parseManifest,
+  applyPreserved,
 } from "./plugin-create-dialog-model";
 import { templates, PLUGIN_TYPES } from "./plugin-create-dialog-templates";
 import { IconPicker } from "@/components/ui/icon-picker";
@@ -477,9 +478,10 @@ export function PluginCreateDialog({
     setSubmitting(true);
     setError(null);
     try {
-      // M4：编辑时把表单不可表达的段（[pi_extension]）原样并回 manifest——
-      // 编辑往返不再丢段。
-      const manifest = { ...buildManifest(form), ...preservedSections };
+      // M4：编辑时把表单不可表达的段（[pi_extension] + [info] 声明字段
+      // category/form/description）原样并回 manifest——编辑往返不再丢段
+      //（P1-5：嵌套合并见 applyPreserved）。
+      const manifest = applyPreserved(buildManifest(form), preservedSections);
       // 需求3（v0.9.4）：文件夹模式 → 目录形式插件（plugin.toml + skills/
       // 整目录复制；后端取首条 skill 条目渲染 SKILL.md 并剥离 [skill] 段）。
       if (skillFolder && !isEdit) {

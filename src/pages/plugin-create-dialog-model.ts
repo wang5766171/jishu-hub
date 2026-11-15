@@ -460,6 +460,24 @@ export function buildManifest(form: FormState): Record<string, unknown> {
   return manifest;
 }
 
+/** 编辑提交时的保留段合并（v0.9.7 第三轮评审修复 P1-5，导出供测试）：
+ * 顶层段（[pi_extension] 等）浅合并；preserved.info（[info] 声明字段
+ * category/form/description）嵌套合并进 buildManifest 产出的 info——顶层
+ * spread 会整段覆盖 info，必须下钻一层。 */
+export function applyPreserved(
+  manifest: Record<string, unknown>,
+  preserved: Record<string, unknown>,
+): Record<string, unknown> {
+  const out = { ...manifest, ...preserved };
+  if (preserved.info && typeof preserved.info === "object") {
+    out.info = {
+      ...(manifest.info as Record<string, unknown> | undefined),
+      ...(preserved.info as Record<string, unknown>),
+    };
+  }
+  return out;
+}
+
 /** manifest JSON（plugin_get 返回）→ 表单状态（buildManifest 的逆映射；导出供测试）。 */
 export function parseManifest(json: Record<string, unknown>): {
   form: FormState;
@@ -499,6 +517,16 @@ export function parseManifest(json: Record<string, unknown>): {
   const preserved: Record<string, unknown> = {};
   if (json.pi_extension && typeof json.pi_extension === "object") {
     preserved.pi_extension = json.pi_extension;
+  }
+  // v0.9.7 第三轮评审修复 P1-5：[info] 声明字段编辑往返保留——表单状态
+  // 无 category/form/description 三字段（buildManifest 不回写），修前 GUI
+  // 编辑 A 家族清单（哪怕零改动保存）即静默抹掉分类/形态/中文说明。
+  const infoPreserved: Record<string, unknown> = {};
+  for (const key of ["category", "form", "description"]) {
+    if (info[key] != null) infoPreserved[key] = info[key];
+  }
+  if (Object.keys(infoPreserved).length > 0) {
+    preserved.info = infoPreserved;
   }
   const form: FormState = {
     id: String(info.id ?? ""),
