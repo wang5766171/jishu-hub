@@ -41,7 +41,7 @@ description: 创建/安装 Jishu Hub 插件前必读——用户想改变客户�
 所有会话侧插件的 id **必须以 `session.` 开头**。智能体侧（agents/）无此限制。
 
 **插件形态显式声明（v0.9.7）**：`[info]` 段写 `form` 字段，明确插件创建到哪个位置——
-`"session"`（会话内渲染）/ `"sidebar"`（侧边栏面板）/ `"floating"`（悬浮窗挂件）/ `"none"`（无 UI 呈现：CLI/MCP/Skill 等纯能力件）。组合式家族写在 `[plugin]` 段同名 `form`。未声明时按挂载位推导，但**创建时应显式写明**。
+**形态 = 九类挂载位**：`"block-renderer"`（会话内渲染）/ `"tool-result-renderer"`（工具结果渲染）/ `"header-action"`（标题栏动作）/ `"sidebar-panel"`（侧边栏面板）/ `"dock-panel"`（停靠面板）/ `"rail-widget"`（贴边挂件）/ `"composer-trailing"`（输入框尾挂件）/ `"app-overlay"`（应用浮层）/ `"event-hook"`（事件钩子）；另有两兜底值 `"theme"`（主题外观）与 `"none"`（无 UI 呈现：CLI/MCP/Skill/流水线等纯能力件）。**会话侧插件 form 直接写挂载位名**（与 `[render].mount` 一致）。组合式家族写在 `[plugin]` 段同名 `form`。未声明时按挂载位推导，但**创建时应显式写明**。
 
 ### 模板 1：CLI 工具（智能体侧，agents/<id>.toml）
 
@@ -72,6 +72,7 @@ id = "session.my-stats"
 name = "我的统计面板"
 description = "会话消息统计"
 kind = "session-composed"
+form = "dock-panel"        # 形态=挂载位（九类口径，与 [render].mount 一致）
 
 [source]
 type = "messages"          # messages | turns | task | signal
@@ -115,6 +116,7 @@ id = "session.turn-cost"
 name = "轮次花销"
 description = "每轮结束在输入框旁显示本轮花销"
 kind = "session-composed"
+form = "composer-trailing" # 形态=挂载位（输入框尾挂件）
 
 [source]
 type = "turns"
@@ -154,6 +156,7 @@ id = "session.echarts-render"
 name = "ECharts 图表渲染"
 description = "echarts 代码块渲染为交互图表"
 kind = "session-composed"
+form = "block-renderer"    # 形态=挂载位（会话内渲染）
 
 [source]
 type = "code-block"
@@ -219,6 +222,7 @@ id = "session.my-notify"
 name = "回合完成通知"
 description = "每轮完成弹桌面通知"
 kind = "session-composed"
+form = "event-hook"        # 形态=挂载位（事件钩子，无 UI）
 
 [source]
 type = "signal"
@@ -246,6 +250,7 @@ id = "session.my-flow"
 name = "视频制作流水线"
 description = "需求→分镜→素材→成片"
 kind = "session-composed"
+form = "none"              # 流水线=编排声明非 UI 形态，恒落「无 UI 呈现」
 
 [[pipeline.stages]]
 name = "需求讨论"
@@ -274,6 +279,7 @@ id = "gemini-cli"
 display_name = "Gemini CLI"
 description = "Google Gemini 命令行智能体"
 icon = "gemini"
+form = "none"          # 智能体=会话引擎非插件挂载形态，恒落「无 UI 呈现」
 
 [transport]
 kind = "cli"
@@ -362,6 +368,7 @@ id = "session.theme-forest"
 name = "森林绿"
 description = "深绿主题，聊天背景用带纹理的绿色"
 kind = "session-composed"
+form = "theme"                 # 主题外观（兜底值，非挂载位）
 category = "appearance"        # 归「外观」分类
 
 [theme]

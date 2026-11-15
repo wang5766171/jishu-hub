@@ -309,6 +309,10 @@ export function buildManifest(form: FormState): Record<string, unknown> {
       info: {
         id: toolId,
         display_name: form.displayName.trim(),
+        // v0.9.7 需求3 十六轮：形态显式落值——tool 家族（MCP/Skill/CLI/
+        // 声明式面板基座）无会话挂载位，统一「无 UI 呈现」（修前靠展示侧
+        // 推导兜底，十一轮裁决「创建时显式写明创建到哪个位置」）。
+        form: "none",
         ...(form.icon.trim() ? { icon: form.icon.trim() } : {}),
         ...(form.installHint.trim() ? { install_hint: form.installHint.trim() } : {}),
       },
@@ -400,6 +404,9 @@ export function buildManifest(form: FormState): Record<string, unknown> {
     info: {
       id: form.id.trim(),
       display_name: form.displayName.trim(),
+      // v0.9.7 需求3 十六轮：形态显式落值——agent 家族无插件挂载位
+      //（会话引擎非 UI 形态），统一「无 UI 呈现」（同 tool 家族口径）。
+      form: "none",
       ...(form.icon.trim() ? { icon: form.icon.trim() } : {}),
       ...(form.installHint.trim() ? { install_hint: form.installHint.trim() } : {}),
     },

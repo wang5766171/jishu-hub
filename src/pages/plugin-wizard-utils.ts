@@ -39,6 +39,47 @@ export function slugify(name: string, fallback: string): string {
   return slug || fallback;
 }
 
+/** 插件形态（v0.9.7 需求3 十六轮用户裁决：**形态 = 九类挂载位粒度**——
+ * 此前十/十一轮的五值合并口径作废，标题栏动作/输入框尾挂件等不得再被并入
+ * 「会话」「悬浮窗」大桶）。九类 = PluginMount 联合全量（types.ts 代码审计）；
+ * 另保留两值覆盖无挂载件：主题外观（app-theme 声明件）与无 UI 呈现
+ * （MCP/Skill/CLI 等无挂载位件统一标注，十一轮裁决）。挂载位即形态——
+ * 创建落值直接写挂载位（form = mount），展示推导取首个非事件钩子挂载。 */
+export type PluginForm =
+  | "block-renderer"
+  | "tool-result-renderer"
+  | "header-action"
+  | "sidebar-panel"
+  | "dock-panel"
+  | "rail-widget"
+  | "composer-trailing"
+  | "app-overlay"
+  | "event-hook"
+  | "theme"
+  | "none";
+
+/** 形态全集（展示顺序=筛选 chips 顺序：会话内三类 → 侧栏/面板/挂件/浮层 →
+ * 事件钩子 → 主题 → 无 UI）。与后端 PLUGIN_FORM_VALUES 同枚举（非法声明
+ * 展示侧忽略走推导）。 */
+export const PLUGIN_FORM_VALUES: PluginForm[] = [
+  "block-renderer",
+  "tool-result-renderer",
+  "header-action",
+  "sidebar-panel",
+  "dock-panel",
+  "rail-widget",
+  "composer-trailing",
+  "app-overlay",
+  "event-hook",
+  "theme",
+  "none",
+];
+
+/** 形态值合法性判断（未知/旧五值声明返回 false，消费方走推导兜底）。 */
+export function isPluginForm(v: unknown): v is PluginForm {
+  return typeof v === "string" && (PLUGIN_FORM_VALUES as string[]).includes(v);
+}
+
 /**
  * 创建前占用检测：id 已被既有组合插件占用时返回 false（调用方提示改名，
  * 阻止静默覆盖——保存按 id 全量替换目录内容）。

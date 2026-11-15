@@ -325,6 +325,20 @@ describe("MCP 表单极简化（需求19 GUI 裁决：ID 自动派生、无图�
     ) as { info: Record<string, unknown> };
     expect(m.info.id).toBe("");
   });
+
+  it("十六轮：tool/agent 家族形态显式落值 form=none（无挂载位统一无 UI 呈现）", () => {
+    const tool = buildManifest(toolForm({ pluginType: "mcp", displayName: "M", mcpCommand: "npx" })) as {
+      info: Record<string, unknown>;
+    };
+    expect(tool.info.form).toBe("none");
+    const agent = parseManifest({
+      schema: 1,
+      info: { id: "a", display_name: "A" },
+      transport: { kind: "cli", chat_command: ["a", "{prompt}"] },
+    });
+    const m = buildManifest(agent.form) as { info: Record<string, unknown> };
+    expect(m.info.form).toBe("none");
+  });
 });
 
 describe("parseMcpServersBatch（批量导入，需求19 第二轮）", () => {

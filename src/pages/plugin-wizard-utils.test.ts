@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { slugify, tomlStr } from "./plugin-wizard-utils";
+import { isPluginForm, PLUGIN_FORM_VALUES, slugify, tomlStr } from "./plugin-wizard-utils";
 
 /** 三轮评审 P1-3 回归：换行安全转义 + Unicode 感知 id + 占用检测。 */
 
@@ -49,6 +49,42 @@ describe("slugify（三轮 P1-3②：中文名不再坍缩为同一 id）", () =
 
   it("中英混合与全角符号折叠", () => {
     expect(slugify("导出 PDF 报告", "flow")).toBe("导出-pdf-报告");
+  });
+});
+
+/** 十六轮用户裁决回归：形态 = 九类挂载位粒度（PluginMount 联合全量）
+ * + theme/none 两兜底——五值合并口径作废，标题栏动作/输入框尾挂件等
+ * 不得再被并入大桶。 */
+describe("PLUGIN_FORM_VALUES（十六轮：形态九类+两兜底全量）", () => {
+  it("恰为 9 挂载位 + theme + none，无遗漏无多余", () => {
+    expect([...PLUGIN_FORM_VALUES].sort()).toEqual([
+      "app-overlay",
+      "block-renderer",
+      "composer-trailing",
+      "dock-panel",
+      "event-hook",
+      "header-action",
+      "none",
+      "rail-widget",
+      "sidebar-panel",
+      "theme",
+      "tool-result-renderer",
+    ]);
+  });
+
+  it("用户点名的细分形态在列（标题栏动作/输入框尾挂件——五值口径曾漏并）", () => {
+    expect(PLUGIN_FORM_VALUES).toContain("header-action");
+    expect(PLUGIN_FORM_VALUES).toContain("composer-trailing");
+  });
+
+  it("isPluginForm：九类+两兜底 true；旧五值/未知值 false（走推导）", () => {
+    expect(isPluginForm("dock-panel")).toBe(true);
+    expect(isPluginForm("theme")).toBe(true);
+    expect(isPluginForm("none")).toBe(true);
+    expect(isPluginForm("session")).toBe(false);
+    expect(isPluginForm("sidebar")).toBe(false);
+    expect(isPluginForm("floating")).toBe(false);
+    expect(isPluginForm(undefined)).toBe(false);
   });
 });
 

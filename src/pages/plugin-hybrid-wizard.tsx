@@ -15,7 +15,7 @@ import { CodeEditor } from "@/components/code-editor";
 import { HybridPreviewPanel } from "@/components/hybrid-preview-panel";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { invokeCommand } from "@/hooks/use-invoke";
-import { composedIdTaken, slugify } from "./plugin-wizard-utils";
+import { composedIdTaken, slugify, tomlStr } from "./plugin-wizard-utils";
 
 type HybridSourceType = "messages" | "turns" | "task" | "stream-state";
 type HybridMount = "dock-panel" | "rail-widget" | "sidebar-panel" | "composer-trailing";
@@ -100,6 +100,9 @@ export function PluginHybridWizard({
       `id = "${id}"`,
       `name = ${JSON.stringify(name.trim() || "混合插件")}`,
       'kind = "session-composed"',
+      // v0.9.7 需求3 十六轮裁决：形态 = 九类挂载位——挂载位即形态，直接落值
+      //（修前不写 form 靠展示侧推导兜底，违背「向导与字段对应」裁决）。
+      `form = ${tomlStr(mount)}`,
       "",
       "[source]",
       `type = "${sourceType}"`,

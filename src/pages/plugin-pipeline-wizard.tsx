@@ -65,6 +65,9 @@ export function PluginPipelineWizard({
     lines.push(`name = ${tomlStr(name.trim() || "流水线")}`);
     if (description.trim()) lines.push(`description = ${tomlStr(description.trim())}`);
     lines.push('kind = "session-composed"');
+    // v0.9.7 需求3 十六轮：形态显式落值——pipeline 为编排声明非 UI 形态
+    //（呈现由块渲染挂载覆盖，十二轮裁决不单列），恒落「无 UI 呈现」。
+    lines.push('form = "none"');
     for (const stage of stages) {
       lines.push("");
       lines.push("[[pipeline.stages]]");
