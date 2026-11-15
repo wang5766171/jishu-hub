@@ -402,6 +402,11 @@ pub enum AcpAction {
 
 #[derive(Subcommand, Debug)]
 pub enum PluginAction {
+    /// Print the plugin API reference (open capabilities for component code).
+    /// 二十三轮（用户裁决）：说明机制——agent 创建插件前可经 CLI 查全部开放
+    /// 能力（与 jishu-plugin-authoring 技能的 API.md 单源同文）。
+    Api,
+
     /// Install a plugin from a local TOML manifest file (validated on install).
     Add {
         /// Path to the plugin manifest TOML.

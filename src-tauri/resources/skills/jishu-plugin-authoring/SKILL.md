@@ -36,6 +36,15 @@ description: 创建/安装 Jishu Hub 插件前必读——用户想改变客户�
 - 不确定时追问用户："你想在哪里看到它？AI 用，还是你用？"
 - 一次只造一个插件；组合需求拆多个。
 
+## 插件开放能力（component.js 可调用的全部 API）
+
+**能力参考唯一权威**：同目录 `API.md`（也可 `jishu-cli plugins api` 打印全文）。
+造任何带代码的插件前先读它——三层能力：
+
+1. **api 工具箱**（工厂参数）：h / React hooks 全套 / t / cn / loadAsset（插件目录资产注入，echarts 等库的引入通道）/ **fetch**（网络直通，v0.9.7 二十三轮起免管控开放）
+2. **props.ctx 当前会话**：消息/轮次（含花销）/流式/审批/任务快照 + 订阅；命令（切会话/插输入框/开面板/搜索定位/压缩/确认弹窗…）
+3. **props.ctx.hub 全局面**（二十三轮新增）：`listSessions()`（跨项目会话列表+usage 花销/工具调用 join）/ `sessionStats(id?)`（消息数/轮数/工具分布/花销）/ `listProjects()` / `listAgents()` / `openUrl(url)`
+
 ## 第二层：形态模板（复制填空）
 
 所有会话侧插件的 id **必须以 `session.` 开头**。智能体侧（agents/）无此限制。

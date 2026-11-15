@@ -568,6 +568,8 @@ pub fn run() {
             commands::agents::pi_package_search,
             commands::agents::pi_package_installed_sources,
             commands::agents::pi_package_installed_versions,
+            commands::sessions::hub_plugin_sessions,
+            commands::sessions::usage_session,
             commands::agents::pi_package_builtin_pins,
             commands::agents::pi_package_install_online,
             commands::agents::pi_package_uninstall_online,

@@ -16,6 +16,7 @@ use crate::cli::output::ExecutionContext;
 
 pub fn run(action: PluginAction, ctx: &ExecutionContext) -> Result<(), CliError> {
     match action {
+        PluginAction::Api => api_reference(),
         PluginAction::Add { path } => add(&path, ctx),
         PluginAction::AddHybrid { path } => add_hybrid(&path, ctx),
         PluginAction::List => list(ctx),
@@ -301,6 +302,14 @@ fn finalize_composed_install(
         println!("Installed composed plugin {id} ({})", target_dir.display());
         println!("Disabled by default; enable it via the hub GUI confirmation card.");
     }
+    Ok(())
+}
+
+/// 二十三轮：打印插件开放能力参考（API.md 单源——与 jishu-plugin-authoring
+/// 技能同文；agent 造插件前的能力发现入口）。
+fn api_reference() -> Result<(), CliError> {
+    const API_MD: &str = include_str!("../../../resources/skills/jishu-plugin-authoring/API.md");
+    println!("{API_MD}");
     Ok(())
 }
 
