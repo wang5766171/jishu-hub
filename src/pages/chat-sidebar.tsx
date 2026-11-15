@@ -543,14 +543,16 @@ function MenuPluginEntries({
           disabled={!enabled}
           onClick={() => enabled && onLaunch(e.prompt)}
           className={cn(
-            "flex h-7 w-full items-center gap-2 rounded-lg pl-4 pr-2 text-xs transition-fast",
+            // 二十一轮补修：图标与新任务按钮对齐（pl-2/gap-2.5/h-8/图标 3.5
+            // 同款几何——修前 pl-4+h-7+图标 3，图标起点缩进一截不齐）。
+            "flex h-8 w-full items-center gap-2.5 rounded-lg pl-2 pr-2 text-xs transition-fast",
             enabled
               ? "text-foreground/80 hover:bg-accent"
               : "opacity-40 cursor-not-allowed"
           )}
           title={e.label}
         >
-          <Zap className="h-3 w-3 shrink-0 text-[var(--icon-action)]/80" />
+          <Zap className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
           <span className="truncate leading-none pt-[1px]">{e.label}</span>
         </button>
       ))}
