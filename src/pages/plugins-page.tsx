@@ -290,11 +290,12 @@ const HUB_FORMS: Record<string, FormValue> = {
  * 声明不入新集，走后续推导自动升级为挂载位粒度）→ hub 随包件基表 →
  * 外观类声明（category=appearance）→ 会话插件挂载位推导 → 无 UI 呈现。 */
 function formOf(p: PluginDescriptor): FormValue {
-  // 二十轮：[menu] 段声明件（需求7 修1d 菜单类——新任务下方入口）优先
-  // 归「菜单入口」形态（菜单件常无挂载位，挂载推导会误落 none）。
+  // 二十轮：纯菜单件（[menu] 声明且无 UI 挂载）归「菜单入口」形态。
+  // 二十二轮修正：带面板挂载的菜单件（点击开独立面板）以挂载形态为准
+  //（它长什么样是面板，菜单只是入口）——menu 优先级让位挂载推导。
   if (p.kind === "session") {
     const d = listSessionPlugins().find((x) => x.id === p.id);
-    if (d?.menu) return "menu";
+    if (d?.menu && !d.mounts.some((m) => m.kind !== "event-hook")) return "menu";
   }
   if (isPluginForm(p.form)) return p.form;
   if (HUB_FORMS[p.id]) return HUB_FORMS[p.id];
