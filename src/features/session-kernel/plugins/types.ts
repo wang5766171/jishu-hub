@@ -289,6 +289,18 @@ export interface SidebarPanelMount {
   Component: ComponentType<{ ctx: SessionKernelContext }>;
 }
 
+/** 菜单页挂载点（二十二轮用户裁决 2026-11-15：菜单与面板是**同等挂载
+ * 形式**——面板=代码实现的弹窗/停靠呈现；菜单=代码实现的独立页面呈现，
+ * 入口在侧栏「新任务」下方，点击打开整页（非会话页）。内容自由：注册表
+ * 组件或 @file: 自定义代码页面，可消费数据面源。 */
+export interface MenuPageMount {
+  kind: "menu";
+  /** 标题 i18n key 和兜底文案。 */
+  titleKey: string;
+  titleFallback: string;
+  Component: ComponentType<{ ctx: SessionKernelContext }>;
+}
+
 /** 块渲染器挂载点（v0.9.2 底座增强）：按匹配域判别联合（测试期修复23
  * 结构收口）——两种匹配语义（代码块语言匹配 / 核心块类型接管）此前共用
  * 一个形状且字段全可选，组合引擎把 block-type 源适配成 languages=[] +
@@ -337,6 +349,7 @@ export type PluginMount =
   | RailWidgetMount
   | DockPanelMount
   | SidebarPanelMount
+  | MenuPageMount
   | BlockRendererMount
   | ComposerTrailingMount
   | EventHookMount

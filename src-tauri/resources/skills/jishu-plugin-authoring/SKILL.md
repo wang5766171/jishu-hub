@@ -108,6 +108,50 @@ default = true
 
 安装：`jishu-cli plugins add session.my-stats.toml`
 
+### 模板 2 变体：菜单页（独立页面挂载，v0.9.7 二十二轮）
+
+菜单与面板是**同等挂载形式**：面板=代码实现的弹窗/停靠呈现；菜单=代码实现的
+**独立页面**（入口在侧栏「新任务」下方，点击打开整页非会话页）。`mount = "menu"`
++ 组件（注册表或 `@file:component.js` 自定义代码页面）；`[menu]` 段的 label 是
+入口文字（纯 `[menu]` 无挂载的旧语义=点击新会话预填 prompt，仍兼容）。
+
+```toml
+[plugin]
+id = "session.menu-data-page"
+name = "数据页演示"
+description = "点击侧栏菜单打开独立数据页（非会话）"
+kind = "session-composed"
+form = "menu"
+
+[source]
+type = "messages"
+
+[render]
+component = "@file:component.js"
+mount = "menu"
+
+[menu]
+label = "打开数据页"
+prompt = "占位（带页面挂载时点击直接开页，不发会话）"
+```
+
+`component.js`（同目录，页面代码自由发挥——数据页/监控页/工具页均可）：
+
+```js
+JishuPlugin.register("session.menu-data-page", {
+  version: 1,
+  component: (api) => (props) => {
+    const msgs = Array.isArray(props.payload) ? props.payload : (props.payload?.messages ?? []);
+    return api.h("div", null,
+      api.h("h2", null, "会话数据页"),
+      api.h("p", null, "消息条数：" + msgs.length));
+  },
+});
+```
+
+安装：`jishu-cli plugins add-hybrid <目录>`（menu 挂载配数据面源：messages/turns/stream-state/task）。
+
+
 ### 模板 3：混合式（会话侧，TOML + component.js）
 
 ```toml

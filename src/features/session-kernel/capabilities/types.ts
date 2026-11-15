@@ -164,6 +164,9 @@ const MOUNT_SOURCE_MATRIX: Record<string, string[]> = {
   "rail-widget": ["messages", "turns", "stream-state"],
   "dock-panel": ["messages", "turns", "stream-state", "task"],
   "sidebar-panel": ["messages", "turns", "stream-state", "task"],
+  // 二十二轮：菜单页挂载——独立页面（非会话），同数据面源（页面可读
+  // 数据也可纯展示）。
+  "menu": ["messages", "turns", "stream-state", "task"],
   "composer-trailing": ["messages", "turns", "stream-state"],
   "event-hook": ["signal"],
   // 8b：工具返回值挂载语义（渲染在 tool_use 卡 output 区——非独立块；

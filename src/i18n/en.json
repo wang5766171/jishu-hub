@@ -1826,5 +1826,8 @@
       "failed": "Failed",
       "todo": "Pending"
     }
+  },
+  "menuPage": {
+    "close": "Close"
   }
 }

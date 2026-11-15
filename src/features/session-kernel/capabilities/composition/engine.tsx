@@ -350,6 +350,15 @@ export function buildComposedDescriptor(
       } as SessionPluginDescriptor["mounts"][number]);
     } else if (render.mount === "sidebar-panel") {
       mounts.push({ kind: "sidebar-panel", ...mountBase } as SessionPluginDescriptor["mounts"][number]);
+    } else if (render.mount === "menu") {
+      // 二十二轮：菜单页挂载（与面板同级——代码实现的独立页面，入口在
+      // 侧栏新任务下方，MenuPageHost 整页渲染）。
+      mounts.push({
+        kind: "menu",
+        titleKey: "",
+        titleFallback: manifest.plugin.name,
+        ...mountBase,
+      } as SessionPluginDescriptor["mounts"][number]);
     } else if (render.mount === "composer-trailing") {
       mounts.push({ kind: "composer-trailing", ...mountBase } as SessionPluginDescriptor["mounts"][number]);
     } else {

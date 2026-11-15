@@ -26,6 +26,7 @@ import { useSyncExternalStore } from "react";
 import { MessageView } from "@/components/sessions/message-view";
 import { SessionArtifactContext } from "@/components/sessions/artifact-link";
 import { SessionPanelLayer } from "@/features/session-kernel/plugins/mounts/session-panel-layer";
+import { MenuPageHost } from "@/features/session-kernel/plugins/mounts/menu-page-host";
 import { SessionSidebarLayer } from "@/features/session-kernel/plugins/mounts/session-sidebar-layer";
 import { requestPanelActivation, requestPanelClose } from "@/features/session-kernel/shell/panel-activation";
 import { closeSessionSidebar } from "@/features/session-kernel/shell/session-sidebar";
@@ -2272,6 +2273,10 @@ export function ChatPage({
         <div className="absolute left-0 top-24 bottom-10 w-6 pointer-events-none">
           <SessionRailSlot ctx={sessionKernelCtx} />
         </div>
+        {/* 二十二轮：菜单页宿主——菜单挂载插件的独立页面。挂会话区顶层
+            （无条件渲染，无选中会话也能开页——修前挂消息区导致空态点击
+            无效）；absolute inset-0 覆盖整个会话区（页面自带页头）。 */}
+        <MenuPageHost ctx={sessionKernelCtx} />
         {/* 新建任务对话（TaskInstance 尚未创建）的顶栏：标题 + 关闭。
             减法重构：TaskHeaderBar 已随 TaskWorkspace 退役，这里用内联顶栏保留关闭能力，
             不引入独立组件；任务激活后主区沿用 chat-page 常规会话头。 */}

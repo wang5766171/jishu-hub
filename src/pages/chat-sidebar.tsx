@@ -37,6 +37,7 @@ import {
 } from "@/components/ui/context-menu";
 import { useSessionUnread } from "@/features/session-kernel/session-unread";
 import { useEnabledSessionPlugins } from "@/features/session-kernel/plugins/registry";
+import { requestMenuPage } from "@/features/session-kernel/shell/menu-page";
 import { composedPlugins, composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
 import { Zap } from "lucide-react";
 import { TaskSessionTree } from "@/features/task-workspace/sidebar/task-session-tree";
@@ -526,10 +527,20 @@ function MenuPluginEntries({
   const composedRev = useSyncExternalStore(subscribeComposed, composedVersion, () => 0);
   const entries = useMemo(() => {
     // 描述符透传 [menu] 段（engine 装配）；与启用集取交集。
+    // 二十二轮（用户裁决 2026-11-15）：菜单件带面板挂载（dock/sidebar）
+    // → 点击**直接打开独立面板**（requestPanelActivation 通道，能力中心
+    // 同款调度）；纯菜单件维持原语义（新会话预填 prompt）。
     return composedPlugins()
       .filter((p) => p.menu && enabledIds.has(p.id))
       .slice(0, 5)
-      .map((p) => ({ id: p.id, label: p.menu!.label, prompt: p.menu!.prompt }));
+      .map((p) => ({
+        id: p.id,
+        label: p.menu!.label,
+        prompt: p.menu!.prompt,
+        // 二十二轮：menu 挂载件（代码实现的独立页面）点击开页；
+        // 纯 [menu] 件维持预填开会话（需求7 修1d 原语义兼容）。
+        hasPage: p.mounts.some((m) => m.kind === "menu"),
+      }));
     // composedRev 进依赖：清单装载/启停变化后重算。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabledIds, composedRev]);
@@ -541,7 +552,14 @@ function MenuPluginEntries({
           key={e.id}
           type="button"
           disabled={!enabled}
-          onClick={() => enabled && onLaunch(e.prompt)}
+          onClick={() => {
+            if (!enabled) return;
+            if (e.hasPage) {
+              requestMenuPage(e.id);
+              return;
+            }
+            onLaunch(e.prompt);
+          }}
           className={cn(
             // 二十一轮补修：图标与新任务按钮对齐（pl-2/gap-2.5/h-8/图标 3.5
             // 同款几何——修前 pl-4+h-7+图标 3，图标起点缩进一截不齐）。
@@ -550,7 +568,7 @@ function MenuPluginEntries({
               ? "text-foreground/80 hover:bg-accent"
               : "opacity-40 cursor-not-allowed"
           )}
-          title={e.label}
+          title={e.hasPage ? `${e.label}（打开页面）` : e.label}
         >
           <Zap className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
           <span className="truncate leading-none pt-[1px]">{e.label}</span>
