@@ -967,7 +967,7 @@ pub fn assemble(
             composed: false,
             has_pipeline: false,
             category: file.info.category.clone(),
-        form: file.info.form.clone(),
+            form: file.info.form.clone(),
         });
     }
 
@@ -1255,7 +1255,7 @@ mod tests {
                 icon: String::new(),
                 install_hint: None,
                 category: None,
-            form: None,
+                form: None,
                 description: None,
             },
             probe: None,
@@ -1609,9 +1609,8 @@ mod review_tests {
     /// frontmatter（曾把块标量记号「|-」当值显示在技能卡上）。
     #[test]
     fn manifest_plugin_description_prefers_info_description() {
-        let file: super::super::manifest::schema::AgentManifestFile =
-            toml::from_str(
-                r#"
+        let file: super::super::manifest::schema::AgentManifestFile = toml::from_str(
+            r#"
 schema = 1
 kind = "tool"
 
@@ -1621,8 +1620,8 @@ display_name = "多引擎搜索"
 icon = ""
 description = "通过公开搜索URL在16个搜索引擎中做跨引擎检索。"
 "#,
-            )
-            .unwrap();
+        )
+        .unwrap();
         assert!(file.tool.is_none());
         let desc = manifest_plugin_description(&file);
         assert_eq!(desc, "通过公开搜索URL在16个搜索引擎中做跨引擎检索。");

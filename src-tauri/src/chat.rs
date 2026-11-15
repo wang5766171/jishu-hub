@@ -1491,11 +1491,7 @@ fn truncated_content(lines: &[&str], keep: usize) -> String {
         .iter()
         .rev()
         .find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .and_then(|v| {
-            v.get("id")
-                .and_then(|i| i.as_str())
-                .map(str::to_string)
-        });
+        .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string));
     let mut anchor = kept_tail_id;
     let mut out: Vec<String> = lines[..keep].iter().map(|l| l.to_string()).collect();
     for line in &lines[keep..] {
@@ -1515,10 +1511,7 @@ fn truncated_content(lines: &[&str], keep: usize) -> String {
                         }
                     }
                     // 锚点前移到本行自身 id，维持回补链。
-                    anchor = obj
-                        .get("id")
-                        .and_then(|i| i.as_str())
-                        .map(str::to_string);
+                    anchor = obj.get("id").and_then(|i| i.as_str()).map(str::to_string);
                 }
                 v.to_string()
             })
@@ -1665,7 +1658,8 @@ mod tests {
         // name 键且 parentId 指向其前一条（session_title.rs append_session_info
         // 与 pi 侧 appendSessionInfo 均如此）。原夹具用虚构的 title 键且无
         // parentId，恰好测不出「回补行 parentId 悬空→上下文断链」缺陷。
-        let info = r#"{"type":"session_info","id":"s0","parentId":null,"name":"初始名"}"#.to_string();
+        let info =
+            r#"{"type":"session_info","id":"s0","parentId":null,"name":"初始名"}"#.to_string();
         let u1 = msg_line("a", "s0", "user", "AAA");
         let r1 = msg_line("b", "a", "assistant", "回复");
         let u2 = msg_line("c", "b", "user", "BBB");
