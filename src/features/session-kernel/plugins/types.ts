@@ -174,6 +174,9 @@ export interface SessionKernelContext {
     sessionId: string,
   ): { title: string; kind: "session" | "task" | "node" | "unknown" } | null;
 
+  // ── hub 级能力（二十三轮）：跨会话/全局异步查询面 ──
+  hub: HubCapabilities;
+
   // ── 订阅（声明制；未订阅不推送）──
   subscribe: {
     /** 完整消息流（含全部块类型）。 */
@@ -189,6 +192,64 @@ export interface SessionKernelContext {
     /** 内核信号（通知/音效等）。 */
     events(cb: (signal: SessionSignal) => void): Unsubscribe;
   };
+}
+
+/** ── hub 级能力面（二十三轮用户裁决 2026-11-15：开放跨会话/全局面给
+ * 插件——「梳理底层 pi/hub 有哪些 API 可以提供出来」；不局限于会话列表。
+ * 异步查询命名空间（区别于 ctx 顶层的当前会话快照）。 ===== */
+
+/** 会话摘要（ctx.hub.listSessions）。 */
+export interface HubSessionSummary {
+  id: string;
+  title: string | null;
+  agentId: string | null;
+  projectPath: string | null;
+  startedAt: string | null;
+  lastActive: string | null;
+  messageCount: number;
+  /** usage.db 精确记账 join（无记录为 null）。 */
+  totalCost: number | null;
+  toolCallsTotal: number | null;
+}
+
+/** 会话统计（ctx.hub.sessionStats）。 */
+export interface HubSessionStats {
+  sessionId: string;
+  messageCount: number;
+  /** assistant 应答轮数（工具中间轮不计）。 */
+  turnCount: number;
+  /** 工具调用分布（工具名 → 次数）。 */
+  toolCalls: Record<string, number>;
+  /** usage.db 精确记账（无记录为 null；与 toolCalls 分布口径互补）。 */
+  totalCost: number | null;
+  toolCallsTotal: number | null;
+}
+
+/** 项目摘要（ctx.hub.listProjects）。 */
+export interface HubProjectSummary {
+  name: string;
+  path: string;
+}
+
+/** 智能体摘要（ctx.hub.listAgents）。 */
+export interface HubAgentSummary {
+  id: string;
+  displayName: string;
+  installed: boolean;
+}
+
+/** hub 级能力（插件触达全局数据的受控面——实现经 hub 命令，插件不直连）。 */
+export interface HubCapabilities {
+  /** 会话列表（默认当前项目，可指定项目编码名/智能体）。 */
+  listSessions(opts?: { projectEncodedName?: string; agentId?: string }): Promise<HubSessionSummary[]>;
+  /** 会话统计（默认当前会话）。 */
+  sessionStats(sessionId?: string): Promise<HubSessionStats>;
+  /** 项目列表。 */
+  listProjects(): Promise<HubProjectSummary[]>;
+  /** 已装智能体及安装态。 */
+  listAgents(): Promise<HubAgentSummary[]>;
+  /** 用系统默认浏览器打开外部链接（详情页跳转等）。 */
+  openUrl(url: string): void;
 }
 
 /** 订阅取消句柄。 */

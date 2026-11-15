@@ -772,3 +772,86 @@ mod tests {
 pub(crate) async fn session_generate_title(session_id: String) -> Result<Option<String>, String> {
     Ok(crate::agent::jishu_self::session_title::generate_and_persist(&session_id).await)
 }
+
+// ── 二十三轮（用户裁决 2026-11-15）：hub 级能力面——插件 ctx.hub 数据源 ──
+
+/// 插件会话摘要（ctx.hub.listSessions 的返回行；跨会话/跨项目只读面）。
+#[derive(serde::Serialize)]
+pub(crate) struct HubPluginSession {
+    pub id: String,
+    pub title: String,
+    pub agent_id: Option<String>,
+    pub project_path: Option<String>,
+    pub started_at: Option<String>,
+    pub last_active: Option<String>,
+    pub message_count: usize,
+    /// usage.db 精确记账 join（无记录时 None——旧会话/未产生用量）。
+    pub total_cost: Option<f64>,
+    pub tool_calls: Option<u64>,
+}
+
+/// 跨项目（或指定项目）会话列表——插件开放能力（二十三轮）。
+/// 复用 pi 会话解析（list_pi_sessions）；标题合并 ai-title 与用户重命名；
+/// usage.db 按会话 join 花销/工具调用。只读，无写面。
+#[tauri::command]
+pub(crate) async fn hub_plugin_sessions(
+    project_encoded: Option<String>,
+) -> Result<Vec<HubPluginSession>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let names = hub::get_session_names().unwrap_or_default();
+        // 项目集：指定单项目；否则全扫 sessions root 下的项目目录。
+        let encoded_list: Vec<String> = match &project_encoded {
+            Some(one) => vec![one.clone()],
+            None => {
+                let root = crate::agent::jishu_self::pi_session::pi_sessions_root()?;
+                let mut list: Vec<String> = std::fs::read_dir(&root)
+                    .map_err(|e| e.to_string())?
+                    .flatten()
+                    .filter(|e| e.path().is_dir())
+                    .filter_map(|e| {
+                        let n = e.file_name().to_string_lossy().into_owned();
+                        n.starts_with("--").then(|| n.trim_matches('-').to_string())
+                    })
+                    .collect();
+                list.sort();
+                list
+            }
+        };
+        let mut out = Vec::new();
+        for encoded in encoded_list {
+            let sessions = crate::agent::jishu_self::pi_session::list_pi_sessions(&encoded)?;
+            for s in sessions {
+                let usage = crate::usage_store::get(&s.id).ok();
+                out.push(HubPluginSession {
+                    title: names
+                        .get(&s.id)
+                        .cloned()
+                        .or_else(|| s.display_name.clone())
+                        .unwrap_or_else(|| s.id.clone()),
+                    id: s.id,
+                    agent_id: s.agent_id.clone(),
+                    project_path: s.project_path.clone(),
+                    started_at: s.started_at.map(|t| t.to_rfc3339()),
+                    last_active: s.last_active.map(|t| t.to_rfc3339()),
+                    message_count: s.messages.len(),
+                    total_cost: usage.as_ref().map(|u| u.total_cost),
+                    tool_calls: usage.as_ref().map(|u| u.tool_calls),
+                });
+            }
+        }
+        // 全局按最近活跃倒序（跨项目口径）。
+        out.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("scan sessions failed: {e}"))?
+}
+
+/// 单会话精确用量（usage.db session_usage；ctx.hub.sessionStats 数据源）。
+/// usage_store::get 已有内部函数，此处薄注册为命令（二十三轮）。
+#[tauri::command]
+pub(crate) fn usage_session(
+    session_id: String,
+) -> Result<crate::usage_store::SessionUsageRow, String> {
+    crate::usage_store::get(&session_id)
+}

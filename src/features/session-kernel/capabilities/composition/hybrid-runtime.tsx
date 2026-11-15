@@ -80,6 +80,9 @@ export const PLUGIN_API_VERSION = 1;
 /** 注入给插件 factory 的 API 面（v1）。 */
 export interface HybridPluginApi {
   h: typeof createElement;
+  /** 二十三轮（用户裁决「外部 API 受控限制暂不考虑」）：fetch 直通——
+   * CSP connect-src 已放开外部域，插件页面可自取任意 API 数据。 */
+  fetch: typeof fetch;
   useState: typeof useState;
   useEffect: typeof useEffect;
   useMemo: typeof useMemo;
@@ -228,6 +231,9 @@ export function ensureGlobalRegisterForTest(): GlobalRegistrar {
 function buildApi(assetScope?: PluginAssetScope): HybridPluginApi {
   return {
     h: createElement,
+    // 二十三轮（用户裁决「外部 API 受控限制暂不考虑」）：fetch 直通开放
+    // ——CSP connect-src 已放开外部域；插件页面可自取任意 API 数据。
+    fetch: (...args: Parameters<typeof fetch>) => fetch(...args),
     useState,
     useEffect,
     useMemo,

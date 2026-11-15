@@ -84,12 +84,15 @@ function RendererShell({
   schema,
   payload,
   sessionId,
+  ctx,
   fileComponent,
 }: {
   manifest: SessionComposedManifest;
   schema: PluginConfigField[];
   payload: SourcePayload;
   sessionId: string | null;
+  /** 二十三轮：ctx 透传（混合件组件 props.ctx）。 */
+  ctx?: SessionKernelContext;
   fileComponent?: ComponentType<RendererComponentProps>;
 }) {
   const { values } = usePluginConfig(manifest.plugin.id, schema);
@@ -114,7 +117,7 @@ function RendererShell({
           ) : undefined
         }
       >
-        <HybridComp payload={payload} options={values} actions={actions} />
+        <HybridComp payload={payload} options={values} actions={actions} ctx={ctx} />
       </HybridErrorBoundary>
     );
   }
@@ -154,7 +157,7 @@ function SourceShell({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx.messages, ctx.turns, ctx.activeTurnIndex, manifest.source!.type]);
-  return <RendererShell manifest={manifest} schema={schema} payload={payload} sessionId={ctx.sessionId} fileComponent={fileComponent} />;
+  return <RendererShell manifest={manifest} schema={schema} payload={payload} sessionId={ctx.sessionId} ctx={ctx} fileComponent={fileComponent} />;
 }
 
 /** manifest → 描述符（校验失败抛错，loader 负责隔离）。

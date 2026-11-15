@@ -1826,6 +1826,86 @@ export function ChatPage({
       // v0.9.3 需求3（P1-3）：真订阅——四个数据面经 SessionDataHub（注册即回放
       // 快照，数据变更 publish 逐个回调，退订真实移除）；events 通道复用信号
       // 总线（本就是真订阅）。v0.9.2 的「cb 调一次返回 no-op」假订阅删除。
+      // ── hub 级能力（二十三轮用户裁决）：跨会话/全局只读面 + openUrl ──
+      // 数据源：hub_plugin_sessions（后端跨项目扫描+usage join）/scan_projects/
+      // list_agents/usage_session/get_session_messages（统计聚合，前端组合）。
+      hub: {
+        listSessions: async (opts) => {
+          type Row = {
+            id: string; title: string; agent_id: string | null; project_path: string | null;
+            started_at: string | null; last_active: string | null; message_count: number;
+            total_cost: number | null; tool_calls: number | null;
+          };
+          const rows = await invokeCommand<Row[]>(
+            "hub_plugin_sessions",
+            opts?.projectEncodedName != null ? { projectEncoded: opts.projectEncodedName } : undefined,
+          );
+          return rows.map((r) => ({
+            id: r.id,
+            title: r.title,
+            agentId: r.agent_id,
+            projectPath: r.project_path,
+            startedAt: r.started_at,
+            lastActive: r.last_active,
+            messageCount: r.message_count,
+            totalCost: r.total_cost,
+            toolCallsTotal: r.tool_calls,
+          }));
+        },
+        sessionStats: async (sessionId) => {
+          const sid = sessionId ?? selectedSession ?? "";
+          // 消息级聚合（工具分布/轮数）：当前项目内会话经 get_session_messages
+          //（有解析缓存）；usage.db 精确记账跨项目可用。
+          let messageCount = 0;
+          let turnCount = 0;
+          const toolCallsDist: Record<string, number> = {};
+          if (sid && ctxSessionMeta.projectEncodedName) {
+            try {
+              type Msg = { role: string; content?: Array<{ type?: string; name?: string }> };
+              const msgs = await invokeCommand<Msg[]>("get_session_messages", {
+                agentId: "jishu-self",
+                sessionId: sid,
+                encodedName: ctxSessionMeta.projectEncodedName,
+              });
+              messageCount = msgs.length;
+              for (const m of msgs) {
+                if (m.role === "assistant") turnCount += 1;
+                for (const b of m.content ?? []) {
+                  if (b.type === "tool_use" && b.name) {
+                    toolCallsDist[b.name] = (toolCallsDist[b.name] ?? 0) + 1;
+                  }
+                }
+              }
+            } catch {
+              // 跨项目/读取失败：消息级统计留零值，用量面仍返回。
+            }
+          }
+          const usage = await invokeCommand<{ total_cost: number; tool_calls: number } | null>(
+            "usage_session",
+            { sessionId: sid },
+          ).catch(() => null);
+          return {
+            sessionId: sid,
+            messageCount,
+            turnCount,
+            toolCalls: toolCallsDist,
+            totalCost: usage?.total_cost ?? null,
+            toolCallsTotal: usage ? usage.tool_calls : null,
+          };
+        },
+        listProjects: async () => {
+          const projects = await invokeCommand<Array<{ name: string; path: string }>>("scan_projects");
+          return (projects ?? []).map((p) => ({ name: p.name, path: p.path }));
+        },
+        listAgents: async () => {
+          const agents = await invokeCommand<Array<{ id: string; display_name: string; enabled: boolean }>>("list_agents");
+          return (agents ?? []).map((a) => ({ id: a.id, displayName: a.display_name, installed: a.enabled }));
+        },
+        openUrl: (url) => void invokeCommand("open_url", { url }).catch(() => undefined),
+      },
+      // v0.9.3 需求3（P1-3）：真订阅——四个数据面经 SessionDataHub（注册即回放
+      // 快照，数据变更 publish 逐个回调，退订真实移除）；events 通道复用信号
+      // 总线（本就是真订阅）。v0.9.2 的「cb 调一次返回 no-op」假订阅删除。
       subscribe: {
         messages: (cb) => dataHub.subscribeMessages(cb),
         streamState: (cb) => dataHub.subscribeStreamState(cb),

@@ -57,6 +57,10 @@ export interface RendererComponentProps<P = SourcePayload> {
   options: PluginConfigValues;
   /** 引擎装配的动作条（导出/打开等；组件负责呈现与转发）。 */
   actions: ComposedActionRef[];
+  /** 二十三轮：会话内核上下文透传（@file 混合件此前只收 payload/options/
+   * actions——ctx 契约缺口，组件拿不到会话/全局能力；可选字段，存量组件
+   * 不受影响）。 */
+  ctx?: import("../plugins/types").SessionKernelContext;
 }
 
 export interface RendererRegistration {
