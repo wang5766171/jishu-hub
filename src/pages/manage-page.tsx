@@ -119,6 +119,10 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigat
     if (pending?.tab) setActiveTab(pending.tab as ManageTab);
     return onManageNav((detail) => {
       if (detail.tab) setActiveTab(detail.tab as ManageTab);
+      // 第四轮评审 P2：在线消费后清掉留存请求——否则下次挂载
+      // consumePendingManageNav() 吃到陈旧请求，用户正常进管理页会意外
+      // 跳到旧 tab（直送成功 ≠ 该请求仍待投递）。
+      consumePendingManageNav();
     });
   }, []);
 

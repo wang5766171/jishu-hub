@@ -523,6 +523,7 @@ function MenuPluginEntries({
   onLaunch: (prompt: string) => void;
   enabled: boolean;
 }) {
+  const { t } = useTranslation();
   const enabledIds = useEnabledSessionPlugins();
   const composedRev = useSyncExternalStore(subscribeComposed, composedVersion, () => 0);
   const entries = useMemo(() => {
@@ -568,7 +569,7 @@ function MenuPluginEntries({
               ? "text-foreground/80 hover:bg-accent"
               : "opacity-40 cursor-not-allowed"
           )}
-          title={e.hasPage ? `${e.label}（打开页面）` : e.label}
+          title={e.hasPage ? `${e.label}${t("plugins.menuOpenPage", "（打开页面）")}` : e.label}
         >
           <Zap className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
           <span className="truncate leading-none pt-[1px]">{e.label}</span>

@@ -1141,6 +1141,10 @@ export function PluginsPage({
                       // 卸载静默直删（「点击没反应」观感），与 A 家族
                       // handleRemove 的 destructive 确认交互对齐；失败显性
                       // 弹窗（修前只 console.warn）。
+                      // 第四轮评审修复：①包进 withBusy（与 A 家族对齐——
+                      // 慢删除期间按钮灰化防重复触发，refresh/错误弹窗复用
+                      // 同链）；②删除后清 detailTarget（修前详情面板残留
+                      // 已删插件信息）。
                       void (async () => {
                         const ok = await confirmDialog({
                           title: t("plugins.removeTitle", { name: plugin.display_name }),
@@ -1149,13 +1153,10 @@ export function PluginsPage({
                           variant: "destructive",
                         });
                         if (!ok) return;
-                        try {
+                        await withBusy(plugin.id, async () => {
                           await invokeCommand("composed_plugin_delete", { id: plugin.id });
-                          await refresh();
-                        } catch (e) {
-                          console.warn("composed_plugin_delete failed:", e);
-                          void alertDialog({ title: t("plugins.actionFailed", "操作失败"), description: String(e) });
-                        }
+                          setDetailTarget(null);
+                        });
                       })();
                       return;
                     }
@@ -1427,10 +1428,10 @@ export function PluginsPage({
             variant="outline"
             size="sm"
             onClick={() => void handleImportExtension()}
-            title="导入 .ts 智能体扩展文件（安全摘要确认后复制，默认不启用）"
+            title={tr("plugins.importExtTitle", "导入 .ts 智能体扩展文件（安全摘要确认后复制，默认不启用）")}
           >
             <FileCode2 className="h-4 w-4" />
-            <span className="ml-1.5">导入扩展</span>
+            <span className="ml-1.5">{tr("plugins.importExt", "导入扩展")}</span>
           </Button>
           <Button variant="outline" size="sm" onClick={handleReload} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}

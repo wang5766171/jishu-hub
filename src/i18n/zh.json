@@ -115,7 +115,8 @@
     "engineReinit": "重新初始化",
     "engineReinstall": "重装引擎",
     "engineDone": "引擎已更新，新会话生效",
-    "installSuccess": "安装成功"
+    "installSuccess": "安装成功",
+    "manifestErrorsTitle": "自定义智能体配置文件加载失败"
   },
   "status": {
     "installed": "已安装",
@@ -648,7 +649,8 @@
       "apiPropsLine": "props.payload（按内容源形状）· options（配置值）· actions（动作条）",
       "apiRegisterLabel": "注册",
       "livePreview": "实时预览（模拟数据，非沙箱）",
-      "tomlPreview": "生成预览（plugin.toml + 保存位置 plugins/{{id}}/）"
+      "tomlPreview": "生成预览（plugin.toml + 保存位置 plugins/{{id}}/）",
+      "mountMenu": "菜单页（独立页面，v0.9.7 二十二轮）"
     },
     "entryDescribeV2": "描述需求（推荐）——AI 帮你把插件做出来",
     "entryGoChat": "去会话创建",
@@ -688,7 +690,66 @@
     "formNone": "无 UI 呈现",
     "formTheme": "主题外观",
     "formFilterLabel": "形态",
-    "formAll": "全部"
+    "formAll": "全部",
+    "reload": "重新加载",
+    "importExt": "导入扩展",
+    "importExtTitle": "导入 .ts 智能体扩展文件（安全摘要确认后复制，默认不启用）",
+    "menuOpenPage": "（打开页面）",
+    "pendingBadge": "待确认",
+    "pendingSectionTitle": "待确认安装",
+    "pendingEnable": "启用",
+    "pendingDismiss": "暂不",
+    "pendingNoAssets": "纯清单",
+    "pendingAssetUnit": "个文件",
+    "edit": "编辑",
+    "editSource": "编辑源码",
+    "empty": "无插件",
+    "installed": "已安装",
+    "notInstalled": "未安装",
+    "searchEmpty": "无匹配插件",
+    "searchPlaceholder": "搜索 id/名称/描述/语言…",
+    "createAction": "创建",
+    "saveAction": "保存修改",
+    "schemaVersion": "schema v1",
+    "viewToml": "查看模版 TOML（manifest 格式参考）",
+    "hAcpPluginDir": "桥接形态：转换脚本随插件目录分发时经 CLI 安装目录包（jishu-cli plugins add <目录>），命令中用 {plugin_dir} 引用插件目录",
+    "sourceTitle": "源码",
+    "sourceReadonly": "（只读——系统/内置件或经表单向导编辑）",
+    "sourceNoFiles": "该插件无本地源码文件（内置 Rust 实现）。",
+    "sourceHybridNote": "含代码组件：保存后将回到「待确认安装」状态，需确认后生效（安全阀）。",
+    "sourceOpenLocation": "打开所在位置"
+  },
+  "nativeMcp": {
+    "title": "原生 MCP 服务",
+    "subtitle": "jishu 直连的 MCP server（pi 原生）；与下方聚合插件互补",
+    "add": "添加服务",
+    "addTitle": "添加原生 MCP 服务",
+    "addDesc": "写入 ~/.jishu-agent/agent/mcp.json（jishu 会话直连）；需 OAuth 的服务添加后在终端执行 jishu mcp login",
+    "empty": "暂无原生服务——可经「添加服务」或终端 jishu mcp add 添加（需 OAuth 的服务用终端 jishu mcp login 登录）。",
+    "fName": "名称（字母/数字/_/-）",
+    "fDesc": "描述（可选，一句话说明用途）",
+    "fCommand": "命令，如 npx 或 uvx",
+    "fArgs": "参数（空格分隔），如 -y @modelcontextprotocol/server-filesystem .",
+    "fUrl": "服务地址，如 https://example.com/mcp",
+    "loading": "读取 mcp.json…",
+    "probe": "探测状态",
+    "probing": "探测中…",
+    "oauthHint": "OAuth：终端执行 jishu mcp login",
+    "remove": "删除",
+    "removeTitle": "删除服务",
+    "removeConfirm": "确定删除 {{name}}？jishu 会话下轮不再连接它。"
+  },
+  "hybridConfirm": {
+    "label": "混合插件安装确认",
+    "title": "新混合插件安装确认",
+    "mountLine": "挂载：{{mount}} · 代码 {{lines}} 行",
+    "takeover": "接管范围：{{scope}}",
+    "bridgeWarn": "⚠ 最高警示：将随插件启动可执行体——{{bridges}}（启用前务必核验脚本内容）",
+    "notice": "混合插件包含自定义代码，会在会话界面运行。启用前建议检查代码内容。",
+    "enable": "启用",
+    "later": "暂不启用",
+    "notifyTitle": "通知插件已启用",
+    "notifyBody": "这是一条测试通知——插件工作正常。"
   },
   "config": {
     "title": "配置管理",
@@ -1560,8 +1621,8 @@
     "hub": {
       "title": "能力中心",
       "groupPanels": "面板 · 点击调度",
-                  "panelCount": "面板",
-            "manage": "管理插件…"
+      "panelCount": "面板",
+      "manage": "管理插件…"
     },
     "collapse": "收起为胶囊",
     "expand": "展开悬浮窗",

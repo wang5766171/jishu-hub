@@ -10,6 +10,7 @@
  * 输入源：hub 内部命令 plugin_confirm_pending（读取后端记录的待确认列表）。
  */
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { ShieldAlert, Check, X } from "lucide-react";
 import { UniModal } from "@/components/ui/uni-modal";
@@ -62,7 +63,7 @@ function fmtAssetSize(bytes: number): string {
 const POLL_INTERVAL_MS = 5000;
 
 /** 5a：启用后自动展示（按 pending.mount 分派）。 */
-function afterEnableShowcase(item: PendingHybridPlugin): void {
+function afterEnableShowcase(item: PendingHybridPlugin, t: (k: string, o?: Record<string, unknown>) => string): void {
   switch (item.mount) {
     case "dock-panel":
     case "sidebar-panel":
@@ -80,8 +81,8 @@ function afterEnableShowcase(item: PendingHybridPlugin): void {
       // 测试通知：确认通知通道畅通（复用 desktop-notify 动作的后端命令）。
       window.setTimeout(() => {
         void invokeCommand("desktop_notify_send", {
-          title: "通知插件已启用",
-          body: "这是一条测试通知——插件工作正常。",
+          title: t("hybridConfirm.notifyTitle"),
+          body: t("hybridConfirm.notifyBody"),
           sessionId: null,
           sound: null,
         }).catch(() => undefined);
@@ -97,6 +98,7 @@ function afterEnableShowcase(item: PendingHybridPlugin): void {
 }
 
 export function HybridInstallConfirmation() {
+  const { t } = useTranslation();
   const [pending, setPending] = useState<PendingHybridPlugin[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -141,12 +143,12 @@ export function HybridInstallConfirmation() {
         }
         // 5a：装好了在哪用？——按挂载形态自动展示（不用去能力中心找）。
         const item = pending.find(p => p.id === id);
-        if (item) afterEnableShowcase(item);
+        if (item) afterEnableShowcase(item, t);
       }
     } finally {
       setBusyId(null);
     }
-  }, [pending]);
+  }, [pending, t]);
 
   if (pending.length === 0) return null;
 
@@ -157,7 +159,7 @@ export function HybridInstallConfirmation() {
       open
       onClose={() => undefined}
       preventClose
-      label="混合插件安装确认"
+      label={t("hybridConfirm.label")}
       className="w-auto max-w-none border-0 bg-transparent shadow-none"
     >
       <div className="flex max-w-[96vw] items-center justify-center gap-4 overflow-x-auto p-2">
@@ -174,18 +176,17 @@ export function HybridInstallConfirmation() {
             <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
             <div className="min-w-0 flex-1">
               <div className="text-sm font-semibold text-foreground">
-                新混合插件安装确认
+                {t("hybridConfirm.title")}
               </div>
               <div className="mt-2 space-y-1 text-xs text-muted-foreground">
                 <div><span className="text-foreground/80">{p.name}</span>（{p.id}）</div>
-                <div>挂载：{p.mount} · 代码 {p.codeLines} 行</div>
+                <div>{t("hybridConfirm.mountLine", { mount: p.mount, lines: p.codeLines })}</div>
                 {p.takeover ? (
-                  <div className="text-amber-600 dark:text-amber-400">接管范围：{p.takeover}</div>
+                  <div className="text-amber-600 dark:text-amber-400">{t("hybridConfirm.takeover", { scope: p.takeover })}</div>
                 ) : null}
                 {(p.bridges ?? []).length > 0 ? (
                   <div className="rounded-md border border-red-500/50 bg-red-500/5 px-2 py-1.5 text-red-600 dark:text-red-400">
-                    ⚠ 最高警示：将随插件启动可执行体——{(p.bridges ?? []).join("、")}
-                    （启用前务必核验脚本内容）
+                    {t("hybridConfirm.bridgeWarn", { bridges: (p.bridges ?? []).join("、") })}
                   </div>
                 ) : null}
                 {(p.assets ?? []).length > 0 ? (
@@ -203,7 +204,7 @@ export function HybridInstallConfirmation() {
                 <div className="font-mono text-[10px] break-all text-muted-foreground/60">{p.dir}</div>
               </div>
               <div className="mt-3 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-                混合插件包含自定义代码，会在会话界面运行。启用前建议检查代码内容。
+                {t("hybridConfirm.notice")}
               </div>
               <div className="mt-4 flex gap-2">
                 <button
@@ -213,7 +214,7 @@ export function HybridInstallConfirmation() {
                   className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
                   <Check className="h-3.5 w-3.5" />
-                  启用
+                  {t("hybridConfirm.enable")}
                 </button>
                 <button
                   type="button"
@@ -222,7 +223,7 @@ export function HybridInstallConfirmation() {
                   className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
                 >
                   <X className="h-3.5 w-3.5" />
-                  暂不启用
+                  {t("hybridConfirm.later")}
                 </button>
               </div>
             </div>

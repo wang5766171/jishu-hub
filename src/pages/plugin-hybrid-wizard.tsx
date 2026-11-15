@@ -18,7 +18,7 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { composedIdTaken, slugify, tomlStr } from "./plugin-wizard-utils";
 
 type HybridSourceType = "messages" | "turns" | "task" | "stream-state";
-type HybridMount = "dock-panel" | "rail-widget" | "sidebar-panel" | "composer-trailing";
+type HybridMount = "dock-panel" | "rail-widget" | "sidebar-panel" | "composer-trailing" | "menu";
 
 // 三轮评审 P1-5：label/hint 全改 i18n 键（渲染点翻译，语言切换即生效——
 // 三轮修复只迁了 label 漏了 hint，本轮补齐）。
@@ -34,6 +34,9 @@ const MOUNTS: Array<{ value: HybridMount; labelKey: string }> = [
   { value: "rail-widget", labelKey: "plugins.wiz.mountRail" },
   { value: "sidebar-panel", labelKey: "plugins.wiz.mountSidebar" },
   { value: "composer-trailing", labelKey: "plugins.wiz.mountComposer" },
+  // 第四轮评审 P2：menu 挂载补 GUI 创建路径（三件套齐活——形态枚举/筛选
+  // 有了，向导下拉缺它则用户造不出菜单页件，只能手写 TOML）。
+  { value: "menu", labelKey: "plugins.wiz.mountMenu" },
 ];
 
 function templateCode(id: string, sourceType: HybridSourceType): string {
@@ -110,6 +113,18 @@ export function PluginHybridWizard({
       "[render]",
       'component = "@file:component.js"',
       `mount = "${mount}"`,
+      // 第四轮评审 P2（menu 挂载补 GUI 路径）：菜单页件必须带 [menu] 段——
+      // 侧栏入口的 label 来源（MenuPluginEntries 过滤 p.menu，缺段则造出的
+      // 件没有入口）；prompt 为占位——带页面挂载时点击直接开页不发会话
+      //（二十二轮语义）。
+      ...(mount === "menu"
+        ? [
+            "",
+            "[menu]",
+            `label = ${JSON.stringify(name.trim() || "菜单插件")}`,
+            'prompt = "占位（带页面挂载时点击直接开页，不发会话）"',
+          ]
+        : []),
     ];
     return lines.join("\n") + "\n";
   };
