@@ -1766,7 +1766,8 @@
     "npmWeeklyDownloads": "npm weekly downloads",
     "perWeek": "/wk",
     "updateFailedItems": "Failed to update: {{names}}",
-    "searchUnified": "Search…"
+    "searchUnified": "Search…",
+    "clearSearch": "Clear search"
   },
   "onboarding": {
     "initTitle": "Preparing your agent",

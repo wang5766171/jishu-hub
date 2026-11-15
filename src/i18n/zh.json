@@ -1766,7 +1766,8 @@
     "npmWeeklyDownloads": "npm 每周下载量",
     "perWeek": "/周",
     "updateFailedItems": "以下项更新失败：{{names}}",
-    "searchUnified": "搜索…"
+    "searchUnified": "搜索…",
+    "clearSearch": "清除搜索"
   },
   "onboarding": {
     "initTitle": "正在准备你的智能体",

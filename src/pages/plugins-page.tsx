@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { AlertCircle, Download, ExternalLink, Loader2, Pencil, Plus, RefreshCw, Search, ShieldAlert, Trash2 , Bug as BugIcon, Package } from "lucide-react";
+import { AlertCircle, Download, ExternalLink, Loader2, Pencil, Plus, RefreshCw, ShieldAlert, Trash2 , Bug as BugIcon, Package } from "lucide-react";
 import type { AgentStatus } from "@/agents/types";
 import { PluginCreateDialog } from "./plugin-create-dialog";
 import { PluginDetailModal, type DrawerPluginInfo } from "./plugin-detail-modal";
@@ -26,6 +26,7 @@ import { PluginCreateEntry } from "./plugin-create-entry";
 // v0.9.7 需求3 C2：插件市场面板（精选/扩展生态/技能市场三源一套交互）。
 import { PluginMarketPanel } from "./plugin-market";
 import { marketUpdateFailures, startExtensionUpdateAll, startSkillUpdateAll, updatesPending, useMarketUpdates, type ExtensionUpdateStatus, type SkillUpdateStatus } from "./plugin-market-updates";
+import { MarketSearchBox } from "./plugin-market";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
 import { composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
 import { Info, Settings2, FileCode2, LayoutGrid, Pin, Bell, MousePointerClick, Palette, Layers, Rocket, Wrench } from "lucide-react";
@@ -1080,14 +1081,16 @@ export function PluginsPage({
       const meta = piindexMeta?.find((e) => e.npm_package === pkg);
       const upd = extUpdates?.find((u) => u.package === pkg);
       const busyCard = updateBusy === pkg || batchUpdates.extensionRunning;
-      // 还原生效条件：内置件且当前版本偏离钉版快照（更新过/缺失版本）。
-      const canRestore = !!pin && ver !== pin.version;
       const runPkg = (action: () => Promise<unknown>, refreshSources = true) => void (async () => {
         setUpdateBusy(pkg);
         try {
           await action();
           if (refreshSources) {
             const sources = await invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]);
+            // 十五轮：动作后单查消解该卡更新态（更新按钮不残留，回到最新/新箭头）。
+            await invokeCommand<ExtensionUpdateStatus>("extension_check_update", { package: pkg })
+              .then(mergeExtUpdate)
+              .catch(() => null);
             setExtInstalled(sources ?? []);
           }
         } catch (e) {
@@ -1124,9 +1127,9 @@ export function PluginsPage({
           ) : (
             <div className="min-h-[26px]" />
           )}
-          <div className="mt-auto flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/70">
+          <div className="mt-auto flex flex-wrap items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/70">
             {upd?.has_update ? (
-              <span className="text-amber-600">→ v{upd.latest}</span>
+              <span className="shrink-0 text-amber-600">→ v{upd.latest}</span>
             ) : upd ? (
               <span>{tr("market.upToDate", "最新")}</span>
             ) : null}
@@ -1141,19 +1144,6 @@ export function PluginsPage({
                 onClick={() => setExtDetailMeta(meta)}
               >
                 <Info className="h-3 w-3" />
-              </Button>
-            )}
-            {canRestore && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-6 px-2 text-[10px]"
-                disabled={busyCard}
-                title={tr("plugins.restoreNativeHint", "还原为系统原生版本") + ` v${pin!.version}`}
-                onClick={() => runPkg(() => invokeCommand("pi_package_install_online", { source: pin!.source }))}
-              >
-                {busyCard ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                <span className="ml-0.5">{tr("plugins.restoreNative", "还原")}</span>
               </Button>
             )}
             {upd?.has_update && (
@@ -1177,19 +1167,25 @@ export function PluginsPage({
               {busyCard || checkingUpdates ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
               <span className="ml-0.5">{tr("market.checkUpdate", "检查更新")}</span>
             </Button>
+            {/* 垃圾桶统一（十五轮裁决）：内置件=卸载更新（还原钉版原生版本），
+                市场件=卸载；悬停提示「卸载更新」。 */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 shrink-0 text-destructive hover:text-destructive"
+              disabled={busyCard}
+              aria-label={tr("plugins.uninstallUpdate", "卸载更新")}
+              title={tr("plugins.uninstallUpdate", "卸载更新")}
+              onClick={() =>
+                pin
+                  ? runPkg(() => invokeCommand("pi_package_install_online", { source: pin.source }))
+                  : runPkg(() => invokeCommand("pi_package_uninstall_online", { source: pkg }))
+              }
+            >
+              <Trash2 className="h-3 w-3" />
+            </Button>
             {!pin && (
               <>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6 text-destructive hover:text-destructive"
-                  disabled={busyCard}
-                  aria-label={tr("plugins.remove", "卸载")}
-                  title={tr("plugins.remove", "卸载")}
-                  onClick={() => runPkg(() => invokeCommand("pi_package_uninstall_online", { source: pkg }))}
-                >
-                  <Trash2 className="h-3 w-3" />
-                </Button>
               </>
             )}
           </div>
@@ -1517,16 +1513,12 @@ export function PluginsPage({
             ))}
           </div>
         </div>
-        {/* 搜索框：工具行恒最右（十四轮统一）。 */}
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={tr("plugins.searchPlaceholder", "搜索 id/名称/描述/语言…")}
-            className="h-7 w-48 rounded-md border border-border/60 bg-background pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50"
-          />
-        </div>
+        {/* 搜索框：工具行恒最右（十四轮统一；十五轮一键清除）。 */}
+        <MarketSearchBox
+          value={search}
+          onChange={setSearch}
+          placeholder={tr("plugins.searchPlaceholder", "搜索 id/名称/描述/语言…")}
+        />
       </div>
 
       {/* v0.9.7 需求3 已装页优化二版（2026-11-14 裁决）：更新检查按当前

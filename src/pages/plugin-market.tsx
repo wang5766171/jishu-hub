@@ -14,7 +14,7 @@
  * actionError）+ load/onChanged 回调——拆出需整包 props 转移，耦合>收益，
  * 随 chat-page 拆分方向后续处理。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -22,7 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { PLUGIN_SCENES } from "@/lib/plugin-scenes";
-import { ArrowDownToLine, Bot, Check, Download, ExternalLink, Info, Loader2, Package, RefreshCw, Search, ShieldCheck, Sparkles, Star, Trash2 } from "lucide-react";
+import { ArrowDownToLine, Bot, Check, Download, ExternalLink, Info, Loader2, Package, RefreshCw, Search, X, ShieldCheck, Sparkles, Star, Trash2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 interface MarketEntry {
@@ -133,6 +133,44 @@ function trendClass(trend: string): string {
 
 /** 分页条（在线扩展库客户端分页 / 技能市场服务端分页共用——
  * 页码 + 总数 + 每页条数选择，最大 100）。 */
+/** 统一搜索框（十四轮布局+十五轮一键清除）：放大镜左侧、清除按钮右侧
+ * （有值时显示，点击清空并触发 onChange("")）。 */
+export function MarketSearchBox({
+  value,
+  onChange,
+  placeholder,
+  width = "w-48",
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  width?: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="relative">
+      <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className={`h-7 ${width} rounded-md border border-border/60 bg-background pl-7 pr-6 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50`}
+      />
+      {value.trim() && (
+        <button
+          type="button"
+          aria-label={t("market.clearSearch", "清除搜索")}
+          title={t("market.clearSearch", "清除搜索")}
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground/60 hover:bg-accent/60 hover:text-foreground"
+          onClick={() => onChange("")}
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 function MarketPager({
   page,
   pageCount,
@@ -235,9 +273,13 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
     }
   }, []);
 
+  // 十五轮：分类基准快照——目录全量（首次非搜索加载冻结）。分类 chips
+  // 从全量派生，不随搜索结果汇聚变化（搜索只过滤列表，页面不跳动）。
+  const fullCatalogRef = useRef<PiindexEntry[] | null>(null);
   const extCategories = useMemo(() => {
+    const base = fullCatalogRef.current ?? piindex ?? [];
     const set = new Set<string>();
-    for (const e of piindex ?? []) {
+    for (const e of base) {
       for (const c of e.category.split("/")) {
         const t = c.trim();
         if (t) set.add(t);
@@ -292,6 +334,8 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
           });
           if (runId !== marketLoadRunId) return;
           setPiindex(results ?? []);
+          // 全量目录快照冻结（分类基准，不随搜索变化）。
+          if (!debouncedOnlineKw.trim()) fullCatalogRef.current = results ?? [];
           setOnline(null);
         } catch {
           if (runId !== marketLoadRunId) return;
@@ -531,25 +575,21 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                 </button>
               ))}
         </div>
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
-          <input
-            value={source === "skills" ? keyword : source === "extensions" ? onlineKw : curatedKw}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (source === "skills") {
-                setKeyword(v);
-                setPage(1);
-              } else if (source === "extensions") {
-                setOnlineKw(v);
-              } else {
-                setCuratedKw(v);
-              }
-            }}
-            placeholder={t("market.searchUnified", "搜索…")}
-            className="h-7 w-48 rounded-md border border-border/60 bg-background pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground/50 focus:border-primary/50"
-          />
-        </div>
+        <MarketSearchBox
+          value={source === "skills" ? keyword : source === "extensions" ? onlineKw : curatedKw}
+          onChange={(v) => {
+            if (source === "skills") {
+              setKeyword(v);
+              setPage(1);
+            } else if (source === "extensions") {
+              setOnlineKw(v);
+              setExtPage(1);
+            } else {
+              setCuratedKw(v);
+            }
+          }}
+          placeholder={t("market.searchUnified", "搜索…")}
+        />
       </div>
 
       {actionError && (
