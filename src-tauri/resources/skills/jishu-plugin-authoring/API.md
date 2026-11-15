@@ -3,6 +3,8 @@
 > 二十三轮（2026-11-15 用户裁决）：插件能力面开放——本文是**唯一权威清单**。
 > agent 创建插件前必读；`jishu-cli plugins api` 打印本文件全文。
 > 契约版本：PLUGIN_API_VERSION 1（`JishuPlugin.register` 的 version 字段）。
+> 开放策略（2026-11-15 二十四轮裁决）：pi 智能体能力**逐步明确开放**——本文即
+> 契约承诺面；未列入者不承诺（技术上可能可达但不属于契约）。
 
 ## 一、组件工厂 `api`（第一个参数——造界面的工具箱）
 
@@ -40,7 +42,26 @@
 | `hub.listAgents()` | `{ id, displayName, installed }[]` | 已装智能体 |
 | `hub.openUrl(url)` | void | 系统默认浏览器打开外部链接 |
 
-全部异步（Promise）；只读 + openUrl——无写面（重命名/删除/持久化不开放）。
+全部异步（Promise）；只读 + openUrl——重命名/删除/持久化不开放。
+
+## 四b、`ctx.hub.agent` pi 智能体定制面（二十四轮——插件可自由定制 pi）
+
+| 方法 | 说明 |
+|---|---|
+| `agent.sendMessage({ message, sessionId?, projectPath? })` | **发消息驱动智能体**：不传 sessionId = 新建会话；返回 `{ sessionId }`（新建时可拿到 id） |
+| `agent.steer({ sessionId, message })` | 中途引导当前回合（注入不起新轮——排队消息同款语义） |
+| `agent.abort(sessionId)` | 中止指定会话的当前回合 |
+| `agent.models()` | 可选模型清单 `{ value, label }[]` |
+| `agent.getModel(sessionId)` / `agent.setModel({ sessionId, provider, model })` | 会话锁定模型读写（model 空串 = 清除回落全局）；**sessionId 须为真实会话 id**（sendMessage 新建返回的 `pending-*` 为 GUI 临时 id，回合完成转真实 id 后方可用于模型锁定——经 hub.listSessions 可查） |
+
+经此六法插件可构建：自动化工作台（发任务+跟踪）、会话驾驶舱（中止/引导）、模型切换器等定制面。
+
+## 四c、开放路线图（二十四轮用户裁决「逐步明确开放 pi 能力」）
+
+- **P0 已开放**：上文全部（api 工具箱/fetch/ctx 会话面/ctx.hub 数据面/agent 定制面）
+- **P1 候补（通道现成，按需启用）**：全局用量总览与轮次级明细（usage_overview/segment——花销趋势图）、pi RPC 闲置读面（get_messages/get_entries/get_tree/get_session_stats/get_commands）、交互请求回写（extension_ui_response）、审批应答、fork 会话、自动压缩开关、任务图读面
+- **P2 候补（需契约设计）**：权限/工具模式切换、排队模式、自动重试、会话命名/导出、子代理与任务写面、skill 分发触发
+- **边界（不开放/需用户级确认）**：任意 shell（pi bash）、绕过 hub 的模型热切（set_model——破坏记账/签名一致性）、凭据重路由（registerProvider）、pi 扩展导入与包安装（任意代码执行）、MCP/skill 全局注入、丢排队消息（clear_queue）
 
 ## 五、示例：会话列表数据页（menu 挂载 + hub 能力）
 

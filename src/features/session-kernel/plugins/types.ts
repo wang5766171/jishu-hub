@@ -238,6 +238,30 @@ export interface HubAgentSummary {
   installed: boolean;
 }
 
+/** 模型选项（hub.agent.models）。 */
+export interface HubModelOption {
+  value: string;
+  label: string;
+}
+
+/** pi 智能体定制面（二十四轮用户裁决：「把 pi 智能体的能力逐步明确开放，
+ * 插件可自由为 pi 做定制」）——驱动/引导/中止/模型控制，全部经 hub 既有
+ * 命令通道（send_message/steer_chat/abort_chat/session_model_*）。 */
+export interface HubAgentCapabilities {
+  /** 发消息驱动智能体（不传 sessionId = 新建会话；返回会话 id）。 */
+  sendMessage(opts: { message: string; sessionId?: string; projectPath?: string }): Promise<{ sessionId: string | null }>;
+  /** 中途引导当前回合（注入不起新轮）。 */
+  steer(opts: { sessionId: string; message: string }): Promise<void>;
+  /** 中止指定会话的当前回合。 */
+  abort(sessionId: string): Promise<void>;
+  /** 可选模型清单（当前智能体）。 */
+  models(): Promise<HubModelOption[]>;
+  /** 会话锁定模型（null = 跟随全局）。 */
+  getModel(sessionId: string): Promise<{ provider: string; model: string } | null>;
+  /** 设置/清除会话锁定模型（model 空串 = 清除）。 */
+  setModel(opts: { sessionId: string; provider: string; model: string }): Promise<void>;
+}
+
 /** hub 级能力（插件触达全局数据的受控面——实现经 hub 命令，插件不直连）。 */
 export interface HubCapabilities {
   /** 会话列表（默认当前项目，可指定项目编码名/智能体）。 */
@@ -250,6 +274,8 @@ export interface HubCapabilities {
   listAgents(): Promise<HubAgentSummary[]>;
   /** 用系统默认浏览器打开外部链接（详情页跳转等）。 */
   openUrl(url: string): void;
+  /** pi 智能体定制面（二十四轮）。 */
+  agent: HubAgentCapabilities;
 }
 
 /** 订阅取消句柄。 */

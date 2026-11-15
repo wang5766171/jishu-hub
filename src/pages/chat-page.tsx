@@ -1902,6 +1902,42 @@ export function ChatPage({
           return (agents ?? []).map((a) => ({ id: a.id, displayName: a.display_name, installed: a.enabled }));
         },
         openUrl: (url) => void invokeCommand("open_url", { url }).catch(() => undefined),
+        // ── pi 智能体定制面（二十四轮）：驱动/引导/中止/模型控制 ──
+        agent: {
+          sendMessage: async (opts) => {
+            const created = await invokeCommand<{ session_id: string | null } | null>("send_message", {
+              agentId: "jishu-self",
+              projectPath: opts.projectPath ?? currentProject?.path ?? "",
+              sessionId: opts.sessionId ?? null,
+              message: opts.message,
+            });
+            return { sessionId: created?.session_id ?? null };
+          },
+          steer: async (opts) => {
+            await invokeCommand("steer_chat", { sessionId: opts.sessionId, message: opts.message });
+          },
+          abort: async (sessionId) => {
+            await invokeCommand("abort_chat", { sessionId });
+          },
+          models: async () => {
+            const opts = await invokeCommand<Array<{ value: string; label: string }>>(
+              "get_model_picker_options",
+              { agentId: "jishu-self" },
+            );
+            return (opts ?? []).map((o) => ({ value: o.value, label: o.label }));
+          },
+          getModel: async (sessionId) => {
+            const pair = await invokeCommand<[string, string] | null>("session_model_get", { sessionId });
+            return pair ? { provider: pair[0], model: pair[1] } : null;
+          },
+          setModel: async (opts) => {
+            await invokeCommand("session_model_set", {
+              sessionId: opts.sessionId,
+              provider: opts.provider,
+              model: opts.model,
+            });
+          },
+        },
       },
       // v0.9.3 需求3（P1-3）：真订阅——四个数据面经 SessionDataHub（注册即回放
       // 快照，数据变更 publish 逐个回调，退订真实移除）；events 通道复用信号
