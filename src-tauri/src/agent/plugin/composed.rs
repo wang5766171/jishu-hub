@@ -416,6 +416,14 @@ pub fn clear_pending_confirm_marker(id: &str) {
 /// ①[menu] 段校验（label/prompt 非空 + 启用菜单插件 ≤5）；
 /// ②[[agent-tool]] 名全局唯一；
 /// ③code-block 语言接管冲突（用户插件之间语言集不得相交）。
+/// 读取单个组合插件的清单（v0.9.7 第三轮评审修复 P1-2：启用链守卫用）。
+/// 非组合件（无 plugins/<id>/plugin.toml）返回 None——守卫只对组合件生效。
+pub fn composed_manifest_value(id: &str) -> Option<toml::Value> {
+    let content =
+        std::fs::read_to_string(composed_plugins_root().join(id).join("plugin.toml")).ok()?;
+    content.parse::<toml::Value>().ok()
+}
+
 pub fn validate_composed_guards(id: &str, value: &toml::Value) -> Result<(), String> {
     // 需求7 修1d：[menu] 段校验——label/prompt 非空 + 启用菜单插件总数 ≤5
     //（保存期 fail loud；页面不提示上限，超额报错即用户要求的交互）。
@@ -778,6 +786,41 @@ mount = "block-renderer"
             &code_block_toml("session.c-charts", &["echarts"]),
         )
         .expect("disabled holder frees the language");
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// v0.9.7 第三轮评审修复 P1-2：启用链语言互斥——装 A（默认禁用不占
+    /// 语言位）→ 装 B（同语言，A 未启用故放行）→ 启用 A → 启用 B 应拒
+    /// （fail loud 指认 A）；禁用 A 释放语言位后 B 可启用。
+    #[test]
+    fn enable_rejects_language_conflict() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+
+        // 直接落盘 + 显式禁用，模拟 add-hybrid 安装语义（装完即默认禁用，
+        // 绕过 save 链守卫——它对启用集校验，B 落盘时 A 未启用不会提前拦，
+        // 正是要测的启用窗口）。不显式禁用则配置口径视为已启用，守卫在
+        // 装 B 那一刻就该拦（那是安装期语义，不是本用例的启用窗口）。
+        for id in ["session.a-charts", "session.b-charts"] {
+            let dir = composed_plugins_root().join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("plugin.toml"), code_block_toml(id, &["echarts"])).unwrap();
+            super::set_plugin_enabled(id, false).unwrap();
+        }
+        // 启用 A → 成功（首占语言位）。
+        super::set_plugin_enabled("session.a-charts", true).expect("enable A ok");
+        // 启用 B（同语言 echarts）→ 拒绝并指认 A。
+        let err = super::set_plugin_enabled("session.b-charts", true)
+            .expect_err("enable conflict must be rejected");
+        assert!(
+            err.contains("session.a-charts"),
+            "should name the first holder, got: {err}"
+        );
+        // 禁用 A 释放语言位 → 启用 B 成功。
+        super::set_plugin_enabled("session.a-charts", false).unwrap();
+        super::set_plugin_enabled("session.b-charts", true).expect("freed after disable");
 
         std::env::remove_var("JISHU_HUB_HOME");
     }

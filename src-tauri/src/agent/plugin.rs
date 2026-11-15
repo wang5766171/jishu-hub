@@ -30,11 +30,12 @@ pub use agent_tools::{
 };
 #[allow(unused_imports)]
 pub use composed::{
-    clear_pending_confirm_marker, composed_pipeline_by_id, composed_plugins_dir,
-    composed_session_manifests, composed_session_plugin_specs, delete_composed_plugin,
-    ensure_builtin_composed_manifests, is_builtin_composed, materialize_builtin_composed,
-    pending_confirm_extras, pending_confirm_list, resolve_pipeline_stages, save_composed_manifest,
-    validate_composed_guards, PendingAssetInfo, PendingHybridPlugin,
+    clear_pending_confirm_marker, composed_manifest_value, composed_pipeline_by_id,
+    composed_plugins_dir, composed_session_manifests, composed_session_plugin_specs,
+    delete_composed_plugin, ensure_builtin_composed_manifests, is_builtin_composed,
+    materialize_builtin_composed, pending_confirm_extras, pending_confirm_list,
+    resolve_pipeline_stages, save_composed_manifest, validate_composed_guards, PendingAssetInfo,
+    PendingHybridPlugin,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -501,6 +502,17 @@ pub fn set_plugin_enabled(id: &str, enabled: bool) -> Result<PluginConfig, Strin
     let known = known_plugin_ids();
     if !known.contains(id) {
         return Err(format!("Unknown plugin: {id}"));
+    }
+    // v0.9.7 第三轮评审修复 P1-2：启用链补组合守卫——安装/保存链的
+    // validate_composed_guards 只对「当时已启用集」校验，启用本身不复查：
+    // 装 A（默认禁用不占语言位）→ 装 B（A 未启用放行）→ 先后启用可让
+    // 同语言双插件并存，接管静默拼运气。启用即占语言位/菜单位/工具名，
+    // 与保存同纪律（fail loud 指认先装者）。GUI 确认卡/开关与 CLI enable
+    // 均经本函数收口；禁用方向不占资源，无需守卫。
+    if enabled {
+        if let Some(value) = composed_manifest_value(id) {
+            validate_composed_guards(id, &value)?;
+        }
     }
     let mut config = load_plugin_config();
     if enabled {
