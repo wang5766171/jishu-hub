@@ -683,6 +683,7 @@
     "formComposerTrailing": "输入框尾挂件",
     "formAppOverlay": "应用浮层",
     "formEventHook": "事件钩子",
+    "formMenu": "菜单入口",
     "mountPipeline": "流程",
     "formNone": "无 UI 呈现",
     "formTheme": "主题外观",

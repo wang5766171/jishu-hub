@@ -42,7 +42,8 @@ export function slugify(name: string, fallback: string): string {
 /** 插件形态（v0.9.7 需求3 十六轮用户裁决：**形态 = 九类挂载位粒度**——
  * 此前十/十一轮的五值合并口径作废，标题栏动作/输入框尾挂件等不得再被并入
  * 「会话」「悬浮窗」大桶）。九类 = PluginMount 联合全量（types.ts 代码审计）；
- * 另保留两值覆盖无挂载件：主题外观（app-theme 声明件）与无 UI 呈现
+ * 二十轮增「菜单」类（新任务下方入口，需求7 修1d 的 [menu] 段声明件，
+ * ≤5）。另保留两值覆盖无挂载件：主题外观（app-theme 声明件）与无 UI 呈现
  * （MCP/Skill/CLI 等无挂载位件统一标注，十一轮裁决）。挂载位即形态——
  * 创建落值直接写挂载位（form = mount），展示推导取首个非事件钩子挂载。 */
 export type PluginForm =
@@ -55,6 +56,7 @@ export type PluginForm =
   | "composer-trailing"
   | "app-overlay"
   | "event-hook"
+  | "menu"
   | "theme"
   | "none";
 
@@ -71,6 +73,7 @@ export const PLUGIN_FORM_VALUES: PluginForm[] = [
   "composer-trailing",
   "app-overlay",
   "event-hook",
+  "menu",
   "theme",
   "none",
 ];

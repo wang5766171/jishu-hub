@@ -290,6 +290,12 @@ const HUB_FORMS: Record<string, FormValue> = {
  * 声明不入新集，走后续推导自动升级为挂载位粒度）→ hub 随包件基表 →
  * 外观类声明（category=appearance）→ 会话插件挂载位推导 → 无 UI 呈现。 */
 function formOf(p: PluginDescriptor): FormValue {
+  // 二十轮：[menu] 段声明件（需求7 修1d 菜单类——新任务下方入口）优先
+  // 归「菜单入口」形态（菜单件常无挂载位，挂载推导会误落 none）。
+  if (p.kind === "session") {
+    const d = listSessionPlugins().find((x) => x.id === p.id);
+    if (d?.menu) return "menu";
+  }
   if (isPluginForm(p.form)) return p.form;
   if (HUB_FORMS[p.id]) return HUB_FORMS[p.id];
   if (p.category === "appearance") return "theme";
@@ -316,6 +322,7 @@ const FORM_BADGE: Record<FormValue, { key: string; fallback: string }> = {
   "composer-trailing": { key: "plugins.formComposerTrailing", fallback: "输入框尾挂件" },
   "app-overlay": { key: "plugins.formAppOverlay", fallback: "应用浮层" },
   "event-hook": { key: "plugins.formEventHook", fallback: "事件钩子" },
+  menu: { key: "plugins.formMenu", fallback: "菜单入口" },
   theme: { key: "plugins.formTheme", fallback: "主题外观" },
   none: { key: "plugins.formNone", fallback: "无 UI 呈现" },
 };
@@ -1752,7 +1759,10 @@ export function PluginsPage({
         {/* v0.9.4 需求12：开发日志中心虚拟卡（用户裁决：入口放插件中心核心引擎
             分类，默认关闭手动开启；开关写 settings.json 跨启动保持）。十七轮：
             无形态/实现徽章，筛选激活时隐藏（见 filtersIdle）。 */}
-        {activeTab === "core" && !search.trim() && filtersIdle && <DevLogCard />}
+        {/* 二十轮：DevLogCard 已有形态徽章（侧边栏面板）——形态筛选命中
+            该值时显示（实现/来源筛选激活仍隐藏：无这两维徽章）。 */}
+        {activeTab === "core" && !search.trim() && implFilter === "all" && sourceFilter === "all"
+          && (formFilter === "all" || formFilter === "sidebar-panel") && <DevLogCard />}
         {/* 需求11 追加三 A：原生 MCP 服务管理区（jishu 直连条目，键级管
             mcp.json 非 jishu-hub 用户条目；与聚合插件互补）。十七轮：同上
             筛选门控。 */}
@@ -1910,11 +1920,14 @@ function DevLogCard() {
           />
         </button>
       </div>
-      {/* 徽章行（十七轮：字号/样式对齐 renderCard——身份徽章复用
-          IDENTITY_BADGE.core，类别注记 10px 与元信息同级）。 */}
+      {/* 徽章行（十七轮样式对齐；二十轮用户裁决：日志中心归侧边栏面板
+          形态——加形态徽章，参与形态筛选联动）。 */}
       <div className="flex min-h-[16px] flex-wrap items-center gap-1">
         <Badge variant="outline" className={cn("px-1 py-0 text-[9px]", IDENTITY_BADGE.core.cls)}>
           {t("plugins.coreBadge", "核心引擎")}
+        </Badge>
+        <Badge variant="outline" className="border-border/60 px-1 py-0 text-[9px] text-muted-foreground">
+          {t("plugins.formSidebarPanel", "侧边栏面板")}
         </Badge>
         <span className="text-[10px] text-muted-foreground">
           {t("plugins.devLogKind", { defaultValue: "调试能力" })}

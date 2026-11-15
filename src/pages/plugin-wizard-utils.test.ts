@@ -55,8 +55,8 @@ describe("slugify（三轮 P1-3②：中文名不再坍缩为同一 id）", () =
 /** 十六轮用户裁决回归：形态 = 九类挂载位粒度（PluginMount 联合全量）
  * + theme/none 两兜底——五值合并口径作废，标题栏动作/输入框尾挂件等
  * 不得再被并入大桶。 */
-describe("PLUGIN_FORM_VALUES（十六轮：形态九类+两兜底全量）", () => {
-  it("恰为 9 挂载位 + theme + none，无遗漏无多余", () => {
+describe("PLUGIN_FORM_VALUES（十六轮九挂载位；二十轮增菜单类）", () => {
+  it("恰为 9 挂载位 + menu + theme + none，无遗漏无多余", () => {
     expect([...PLUGIN_FORM_VALUES].sort()).toEqual([
       "app-overlay",
       "block-renderer",
@@ -64,6 +64,7 @@ describe("PLUGIN_FORM_VALUES（十六轮：形态九类+两兜底全量）", () 
       "dock-panel",
       "event-hook",
       "header-action",
+      "menu",
       "none",
       "rail-widget",
       "sidebar-panel",

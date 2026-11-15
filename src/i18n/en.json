@@ -683,6 +683,7 @@
     "formComposerTrailing": "Composer trailing",
     "formAppOverlay": "App overlay",
     "formEventHook": "Event hook",
+    "formMenu": "Menu entry",
     "mountPipeline": "Pipeline",
     "formNone": "No UI",
     "formTheme": "Theme",

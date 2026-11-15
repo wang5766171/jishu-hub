@@ -540,7 +540,7 @@ pub fn save_composed_manifest(id: &str, toml: &str) -> Result<(), String> {
         if !crate::agent::manifest::schema::PLUGIN_FORM_VALUES.contains(&form) {
             return Err(format!(
                 "plugin.form 无效：{form:?}（合法：{}；旧值 session/sidebar/floating 仅保存兼容，新插件请用九类挂载位形态）",
-                crate::agent::manifest::schema::PLUGIN_FORM_VALUES[..11].join("/")
+                crate::agent::manifest::schema::PLUGIN_FORM_VALUES[..12].join("/")
             ));
         }
     }

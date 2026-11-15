@@ -279,6 +279,7 @@ pub const PLUGIN_FORM_VALUES: &[&str] = &[
     "composer-trailing",
     "app-overlay",
     "event-hook",
+    "menu",
     "theme",
     "none",
     // 旧五值残留（保存兼容，新创建不得再写）：
@@ -441,7 +442,7 @@ impl AgentManifestFile {
             if !PLUGIN_FORM_VALUES.contains(&form.as_str()) {
                 return Err(format!(
                     "info.form 无效：{form:?}（合法：{}；旧值 session/sidebar/floating 仅保存兼容，新插件请用九类挂载位形态）",
-                    PLUGIN_FORM_VALUES[..11].join("/")
+                    PLUGIN_FORM_VALUES[..12].join("/")
                 ));
             }
         }
