@@ -15,7 +15,7 @@
 | `t(key, fallback)` | 多语言文案 |
 | `cn(...)` | 样式类名合并 |
 | `loadAsset(rel, kind?)` | 从插件目录注入资产（script/style/url）——echarts 等库的引入通道；资产必须平铺在插件根目录 |
-| `fetch` | **网络直通**（二十三轮裁决免管控）——CSP 已放开外部域，可直接请求任意 API |
+| `fetch` | **网络直通**（二十三轮裁决免管控）——CSP 已放开外部域（http/https 及其上的 ws/wss 均直通），可直接请求任意 API |
 
 ## 二、组件 `props`
 
@@ -93,6 +93,6 @@ api.useEffect(() => {
   api.fetch("https://api.github.com/repos/owner/repo")
     .then((r) => r.json())
     .then(setData)
-    .catch((e) => api.console?.error?.(e));
+    .catch((e) => setData(null)); // api 无 console——错误请渲染进组件或静默降级
 }, []);
 ```

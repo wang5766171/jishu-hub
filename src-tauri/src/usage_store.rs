@@ -579,6 +579,18 @@ pub fn get(session_id: &str) -> Result<SessionUsageRow, String> {
     }
 }
 
+/// 第四轮评审 P2：无记录语义——get 对 miss 返回全零行（chat/mcp_server
+/// 等历史调用方依赖该口径）；hub 开放面（hub_plugin_sessions join /
+/// usage_session 命令）需要区分「无记账」与「真零」，用本函数拿 None。
+pub fn get_optional(session_id: &str) -> Result<Option<SessionUsageRow>, String> {
+    let s = store()?;
+    let conn = s.conn.lock().map_err(|e| e.to_string())?;
+    match read_on(&conn, session_id) {
+        Ok(row) => Ok(Some(row)),
+        Err(_) => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,6 +629,10 @@ mod tests {
         assert_eq!(row.est_builtin_tool, 60);
         assert_eq!(row.tool_calls, 2);
         assert_eq!(row.compactions, 0);
+
+        // 第四轮评审 P2：miss 必须 Err——get_optional 的 None 语义分叉点
+        //（get 全零兜底 vs get_optional None，两者都以此为先决条件）。
+        assert!(read_on(&conn, "no-such-session").is_err());
 
         let n: i64 = conn
             .query_row(

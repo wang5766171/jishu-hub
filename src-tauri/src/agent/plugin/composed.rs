@@ -446,6 +446,40 @@ pub fn validate_composed_guards(id: &str, value: &toml::Value) -> Result<(), Str
             ));
         }
     }
+    // 第四轮评审 P2（R4 生产实测）：[render].mount 白名单——修前 Rust 装
+    // 校不查 mount，mount="none" 等值可装上而内核装载校验拒绝（types.ts
+    // MOUNT_SOURCE_MATRIX），产出「可装不可用」半死件。白名单与 types.ts
+    // 矩阵键集同源镜像，改动必须双侧同步；仅 [pipeline] 无 [render] 的
+    // 流水线件不受限。
+    const COMPOSED_MOUNT_VALUES: &[&str] = &[
+        "block-renderer",
+        "rail-widget",
+        "dock-panel",
+        "sidebar-panel",
+        "menu",
+        "composer-trailing",
+        "event-hook",
+        "tool-output",
+        "app-theme",
+        "app-overlay",
+    ];
+    if let Some(render) = value.get("render") {
+        match render.get("mount").and_then(|v| v.as_str()) {
+            Some(mount) if COMPOSED_MOUNT_VALUES.contains(&mount) => {}
+            Some(mount) => {
+                return Err(format!(
+                    "[render] mount 无效：{mount:?}（合法：{}——与内核装载配对矩阵同集）",
+                    COMPOSED_MOUNT_VALUES.join("/")
+                ));
+            }
+            None => {
+                return Err(
+                    "[render] 段必须声明 mount（源×挂载配对见 jishu-plugin-authoring SKILL 配对矩阵）"
+                        .to_string(),
+                );
+            }
+        }
+    }
     // 6c：[[agent-tool]] 名全局唯一（agent 工具名撞名会让 agent 无从
     // 分辨——安装/保存期拒绝，与既有插件 id 冲突检查同纪律）。
     let tool_names: Vec<String> = value
@@ -539,7 +573,7 @@ pub fn save_composed_manifest(id: &str, toml: &str) -> Result<(), String> {
     {
         if !crate::agent::manifest::schema::PLUGIN_FORM_VALUES.contains(&form) {
             return Err(format!(
-                "plugin.form 无效：{form:?}（合法：{}；旧值 session/sidebar/floating 仅保存兼容，新插件请用九类挂载位形态）",
+                "plugin.form 无效：{form:?}（合法：{}；旧值 session/sidebar/floating 仅保存兼容，新插件请用挂载位形态）",
                 crate::agent::manifest::schema::PLUGIN_FORM_VALUES[..12].join("/")
             ));
         }
@@ -842,6 +876,55 @@ form = \"{f}\""
         let err = save_composed_manifest("session.form-check", &with_form("dockpanel"))
             .expect_err("拼错 form 必须拒绝");
         assert!(err.contains("plugin.form 无效"), "got: {err}");
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// 第四轮评审 P2（R4 生产实测）：[render].mount 白名单——装/存链与
+    /// 内核装载矩阵（types.ts MOUNT_SOURCE_MATRIX）同集；修前 mount="none"
+    /// 可装上而内核装载拒绝，产出「可装不可用」半死件。
+    #[test]
+    fn mount_whitelist_rejects_invalid_values() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let with_mount = |m: &str| {
+            r#"[plugin]
+id = "session.mount-check"
+name = "挂载校验"
+kind = "session-composed"
+[source]
+type = "messages"
+[render]
+component = "render.list"
+mount = "sidebar-panel"
+"#
+            .replacen("sidebar-panel", m, 1)
+        };
+        // 合法挂载位放行（含二十轮 menu——menu×messages 配对合法）。
+        for ok in ["dock-panel", "menu"] {
+            save_composed_manifest("session.mount-check", &with_mount(ok))
+                .unwrap_or_else(|e| panic!("合法 mount {ok} 被拒: {e}"));
+        }
+        // 旧值/拼错拒绝：none 是 form 兜底词汇不是挂载位，混写即拦。
+        for bad in ["none", "session", "floating"] {
+            let err = save_composed_manifest("session.mount-check", &with_mount(bad))
+                .expect_err("非法 mount 必须拒绝");
+            assert!(err.contains("mount 无效"), "got: {err}");
+        }
+        // [render] 缺 mount 拒绝（与内核装载校验口径一致）。
+        let no_mount = r#"[plugin]
+id = "session.mount-check"
+name = "挂载校验"
+kind = "session-composed"
+[source]
+type = "messages"
+[render]
+component = "render.list"
+"#;
+        let err = save_composed_manifest("session.mount-check", no_mount)
+            .expect_err("[render] 缺 mount 必须拒绝");
+        assert!(err.contains("必须声明 mount"), "got: {err}");
 
         std::env::remove_var("JISHU_HUB_HOME");
     }

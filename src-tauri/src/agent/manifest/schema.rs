@@ -436,12 +436,13 @@ impl AgentManifestFile {
             }
         }
         // v0.9.7 需求3 标签裁决：形态声明枚举校验（同 category fail loud 口径）。
-        // 第三轮评审修复：错误信息只列 11 个新值——旧三值虽保存兼容，但列入
-        // 「合法」会诱导把拼错值「改」成已废弃口径。
+        // 第三轮评审修复：错误信息只列新值——旧三值虽保存兼容，但列入
+        // 「合法」会诱导把拼错值「改」成已废弃口径。第四轮评审修复：措辞去
+        // 「九类」计数（二十轮增 menu 后挂载位已十个，数字口径易再过时）。
         if let Some(form) = &self.info.form {
             if !PLUGIN_FORM_VALUES.contains(&form.as_str()) {
                 return Err(format!(
-                    "info.form 无效：{form:?}（合法：{}；旧值 session/sidebar/floating 仅保存兼容，新插件请用九类挂载位形态）",
+                    "info.form 无效：{form:?}（合法：{}；旧值 session/sidebar/floating 仅保存兼容，新插件请用挂载位形态）",
                     PLUGIN_FORM_VALUES[..12].join("/")
                 ));
             }

@@ -804,13 +804,28 @@ pub(crate) async fn hub_plugin_sessions(
             Some(one) => vec![one.clone()],
             None => {
                 let root = crate::agent::jishu_self::pi_session::pi_sessions_root()?;
-                let mut list: Vec<String> = std::fs::read_dir(&root)
-                    .map_err(|e| e.to_string())?
+                // 第四轮评审 P2：根目录不存在（全新安装零会话）返回空列表
+                // 而非整体报错——只读展示面优雅降级；其他读取错误仍 fail loud。
+                let dir = match std::fs::read_dir(&root) {
+                    Ok(d) => d,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+                    Err(e) => return Err(e.to_string()),
+                };
+                let mut list: Vec<String> = dir
                     .flatten()
                     .filter(|e| e.path().is_dir())
                     .filter_map(|e| {
                         let n = e.file_name().to_string_lossy().into_owned();
-                        n.starts_with("--").then(|| n.trim_matches('-').to_string())
+                        // 第四轮评审 P2：精确剥包裹（strip 双端 "--"，与 lib.rs
+                        // 同款）——trim_matches 会连项目路径自身的尾部 '-'
+                        // 一并剥掉（如 `--D--foo---` 应得 `D--foo-`，误剥成
+                        // `D--foo`，该项目会话将静默从列表消失）。
+                        n.starts_with("--").then(|| {
+                            n.strip_prefix("--")
+                                .and_then(|s| s.strip_suffix("--"))
+                                .unwrap_or(&n)
+                                .to_string()
+                        })
                     })
                     .collect();
                 list.sort();
@@ -819,9 +834,19 @@ pub(crate) async fn hub_plugin_sessions(
         };
         let mut out = Vec::new();
         for encoded in encoded_list {
-            let sessions = crate::agent::jishu_self::pi_session::list_pi_sessions(&encoded)?;
+            // 第四轮评审 P2：单项目解析失败局部化——目录损坏/半删等只丢
+            // 该项目并留痕，不拖垮整个跨项目列表（§16.1 局部化纪律）。
+            let sessions = match crate::agent::jishu_self::pi_session::list_pi_sessions(&encoded) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::warn!("[hub] 跳过无法解析的项目目录 {encoded}: {e}");
+                    continue;
+                }
+            };
             for s in sessions {
-                let usage = crate::usage_store::get(&s.id).ok();
+                // 第四轮评审 P2：usage join 用 get_optional——无记账记录返回
+                // None（插件可区分「未记账」与「真零」），不再把缺记当零花。
+                let usage = crate::usage_store::get_optional(&s.id).unwrap_or(None);
                 out.push(HubPluginSession {
                     title: names
                         .get(&s.id)
@@ -848,10 +873,11 @@ pub(crate) async fn hub_plugin_sessions(
 }
 
 /// 单会话精确用量（usage.db session_usage；ctx.hub.sessionStats 数据源）。
-/// usage_store::get 已有内部函数，此处薄注册为命令（二十三轮）。
+/// 第四轮评审 P2：无记录返回 None——修前薄注册 get 的全零口径使「无记账」
+/// 与「真零」不可区分；get 本体语义不变（chat/mcp_server 老调用方零影响）。
 #[tauri::command]
 pub(crate) fn usage_session(
     session_id: String,
-) -> Result<crate::usage_store::SessionUsageRow, String> {
-    crate::usage_store::get(&session_id)
+) -> Result<Option<crate::usage_store::SessionUsageRow>, String> {
+    crate::usage_store::get_optional(&session_id)
 }

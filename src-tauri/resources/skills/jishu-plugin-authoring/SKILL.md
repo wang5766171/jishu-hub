@@ -50,7 +50,7 @@ description: 创建/安装 Jishu Hub 插件前必读——用户想改变客户�
 所有会话侧插件的 id **必须以 `session.` 开头**。智能体侧（agents/）无此限制。
 
 **插件形态显式声明（v0.9.7）**：`[info]` 段写 `form` 字段，明确插件创建到哪个位置——
-**形态 = 九类挂载位**：`"block-renderer"`（会话内渲染）/ `"tool-result-renderer"`（工具结果渲染）/ `"header-action"`（标题栏动作）/ `"sidebar-panel"`（侧边栏面板）/ `"dock-panel"`（停靠面板）/ `"rail-widget"`（贴边挂件）/ `"composer-trailing"`（输入框尾挂件）/ `"app-overlay"`（应用浮层）/ `"event-hook"`（事件钩子）；另有两兜底值 `"theme"`（主题外观）与 `"none"`（无 UI 呈现：CLI/MCP/Skill/流水线等纯能力件）。**会话侧插件 form 直接写挂载位名**（与 `[render].mount` 一致）。组合式家族写在 `[plugin]` 段同名 `form`。未声明时按挂载位推导，但**创建时应显式写明**。
+**形态 = 挂载位**：`"block-renderer"`（会话内渲染）/ `"tool-result-renderer"`（工具结果渲染）/ `"header-action"`（标题栏动作）/ `"sidebar-panel"`（侧边栏面板）/ `"dock-panel"`（停靠面板）/ `"rail-widget"`（贴边挂件）/ `"composer-trailing"`（输入框尾挂件）/ `"app-overlay"`（应用浮层）/ `"event-hook"`（事件钩子）/ `"menu"`（菜单入口/独立页面，v0.9.7 二十/二十二轮）；另有两兜底值 `"theme"`（主题外观）与 `"none"`（无 UI 呈现：CLI/MCP/Skill/流水线等纯能力件）。**会话侧插件 form 直接写挂载位名**（与 `[render].mount` 一致）。组合式家族写在 `[plugin]` 段同名 `form`。未声明时按挂载位推导，但**创建时应显式写明**。
 
 ### 模板 1：CLI 工具（智能体侧，agents/<id>.toml）
 
@@ -81,7 +81,7 @@ id = "session.my-stats"
 name = "我的统计面板"
 description = "会话消息统计"
 kind = "session-composed"
-form = "dock-panel"        # 形态=挂载位（九类口径，与 [render].mount 一致）
+form = "dock-panel"        # 形态=挂载位（与 [render].mount 一致）
 
 [source]
 type = "messages"          # messages | turns | task | signal
@@ -112,6 +112,7 @@ default = true
 | 挂载 | 合法源 |
 |---|---|
 | dock-panel / sidebar-panel / rail-widget / composer-trailing | messages / turns / stream-state（dock、sidebar 另收 task） |
+| menu（独立页面，v0.9.7 二十二轮） | messages / turns / stream-state / task |
 | block-renderer | code-block（声明 languages）/ block-type（声明 blockTypes） |
 | event-hook | signal（声明 signals） |
 
@@ -494,7 +495,7 @@ JishuPlugin.register(pluginId, {
 | `api.useCallback(fn, deps)` | useCallback | 回调记忆化 |
 | `api.t(key, fallback)` | — | i18n 取词 |
 | `api.cn(...classes)` | clsx | className 合并 |
-| `api.loadAsset(rel, kind?)` | — | 加载插件目录资产（v0.9.5 需求14 加法）：rel=相对根目录的平铺文件名；kind: "script"=注入 `<script>` 并等待 onload（同一库全局只加载一次）、"url"/"style"=仅返回 asset URL。路径限定插件目录内（拒绝 `..`/绝对路径）；存在性以文件清单为白名单——**资产必须平铺在插件根目录**。不提供 fetch/网络通道（库由你放进插件目录随插件分发） |
+| `api.loadAsset(rel, kind?)` | — | 加载插件目录资产（v0.9.5 需求14 加法）：rel=相对根目录的平铺文件名；kind: "script"=注入 `<script>` 并等待 onload（同一库全局只加载一次）、"url"/"style"=仅返回 asset URL。路径限定插件目录内（拒绝 `..`/绝对路径）；存在性以文件清单为白名单——**资产必须平铺在插件根目录**。网络请求请直接用 `api.fetch`（见第一层「插件开放能力」与 API.md） |
 
 组件 props 形状：
 
