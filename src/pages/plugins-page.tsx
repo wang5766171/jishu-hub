@@ -111,17 +111,25 @@ const LEGACY_CATEGORY_MAP: Record<string, PluginCategory> = {
 
 /** 需求14 M4-5（06 §5.3 △ 兑现）：呈现位徽标——会话插件卡片右上挂载位小
  *  图标组（title 中文呈现位），「装完即知在哪用」。 */
-const MOUNT_FACE_ICONS: Record<string, { icon: typeof LayoutGrid; label: string }> = {
-  "block-renderer": { icon: FileCode2, label: "内容驱动（代码块/块渲染）" },
-  "dock-panel": { icon: LayoutDashboard, label: "调度面板（停靠/悬浮）" },
-  "sidebar-panel": { icon: LayoutDashboard, label: "侧栏面板" },
-  "rail-widget": { icon: Pin, label: "常驻挂件（贴边）" },
-  "composer-trailing": { icon: Pin, label: "输入框尾挂件" },
-  "event-hook": { icon: Bell, label: "事件钩子（无 UI）" },
-  "header-action": { icon: MousePointerClick, label: "标题栏动作" },
-  "tool-result-renderer": { icon: Wrench, label: "工具结果渲染" },
-  "app-theme": { icon: Palette, label: "全局外观" },
-  "app-overlay": { icon: Layers, label: "应用级浮层" },
+
+
+/** npm 源串解析正则（`npm:<pkg>[@<ver>]`，非贪婪取包名）——pkgOfSource
+ * 与扩展卡渲染共用（第三轮评审修复：消除同文件双拷贝）。 */
+const NPM_SOURCE_RE = /^npm:(.+?)@(.+)$/;
+
+// 第三轮评审修复：label 字段为死数据（十七轮⑤ 后展示只走 FORM_BADGE 词
+// 表，此处仅剩 icon 用途）——删除防口径漂移。
+const MOUNT_FACE_ICONS: Record<string, typeof LayoutGrid> = {
+  "block-renderer": FileCode2,
+  "dock-panel": LayoutDashboard,
+  "sidebar-panel": LayoutDashboard,
+  "rail-widget": Pin,
+  "composer-trailing": Pin,
+  "event-hook": Bell,
+  "header-action": MousePointerClick,
+  "tool-result-renderer": Wrench,
+  "app-theme": Palette,
+  "app-overlay": Layers,
 };
 
 /** 需求7 修1c：呈现位标签（文字化——用户看得懂「在哪用」，不再只悬停图标）。
@@ -148,10 +156,10 @@ function MountFaces({ pluginId, primary }: { pluginId: string; primary: FormValu
     <span className="inline-flex flex-wrap items-center gap-1">
       {all.map((k) => {
         const mount = k as string;
-        const Icon = k === "pipeline" ? Rocket : MOUNT_FACE_ICONS[mount]?.icon ?? LayoutGrid;
+        const Icon = k === "pipeline" ? Rocket : MOUNT_FACE_ICONS[mount] ?? LayoutGrid;
         const f = k === "pipeline" || mount === "app-theme" ? null : FORM_BADGE[k as FormValue];
         const label =
-          k === "pipeline" ? "流程"
+          k === "pipeline" ? tr("plugins.mountPipeline", "流程")
           : mount === "app-theme" ? tr(FORM_BADGE.theme.key, FORM_BADGE.theme.fallback)
           : f ? tr(f.key, f.fallback)
           : mount;
@@ -712,7 +720,7 @@ export function PluginsPage({
   /** 扩展包搜索匹配（十四轮：搜索「pi-subagents」搜不到——生态件不在
    * plugin_list 且搜索态被隐藏；并入全库检索：包名/piindex 说明）。 */
   const pkgOfSource = useCallback((src: string) => {
-    const m = src.match(/^npm:(.+?)@(.+)$/);
+    const m = src.match(NPM_SOURCE_RE);
     return m?.[1] ?? src.replace(/^npm:/, "");
   }, []);
   const matchesExtSearch = useCallback(
@@ -949,7 +957,11 @@ export function PluginsPage({
                               console.warn("skillhub_update failed:", e);
                               void alertDialog({ title: tr("plugins.actionFailed", "操作失败"), description: String(e) });
                             } finally {
-                              setUpdateBusy(null);
+                              // 第三轮评审修复：compare-and-clear——单值 busy 被
+                              // 后发起的操作覆盖时，先完成者不得清掉后者的忙态
+                              //（修前 finally 无条件置 null，另一卡 spinner 提前
+                              // 消失且按钮解锁，可重复触发并发更新）。
+                              setUpdateBusy((prev) => (prev === plugin.id ? null : prev));
                             }
                           })()
                         }
@@ -975,7 +987,7 @@ export function PluginsPage({
                             console.warn("skillhub_check_update failed:", e);
                             void alertDialog({ title: tr("plugins.actionFailed", "操作失败"), description: String(e) });
                           } finally {
-                            setUpdateBusy(null);
+                            setUpdateBusy((prev) => (prev === plugin.id ? null : prev));
                           }
                         })()
                       }
@@ -1096,7 +1108,9 @@ export function PluginsPage({
       );
     }
     return sources.map((src) => {
-      const m = src.match(/^npm:(.+?)@(.+)$/);
+      // 第三轮评审修复：正则单源（NPM_SOURCE_RE）——与 pkgOfSource 同款
+      // 内联拷贝删除，改解析只改一处。
+      const m = src.match(NPM_SOURCE_RE);
       const pkg = m?.[1] ?? src.replace(/^npm:/, "");
       const pin = extPins.find((p) => p.package === pkg);
       // 十七轮⑧：版本三级兜底——实装目录（真源）→ 源串 @version 钉定
@@ -1124,7 +1138,7 @@ export function PluginsPage({
           console.warn("ext action failed:", e);
           void alertDialog({ title: tr("plugins.actionFailed", "操作失败"), description: String(e) });
         } finally {
-          setUpdateBusy(null);
+          setUpdateBusy((prev) => (prev === pkg ? null : prev));
         }
       })();
       // 单卡检查：结果并入全局更新状态（与全部检查联动）。
@@ -1139,7 +1153,7 @@ export function PluginsPage({
             <Package className="h-4 w-4 shrink-0 text-primary/70" />
             <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium" title={pkg}>{pkg}</span>
             {pin ? (
-              <Badge variant="secondary" className="shrink-0 px-1 py-0 text-[9px]">{tr("plugins.kindBuiltin", "内置")}</Badge>
+              <Badge variant="secondary" className="shrink-0 px-1 py-0 text-[9px]">{tr("plugins.implBuiltin", "内置")}</Badge>
             ) : (
               <Badge variant="outline" className="shrink-0 border-primary/40 px-1 py-0 text-[9px] text-primary">
                 {tr("plugins.badgeMarket", "市场安装")}
@@ -1211,10 +1225,6 @@ export function PluginsPage({
             >
               <Trash2 className="h-3 w-3" />
             </Button>
-            {!pin && (
-              <>
-              </>
-            )}
           </div>
         </div>
       );
@@ -1763,6 +1773,9 @@ export function PluginsPage({
  */
 function DevLogCard() {
   const { t } = useTranslation();
+  // 第三轮评审修复：开关失败显性化（修前只 console.warn——点开关无反应
+  // 像按钮失灵）。hook 需渲染自身 dialogNode（e89bfe7 同款坑）。
+  const { alert: alertDialog, dialogNode: alertNode } = useConfirmDialog();
   const [forced, setForced] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -1780,6 +1793,10 @@ function DevLogCard() {
       setForced(!forced);
     } catch (e) {
       console.warn("[dev-log] 切换失败:", e);
+      void alertDialog({
+        title: t("plugins.actionFailed", { defaultValue: "操作失败" }),
+        description: String(e),
+      });
     } finally {
       setBusy(false);
     }
@@ -1826,6 +1843,7 @@ function DevLogCard() {
       <p className="line-clamp-2 min-h-[26px] text-[10px] leading-[13px] text-muted-foreground/80">
         {t("plugins.devLogDesc", { defaultValue: "开启后显示会话区日志中心入口（含生产构建），全流程会话流转/时序日志可复制导出，便于问题排查。默认关闭。" })}
       </p>
+      {alertNode}
     </div>
   );
 }

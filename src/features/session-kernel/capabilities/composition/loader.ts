@@ -154,6 +154,13 @@ export async function reloadComposed(): Promise<void> {
         }
       } catch (err) {
         console.warn(`[composition] 跳过无效组合清单 ${item.id}:`, err);
+        // 第三轮评审修复（观测缺口）：跳过原因进 devLog capability——
+        // 「插件为什么没装上」在 DevLogCenter 可查（修前只有计数没有归因，
+        // 靠盘上对账才能解释 skipped=1）。
+        devLog("capability", `composed manifest skipped: ${item.id} (${String(err).slice(0, 120)})`, {
+          id: item.id,
+          reason: String(err).slice(0, 300),
+        });
       }
     }
     cache = descriptors;

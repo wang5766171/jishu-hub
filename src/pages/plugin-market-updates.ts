@@ -80,7 +80,15 @@ export function marketUpdateFailures(): string[] {
 /** 批量更新全部有更新的扩展（逐包更新，进度推进；离开页面继续跑）。 */
 export function startExtensionUpdateAll(): void {
   if (state.extensionRunning) return;
-  set({ extensionRunning: true, extensionDone: 0, extensionTotal: 0, failedNames: [] });
+  // 第三轮评审修复：技能批量仍在跑时保留其已累计的失败项——与
+  // startSkillUpdateAll 的条件清空对称（修前无条件 [] 会抹掉另一批失败
+  // 记录，完成弹窗漏报）。
+  set({
+    extensionRunning: true,
+    extensionDone: 0,
+    extensionTotal: 0,
+    failedNames: state.skillRunning ? state.failedNames : [],
+  });
   void (async () => {
     try {
       const updates = await invokeCommand<Array<{ package: string; has_update: boolean }>>(

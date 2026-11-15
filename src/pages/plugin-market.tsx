@@ -8,11 +8,12 @@
  * - 已装判定：精选/扩展 = plugin_list 交集；技能 = skillhub_installed 台账。
  * - 文案不暴露内部引擎代号（§7）：三源页签名为 精选/扩展生态/技能市场。
  *
- * 评审 P2-12 处置说明（不拆分）：已安装+批量更新分区与四源页签共享状态机
- * 11 处（extUpdates/skillUpdates/extCardUpdate/skillCardUpdate/cardBusy/
- * checkingUpdates/batchUpdates/onlineInstalled/skillInstalled/piindex/
- * actionError）+ load/onChanged 回调——拆出需整包 props 转移，耦合>收益，
- * 随 chat-page 拆分方向后续处理。
+ * 评审 P2-12 处置说明（不拆分，第三轮评审更新口径）：九轮「已安装统一
+ * 页」抽出后，已装/批量更新状态机（extUpdates/skillUpdates/
+ * checkingUpdates/updateBusy/batchUpdates/extInstalled/extVersions 等）
+ * 已全部迁往 plugins-page.tsx——本组件仅剩市场三源装载（onlineInstalled/
+ * skillInstalled/piindex/busyId）与 load/onChanged 回调。文件规模与拆分
+ * 处置仍随 chat-page 拆分方向后续评估。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
