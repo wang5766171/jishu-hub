@@ -86,6 +86,21 @@ fn session_project_of(session_id: &str) -> Option<(String, String)> {
     session_project_in_root(&root, session_id)
 }
 
+/// 会话目录名剥首尾 `--` 包裹（`--C--Users-...--` → `C--Users-...`）。
+/// 需求10 收口（2026-11-11 用户实测回归）：pi 会话目录名带首尾包裹 `--`，
+/// 而前端 projects[].encoded_name 是 hub encode（无包裹）——原样返回恒不
+/// 匹配，前端 find 静默失败=点击通知不切标签。
+/// 第五轮评审 P2-6：原本 lib.rs 与 commands/sessions.rs 两处裸拷贝——收敛
+/// 单源。精确双端剥（trim_matches 会连项目路径自身的尾部 '-' 一并误剥，
+/// 如 `--D--foo---` 应得 `D--foo-` 而非 `D--foo`）；无完整包裹原样返回。
+pub(crate) fn strip_session_dir_wrap(dir_name: &str) -> String {
+    dir_name
+        .strip_prefix("--")
+        .and_then(|s| s.strip_suffix("--"))
+        .unwrap_or(dir_name)
+        .to_string()
+}
+
 /// `session_project_of` 的纯函数核心（root 注入，tempdir 单测覆盖）：
 /// 扫 pi sessions 目录下 `--<encoded>--/<ts>_<session_id>.jsonl` 反查会话
 /// 所属项目。返回 (剥过包裹的 encoded, 解码路径)。
@@ -103,16 +118,9 @@ fn session_project_in_root(root: &std::path::Path, session_id: &str) -> Option<(
             .flatten()
             .any(|f| f.file_name().to_string_lossy().ends_with(&suffix))
         {
-            // 需求10 收口（2026-11-11 用户实测回归）：pi 会话目录名带首尾包裹
-            // `--`（`--C--Users-...--`），而前端 projects[].encoded_name 是
-            // hub encode（`C--Users-...`，无包裹）——原样返回恒不匹配，前端
-            // find 静默失败=点击通知不切标签。剥去包裹再返回（decode 同用
-            // 剥过包裹的入参：带包裹名 find("--") 命中位置 0，盘符解析错位）。
-            let encoded = dir_name
-                .strip_prefix("--")
-                .and_then(|s| s.strip_suffix("--"))
-                .unwrap_or(&dir_name)
-                .to_string();
+            // 剥包裹单源（decode 同用剥过包裹的入参：带包裹名 find("--")
+            // 命中位置 0，盘符解析错位）。
+            let encoded = strip_session_dir_wrap(&dir_name);
             let project_path = crate::project::decode_project_path(&encoded);
             return Some((encoded, project_path));
         }
@@ -168,6 +176,27 @@ mod tests {
 
         // 其他会话 / 空目录不误报。
         assert!(session_project_in_root(root.path(), "other").is_none());
+    }
+
+    /// 第五轮评审 P2-6：剥包裹纯函数表驱动边界——精确双端剥，路径自身
+    /// 的尾部 '-' 不误剥；无完整包裹原样返回。
+    #[test]
+    fn strip_session_dir_wrap_boundaries() {
+        for (input, expected) in [
+            ("--C--Users-51743--", "C--Users-51743"), // 常规包裹
+            ("--D--foo---", "D--foo-"),               // 路径自身尾部 '-'（trim_matches 会误剥）
+            ("--a--", "a"),                           // 最短完整包裹
+            ("--abc", "--abc"),                       // 只有前缀无后缀——原样返回
+            ("abc--", "abc--"),                       // 只有后缀无前缀——原样返回
+            ("abc", "abc"),                           // 无包裹
+            ("----", ""),                             // 空名包裹
+        ] {
+            assert_eq!(
+                strip_session_dir_wrap(input),
+                expected,
+                "input {input:?} must strip to {expected:?}"
+            );
+        }
     }
 }
 

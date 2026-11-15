@@ -254,21 +254,23 @@ pub struct InfoSection {
     /// 字段（deny_unknown_fields 下照抄装不上），补位使模板合法且卡片有说明。
     #[serde(default)]
     pub description: Option<String>,
-    /// v0.9.7 需求3（2026-11-14 标签裁决 + 11-15 十六轮九类裁决）：
+    /// v0.9.7 需求3（2026-11-14 标签裁决 + 11-15 十六轮形态裁决）：
     /// **插件形态显式声明**——创建时智能体显式写明「创建到哪个位置」。
-    /// 形态 = 九类挂载位（会话件直接写挂载位名）+ theme/none 两兜底，
-    /// 枚举见 PLUGIN_FORM_VALUES；未声明由前端按挂载位推导兜底。
+    /// 形态 = 挂载位粒度（会话件直接写挂载位名，二十/二十二轮增 menu 后
+    /// 为十类）+ theme/none 两兜底，枚举见 PLUGIN_FORM_VALUES；未声明由
+    /// 前端按挂载位推导兜底。
     #[serde(default)]
     pub form: Option<String>,
 }
 
 /// 插件形态枚举（标签三类体系的第三类）。v0.9.7 需求3 十六轮用户裁决：
-/// **形态 = 九类挂载位粒度**（PluginMount 联合全量：会话内渲染/工具结果
+/// **形态 = 挂载位粒度**（PluginMount 联合全量：会话内渲染/工具结果
 /// 渲染/标题栏动作/侧边栏面板/停靠面板/贴边挂件/输入框尾挂件/应用浮层/
-/// 事件钩子），另保留两兜底值：theme（主题外观，app-theme 声明件）与
-/// none（无 UI 呈现——无挂载位的 MCP/Skill/CLI 等统一标注）。
+/// 事件钩子，二十/二十二轮增菜单页后为十类），另保留两兜底值：theme
+/// （主题外观，app-theme 声明件）与 none（无 UI 呈现——无挂载位的
+/// MCP/Skill/CLI 等统一标注）。
 /// 旧五值中的 session/sidebar/floating 保留合法：旧清单编辑保存不被拒；
-/// 展示侧对旧值不入新集、走挂载位推导自动升级为九类粒度。
+/// 展示侧对旧值不入新集、走挂载位推导自动升级为挂载位粒度。
 pub const PLUGIN_FORM_VALUES: &[&str] = &[
     "block-renderer",
     "tool-result-renderer",

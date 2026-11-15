@@ -510,6 +510,35 @@ mod tests {
 
     /// v0.9.7 需求6 F3：引用校验——项目内按扩展名返回类别；越界（项目外
     /// /逃逸路径）拒绝；任务产物区放行。
+    /// 第五轮评审 P2-6：项目目录扫描纯函数——剥包裹（路径自身尾部 '-'
+    /// 不误剥）、无包裹目录/文件不收、排序稳定。
+    #[test]
+    fn scan_encoded_project_dirs_filters_and_strips() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["--D--foo---", "--B--bar--", "plain-dir", "--file--"] {
+            let p = root.path().join(name);
+            if name == "--file--" {
+                std::fs::write(&p, b"x").unwrap(); // 文件不收（即便带包裹名）
+            } else {
+                std::fs::create_dir_all(&p).unwrap();
+            }
+        }
+        let list = super::scan_encoded_project_dirs(root.path()).unwrap();
+        assert_eq!(
+            list,
+            vec!["B--bar".to_string(), "D--foo-".to_string()],
+            "只收包裹目录、精确剥包裹、按名排序"
+        );
+    }
+
+    /// 第四轮评审 P2（根目录不存在返空）行为锚定——第五轮评审 P2-6 补用例。
+    #[test]
+    fn scan_encoded_project_dirs_missing_root_returns_empty() {
+        let missing = std::env::temp_dir().join(format!("jishu-no-such-{}", uuid::Uuid::new_v4()));
+        let list = super::scan_encoded_project_dirs(&missing).unwrap();
+        assert!(list.is_empty(), "根目录不存在应返回空列表而非报错");
+    }
+
     #[test]
     fn validate_preview_file_bounds_and_kind() {
         let root = std::env::temp_dir().join(format!("jishu-preview-{}", uuid::Uuid::new_v4()));
@@ -790,6 +819,27 @@ pub(crate) struct HubPluginSession {
     pub tool_calls: Option<u64>,
 }
 
+/// 第四轮评审 P2 + 第五轮评审 P2-6：项目目录扫描提为可测纯函数——
+/// 根目录不存在（全新安装零会话）返空列表（只读展示面优雅降级）；其他
+/// 读取错误仍 fail loud；只收带 `--` 包裹的目录，剥包裹走单源
+/// strip_session_dir_wrap（此前与 lib.rs 各持一份裸拷贝——改一处漏一处
+/// 是修复轮被抓 P1 的高危形态）。排序保证列表稳定。
+fn scan_encoded_project_dirs(root: &std::path::Path) -> Result<Vec<String>, String> {
+    let dir = match std::fs::read_dir(root) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut list: Vec<String> = dir
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("--"))
+        .map(|e| crate::strip_session_dir_wrap(&e.file_name().to_string_lossy()))
+        .collect();
+    list.sort();
+    Ok(list)
+}
+
 /// 跨项目（或指定项目）会话列表——插件开放能力（二十三轮）。
 /// 复用 pi 会话解析（list_pi_sessions）；标题合并 ai-title 与用户重命名；
 /// usage.db 按会话 join 花销/工具调用。只读，无写面。
@@ -802,35 +852,9 @@ pub(crate) async fn hub_plugin_sessions(
         // 项目集：指定单项目；否则全扫 sessions root 下的项目目录。
         let encoded_list: Vec<String> = match &project_encoded {
             Some(one) => vec![one.clone()],
-            None => {
-                let root = crate::agent::jishu_self::pi_session::pi_sessions_root()?;
-                // 第四轮评审 P2：根目录不存在（全新安装零会话）返回空列表
-                // 而非整体报错——只读展示面优雅降级；其他读取错误仍 fail loud。
-                let dir = match std::fs::read_dir(&root) {
-                    Ok(d) => d,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-                    Err(e) => return Err(e.to_string()),
-                };
-                let mut list: Vec<String> = dir
-                    .flatten()
-                    .filter(|e| e.path().is_dir())
-                    .filter_map(|e| {
-                        let n = e.file_name().to_string_lossy().into_owned();
-                        // 第四轮评审 P2：精确剥包裹（strip 双端 "--"，与 lib.rs
-                        // 同款）——trim_matches 会连项目路径自身的尾部 '-'
-                        // 一并剥掉（如 `--D--foo---` 应得 `D--foo-`，误剥成
-                        // `D--foo`，该项目会话将静默从列表消失）。
-                        n.starts_with("--").then(|| {
-                            n.strip_prefix("--")
-                                .and_then(|s| s.strip_suffix("--"))
-                                .unwrap_or(&n)
-                                .to_string()
-                        })
-                    })
-                    .collect();
-                list.sort();
-                list
-            }
+            None => scan_encoded_project_dirs(
+                &crate::agent::jishu_self::pi_session::pi_sessions_root()?,
+            )?,
         };
         let mut out = Vec::new();
         for encoded in encoded_list {
@@ -846,7 +870,16 @@ pub(crate) async fn hub_plugin_sessions(
             for s in sessions {
                 // 第四轮评审 P2：usage join 用 get_optional——无记账记录返回
                 // None（插件可区分「未记账」与「真零」），不再把缺记当零花。
-                let usage = crate::usage_store::get_optional(&s.id).unwrap_or(None);
+                // 第五轮评审 P2-5：get_optional 现在上抛真实读错（仅查无此行
+                // 折 None）——列表 join 场景局部化：warn 留痕后按未记账计，
+                // 不拖垮跨项目列表（与单项目跳过同款 §16.1 纪律）。
+                let usage = match crate::usage_store::get_optional(&s.id) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::warn!("[hub] usage 读取失败，按未记账计 session {}: {e}", s.id);
+                        None
+                    }
+                };
                 out.push(HubPluginSession {
                     title: names
                         .get(&s.id)

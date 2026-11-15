@@ -448,36 +448,87 @@ pub fn validate_composed_guards(id: &str, value: &toml::Value) -> Result<(), Str
     }
     // 第四轮评审 P2（R4 生产实测）：[render].mount 白名单——修前 Rust 装
     // 校不查 mount，mount="none" 等值可装上而内核装载校验拒绝（types.ts
-    // MOUNT_SOURCE_MATRIX），产出「可装不可用」半死件。白名单与 types.ts
-    // 矩阵键集同源镜像，改动必须双侧同步；仅 [pipeline] 无 [render] 的
-    // 流水线件不受限。
-    const COMPOSED_MOUNT_VALUES: &[&str] = &[
-        "block-renderer",
-        "rail-widget",
-        "dock-panel",
-        "sidebar-panel",
-        "menu",
-        "composer-trailing",
-        "event-hook",
-        "tool-output",
-        "app-theme",
-        "app-overlay",
+    // MOUNT_SOURCE_MATRIX），产出「可装不可用」半死件。仅 [pipeline] 无
+    // [render] 的流水线件不受限。
+    //
+    // 第五轮评审 P2-4：镜像升级为**行集**（键 + 该挂载位接受的源类型），
+    // 与 types.ts MOUNT_SOURCE_MATRIX 同源镜像，改动必须双侧同步——修前
+    // 只对键集，「合法挂载位 + 非法配对」「有 [source]/[theme] 无 [render]」
+    // 仍装得上、装载期才死（SKILL 承诺「非法组合安装即拒」兑现不了）。
+    // 内核侧附加裁决一并镜像：无源挂载（app-theme/app-overlay）不得带源；
+    // app-theme 必须带 [theme]；[theme] 必须配 app-theme。
+    const COMPOSED_MOUNT_SOURCES: &[(&str, &[&str])] = &[
+        ("block-renderer", &["code-block", "block-type"]),
+        ("rail-widget", &["messages", "turns", "stream-state"]),
+        ("dock-panel", &["messages", "turns", "stream-state", "task"]),
+        (
+            "sidebar-panel",
+            &["messages", "turns", "stream-state", "task"],
+        ),
+        ("menu", &["messages", "turns", "stream-state", "task"]),
+        ("composer-trailing", &["messages", "turns", "stream-state"]),
+        ("event-hook", &["signal"]),
+        ("tool-output", &["tool-result"]),
+        ("app-theme", &[]),
+        ("app-overlay", &[]),
     ];
+    // 渲染臂完整性：声明了 [source]/[theme] 而无 [render]——内核装载按
+    // 渲染臂校验（mount undefined 拒绝），安装期同拒。
+    if value.get("render").is_none()
+        && (value.get("source").is_some() || value.get("theme").is_some())
+    {
+        return Err(
+            "[source]/[theme] 声明须配 [render] 段（挂载与源配对见 jishu-plugin-authoring SKILL 配对矩阵）"
+                .to_string(),
+        );
+    }
     if let Some(render) = value.get("render") {
-        match render.get("mount").and_then(|v| v.as_str()) {
-            Some(mount) if COMPOSED_MOUNT_VALUES.contains(&mount) => {}
-            Some(mount) => {
+        let mount = match render.get("mount").and_then(|v| v.as_str()) {
+            Some(m) => m,
+            None => return Err(
+                "[render] 段必须声明 mount（源×挂载配对见 jishu-plugin-authoring SKILL 配对矩阵）"
+                    .to_string(),
+            ),
+        };
+        let allowed_sources = match COMPOSED_MOUNT_SOURCES.iter().find(|(m, _)| *m == mount) {
+            Some((_, srcs)) => *srcs,
+            None => {
+                let values: Vec<&str> = COMPOSED_MOUNT_SOURCES.iter().map(|(m, _)| *m).collect();
                 return Err(format!(
                     "[render] mount 无效：{mount:?}（合法：{}——与内核装载配对矩阵同集）",
-                    COMPOSED_MOUNT_VALUES.join("/")
+                    values.join("/")
                 ));
             }
-            None => {
-                return Err(
-                    "[render] 段必须声明 mount（源×挂载配对见 jishu-plugin-authoring SKILL 配对矩阵）"
-                        .to_string(),
-                );
+        };
+        let source_type = value
+            .get("source")
+            .and_then(|s| s.get("type"))
+            .and_then(|v| v.as_str());
+        let sourceless = allowed_sources.is_empty();
+        if sourceless {
+            if let Some(st) = source_type {
+                return Err(format!(
+                    "[render] mount {mount} 为无源挂载，不接受数据面源 {st:?}"
+                ));
             }
+            if mount == "app-theme" && value.get("theme").is_none() {
+                return Err("[render] app-theme 挂载须声明 [theme] 段".to_string());
+            }
+        } else if source_type.is_none() {
+            return Err(format!(
+                "[source] 段缺失（mount {mount} 需数据面源——源×挂载配对见 SKILL 矩阵）"
+            ));
+        }
+        if let Some(st) = source_type {
+            if !sourceless && !allowed_sources.contains(&st) {
+                return Err(format!(
+                    "[render] mount {mount} 不接受源类型 {st}（合法：{}）",
+                    allowed_sources.join("/")
+                ));
+            }
+        }
+        if value.get("theme").is_some() && mount != "app-theme" {
+            return Err("[theme] 主题声明须配 [render] mount = \"app-theme\"".to_string());
         }
     }
     // 6c：[[agent-tool]] 名全局唯一（agent 工具名撞名会让 agent 无从
@@ -840,7 +891,7 @@ mount = "block-renderer"
     }
 
     /// 第三轮评审修复：组合家族 [plugin].form 白名单——拼错值 fail loud，
-    /// 旧三值（保存兼容）与九类新值放行。
+    /// 旧三值（保存兼容）与十类挂载位新值（含 menu）放行。
     #[test]
     fn save_composed_manifest_form_whitelist() {
         let _guard = lock_env();
@@ -925,6 +976,94 @@ component = "render.list"
         let err = save_composed_manifest("session.mount-check", no_mount)
             .expect_err("[render] 缺 mount 必须拒绝");
         assert!(err.contains("必须声明 mount"), "got: {err}");
+
+        // 第五轮评审 P2-4：配对镜像与渲染臂完整性——「可装不可用」的
+        // 其余通道（合法键 + 非法配对 / 声明源无渲染段 / 无源挂载带源 /
+        // app-theme 缺主题段 / 主题段配非 app-theme）全部安装期拒绝。
+        let with_pair = |mount: &str, source: &str| {
+            format!(
+                r#"[plugin]
+id = "session.mount-check"
+name = "挂载校验"
+kind = "session-composed"
+[source]
+type = "{source}"
+[render]
+component = "render.list"
+mount = "{mount}"
+"#
+            )
+        };
+        // event-hook 只吃 signal——messages 配对拒绝。
+        let err =
+            save_composed_manifest("session.mount-check", &with_pair("event-hook", "messages"))
+                .expect_err("非法配对必须拒绝");
+        assert!(err.contains("不接受源类型"), "got: {err}");
+        // 数据面挂载缺 [source] 拒绝。
+        let no_source = r#"[plugin]
+id = "session.mount-check"
+name = "挂载校验"
+kind = "session-composed"
+[render]
+component = "render.list"
+mount = "dock-panel"
+"#;
+        let err = save_composed_manifest("session.mount-check", no_source)
+            .expect_err("数据面挂载缺源必须拒绝");
+        assert!(err.contains("[source] 段缺失"), "got: {err}");
+        // 有 [source] 无 [render] 拒绝（内核按渲染臂校验 mount，装上即死件）。
+        let src_only = r#"[plugin]
+id = "session.mount-check"
+name = "挂载校验"
+kind = "session-composed"
+[source]
+type = "messages"
+"#;
+        let err = save_composed_manifest("session.mount-check", src_only)
+            .expect_err("裸 [source] 必须拒绝");
+        assert!(err.contains("须配 [render]"), "got: {err}");
+        // 无源挂载 app-overlay 不吃数据面源；app-theme 缺 [theme] 拒绝。
+        let err =
+            save_composed_manifest("session.mount-check", &with_pair("app-overlay", "messages"))
+                .expect_err("app-overlay 带源必须拒绝");
+        assert!(err.contains("无源挂载"), "got: {err}");
+        let themeless = r#"[plugin]
+id = "session.mount-check"
+name = "挂载校验"
+kind = "session-composed"
+[render]
+mount = "app-theme"
+"#;
+        let err = save_composed_manifest("session.mount-check", themeless)
+            .expect_err("app-theme 缺主题段必须拒绝");
+        assert!(err.contains("须声明 [theme]"), "got: {err}");
+        // [theme] 配非 app-theme 挂载拒绝。
+        let theme_mismatch = r#"[plugin]
+id = "session.mount-check"
+name = "挂载校验"
+kind = "session-composed"
+[source]
+type = "messages"
+[render]
+component = "render.list"
+mount = "dock-panel"
+[theme]
+css = "@file:theme.css"
+"#;
+        let err = save_composed_manifest("session.mount-check", theme_mismatch)
+            .expect_err("[theme] 配非 app-theme 必须拒绝");
+        assert!(err.contains("app-theme"), "got: {err}");
+        // 反例放行：app-overlay 无源挂载（不带源不带主题）合法。
+        let overlay_ok = r#"[plugin]
+id = "session.mount-check"
+name = "挂载校验"
+kind = "session-composed"
+[render]
+component = "render.list"
+mount = "app-overlay"
+"#;
+        save_composed_manifest("session.mount-check", overlay_ok)
+            .unwrap_or_else(|e| panic!("app-overlay 无源挂载被误拒: {e}"));
 
         std::env::remove_var("JISHU_HUB_HOME");
     }
