@@ -30,13 +30,6 @@ export function requestMenuPage(pluginId: string): void {
   emit();
 }
 
-/** 关闭当前菜单页（宿主关闭钮）。 */
-export function requestMenuPageClose(): void {
-  seq += 1;
-  request = { pluginId: "__close__", seq };
-  emit();
-}
-
 function getRequest(): MenuPageRequest | null {
   return request;
 }

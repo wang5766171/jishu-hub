@@ -8,8 +8,9 @@
 import { useMemo } from "react";
 import type { ComponentType } from "react";
 import { usePluginConfig, type PluginConfigField, type PluginConfigValues } from "../../plugins/config-plane";
-import type { SessionPluginDescriptor, SessionKernelContext, PluginBlock } from "../../plugins/types";
+import type { SessionPluginDescriptor, SessionKernelContext, PluginBlock, OverlayPluginContext } from "../../plugins/types";
 import { SESSION_PLUGIN_CONTRACT_VERSION } from "../../plugins/types";
+import { buildOverlayPluginContext } from "../../plugins/hub-capabilities";
 import { rendererRegistry } from "../renderers/registry";
 import { actionRegistry, resolveActionParams } from "../actions";
 import { getAggregator } from "../sources/aggregate-source";
@@ -91,8 +92,9 @@ function RendererShell({
   schema: PluginConfigField[];
   payload: SourcePayload;
   sessionId: string | null;
-  /** 二十三轮：ctx 透传（混合件组件 props.ctx）。 */
-  ctx?: SessionKernelContext;
+  /** 二十三轮：ctx 透传（混合件组件 props.ctx）。第四轮评审修复：app-overlay
+   * 形态传受限 ctx（仅 hub 面，OverlayPluginContext）。 */
+  ctx?: SessionKernelContext | OverlayPluginContext;
   fileComponent?: ComponentType<RendererComponentProps>;
 }) {
   const { values } = usePluginConfig(manifest.plugin.id, schema);
@@ -311,6 +313,10 @@ export function buildComposedDescriptor(
   } else if (render.mount === "app-overlay") {
     // 需求14 M5（06-P2）：应用级浮层挂载——无源空数据面，页面层外常驻
     //（AppOverlayHost 消费；DevLogCenter 形态的第三方复刻位）。
+    // 第四轮评审修复：注入受限 ctx（仅 hub 面）——修前该臂未透传 ctx，
+    // 浮层形态混合件按 API.md 调 ctx.hub 直接 TypeError（SourceShell 臂
+    // 二十三轮已修，同族缺口在此补齐）。
+    const overlayCtx = buildOverlayPluginContext();
     mounts.push({
       kind: "app-overlay",
       Component: () => (
@@ -319,6 +325,7 @@ export function buildComposedDescriptor(
           schema={schema}
           payload={{ kind: "aggregate", data: [] }}
           sessionId={null}
+          ctx={overlayCtx}
           fileComponent={hybrid?.component}
         />
       ),

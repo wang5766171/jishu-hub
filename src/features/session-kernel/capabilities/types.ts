@@ -59,8 +59,11 @@ export interface RendererComponentProps<P = SourcePayload> {
   actions: ComposedActionRef[];
   /** 二十三轮：会话内核上下文透传（@file 混合件此前只收 payload/options/
    * actions——ctx 契约缺口，组件拿不到会话/全局能力；可选字段，存量组件
-   * 不受影响）。 */
-  ctx?: import("../plugins/types").SessionKernelContext;
+   * 不受影响）。第四轮评审修复：app-overlay 形态（会话树外）注入受限
+   * ctx（仅 hub 面）——两种形态共拥 ctx.hub 全局面。 */
+  ctx?:
+    | import("../plugins/types").SessionKernelContext
+    | import("../plugins/types").OverlayPluginContext;
 }
 
 export interface RendererRegistration {

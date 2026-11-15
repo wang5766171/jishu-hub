@@ -254,7 +254,7 @@ export interface HubAgentCapabilities {
   steer(opts: { sessionId: string; message: string }): Promise<void>;
   /** 中止指定会话的当前回合。 */
   abort(sessionId: string): Promise<void>;
-  /** 可选模型清单（当前智能体）。 */
+  /** 可选模型清单（内置智能体引擎——二十四轮开放面绑定内置引擎，非跟随会话 agent）。 */
   models(): Promise<HubModelOption[]>;
   /** 会话锁定模型（null = 跟随全局）。 */
   getModel(sessionId: string): Promise<{ provider: string; model: string } | null>;
@@ -264,8 +264,8 @@ export interface HubAgentCapabilities {
 
 /** hub 级能力（插件触达全局数据的受控面——实现经 hub 命令，插件不直连）。 */
 export interface HubCapabilities {
-  /** 会话列表（默认当前项目，可指定项目编码名/智能体）。 */
-  listSessions(opts?: { projectEncodedName?: string; agentId?: string }): Promise<HubSessionSummary[]>;
+  /** 会话列表（默认跨全部项目，可指定项目编码名限定单项目）。 */
+  listSessions(opts?: { projectEncodedName?: string }): Promise<HubSessionSummary[]>;
   /** 会话统计（默认当前会话）。 */
   sessionStats(sessionId?: string): Promise<HubSessionStats>;
   /** 项目列表。 */
@@ -280,6 +280,12 @@ export interface HubCapabilities {
 
 /** 订阅取消句柄。 */
 export type Unsubscribe = () => void;
+
+/** app-overlay 形态的受限 ctx（第四轮评审修复）：应用浮层挂载在会话树外
+ * （app.tsx AppOverlayHost），无会话数据面/命令面——仅注入 hub 全局面。
+ * 修前该形态 ctx 为 undefined，插件按 API.md 调 ctx.hub 直接 TypeError。
+ * 实现见 plugins/hub-capabilities.ts 的 buildOverlayPluginContext。 */
+export type OverlayPluginContext = Pick<SessionKernelContext, "hub">;
 
 /** 全景面板节点的呈现态摘要（内核侧组装，插件不直接触达 store）。 */
 export interface TaskPanelNode {
