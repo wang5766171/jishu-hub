@@ -47,19 +47,19 @@ description: 创建/安装 Jishu Hub 插件前必读——用户想改变客户�
 
 ```toml
 schema = 1
+kind = "tool"
 
 [info]
 id = "my-qrcode"
-name = "二维码生成"
+display_name = "二维码生成"
 description = "把文本/URL 生成二维码 PNG。用户要求生成二维码时使用。"
-kind = "tool"
 icon = "qr"
 form = "none"
 
 [tool]
 usage = "qrencode -o {{output}} -s 10 {{text}}"
 description = "生成二维码图片。text：要编码的内容；output：输出 PNG 路径。"
-examples = ["生成 https://example.com 的二维码到 /tmp/qr.png"]
+example = "生成 https://example.com 的二维码到 /tmp/qr.png"
 ```
 
 安装：`jishu-cli plugins add my-qrcode.toml`
