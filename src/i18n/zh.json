@@ -1559,11 +1559,8 @@
     "hub": {
       "title": "能力中心",
       "groupPanels": "面板 · 点击调度",
-      "groupResidents": "常驻挂件 · 点击定位",
-      "locateHint": "{{name}}（常驻——点击高亮定位；右键挂件可停用/设置）",
-      "panelCount": "面板",
-      "widgetCount": "挂件",
-      "manage": "管理插件…"
+                  "panelCount": "面板",
+            "manage": "管理插件…"
     },
     "collapse": "收起为胶囊",
     "expand": "展开悬浮窗",

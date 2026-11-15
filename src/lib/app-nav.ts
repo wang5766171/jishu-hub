@@ -14,9 +14,22 @@ export interface ManageNavDetail {
 
 const NAV_MANAGE_EVENT = "jishu:navigate-manage";
 
+/** 最近一次导航请求（十九轮修复：chat→manage 条件挂载下，事件派发时
+ * manage-page 尚未挂载、其监听不存在——tab 落默认「项目管理」。open 时
+ * 留存，manage-page 挂载时 consume 补投递。） */
+let lastManageNav: ManageNavDetail | null = null;
+
 /** 请求跳转管理页（可带目标 tab）。 */
 export function openManagePage(tab?: string): void {
+  lastManageNav = { tab };
   window.dispatchEvent(new CustomEvent<ManageNavDetail>(NAV_MANAGE_EVENT, { detail: { tab } }));
+}
+
+/** manage-page 挂载时取走最近一次导航请求（无则 null；一次性消费）。 */
+export function consumePendingManageNav(): ManageNavDetail | null {
+  const detail = lastManageNav;
+  lastManageNav = null;
+  return detail;
 }
 
 /** 订阅导航请求（App 换页 / manage-page 切 tab 各自消费）。返回退订函数。 */

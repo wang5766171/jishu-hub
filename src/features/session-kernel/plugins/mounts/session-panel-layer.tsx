@@ -24,13 +24,11 @@ import {
   useSessionSidebar,
 } from "../../shell/session-sidebar";
 import { usePanelActivation, consumePanelActivation } from "../../shell/panel-activation";
-// 批次5：能力中心常驻挂件定位（复用 5a spotlight 脉冲）与管理页导航。
-import { requestInstallSpotlight } from "../../shell/install-spotlight";
 import { openManagePage } from "@/lib/app-nav";
 import { resolvePluginIcon } from "@/components/ui/icon-picker";
 import { useAllPluginBehaviors } from "../config-plane";
 import { listSessionPlugins, useEnabledSessionPlugins } from "../registry";
-import { dockPanelsOf, sidebarPanelsOf, railWidgetsOf, composerTrailingsOf } from "../types";
+import { dockPanelsOf, sidebarPanelsOf } from "../types";
 import type { SessionKernelContext } from "../types";
 
 /**
@@ -378,25 +376,6 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
     [sidebarEntries, behaviors],
   );
 
-  // 批次5：常驻挂件清单（rail/composer/**动作位**，作用域同口径）——能力中心
-  // 第二组仅定位（点击 spotlight 脉冲）；启停归插件中心/挂件右键（双开关口径铁律）。
-  const residentEntries = useMemo(() => {
-    const entries: Array<{ id: string; title: string }> = [];
-    for (const plugin of listSessionPlugins()) {
-      if (!enabled.has(plugin.id)) continue;
-      const bhv = behaviors[plugin.id];
-      if (bhv?.scope === "task-only" && !inTaskSession) continue;
-      if (
-        railWidgetsOf(plugin).length ||
-        composerTrailingsOf(plugin).length ||
-        plugin.mounts.some((m) => m.kind === "header-action")
-      ) {
-        entries.push({ id: plugin.id, title: t(plugin.displayNameKey, plugin.displayNameFallback) });
-      }
-    }
-    return entries;
-  }, [enabled, t, behaviors, inTaskSession]);
-
   const hideAllDockPanels = useCallback(() => {
     setLayout((prev) => {
       const hasVisible = Object.values(prev.panels).some((p) => !p.hidden);
@@ -575,8 +554,9 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
             <div className="mb-1 text-[9px] font-medium text-muted-foreground">
               {t("sessionPanels.hub.title", "能力中心")}
             </div>
-            {/* 批次5：分组呈现——面板可调度（点击 toggle）；常驻挂件仅定位
-                （点击闪烁提示位置；启停归插件中心/右键菜单，双开关口径铁律）。 */}
+            {/* 十九轮裁决（2026-11-15）：常驻挂件「点击定位」组删除（无需此
+                功能）——能力中心只展示有面板的插件；面板卡点击调度不变。
+                名称最多显示四个字，超出悬浮显示全称（title）。 */}
             <div className="mb-1 text-[9px] text-muted-foreground/70">
               {t("sessionPanels.hub.groupPanels", "面板 · 点击调度")}
             </div>
@@ -601,42 +581,16 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
                     )}
                   >
                     <Icon className="h-3.5 w-3.5" />
-                    <span className="text-[9px] font-medium leading-tight whitespace-nowrap">{entry.title}</span>
+                    <span className="text-[9px] font-medium leading-tight whitespace-nowrap">{entry.title.length > 4 ? entry.title.slice(0, 4) : entry.title}</span>
                   </button>
                 );
               })}
             </div>
-            {residentEntries.length > 0 ? (
-              <>
-                <div className="mb-1 mt-2.5 text-[9px] text-muted-foreground/70">
-                  {t("sessionPanels.hub.groupResidents", "常驻挂件 · 点击定位")}
-                </div>
-                <div className="grid grid-cols-4 gap-1.5">
-                  {residentEntries.map((entry) => {
-                    const Icon = pluginIconOf(entry.id);
-                    return (
-                      <button
-                        key={entry.id}
-                        type="button"
-                        title={t("sessionPanels.hub.locateHint", "{{name}}（常驻——点击高亮定位；右键挂件可停用/设置）", { name: entry.title })}
-                        onClick={() => {
-                          requestInstallSpotlight(entry.id);
-                          setHubOpen(false);
-                        }}
-                        className="flex h-14 flex-col items-center justify-center gap-1 rounded-lg border border-border/40 px-0.5 text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-                      >
-                        <Icon className="h-3.5 w-3.5" />
-                        <span className="text-[9px] font-medium leading-tight whitespace-nowrap">{entry.title}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </>
-            ) : null}
-            {/* 批次5：底部管理入口（管理面唯一开关口径的导航闭环）。 */}
+            {/* 批次5：底部管理入口（管理面唯一开关口径的导航闭环；十九轮：跳转
+                目标修复——chat→manage 条件挂载时序下 tab 落默认页，见 app-nav）。 */}
             <div className="mt-2.5 flex items-center justify-between border-t border-border/50 pt-2">
               <span className="text-[9px] text-muted-foreground/60">
-                {panels.length + sidebarEntries.length} {t("sessionPanels.hub.panelCount", "面板")} · {residentEntries.length} {t("sessionPanels.hub.widgetCount", "挂件")}
+                {panels.length + sidebarEntries.length} {t("sessionPanels.hub.panelCount", "面板")}
               </span>
               <button
                 type="button"

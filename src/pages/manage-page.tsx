@@ -23,8 +23,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 // 批次5（v0.9.5 需求1 GUI 改造）：会话区 → 管理页导航事件。
-import { onManageNav } from "@/lib/app-nav";
 import type { AgentConfigSection, ManageTab, Project, ProjectMeta } from "@/types";
+import { consumePendingManageNav, onManageNav } from "@/lib/app-nav";
 import { OnboardingWizard } from "@/pages/onboarding-wizard";
 
 interface ManagePageProps {
@@ -112,9 +112,15 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigat
 
   // 批次5（v0.9.5 需求1 GUI 改造）：会话区入口导航事件（能力中心「管理
   // 插件…」/挂件右键「在插件中心设置」）→ 切到目标 tab。
-  useEffect(() => onManageNav((detail) => {
-    if (detail.tab) setActiveTab(detail.tab as ManageTab);
-  }), []);
+  // 十九轮修复：chat→manage 条件挂载下事件先于本页挂载——挂载时补消费
+  // 最近一次请求（否则 tab 落默认「项目管理」，能力中心跳转页面不对）。
+  useEffect(() => {
+    const pending = consumePendingManageNav();
+    if (pending?.tab) setActiveTab(pending.tab as ManageTab);
+    return onManageNav((detail) => {
+      if (detail.tab) setActiveTab(detail.tab as ManageTab);
+    });
+  }, []);
 
   useEffect(() => {
     if (navigateToProjects && navigateToProjects !== prevNavRef.current) {

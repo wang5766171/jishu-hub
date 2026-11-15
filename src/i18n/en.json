@@ -1559,10 +1559,7 @@
     "hub": {
       "title": "Capability Hub",
       "groupPanels": "Panels · click to toggle",
-      "groupResidents": "Widgets · click to locate",
-      "locateHint": "{{name}} (resident — click to highlight; right-click widget to disable/configure)",
       "panelCount": "panels",
-      "widgetCount": "widgets",
       "manage": "Manage plugins…"
     },
     "collapse": "Collapse to capsule",
