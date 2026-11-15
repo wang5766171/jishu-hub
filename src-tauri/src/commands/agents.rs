@@ -493,11 +493,17 @@ pub(crate) fn hybrid_preview_write(source: String) -> Result<String, String> {
 }
 
 /// v0.9.3 需求13 C3：删除用户组合插件（内置拒绝）并广播。
+/// 用户实测补修（2026-11-15「删除后卡片残留」）：补 rebuild_registry——
+/// 修前只删盘+emit，registry 仍含已删件，插件页 refresh 读旧数据卡片
+/// 不消失（plugin_remove 同位置有 rebuild，本命令漏配对）。
 #[tauri::command]
-pub(crate) fn composed_plugin_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {
+pub(crate) fn composed_plugin_delete(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
+    id: String,
+) -> Result<(), String> {
     agent::plugin::delete_composed_plugin(&id)?;
-    use tauri::Emitter;
-    let _ = app.emit("plugins-changed", ());
+    rebuild_registry(&app, &state);
     Ok(())
 }
 

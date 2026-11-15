@@ -1136,12 +1136,24 @@ export function PluginsPage({
                   aria-label={tr("plugins.remove", "卸载")}
                   onClick={() => {
                     if (plugin.composed) {
+                      // 用户实测补修（2026-11-15）：补确认弹窗——修前组合件
+                      // 卸载静默直删（「点击没反应」观感），与 A 家族
+                      // handleRemove 的 destructive 确认交互对齐；失败显性
+                      // 弹窗（修前只 console.warn）。
                       void (async () => {
+                        const ok = await confirmDialog({
+                          title: t("plugins.removeTitle", { name: plugin.display_name }),
+                          description: t("plugins.removeDesc"),
+                          confirmText: t("plugins.removeConfirm"),
+                          variant: "destructive",
+                        });
+                        if (!ok) return;
                         try {
                           await invokeCommand("composed_plugin_delete", { id: plugin.id });
                           await refresh();
                         } catch (e) {
                           console.warn("composed_plugin_delete failed:", e);
+                          void alertDialog({ title: t("plugins.actionFailed", "操作失败"), description: String(e) });
                         }
                       })();
                       return;
