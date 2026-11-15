@@ -37,12 +37,15 @@ export type CreateEntryChoice =
 export type SessionPluginFace = "panel" | "widget" | "render" | "action";
 
 /** 分类卡（v0.9.7 需求3 五类口径：自建智能体暂不支持——用户裁决 2026-11-14，
- * 智能体卡撤除，此类意图并入自定义模板；核心引擎不在创建面）。 */
+ * 智能体卡撤除，此类意图并入自定义模板；核心引擎不在创建面）。
+ * 第五轮评审 P2-1：副标题此前硬编码中文（英文态泄漏）——i18n 化，
+ * descKey/descFallback 双轨与标题同款。 */
 const CATEGORY_CARDS: Array<{
   key: string;
   icon: typeof Bot;
   titleKey: string;
   titleFallback: string;
+  descKey: string;
   descFallback: string;
   template: string;
 }> = [
@@ -51,6 +54,7 @@ const CATEGORY_CARDS: Array<{
     icon: LayoutDashboard,
     titleKey: "plugins.catSession",
     titleFallback: "会话能力",
+    descKey: "plugins.catSessionDesc",
     descFallback: "面板 / 挂件 / 会话内渲染与交互",
     template: "我想创建一个会话能力插件（面板/挂件/会话内渲染），需求是：",
   },
@@ -59,6 +63,7 @@ const CATEGORY_CARDS: Array<{
     icon: Terminal,
     titleKey: "plugins.typeMcp",
     titleFallback: "MCP",
+    descKey: "plugins.typeMcpDesc",
     descFallback: "注册 MCP 服务（结构化外部能力）",
     template: "我想注册一个 MCP 服务插件（数据库/API/内部系统等结构化能力）。",
   },
@@ -67,6 +72,7 @@ const CATEGORY_CARDS: Array<{
     icon: FileCode2,
     titleKey: "plugins.typeSkill",
     titleFallback: "skill 工具",
+    descKey: "plugins.typeSkillDesc",
     descFallback: "把可复用流程固化成技能",
     template: "我想创建一个 skill 工具插件（把可复用流程固化成技能），流程是：",
   },
@@ -75,6 +81,7 @@ const CATEGORY_CARDS: Array<{
     icon: Wrench,
     titleKey: "plugins.typeCli",
     titleFallback: "CLI 工具",
+    descKey: "plugins.typeCliDesc",
     descFallback: "命令行能力单元",
     template: "我想创建一个 CLI 工具插件（命令行能力），功能是：",
   },
@@ -83,6 +90,7 @@ const CATEGORY_CARDS: Array<{
     icon: Code2,
     titleKey: "plugins.catCustom",
     titleFallback: "自定义插件",
+    descKey: "plugins.catCustomDesc",
     descFallback: "自由形态（含流水线/菜单入口）",
     template: "我想创建一个自定义插件（形态不限，可以是流水线或菜单入口），需求是：",
   },
@@ -91,22 +99,57 @@ const CATEGORY_CARDS: Array<{
     icon: Palette,
     titleKey: "plugins.catAppearance",
     titleFallback: "外观",
+    descKey: "plugins.catAppearanceDesc",
     descFallback: "主题 / 配色 / 聊天背景",
     template: "我想创建一个外观主题插件（配色/聊天背景）。",
   },
 ];
 
-/** 手动向导快捷入口（次要——特殊按钮）。 */
+/** 手动向导快捷入口（次要——特殊按钮）。第五轮评审 P2-1：整块硬编码
+ * 中文——i18n 化（专用短键 wiz.entryWizards.*，与向导页自身的长标题键
+ * 分开——入口卡要的是一行短文案）。 */
 const MANUAL_WIZARDS: Array<{
   kind: CreateEntryChoice["kind"];
-  label: string;
-  desc: string;
+  labelKey: string;
+  labelFallback: string;
+  descKey: string;
+  descFallback: string;
 }> = [
-  { kind: "theme-wizard", label: "主题向导", desc: "可视化调色板" },
-  { kind: "session-composed", label: "组合式向导", desc: "TOML 清单零代码" },
-  { kind: "hybrid-guide", label: "混合代码向导", desc: "component.js 自定义" },
-  { kind: "pipeline-guide", label: "流水线向导", desc: "多阶段编排" },
-  { kind: "agent-tool", label: "智能体向导", desc: "agents 清单" },
+  {
+    kind: "theme-wizard",
+    labelKey: "plugins.wiz.entryWizards.theme",
+    labelFallback: "主题向导",
+    descKey: "plugins.wiz.entryWizards.themeDesc",
+    descFallback: "可视化调色板",
+  },
+  {
+    kind: "session-composed",
+    labelKey: "plugins.wiz.entryWizards.composed",
+    labelFallback: "组合式向导",
+    descKey: "plugins.wiz.entryWizards.composedDesc",
+    descFallback: "TOML 清单零代码",
+  },
+  {
+    kind: "hybrid-guide",
+    labelKey: "plugins.wiz.entryWizards.hybrid",
+    labelFallback: "混合代码向导",
+    descKey: "plugins.wiz.entryWizards.hybridDesc",
+    descFallback: "component.js 自定义",
+  },
+  {
+    kind: "pipeline-guide",
+    labelKey: "plugins.wiz.entryWizards.pipeline",
+    labelFallback: "流水线向导",
+    descKey: "plugins.wiz.entryWizards.pipelineDesc",
+    descFallback: "多阶段编排",
+  },
+  {
+    kind: "agent-tool",
+    labelKey: "plugins.wiz.entryWizards.agent",
+    labelFallback: "智能体向导",
+    descKey: "plugins.wiz.entryWizards.agentDesc",
+    descFallback: "agents 清单",
+  },
 ];
 
 export function PluginCreateEntry({
@@ -165,7 +208,7 @@ export function PluginCreateEntry({
                 <c.icon className="h-4.5 w-4.5 text-primary" />
               </div>
               <span className="text-[13px] font-medium text-foreground">{t(c.titleKey, c.titleFallback)}</span>
-              <span className="text-[11px] leading-snug text-muted-foreground">{c.descFallback}</span>
+              <span className="text-[11px] leading-snug text-muted-foreground">{t(c.descKey, c.descFallback)}</span>
             </button>
           ))}
         </div>
@@ -184,7 +227,10 @@ export function PluginCreateEntry({
               onKeyDown={(e) => {
                 if (e.key === "Enter") goChat(describeText);
               }}
-              placeholder="如：帮我做个倒计时挂件 / 每轮结束显示花销 / 接入我们的内部 API"
+              placeholder={t(
+                "plugins.entryDescribePh",
+                "如：帮我做个倒计时挂件 / 每轮结束显示花销 / 接入我们的内部 API",
+              )}
             />
             <button
               type="button"
@@ -225,8 +271,8 @@ export function PluginCreateEntry({
                   }}
                   className="flex flex-col items-start rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-left transition-colors hover:border-primary/40"
                 >
-                  <span className="text-xs font-medium text-foreground">{w.label}</span>
-                  <span className="text-[10px] text-muted-foreground">{w.desc}</span>
+                  <span className="text-xs font-medium text-foreground">{t(w.labelKey, w.labelFallback)}</span>
+                  <span className="text-[10px] text-muted-foreground">{t(w.descKey, w.descFallback)}</span>
                 </button>
               ))}
             </div>

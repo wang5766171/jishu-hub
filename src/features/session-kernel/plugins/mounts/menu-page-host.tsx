@@ -22,7 +22,10 @@ export function MenuPageHost({ ctx }: { ctx: SessionKernelContext }) {
 
   useEffect(() => {
     if (!req) return;
-    setOpenId(req.pluginId === "__close__" ? null : req.pluginId);
+    // 第五轮评审 P2-8：此前的 `__close__` 哨兵分支随 requestMenuPageClose
+    // 死代码删除后不可能再出现在该通道上（关闭走 setOpenId(null) 本地态；
+    // panel-activation 的 __close__ 是另一条通道）——直取插件 id。
+    setOpenId(req.pluginId);
     consumeMenuPage();
   }, [req]);
 

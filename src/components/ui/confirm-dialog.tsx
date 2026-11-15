@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Dialog,
   DialogContent,
@@ -54,6 +55,10 @@ const INITIAL: DialogState = { open: false, mode: "confirm", title: "" };
  */
 export function useConfirmDialog() {
   const [state, setState] = useState<DialogState>(INITIAL);
+  // 第五轮评审 P2-2：三个按钮默认值此前硬编码中文（取消/确定/知道了）——
+  // 不传文案的调用方（组合件卸载确认等）英文态全部泄漏中文。默认值统一
+  // 走 i18n（common.cancel/common.confirm/common.gotIt 双侧登记）。
+  const { t } = useTranslation();
 
   const close = useCallback((ok: boolean) => {
     setState((prev) => {
@@ -97,7 +102,7 @@ export function useConfirmDialog() {
         <DialogFooter>
           {state.mode === "confirm" && (
             <Button variant="outline" onClick={() => close(false)}>
-              {state.cancelText ?? "取消"}
+              {state.cancelText ?? t("common.cancel", "取消")}
             </Button>
           )}
           <Button
@@ -105,8 +110,8 @@ export function useConfirmDialog() {
             onClick={() => close(true)}
           >
             {state.mode === "alert"
-              ? (state.closeText ?? "知道了")
-              : (state.confirmText ?? "确定")}
+              ? (state.closeText ?? t("common.gotIt", "知道了"))
+              : (state.confirmText ?? t("common.confirm", "确定"))}
           </Button>
         </DialogFooter>
       </DialogContent>
