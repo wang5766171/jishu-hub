@@ -198,7 +198,13 @@ function categoryOf(p: PluginDescriptor): PluginCategory {
   // 件）**不**因此进核心引擎——按兜底规则留自定义（归属只增加智能体，
   // 其他不变）。
   if (p.kind === "builtin" || p.core) return "core";
-  if (p.kind === "session") return implKindOf(p) === "builtin" ? "core" : "custom";
+  // 十八轮：session 件核心引擎归属直查 descriptor（TS 内置组件
+  // source=builtin 归核心引擎，三轮裁决口径不变）——原经 implKindOf
+  // 中转在新实现下成环（implKindOf 判核心引擎卡又调 categoryOf）。
+  if (p.kind === "session") {
+    const d = listSessionPlugins().find((x) => x.id === p.id);
+    return d?.source === "builtin" ? "core" : "custom";
+  }
   if (p.kind === "tool") {
     if (p.has_mcp) return "mcp";
     if (p.has_skill) return "skill";
@@ -215,41 +221,44 @@ function categoryOf(p: PluginDescriptor): PluginCategory {
  * 其余（tool/manifest 声明式清单）→ 配置。十七轮⑥：市场安装件加值
  * 「市场安装」（市场台账在册——其构建方式对用户无意义，与内置件「内置」
  * 同口径，判定见 implOfCard）。 */
-type ImplKind = "config" | "code" | "builtin" | "combo" | "market";
+type ImplKind = "config" | "code" | "combo";
 
-function implKindOf(p: PluginDescriptor): ImplKind {
+function implKindOf(p: PluginDescriptor): ImplKind | null {
+  // 十八轮裁决（2026-11-15）：实现回归纯语义——配置实现/混合实现（涉及
+  // 代码即混合：@file: 组件 / [pi_extension] 扩展部署 / 流水线+渲染臂）；
+  // 「内置/市场安装」移来源维度（sourceOf），十七轮④⑥的实现值作废。
+  // 核心引擎卡（引擎本体）无实现方式语义——不标徽章不参与实现筛选
+  //（十轮先例：无该维度留空不硬凑）。
+  if (categoryOf(p) === "core") return null;
   if (p.kind === "session") {
     const d = listSessionPlugins().find((x) => x.id === p.id);
     if (!d) return "config";
-    return d.source === "builtin" ? "builtin" : d.implKind ?? "config";
+    // descriptor.implKind 客观标记构成（code=@file 组件）——展示口径按
+    // 十八轮「涉及代码即混合」归 combo（engine 标记保持，消费侧映射）。
+    if (d.implKind === "code" || d.implKind === "combo") return "combo";
+    return "config";
   }
-  // 十七轮④：内置智能体（kind=builtin）随包分发，实现维度同 core/system
-  // 件归「内置」——修前走兜底 config 被标「配置实现」。
-  if (p.kind === "builtin" || p.core || p.system) return "builtin";
+  // tool 家族：部署 [pi_extension] 扩展 ts（带代码文件）→ 混合实现；
+  // MCP/Skill/CLI 声明清单（纯配置）→ 配置实现。
+  if (p.has_pi_extension) return "combo";
   return "config";
 }
 
-/** v0.9.7 需求3 标签三类体系（2026-11-14 裁决）——身份·实现方式·形态。
- * 身份四值：市场台账在册 → 市场安装；核心引擎 tab 成员 → 核心引擎；
- * 系统随包件 → 内置插件；其余用户件 → 自建。 */
+/** 十八轮裁决（2026-11-15）：身份维度瘦身——原四值中内置插件/市场安装/
+ * 自建三值是来源语义，迁至 SOURCE_BADGE/sourceOf；身份仅保留「核心引擎」
+ * 专属徽章（核心引擎 tab 成员）。inMarketLedger 参数保留签名兼容，判定
+ * 已由 sourceOf 承担。 */
 function identityOf(
   p: PluginDescriptor,
-  inMarketLedger: boolean,
-): "core" | "builtin" | "market" | "custom" {
-  if (inMarketLedger) return "market";
+  _inMarketLedger: boolean,
+): "core" | "custom" {
   if (categoryOf(p) === "core") return "core";
-  if (p.system) return "builtin";
   return "custom";
 }
 
-const IDENTITY_BADGE: Record<
-  "core" | "builtin" | "market" | "custom",
-  { key: string; fallback: string; cls: string }
-> = {
+/** 身份徽章（十八轮瘦身）：仅核心引擎专属值——其余原值归 SOURCE_BADGE。 */
+const IDENTITY_BADGE: Record<"core", { key: string; fallback: string; cls: string }> = {
   core: { key: "plugins.identityCore", fallback: "核心引擎", cls: "border-primary/40 bg-primary/10 text-primary" },
-  builtin: { key: "plugins.identityBuiltin", fallback: "内置插件", cls: "border-border/60 text-muted-foreground" },
-  market: { key: "plugins.identityMarket", fallback: "市场安装", cls: "border-primary/40 text-primary" },
-  custom: { key: "plugins.identityCustom", fallback: "自建", cls: "border-emerald-500/40 text-emerald-600" },
 };
 
 /** 形态九类 + 主题/无 UI 两兜底（v0.9.7 需求3 十六轮用户裁决：**形态 =
@@ -311,14 +320,49 @@ const FORM_BADGE: Record<FormValue, { key: string; fallback: string }> = {
   none: { key: "plugins.formNone", fallback: "无 UI 呈现" },
 };
 
-/** 实现徽标（颜色对应 v3 原型：绿配置/紫代码/灰内置/橙组合/蓝市场）。 */
+/** 实现徽标（十八轮裁决：纯实现语义——绿配置/紫代码/橙混合；code 值
+ * 保留枚举但当前无产出件（@file 组件按「涉及代码即混合」归 combo），
+ * 筛选 chips 只列有徽章的值（一一对应）。 */
 const IMPL_BADGE: Record<ImplKind, { key: string; fallback: string; cls: string }> = {
   config: { key: "plugins.implConfig", fallback: "配置实现", cls: "border-emerald-500/40 text-emerald-600" },
   code: { key: "plugins.implCode", fallback: "代码实现", cls: "border-fuchsia-500/40 text-fuchsia-600" },
-  builtin: { key: "plugins.implBuiltin", fallback: "内置", cls: "border-slate-400/40 text-slate-500" },
   combo: { key: "plugins.implCombo", fallback: "混合实现", cls: "border-amber-500/40 text-amber-600" },
-  market: { key: "plugins.implMarket", fallback: "市场安装", cls: "border-primary/40 text-primary" },
 };
+
+/** 来源（十八轮裁决 2026-11-15：内置/自建/市场安装从实现摘出独立成维——
+ * 「这种属于来源」；原身份徽章三值迁移至此，核心引擎徽章单独保留）。
+ * 来源筛选排在实现后面。 */
+type SourceValue = "builtin" | "custom" | "market";
+const SOURCE_BADGE: Record<SourceValue, { key: string; fallback: string; cls: string }> = {
+  builtin: { key: "plugins.identityBuiltin", fallback: "内置", cls: "border-border/60 text-muted-foreground" },
+  custom: { key: "plugins.identityCustom", fallback: "自建", cls: "border-emerald-500/40 text-emerald-600" },
+  market: { key: "plugins.identityMarket", fallback: "市场安装", cls: "border-primary/40 text-primary" },
+};
+
+/** hub 随包分发但 plugin_list 无 system/core 标记的补充表（实测口径
+ * 2026-11-15）——mermaid（组合件物化副本不带 system 标记）与
+ * html-preview/interactive-qa（pi_extension 闸门件）。用户裁决：「系统
+ * 自带的就叫内置」。新随包件应在此登记或补 system 标记。 */
+const HUB_SHIPPED_EXTRA: ReadonlySet<string> = new Set([
+  "session.mermaid-render",
+  "html-preview",
+  "interactive-qa",
+]);
+
+/** 来源判定（十八轮）：市场台账 → 市场安装；系统自带（system/core 标记、
+ * 引擎 kind=builtin、session TS 内置组件 source=builtin、随包补充表）
+ * → 内置；其余 → 自建。 */
+function sourceOf(p: PluginDescriptor, inMarketLedger: boolean): SourceValue {
+  if (inMarketLedger) return "market";
+  if (p.kind === "builtin" || p.core || p.system || HUB_SHIPPED_EXTRA.has(p.id)) {
+    return "builtin";
+  }
+  if (p.kind === "session") {
+    const d = listSessionPlugins().find((x) => x.id === p.id);
+    if (d?.source === "builtin") return "builtin";
+  }
+  return "custom";
+}
 
 /** v0.9.3 需求11：分类改横向 tab（顺序按用户口径，智能体置首）。 */
 // v0.9.7 需求3（2026-11-14 用户裁决）：分类五类——核心引擎（含智能体与
@@ -412,10 +456,9 @@ export function PluginsPage({
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updateBusy, setUpdateBusy] = useState<string | null>(null);
   const batchUpdates = useMarketUpdates();
-  /** 十七轮⑥：实现徽章/筛选的市场感知判定——市场台账在册 → 「市场安装」
-   *（构建方式对用户无意义，与内置件「内置」同口径）；其余走 implKindOf。 */
-  const implOfCard = (p: PluginDescriptor): ImplKind =>
-    identityOf(p, !!skillLedger[p.id]) === "market" ? "market" : implKindOf(p);
+  /** 实现徽章/筛选判定（十八轮：市场感知移除——「市场安装」归来源维度
+   * sourceOf；实现=纯实现语义，核心引擎卡返回 null 不参与）。 */
+  const implOfCard = (p: PluginDescriptor): ImplKind | null => implKindOf(p);
   /** 单卡检查更新结果并入全局更新状态（十二轮裁决：全部检查与单独检查
    * 联动——单查结果即时反映到版本箭头/全部更新按钮可见性）。 */
   const mergeExtUpdate = (status: ExtensionUpdateStatus) =>
@@ -643,17 +686,20 @@ export function PluginsPage({
   };
   // 批次2：实现维度筛选（与业务 tab 正交——双视角管理，v3 双维度设计）。
   // v0.9.7 需求3 二版（2026-11-14 裁决「检索标签对应」）：实现筛选与实现
-  // 徽章一一对应。十七轮④：内置件恢复实现徽章，「内置」chip 同步回归
-  //（十轮删它是因当时无卡有此徽章——现在全卡展示，四值对应）。
+  // 徽章一一对应。十八轮：实现回归纯语义（配置/混合；code 当前无产出件
+  // 不放 chip），「内置/市场安装」chip 移除（归来源组）。
   type ImplFilter = ImplKind | "all";
   const [implFilter, setImplFilter] = useState<ImplFilter>("all");
+  // 十八轮裁决（2026-11-15）：来源筛选——内置/自建/市场安装（「这种属于
+  // 来源」），新增组排在实现后面、形态前面；与来源徽章一一对应。
+  const [sourceFilter, setSourceFilter] = useState<SourceValue | "all">("all");
   // v0.9.7 需求3 十六轮（用户裁决）：形态筛选——九类挂载位+两兜底全量，
   // 与形态徽章一一对应（五值合并口径作废）。
   const [formFilter, setFormFilter] = useState<FormValue | "all">("all");
-  // 十七轮：两筛选维度均「全部」才显示不参与筛选的专属区块（开发日志
-  // 虚拟卡/原生 MCP 区/扩展包卡）——它们无形态/实现徽章（与「筛选与徽章
-  // 一一对应」裁决一致），筛选激活时挂着不动会被误读为命中。
-  const filtersIdle = implFilter === "all" && formFilter === "all";
+  // 十七轮：各筛选维度均「全部」才显示不参与筛选的专属区块（开发日志
+  // 虚拟卡/原生 MCP 区/扩展包卡）——它们无形态/实现/来源徽章（与「筛选
+  // 与徽章一一对应」裁决一致），筛选激活时挂着不动会被误读为命中。
+  const filtersIdle = implFilter === "all" && sourceFilter === "all" && formFilter === "all";
   // 需求14 M4（G8 搜索）：跨分类搜索（id/名称/描述/路径/接管语言集命中）；
   // 非空时网格展示全库命中项（忽略当前 tab），实现维度筛选仍叠加。
   const [search, setSearch] = useState("");
@@ -805,11 +851,12 @@ export function PluginsPage({
                   {tr("plugins.pendingBadge", "待确认")}
                 </Badge>
               )}
-              {/* v0.9.7 需求3 标签三类体系（2026-11-14 裁决；十七轮④实现
-                  徽章全卡展示）：身份四值 → 实现方式四值 → 插件形态（显式声明优先/
-                  挂载位推导/无 UI 呈现兜底）；样式按类统一。 */}
-              {(() => {
-                const identity = IDENTITY_BADGE[identityOf(plugin, !!skillLedger[plugin.id])];
+              {/* v0.9.7 需求3 标签体系（十轮立三类 → 十八轮裁决 2026-11-15
+                  定四类拆分）：核心引擎专属徽章 → 来源（内置/自建/市场安装，
+                  从实现摘出独立成维）→ 实现方式（配置/混合；核心引擎卡无此
+                  维度不硬凑）→ 插件形态（显式声明优先/挂载位推导/无 UI 兜底）。 */}
+              {identityOf(plugin, !!skillLedger[plugin.id]) === "core" && (() => {
+                const identity = IDENTITY_BADGE.core;
                 return (
                   <Badge variant="outline" className={cn("px-1 py-0 text-[9px]", identity.cls)}>
                     {tr(identity.key, identity.fallback)}
@@ -817,12 +864,19 @@ export function PluginsPage({
                 );
               })()}
               {(() => {
-                // 十七轮④（用户裁决「每张卡按三类各给标签」）：实现徽章
-                // 全卡展示——此前「内置件不标」收窄作废；内置件灰「内置」
-                // 徽章（implKindOf 对 core/system 恒 builtin），筛选同步恢复
-                // 「内置」chip（筛选与徽章一一对应）。十七轮⑥：市场安装件
-                //（台账在册）→「市场安装」（implOfCard 市场感知判定）。
-                const b = IMPL_BADGE[implOfCard(plugin)];
+                const src = SOURCE_BADGE[sourceOf(plugin, !!skillLedger[plugin.id])];
+                return (
+                  <Badge variant="outline" className={cn("px-1 py-0 text-[9px]", src.cls)}>
+                    {tr(src.key, src.fallback)}
+                  </Badge>
+                );
+              })()}
+              {(() => {
+                // 十八轮裁决：实现=纯实现语义（涉及代码即混合实现）；
+                // implKindOf 对核心引擎卡返回 null——不标徽章不参与实现筛选。
+                const impl = implOfCard(plugin);
+                if (!impl) return null;
+                const b = IMPL_BADGE[impl];
                 return (
                   <Badge variant="outline" className={cn("px-1 py-0 text-[9px]", b.cls)}>
                     {tr(b.key, b.fallback)}
@@ -1153,7 +1207,7 @@ export function PluginsPage({
             <Package className="h-4 w-4 shrink-0 text-primary/70" />
             <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium" title={pkg}>{pkg}</span>
             {pin ? (
-              <Badge variant="secondary" className="shrink-0 px-1 py-0 text-[9px]">{tr("plugins.implBuiltin", "内置")}</Badge>
+              <Badge variant="secondary" className="shrink-0 px-1 py-0 text-[9px]">{tr("plugins.identityBuiltin", "内置")}</Badge>
             ) : (
               <Badge variant="outline" className="shrink-0 border-primary/40 px-1 py-0 text-[9px] text-primary">
                 {tr("plugins.badgeMarket", "市场安装")}
@@ -1504,18 +1558,16 @@ export function PluginsPage({
       {/* 工具行（十四轮 UI 统一）：筛选 chips 在左、搜索框恒最右（跨分类
           搜索——非空时网格展示全库命中，忽略 tab）。 */}
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
-        {/* 筛选维度分组（十二轮样式优化；十七轮：维度标题与选项绑成不折行
-            小组——窄窗口换行时整组下移，标题不再与选项分家两行）。标题弱化
-            底色胶囊、选项保持描边 chips，组间竖分隔线。实现方式（与实现徽章
-            四值对应，十七轮「内置」回归）｜形态（九类挂载位+两兜底，与形态徽章
-            一一对应）。 */}
+        {/* 筛选维度分组（十二轮样式优化；十七轮小组不折行；十八轮四组：
+            实现（配置/混合——code 无产出件不放 chip，内置/市场安装移来源组）
+            → 来源（内置/自建/市场安装，新增组排实现后）→ 形态（九类+两兜底）。 */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[10px]">
           <div className="flex items-center gap-1.5">
             <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-medium text-muted-foreground">
               {tr("plugins.implFilterLabel", "实现")}
             </span>
             <div className="flex items-center gap-1">
-              {(["all", "config", "code", "combo", "builtin", "market"] as const).map((k) => (
+              {(["all", "config", "combo"] as const).map((k) => (
                 <button
                   key={k}
                   type="button"
@@ -1528,6 +1580,30 @@ export function PluginsPage({
                   )}
                 >
                   {k === "all" ? tr("plugins.implAll", "全部") : tr(IMPL_BADGE[k].key, IMPL_BADGE[k].fallback)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="h-3.5 w-px bg-border/70" />
+          {/* 十八轮新增：来源筛选（内置/自建/市场安装）——排在实现后面。 */}
+          <div className="flex items-center gap-1.5">
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-medium text-muted-foreground">
+              {tr("plugins.sourceFilterLabel", "来源")}
+            </span>
+            <div className="flex items-center gap-1">
+              {(["all", "builtin", "custom", "market"] as const).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setSourceFilter(k)}
+                  className={cn(
+                    "shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 transition-colors",
+                    sourceFilter === k
+                      ? "border-primary/60 bg-primary/10 text-primary"
+                      : "border-border/60 text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {k === "all" ? tr("plugins.sourceAll", "全部") : tr(SOURCE_BADGE[k].key, SOURCE_BADGE[k].fallback)}
                 </button>
               ))}
             </div>
@@ -1690,8 +1766,10 @@ export function PluginsPage({
           .filter((x) =>
             search.trim()
               ? matchesSearch(x) && (implFilter === "all" || implOfCard(x) === implFilter)
+                  && (sourceFilter === "all" || sourceOf(x, !!skillLedger[x.id]) === sourceFilter)
                   && (formFilter === "all" || formOf(x) === formFilter)
               : categoryOf(x) === activeTab && (implFilter === "all" || implOfCard(x) === implFilter)
+                  && (sourceFilter === "all" || sourceOf(x, !!skillLedger[x.id]) === sourceFilter)
                   && (formFilter === "all" || formOf(x) === formFilter),
           )
           .map((plugin) => renderCard(plugin))}
@@ -1699,8 +1777,10 @@ export function PluginsPage({
       {(result?.plugins ?? []).filter((x) =>
         search.trim()
           ? matchesSearch(x) && (implFilter === "all" || implOfCard(x) === implFilter)
+              && (sourceFilter === "all" || sourceOf(x, !!skillLedger[x.id]) === sourceFilter)
               && (formFilter === "all" || formOf(x) === formFilter)
           : categoryOf(x) === activeTab && (implFilter === "all" || implOfCard(x) === implFilter)
+              && (sourceFilter === "all" || sourceOf(x, !!skillLedger[x.id]) === sourceFilter)
               && (formFilter === "all" || formOf(x) === formFilter),
       ).length === 0 &&
         // v0.9.7 第三轮评审修复 P1-4：空态误判——旧条件把「装过扩展包」
