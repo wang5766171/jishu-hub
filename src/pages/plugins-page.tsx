@@ -28,6 +28,7 @@ import { PluginMarketPanel } from "./plugin-market";
 import { marketUpdateFailures, startExtensionUpdateAll, startSkillUpdateAll, updatesPending, useMarketUpdates, type ExtensionUpdateStatus, type SkillUpdateStatus } from "./plugin-market-updates";
 import { MarketSearchBox } from "./plugin-market";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
+import { isPluginForm, PLUGIN_FORM_VALUES, type PluginForm } from "./plugin-wizard-utils";
 import { composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
 import { Info, Settings2, FileCode2, LayoutGrid, Pin, Bell, MousePointerClick, Palette, Layers, Rocket, Wrench } from "lucide-react";
 import {
@@ -124,18 +125,36 @@ const MOUNT_FACE_ICONS: Record<string, { icon: typeof LayoutGrid; label: string 
 };
 
 /** 需求7 修1c：呈现位标签（文字化——用户看得懂「在哪用」，不再只悬停图标）。
- * 图标 + 短词并排；流水线并入自定义分类后仍标注其形态。 */
-function MountFaces({ pluginId }: { pluginId: string }) {
+ * 十七轮⑤：与形态徽章去重——主形态挂载位已由形态徽章承载（十六轮起
+ * 挂载位即形态），此处只列**次挂载**（多挂载件的其余呈现位，如产物中心
+ * = 侧边栏面板(主) + 事件钩子(次)）；文案统一形态徽章词表（同物同名），
+ * pipeline 声明非挂载位，保留「流程」标注。 */
+function MountFaces({ pluginId, primary }: { pluginId: string; primary: FormValue }) {
+  const { t } = useTranslation();
+  const tr = (key: string, fallback: string) => (t(key) === key ? fallback : t(key));
   const desc = listSessionPlugins().find((p) => p.id === pluginId);
-  const faces = [...new Set((desc?.mounts ?? []).map((m) => m.kind))];
+  const faces = [...new Set((desc?.mounts ?? []).map((m) => m.kind))]
+    // 主形态挂载排除（theme ↔ app-theme 语义对应——app-theme 不在
+    // PluginMount 联合但组合件运行时可能携带，字符串比较放宽；none/流水线
+    // 无对应挂载不排）。
+    .filter((k) => {
+      const mount = k as string;
+      return mount !== primary && !(primary === "theme" && mount === "app-theme");
+    });
   const pipeline = desc?.pipeline ? ["pipeline"] : [];
   const all = [...faces, ...pipeline];
   if (all.length === 0) return null;
   return (
     <span className="inline-flex flex-wrap items-center gap-1">
       {all.map((k) => {
-        const Icon = k === "pipeline" ? Rocket : MOUNT_FACE_ICONS[k]?.icon ?? LayoutGrid;
-        const label = k === "pipeline" ? "流程" : MOUNT_FACE_ICONS[k]?.label ?? k;
+        const mount = k as string;
+        const Icon = k === "pipeline" ? Rocket : MOUNT_FACE_ICONS[mount]?.icon ?? LayoutGrid;
+        const f = k === "pipeline" || mount === "app-theme" ? null : FORM_BADGE[k as FormValue];
+        const label =
+          k === "pipeline" ? "流程"
+          : mount === "app-theme" ? tr(FORM_BADGE.theme.key, FORM_BADGE.theme.fallback)
+          : f ? tr(f.key, f.fallback)
+          : mount;
         return (
           <span
             key={k}
@@ -185,8 +204,10 @@ function categoryOf(p: PluginDescriptor): PluginCategory {
 /** v0.9.5 需求1 GUI 改造 批次2：实现维度（双维度 X 轴）——业务 tab 之外的第二
  * 视角（怎么造的/能不能改）。会话插件看描述符（engine 装配标记 implKind；
  * source=builtin → 内置🔒只读）；非会话插件 core/system → 内置，
- * 其余（tool/manifest 声明式清单）→ 配置。 */
-type ImplKind = "config" | "code" | "builtin" | "combo";
+ * 其余（tool/manifest 声明式清单）→ 配置。十七轮⑥：市场安装件加值
+ * 「市场安装」（市场台账在册——其构建方式对用户无意义，与内置件「内置」
+ * 同口径，判定见 implOfCard）。 */
+type ImplKind = "config" | "code" | "builtin" | "combo" | "market";
 
 function implKindOf(p: PluginDescriptor): ImplKind {
   if (p.kind === "session") {
@@ -194,7 +215,9 @@ function implKindOf(p: PluginDescriptor): ImplKind {
     if (!d) return "config";
     return d.source === "builtin" ? "builtin" : d.implKind ?? "config";
   }
-  if (p.core || p.system) return "builtin";
+  // 十七轮④：内置智能体（kind=builtin）随包分发，实现维度同 core/system
+  // 件归「内置」——修前走兜底 config 被标「配置实现」。
+  if (p.kind === "builtin" || p.core || p.system) return "builtin";
   return "config";
 }
 
@@ -221,40 +244,21 @@ const IDENTITY_BADGE: Record<
   custom: { key: "plugins.identityCustom", fallback: "自建", cls: "border-emerald-500/40 text-emerald-600" },
 };
 
-/** 形态五值（v0.9.7 需求3 十一轮裁决）：会话/侧边栏/悬浮窗/主题外观/
- * 无 UI 呈现。 */
-type FormValue = "session" | "sidebar" | "floating" | "theme" | "none";
-
-/** 挂载位 → 形态推导映射（**代码审计全量 9 种挂载位 + 主题**，
- * 2026-11-14 十二轮）：dock-panel 是悬浮覆盖式停靠面板（与 sidebar-panel
- * 的挤压式相对——types.ts 文档语义），归悬浮窗。
- * block-renderer/tool-result-renderer/header-action = 会话内呈现；
- * rail-widget/composer-trailing/app-overlay = 悬浮/挂件；
- * event-hook 无 UI；app-theme = 主题外观；pipeline 为编排声明非 UI 形态
- * （其呈现由块渲染挂载覆盖），不单列。 */
-const MOUNT_FORM_MAP: Record<string, FormValue> = {
-  "block-renderer": "session",
-  "tool-result-renderer": "session",
-  "header-action": "session",
-  "sidebar-panel": "sidebar",
-  "dock-panel": "floating",
-  "rail-widget": "floating",
-  "composer-trailing": "floating",
-  "app-overlay": "floating",
-  "event-hook": "none",
-  "app-theme": "theme",
-};
+/** 形态九类 + 主题/无 UI 两兜底（v0.9.7 需求3 十六轮用户裁决：**形态 =
+ * 九类挂载位粒度**，十/十一轮的五值合并口径作废——标题栏动作、输入框尾
+ * 挂件等是独立形态，不得并入「会话」「悬浮窗」大桶）。枚举单一真源见
+ * plugin-wizard-utils（与后端 PLUGIN_FORM_VALUES 同集）。 */
+type FormValue = PluginForm;
 
 /** hub 随包件形态基表（存量已物化副本不走 resources 重部署——非必需件
  * 已物化不覆盖，此处一处真源覆盖全部已装副本；新创建件由显式 form 声明）。
- * 统一标签分析（2026-11-14）：会话内渲染卡/清单 = session；纯工具/技能/
- * 解析器底座 = none。 */
+ * 会话内渲染卡/清单 = block-renderer；纯工具/技能/解析器底座 = none。 */
 const HUB_FORMS: Record<string, FormValue> = {
-  "html-preview": "session", // 会话内 HTML 预览
-  "interactive-qa": "session", // 交互问答卡
-  "task-requirements": "session", // 需求澄清卡
-  "task-plan": "session", // 流程规划卡
-  "pi-todo": "session", // 待办清单（pi 会话内渲染）
+  "html-preview": "block-renderer", // 会话内 HTML 预览
+  "interactive-qa": "block-renderer", // 交互问答卡
+  "task-requirements": "block-renderer", // 需求澄清卡
+  "task-plan": "block-renderer", // 流程规划卡
+  "pi-todo": "block-renderer", // 待办清单（pi 会话内渲染）
   "jishu-subagent": "none",
   "pi-lens": "none",
   "pi-web-access": "none",
@@ -265,14 +269,11 @@ const HUB_FORMS: Record<string, FormValue> = {
   "skill-resolver": "none",
 };
 
-/** 形态判定链：显式 [info].form 声明 → hub 随包件基表 → 外观类声明
- *（category=appearance）→ 会话插件挂载位推导 → 统一「无 UI 呈现」。 */
+/** 形态判定链：显式 [info].form/[plugin].form 声明（九类+两兜底；旧五值
+ * 声明不入新集，走后续推导自动升级为挂载位粒度）→ hub 随包件基表 →
+ * 外观类声明（category=appearance）→ 会话插件挂载位推导 → 无 UI 呈现。 */
 function formOf(p: PluginDescriptor): FormValue {
-  const declared = p.form;
-  if (declared === "session" || declared === "sidebar" || declared === "floating"
-    || declared === "theme" || declared === "none") {
-    return declared;
-  }
+  if (isPluginForm(p.form)) return p.form;
   if (HUB_FORMS[p.id]) return HUB_FORMS[p.id];
   if (p.category === "appearance") return "theme";
   if (p.kind === "session") {
@@ -281,26 +282,34 @@ function formOf(p: PluginDescriptor): FormValue {
     ];
     // 多挂载位取**最有信息量**的形态——event-hook（无 UI）常与真实 UI 挂载
     // 并存（产物中心 = event-hook + sidebar-panel），首个命中会被无 UI 截胡。
-    const forms = mounts.map((m) => MOUNT_FORM_MAP[m]).filter(Boolean);
-    return forms.find((f) => f !== "none") ?? forms[0] ?? "none";
+    const ui = mounts.filter((m) => m !== "event-hook");
+    return ui[0] ?? mounts[0] ?? "none";
   }
   return "none";
 }
 
+/** 形态徽章（九类挂载位 + 主题外观 + 无 UI 呈现，十六轮全量口径）。 */
 const FORM_BADGE: Record<FormValue, { key: string; fallback: string }> = {
-  session: { key: "plugins.formSession", fallback: "会话" },
-  sidebar: { key: "plugins.formSidebar", fallback: "侧边栏" },
-  floating: { key: "plugins.formFloating", fallback: "悬浮窗" },
+  "block-renderer": { key: "plugins.formBlockRenderer", fallback: "会话内渲染" },
+  "tool-result-renderer": { key: "plugins.formToolResult", fallback: "工具结果渲染" },
+  "header-action": { key: "plugins.formHeaderAction", fallback: "标题栏动作" },
+  "sidebar-panel": { key: "plugins.formSidebarPanel", fallback: "侧边栏面板" },
+  "dock-panel": { key: "plugins.formDockPanel", fallback: "停靠面板" },
+  "rail-widget": { key: "plugins.formRailWidget", fallback: "贴边挂件" },
+  "composer-trailing": { key: "plugins.formComposerTrailing", fallback: "输入框尾挂件" },
+  "app-overlay": { key: "plugins.formAppOverlay", fallback: "应用浮层" },
+  "event-hook": { key: "plugins.formEventHook", fallback: "事件钩子" },
   theme: { key: "plugins.formTheme", fallback: "主题外观" },
   none: { key: "plugins.formNone", fallback: "无 UI 呈现" },
 };
 
-/** 实现徽标（颜色对应 v3 原型：绿配置/紫代码/灰内置/橙组合）。 */
+/** 实现徽标（颜色对应 v3 原型：绿配置/紫代码/灰内置/橙组合/蓝市场）。 */
 const IMPL_BADGE: Record<ImplKind, { key: string; fallback: string; cls: string }> = {
   config: { key: "plugins.implConfig", fallback: "配置实现", cls: "border-emerald-500/40 text-emerald-600" },
   code: { key: "plugins.implCode", fallback: "代码实现", cls: "border-fuchsia-500/40 text-fuchsia-600" },
   builtin: { key: "plugins.implBuiltin", fallback: "内置", cls: "border-slate-400/40 text-slate-500" },
   combo: { key: "plugins.implCombo", fallback: "混合实现", cls: "border-amber-500/40 text-amber-600" },
+  market: { key: "plugins.implMarket", fallback: "市场安装", cls: "border-primary/40 text-primary" },
 };
 
 /** v0.9.3 需求11：分类改横向 tab（顺序按用户口径，智能体置首）。 */
@@ -381,6 +390,9 @@ export function PluginsPage({
   // v0.9.7 需求3 已安装统一页（2026-11-14 裁决）：扩展包/市场技能的更新
   // 与还原数据面（市场「已安装」子页并入本页）。
   const [extInstalled, setExtInstalled] = useState<string[]>([]);
+  // 十七轮⑧：已装扩展实装版本（node_modules package.json——浮动安装/更新
+  // 后的真实版本；settings 源串 @version 是意图快照会陈旧/缺失）。
+  const [extVersions, setExtVersions] = useState<Record<string, string>>({});
   const [extPins, setExtPins] = useState<Array<{ source: string; package: string; version: string }>>([]);
   const [skillLedger, setSkillLedger] = useState<Record<string, string>>({});
   const [piindexMeta, setPiindexMeta] = useState<Array<{
@@ -392,6 +404,10 @@ export function PluginsPage({
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updateBusy, setUpdateBusy] = useState<string | null>(null);
   const batchUpdates = useMarketUpdates();
+  /** 十七轮⑥：实现徽章/筛选的市场感知判定——市场台账在册 → 「市场安装」
+   *（构建方式对用户无意义，与内置件「内置」同口径）；其余走 implKindOf。 */
+  const implOfCard = (p: PluginDescriptor): ImplKind =>
+    identityOf(p, !!skillLedger[p.id]) === "market" ? "market" : implKindOf(p);
   /** 单卡检查更新结果并入全局更新状态（十二轮裁决：全部检查与单独检查
    * 联动——单查结果即时反映到版本箭头/全部更新按钮可见性）。 */
   const mergeExtUpdate = (status: ExtensionUpdateStatus) =>
@@ -432,8 +448,9 @@ export function PluginsPage({
     }
     // 扩展包（pi 生态件）/技能台账/钉版快照/目录元数据（失败静默——
     // 各自独立展示位，不阻塞插件清单）。
-    const [sources, pins, ledger, piindex] = await Promise.all([
+    const [sources, versions, pins, ledger, piindex] = await Promise.all([
       invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
+      invokeCommand<Record<string, string>>("pi_package_installed_versions").catch(() => ({}) as Record<string, string>),
       invokeCommand<Array<{ source: string; package: string; version: string }>>("pi_package_builtin_pins").catch(() => []),
       invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>),
       invokeCommand<Array<{
@@ -442,6 +459,7 @@ export function PluginsPage({
       }>>("piindex_search", { keyword: null }).catch(() => null),
     ]);
     setExtInstalled(sources ?? []);
+    setExtVersions(versions ?? {});
     setExtPins(pins ?? []);
     setSkillLedger(ledger ?? {});
     setPiindexMeta(piindex ?? []);
@@ -617,11 +635,17 @@ export function PluginsPage({
   };
   // 批次2：实现维度筛选（与业务 tab 正交——双视角管理，v3 双维度设计）。
   // v0.9.7 需求3 二版（2026-11-14 裁决「检索标签对应」）：实现筛选与实现
-  // 徽章三值一一对应（内置件无实现徽章，不参与实现筛选）。
-  type ImplFilter = Exclude<ImplKind, "builtin"> | "all";
+  // 徽章一一对应。十七轮④：内置件恢复实现徽章，「内置」chip 同步回归
+  //（十轮删它是因当时无卡有此徽章——现在全卡展示，四值对应）。
+  type ImplFilter = ImplKind | "all";
   const [implFilter, setImplFilter] = useState<ImplFilter>("all");
-  // v0.9.7 需求3 十一轮（用户裁决）：形态筛选——与形态徽章五值一一对应。
+  // v0.9.7 需求3 十六轮（用户裁决）：形态筛选——九类挂载位+两兜底全量，
+  // 与形态徽章一一对应（五值合并口径作废）。
   const [formFilter, setFormFilter] = useState<FormValue | "all">("all");
+  // 十七轮：两筛选维度均「全部」才显示不参与筛选的专属区块（开发日志
+  // 虚拟卡/原生 MCP 区/扩展包卡）——它们无形态/实现徽章（与「筛选与徽章
+  // 一一对应」裁决一致），筛选激活时挂着不动会被误读为命中。
+  const filtersIdle = implFilter === "all" && formFilter === "all";
   // 需求14 M4（G8 搜索）：跨分类搜索（id/名称/描述/路径/接管语言集命中）；
   // 非空时网格展示全库命中项（忽略当前 tab），实现维度筛选仍叠加。
   const [search, setSearch] = useState("");
@@ -773,8 +797,8 @@ export function PluginsPage({
                   {tr("plugins.pendingBadge", "待确认")}
                 </Badge>
               )}
-              {/* v0.9.7 需求3 标签三类体系（2026-11-14 裁决）：身份四值 →
-                  实现方式三值（内置件不标实现）→ 插件形态（显式声明优先/
+              {/* v0.9.7 需求3 标签三类体系（2026-11-14 裁决；十七轮④实现
+                  徽章全卡展示）：身份四值 → 实现方式四值 → 插件形态（显式声明优先/
                   挂载位推导/无 UI 呈现兜底）；样式按类统一。 */}
               {(() => {
                 const identity = IDENTITY_BADGE[identityOf(plugin, !!skillLedger[plugin.id])];
@@ -785,14 +809,12 @@ export function PluginsPage({
                 );
               })()}
               {(() => {
-                // 实现方式只标创建件（市场安装/自建）——内置件（核心引擎/
-                // 内置插件身份）随包分发，实现维度对用户无意义（口径：
-                // 2026-11-14 标签裁决）。
-                if (identityOf(plugin, !!skillLedger[plugin.id]) === "core"
-                  || identityOf(plugin, !!skillLedger[plugin.id]) === "builtin") return null;
-                const impl = implKindOf(plugin);
-                if (impl === "builtin") return null;
-                const b = IMPL_BADGE[impl];
+                // 十七轮④（用户裁决「每张卡按三类各给标签」）：实现徽章
+                // 全卡展示——此前「内置件不标」收窄作废；内置件灰「内置」
+                // 徽章（implKindOf 对 core/system 恒 builtin），筛选同步恢复
+                // 「内置」chip（筛选与徽章一一对应）。十七轮⑥：市场安装件
+                //（台账在册）→「市场安装」（implOfCard 市场感知判定）。
+                const b = IMPL_BADGE[implOfCard(plugin)];
                 return (
                   <Badge variant="outline" className={cn("px-1 py-0 text-[9px]", b.cls)}>
                     {tr(b.key, b.fallback)}
@@ -828,7 +850,7 @@ export function PluginsPage({
                     : tr("plugins.mcpConnecting", "启动中·稍后自动恢复")}
                 </span>
               )}
-              {plugin.kind === "session" && <MountFaces pluginId={plugin.id} />}
+              {plugin.kind === "session" && <MountFaces pluginId={plugin.id} primary={formOf(plugin)} />}
             </div>
             {/* 说明（v0.9.3 需求11 用户裁决：中文说明取代 id/版本显示；编码与
              * 版本等运维信息收进 title 悬停）。来源链：session → i18n →
@@ -1076,8 +1098,10 @@ export function PluginsPage({
     return sources.map((src) => {
       const m = src.match(/^npm:(.+?)@(.+)$/);
       const pkg = m?.[1] ?? src.replace(/^npm:/, "");
-      const ver = m?.[2] ?? "";
       const pin = extPins.find((p) => p.package === pkg);
+      // 十七轮⑧：版本三级兜底——实装目录（真源）→ 源串 @version 钉定
+      //（浮动安装无此后缀）→ 钉版快照（还原锚点）。
+      const ver = extVersions[pkg] ?? m?.[2] ?? pin?.version ?? "";
       const meta = piindexMeta?.find((e) => e.npm_package === pkg);
       const upd = extUpdates?.find((u) => u.package === pkg);
       const busyCard = updateBusy === pkg || batchUpdates.extensionRunning;
@@ -1091,6 +1115,9 @@ export function PluginsPage({
             await invokeCommand<ExtensionUpdateStatus>("extension_check_update", { package: pkg })
               .then(mergeExtUpdate)
               .catch(() => null);
+            // 十七轮⑧：实装版本同步刷新（安装/更新/还原后版本随之变化）。
+            const versions = await invokeCommand<Record<string, string>>("pi_package_installed_versions").catch(() => ({}) as Record<string, string>);
+            setExtVersions(versions ?? {});
             setExtInstalled(sources ?? []);
           }
         } catch (e) {
@@ -1167,15 +1194,15 @@ export function PluginsPage({
               {busyCard || checkingUpdates ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
               <span className="ml-0.5">{tr("market.checkUpdate", "检查更新")}</span>
             </Button>
-            {/* 垃圾桶统一（十五轮裁决）：内置件=卸载更新（还原钉版原生版本），
-                市场件=卸载；悬停提示「卸载更新」。 */}
+            {/* 垃圾桶统一（十五轮裁决；十七轮⑦文案分流）：内置件=卸载更新
+                （还原钉版原生版本），市场件=卸载——悬停提示各自如实。 */}
             <Button
               variant="ghost"
               size="icon"
               className="h-6 w-6 shrink-0 text-destructive hover:text-destructive"
               disabled={busyCard}
-              aria-label={tr("plugins.uninstallUpdate", "卸载更新")}
-              title={tr("plugins.uninstallUpdate", "卸载更新")}
+              aria-label={pin ? tr("plugins.uninstallUpdate", "卸载更新") : tr("plugins.remove", "卸载")}
+              title={pin ? tr("plugins.uninstallUpdate", "卸载更新") : tr("plugins.remove", "卸载")}
               onClick={() =>
                 pin
                   ? runPkg(() => invokeCommand("pi_package_install_online", { source: pin.source }))
@@ -1467,50 +1494,56 @@ export function PluginsPage({
       {/* 工具行（十四轮 UI 统一）：筛选 chips 在左、搜索框恒最右（跨分类
           搜索——非空时网格展示全库命中，忽略 tab）。 */}
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
-        {/* 筛选维度分组（十二轮样式优化）：维度标题与选项视觉分离——标题
-            弱化底色胶囊、选项保持描边 chips，组间竖分隔线。实现方式（与实现
-            徽章三值对应）｜形态（与形态徽章五值对应）。 */}
+        {/* 筛选维度分组（十二轮样式优化；十七轮：维度标题与选项绑成不折行
+            小组——窄窗口换行时整组下移，标题不再与选项分家两行）。标题弱化
+            底色胶囊、选项保持描边 chips，组间竖分隔线。实现方式（与实现徽章
+            四值对应，十七轮「内置」回归）｜形态（九类挂载位+两兜底，与形态徽章
+            一一对应）。 */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[10px]">
-          <span className="rounded bg-muted px-1.5 py-0.5 font-medium text-muted-foreground">
-            {tr("plugins.implFilterLabel", "实现")}
-          </span>
-          <div className="flex items-center gap-1">
-            {(["all", "config", "code", "combo"] as const).map((k) => (
-              <button
-                key={k}
-                type="button"
-                onClick={() => setImplFilter(k)}
-                className={cn(
-                  "rounded-full border px-2 py-0.5 transition-colors",
-                  implFilter === k
-                    ? "border-primary/60 bg-primary/10 text-primary"
-                    : "border-border/60 text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {k === "all" ? tr("plugins.implAll", "全部") : tr(IMPL_BADGE[k].key, IMPL_BADGE[k].fallback)}
-              </button>
-            ))}
+          <div className="flex items-center gap-1.5">
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-medium text-muted-foreground">
+              {tr("plugins.implFilterLabel", "实现")}
+            </span>
+            <div className="flex items-center gap-1">
+              {(["all", "config", "code", "combo", "builtin", "market"] as const).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setImplFilter(k)}
+                  className={cn(
+                    "shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 transition-colors",
+                    implFilter === k
+                      ? "border-primary/60 bg-primary/10 text-primary"
+                      : "border-border/60 text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {k === "all" ? tr("plugins.implAll", "全部") : tr(IMPL_BADGE[k].key, IMPL_BADGE[k].fallback)}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="h-3.5 w-px bg-border/70" />
-          <span className="rounded bg-muted px-1.5 py-0.5 font-medium text-muted-foreground">
-            {tr("plugins.formFilterLabel", "形态")}
-          </span>
-          <div className="flex items-center gap-1">
-            {(["all", "session", "sidebar", "floating", "theme", "none"] as const).map((k) => (
-              <button
-                key={k}
-                type="button"
-                onClick={() => setFormFilter(k)}
-                className={cn(
-                  "rounded-full border px-2 py-0.5 transition-colors",
-                  formFilter === k
-                    ? "border-primary/60 bg-primary/10 text-primary"
-                    : "border-border/60 text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {k === "all" ? tr("plugins.formAll", "全部") : tr(FORM_BADGE[k].key, FORM_BADGE[k].fallback)}
-              </button>
-            ))}
+          <div className="flex items-center gap-1.5">
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-medium text-muted-foreground">
+              {tr("plugins.formFilterLabel", "形态")}
+            </span>
+            <div className="flex items-center gap-1">
+              {(["all", ...PLUGIN_FORM_VALUES] as Array<"all" | FormValue>).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setFormFilter(k)}
+                  className={cn(
+                    "shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 transition-colors",
+                    formFilter === k
+                      ? "border-primary/60 bg-primary/10 text-primary"
+                      : "border-border/60 text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {k === "all" ? tr("plugins.formAll", "全部") : tr(FORM_BADGE[k].key, FORM_BADGE[k].fallback)}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
         {/* 搜索框：工具行恒最右（十四轮统一；十五轮一键清除）。 */}
@@ -1586,10 +1619,13 @@ export function PluginsPage({
                         if (skillsLatest) setSkillUpdates(skillsLatest);
                         setSkillLedger(ledger ?? {});
                       } else {
-                        const [sources, latest] = await Promise.all([
+                        const [sources, latest, versions] = await Promise.all([
                           invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
                           invokeCommand<ExtensionUpdateStatus[]>("extension_check_updates").catch(() => null),
+                          // 十七轮⑧：批量更新后实装版本同步刷新。
+                          invokeCommand<Record<string, string>>("pi_package_installed_versions").catch(() => ({}) as Record<string, string>),
                         ]);
+                        setExtVersions(versions ?? {});
                         setExtInstalled(sources ?? []);
                         if (latest) setExtUpdates(latest);
                       }
@@ -1628,32 +1664,35 @@ export function PluginsPage({
           全库命中（tab 失效、实现筛选叠加、专属区块隐藏）。 */}
       <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(230px,1fr))]">
         {/* v0.9.4 需求12：开发日志中心虚拟卡（用户裁决：入口放插件中心核心引擎
-            分类，默认关闭手动开启；开关写 settings.json 跨启动保持）。 */}
-        {activeTab === "core" && !search.trim() && <DevLogCard />}
+            分类，默认关闭手动开启；开关写 settings.json 跨启动保持）。十七轮：
+            无形态/实现徽章，筛选激活时隐藏（见 filtersIdle）。 */}
+        {activeTab === "core" && !search.trim() && filtersIdle && <DevLogCard />}
         {/* 需求11 追加三 A：原生 MCP 服务管理区（jishu 直连条目，键级管
-            mcp.json 非 jishu-hub 用户条目；与聚合插件互补）。 */}
-        {activeTab === "mcp" && !search.trim() && <NativeMcpSection />}
+            mcp.json 非 jishu-hub 用户条目；与聚合插件互补）。十七轮：同上
+            筛选门控。 */}
+        {activeTab === "mcp" && !search.trim() && filtersIdle && <NativeMcpSection />}
 {/* v0.9.7 需求3 十四轮：扩展包参与检索——扩展包 tab 无搜索显示全量；
-    搜索态生态件命中卡并入全库结果（插件全库命中 + 扩展包命中）。 */}
-        {activeTab === "extension" && !search.trim() && renderExtCards()}
-        {search.trim() && extInstalled.filter(matchesExtSearch).length > 0 && renderExtCards(extInstalled.filter(matchesExtSearch))}
+    搜索态生态件命中卡并入全库结果（插件全库命中 + 扩展包命中）。
+    十七轮：扩展卡无形态/实现徽章，筛选激活时同样隐藏。 */}
+        {activeTab === "extension" && !search.trim() && filtersIdle && renderExtCards()}
+        {search.trim() && filtersIdle && extInstalled.filter(matchesExtSearch).length > 0 && renderExtCards(extInstalled.filter(matchesExtSearch))}
         {(result?.plugins ?? [])
           .filter((x) =>
             search.trim()
-              ? matchesSearch(x) && (implFilter === "all" || implKindOf(x) === implFilter)
+              ? matchesSearch(x) && (implFilter === "all" || implOfCard(x) === implFilter)
                   && (formFilter === "all" || formOf(x) === formFilter)
-              : categoryOf(x) === activeTab && (implFilter === "all" || implKindOf(x) === implFilter)
+              : categoryOf(x) === activeTab && (implFilter === "all" || implOfCard(x) === implFilter)
                   && (formFilter === "all" || formOf(x) === formFilter),
           )
           .map((plugin) => renderCard(plugin))}
       </div>
       {(result?.plugins ?? []).filter((x) =>
         search.trim()
-          ? matchesSearch(x) && (implFilter === "all" || implKindOf(x) === implFilter)
+          ? matchesSearch(x) && (implFilter === "all" || implOfCard(x) === implFilter)
               && (formFilter === "all" || formOf(x) === formFilter)
-          : categoryOf(x) === activeTab && (implFilter === "all" || implKindOf(x) === implFilter)
+          : categoryOf(x) === activeTab && (implFilter === "all" || implOfCard(x) === implFilter)
               && (formFilter === "all" || formOf(x) === formFilter),
-      ).length === 0 && extInstalled.filter(matchesExtSearch).length === 0 && (
+      ).length === 0 && (!filtersIdle || extInstalled.filter(matchesExtSearch).length === 0) && (
         <p className="py-10 text-center text-sm text-muted-foreground">
           {search.trim()
             ? tr("plugins.searchEmpty", "无匹配插件")
@@ -1740,10 +1779,10 @@ function DevLogCard() {
   return (
     <div className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3 transition-colors hover:border-border">
       <div className="flex items-center gap-2">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted/50 text-muted-foreground">
+        <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-md bg-muted/50 text-muted-foreground">
           <BugIcon className="h-4 w-4" />
         </div>
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">
           {t("plugins.devLogName", { defaultValue: "开发日志中心" })}
         </span>
         <button
@@ -1765,13 +1804,17 @@ function DevLogCard() {
           />
         </button>
       </div>
-      <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
-        <span className="inline-flex items-center rounded-full bg-primary/10 px-1.5 py-0.5 font-medium text-primary">
+      {/* 徽章行（十七轮：字号/样式对齐 renderCard——身份徽章复用
+          IDENTITY_BADGE.core，类别注记 10px 与元信息同级）。 */}
+      <div className="flex min-h-[16px] flex-wrap items-center gap-1">
+        <Badge variant="outline" className={cn("px-1 py-0 text-[9px]", IDENTITY_BADGE.core.cls)}>
           {t("plugins.coreBadge", "核心引擎")}
+        </Badge>
+        <span className="text-[10px] text-muted-foreground">
+          {t("plugins.devLogKind", { defaultValue: "调试能力" })}
         </span>
-        <span>{t("plugins.devLogKind", { defaultValue: "调试能力" })}</span>
       </div>
-      <p className="line-clamp-2 min-h-[2em] text-xs leading-relaxed text-muted-foreground">
+      <p className="line-clamp-2 min-h-[26px] text-[10px] leading-[13px] text-muted-foreground/80">
         {t("plugins.devLogDesc", { defaultValue: "开启后显示会话区日志中心入口（含生产构建），全流程会话流转/时序日志可复制导出，便于问题排查。默认关闭。" })}
       </p>
     </div>

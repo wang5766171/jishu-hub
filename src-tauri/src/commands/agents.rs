@@ -1391,6 +1391,54 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+/// 已装在线扩展的**实装版本**（v0.9.7 需求3 十七轮⑧：市场件版本号显示
+/// 真源）——读 npm 装载目录 node_modules/<pkg>/package.json 的 version。
+/// settings.json packages 的 `@version` 后缀是安装意图快照：浮动安装
+///（pi install npm:pkg 不带版本）无后缀、更新后不回写——均显示不出
+/// 真实版本；实装目录才是权威。读不到返回空表（前端兜底走源解析）。
+#[tauri::command]
+pub(crate) fn pi_package_installed_versions(
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let Ok(agent_dir) = agent::jishu_self::paths::agent_dir() else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let modules_dir = agent_dir.join("npm").join("node_modules");
+    let mut out = std::collections::HashMap::new();
+    let Ok(entries) = std::fs::read_dir(&modules_dir) else {
+        return Ok(out);
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // scoped 包（@scope/pkg）在两级子目录——scope 目录本身无清单。
+        let dirs: Vec<std::path::PathBuf> = if name.starts_with('@') {
+            std::fs::read_dir(entry.path())
+                .map(|sub| sub.flatten().map(|e| e.path()).collect())
+                .unwrap_or_default()
+        } else {
+            vec![entry.path()]
+        };
+        for dir in dirs {
+            let manifest = dir.join("package.json");
+            let Ok(content) = std::fs::read_to_string(&manifest) else {
+                continue;
+            };
+            let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) else {
+                continue;
+            };
+            let (Some(name), Some(version)) = (
+                pkg.get("name").and_then(|v| v.as_str()),
+                pkg.get("version").and_then(|v| v.as_str()),
+            ) else {
+                continue;
+            };
+            if !version.is_empty() {
+                out.insert(name.to_string(), version.to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// 当前 settings.json packages 数组（在线包「已安装」判定真源）。
 #[tauri::command]
 pub(crate) fn pi_package_installed_sources() -> Result<Vec<String>, String> {
