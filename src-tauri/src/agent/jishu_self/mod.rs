@@ -245,7 +245,10 @@ impl JishuSelfAgent {
         let mut failed: Vec<String> = Vec::new();
         for (source, dir_name) in PI_EXTENSION_PACKAGES {
             let target = root.join(dir_name);
-            let pinned_ver = source.rsplit_once('@').map(|(_, v)| v).unwrap_or_default();
+            // 第三轮评审修复：经 parse_npm_source 解析（rsplit 对 scoped
+            // 无版本源会解出 "scope/pkg" 当版本——此处消费钉定源恒带版本，
+            // 换 helper 防未来加无版本源时引爆同款）。
+            let pinned_ver = parse_npm_source(source).1;
             let up_to_date = target.exists()
                 && std::fs::read_to_string(target.join("package.json"))
                     .ok()
@@ -946,6 +949,30 @@ fn ensure_default_tools_arg(
 #[allow(dead_code)] // 仅测试模块引用（退役留痕，非生产路径）
 pub(crate) const MCP_ADAPTER_SOURCE: &str = "npm:pi-mcp-adapter@2.32.1";
 
+/// 解析 npm 源串（`npm:<pkg>[@<version>]`）→ (包名, 版本)。
+/// v0.9.7 第三轮评审修复：scoped 包（@scope/pkg）首 @ 是名字一部分——
+/// 直接 rsplit_once 会把「scoped 无版本源」唯一的 @ 当版本分隔，解出
+/// 包名空串、版本="scope/pkg"（builtin_pins 显示乱码版本 + 启动自愈
+/// 永判版本不符反复重装）。解析规则：scoped 跳过首 @ 与 scope 段，其后
+/// 第一个 @ 才是版本分隔；非 scoped 从右取 @ 且两端非空才视为带版本。
+pub(crate) fn parse_npm_source(source: &str) -> (String, String) {
+    let body = source.strip_prefix("npm:").unwrap_or(source);
+    if let Some(rest) = body.strip_prefix('@') {
+        // scoped：rest = "scope/pkg[@ver]"——首个 @ 之后才是版本
+        return match rest.find('@') {
+            Some(i) => {
+                let split = i + 1; // 含首 @ 的包名长度
+                (body[..split].to_string(), body[split + 1..].to_string())
+            }
+            None => (body.to_string(), String::new()),
+        };
+    }
+    match body.rsplit_once('@') {
+        Some((n, v)) if !n.is_empty() && !v.is_empty() => (n.to_string(), v.to_string()),
+        _ => (body.to_string(), String::new()),
+    }
+}
+
 /// v0.9.5 需求5：随包初始化安装的 pi 扩展（钉定版本，与 mcp 同策略——
 /// 可预测、离线可复现；peer 面已核 fork 0.87.1-13 全覆盖）。元素 =
 /// (npm 安装源, node_modules 目录名——scoped 包含 @scope/ 层级)。
@@ -1070,6 +1097,29 @@ mod mcp_tests {
         assert_eq!(
             pi_package_args(&["cli.js".to_string()], "update", super::MCP_ADAPTER_SOURCE),
             vec!["cli.js", "update", "npm:pi-mcp-adapter@2.32.1"]
+        );
+    }
+
+    /// 第三轮评审修复：parse_npm_source 四形态（非 scoped 带版本/裸名/
+    /// scoped 带版本/scoped 无版本）——旧 rsplit 对末形态解出
+    /// ("", "scope/pkg")。super:: 限定——本 tests 模块无 use super::*。
+    #[test]
+    fn parse_npm_source_four_shapes() {
+        assert_eq!(
+            super::parse_npm_source("npm:pi-subagents@0.72.0"),
+            ("pi-subagents".to_string(), "0.72.0".to_string())
+        );
+        assert_eq!(
+            super::parse_npm_source("npm:pi-subagents"),
+            ("pi-subagents".to_string(), String::new())
+        );
+        assert_eq!(
+            super::parse_npm_source("npm:@juicesharp/rpiv-todo@2.15.0"),
+            ("@juicesharp/rpiv-todo".to_string(), "2.15.0".to_string())
+        );
+        assert_eq!(
+            super::parse_npm_source("npm:@juicesharp/rpiv-todo"),
+            ("@juicesharp/rpiv-todo".to_string(), String::new())
         );
     }
 

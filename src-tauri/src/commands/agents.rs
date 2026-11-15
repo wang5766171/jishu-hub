@@ -633,7 +633,6 @@ pub(crate) fn plugin_preconnect_clear() -> Result<(), String> {
 /// 源码读取结果（需求14 M4 R8：前端 fetch 插件文件会被 CSP connect-src 拦
 ///——无 asset 源，IPC 读取是唯一通路且顺带做目录越界校验）。
 #[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct PluginReadFile {
     pub path: String,
     pub content: String,
@@ -1397,46 +1396,53 @@ fn urlencode(s: &str) -> String {
 ///（pi install npm:pkg 不带版本）无后缀、更新后不回写——均显示不出
 /// 真实版本；实装目录才是权威。读不到返回空表（前端兜底走源解析）。
 #[tauri::command]
-pub(crate) fn pi_package_installed_versions(
+pub(crate) async fn pi_package_installed_versions(
 ) -> Result<std::collections::HashMap<String, String>, String> {
-    let Ok(agent_dir) = agent::jishu_self::paths::agent_dir() else {
-        return Ok(std::collections::HashMap::new());
-    };
-    let modules_dir = agent_dir.join("npm").join("node_modules");
-    let mut out = std::collections::HashMap::new();
-    let Ok(entries) = std::fs::read_dir(&modules_dir) else {
-        return Ok(out);
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        // scoped 包（@scope/pkg）在两级子目录——scope 目录本身无清单。
-        let dirs: Vec<std::path::PathBuf> = if name.starts_with('@') {
-            std::fs::read_dir(entry.path())
-                .map(|sub| sub.flatten().map(|e| e.path()).collect())
-                .unwrap_or_default()
-        } else {
-            vec![entry.path()]
+    // 第三轮评审修复：同步命令在主线程遍历全 node_modules（实测 218 包，
+    // 含传递依赖）逐包读文件+解析 JSON——包多时可感知卡顿。下沉
+    // spawn_blocking（对齐 piindex_search 等重 IO 命令的分层惯例）。
+    tauri::async_runtime::spawn_blocking(|| {
+        let Ok(agent_dir) = agent::jishu_self::paths::agent_dir() else {
+            return Ok(std::collections::HashMap::new());
         };
-        for dir in dirs {
-            let manifest = dir.join("package.json");
-            let Ok(content) = std::fs::read_to_string(&manifest) else {
-                continue;
+        let modules_dir = agent_dir.join("npm").join("node_modules");
+        let mut out = std::collections::HashMap::new();
+        let Ok(entries) = std::fs::read_dir(&modules_dir) else {
+            return Ok(out);
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // scoped 包（@scope/pkg）在两级子目录——scope 目录本身无清单。
+            let dirs: Vec<std::path::PathBuf> = if name.starts_with('@') {
+                std::fs::read_dir(entry.path())
+                    .map(|sub| sub.flatten().map(|e| e.path()).collect())
+                    .unwrap_or_default()
+            } else {
+                vec![entry.path()]
             };
-            let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) else {
-                continue;
-            };
-            let (Some(name), Some(version)) = (
-                pkg.get("name").and_then(|v| v.as_str()),
-                pkg.get("version").and_then(|v| v.as_str()),
-            ) else {
-                continue;
-            };
-            if !version.is_empty() {
-                out.insert(name.to_string(), version.to_string());
+            for dir in dirs {
+                let manifest = dir.join("package.json");
+                let Ok(content) = std::fs::read_to_string(&manifest) else {
+                    continue;
+                };
+                let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) else {
+                    continue;
+                };
+                let (Some(name), Some(version)) = (
+                    pkg.get("name").and_then(|v| v.as_str()),
+                    pkg.get("version").and_then(|v| v.as_str()),
+                ) else {
+                    continue;
+                };
+                if !version.is_empty() {
+                    out.insert(name.to_string(), version.to_string());
+                }
             }
         }
-    }
-    Ok(out)
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("scan node_modules failed: {e}"))?
 }
 
 /// 当前 settings.json packages 数组（在线包「已安装」判定真源）。
@@ -1462,8 +1468,9 @@ pub(crate) fn pi_package_installed_sources() -> Result<Vec<String>, String> {
 
 /// 内置 pi 扩展钉版清单（v0.9.7 需求3 已安装统一页）：hub 分发时的版本
 /// 快照——「还原系统原生版本」的锚点（编译期常量随包走，升级即新快照）。
+/// 第三轮评审修复：删 rename_all="camelCase"（§4 跨端序列化一律
+/// snake_case——三字段恰为单词无实际影响，但声明给后续加多词字段埋雷）。
 #[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct BuiltinPin {
     pub source: String,
     pub package: String,
@@ -1475,12 +1482,13 @@ pub(crate) fn pi_package_builtin_pins() -> Result<Vec<BuiltinPin>, String> {
     Ok(agent::jishu_self::PI_EXTENSION_PACKAGES
         .iter()
         .map(|(source, _dir)| {
-            let body = source.strip_prefix("npm:").unwrap_or(source);
-            let (package, version) = body.rsplit_once('@').unwrap_or((body, ""));
+            // 第三轮评审修复：换 parse_npm_source（rsplit 对 scoped 无版本
+            // 源会解出空包名 + 乱码版本——还原锚点失真）。
+            let (package, version) = agent::jishu_self::parse_npm_source(source);
             BuiltinPin {
                 source: source.to_string(),
-                package: package.to_string(),
-                version: version.to_string(),
+                package,
+                version,
             }
         })
         .collect())

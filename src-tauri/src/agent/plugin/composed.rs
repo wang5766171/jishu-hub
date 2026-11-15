@@ -529,6 +529,21 @@ pub fn save_composed_manifest(id: &str, toml: &str) -> Result<(), String> {
     if decl_id != id {
         return Err(format!("清单 id ({decl_id:?}) 与目标 id ({id:?}) 不一致"));
     }
+    // v0.9.7 第三轮评审修复：组合家族 [plugin].form 白名单校验——与 A 家族
+    // fail loud 同口径（修前拼错值如 "dockpanel" 静默落盘，展示侧走推导
+    // 永不命中形态筛选，用户以为筛选坏了）。旧三值随全集放行（保存兼容）。
+    if let Some(form) = value
+        .get("plugin")
+        .and_then(|p| p.get("form"))
+        .and_then(|v| v.as_str())
+    {
+        if !crate::agent::manifest::schema::PLUGIN_FORM_VALUES.contains(&form) {
+            return Err(format!(
+                "plugin.form 无效：{form:?}（合法：{}；旧值 session/sidebar/floating 仅保存兼容，新插件请用九类挂载位形态）",
+                crate::agent::manifest::schema::PLUGIN_FORM_VALUES[..11].join("/")
+            ));
+        }
+    }
     validate_composed_guards(id, &value)?;
     let dir = composed_plugins_root().join(id);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -786,6 +801,47 @@ mount = "block-renderer"
             &code_block_toml("session.c-charts", &["echarts"]),
         )
         .expect("disabled holder frees the language");
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// 第三轮评审修复：组合家族 [plugin].form 白名单——拼错值 fail loud，
+    /// 旧三值（保存兼容）与九类新值放行。
+    #[test]
+    fn save_composed_manifest_form_whitelist() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+
+        let base = r#"[plugin]
+id = "session.form-check"
+name = "form 白名单"
+kind = "session-composed"
+
+[source]
+type = "messages"
+
+[render]
+component = "render.list"
+mount = "sidebar-panel"
+"#;
+        let with_form = |f: &str| {
+            base.replacen(
+                "kind = \"session-composed\"",
+                &format!(
+                    "kind = \"session-composed\"
+form = \"{f}\""
+                ),
+                1,
+            )
+        };
+        for ok in ["dock-panel", "sidebar-panel", "session", "theme", "none"] {
+            save_composed_manifest("session.form-check", &with_form(ok))
+                .unwrap_or_else(|e| panic!("合法 form {ok} 被拒: {e}"));
+        }
+        let err = save_composed_manifest("session.form-check", &with_form("dockpanel"))
+            .expect_err("拼错 form 必须拒绝");
+        assert!(err.contains("plugin.form 无效"), "got: {err}");
 
         std::env::remove_var("JISHU_HUB_HOME");
     }

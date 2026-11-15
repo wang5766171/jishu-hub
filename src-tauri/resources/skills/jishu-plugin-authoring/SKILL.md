@@ -318,7 +318,9 @@ acp_command = ["node", "{plugin_dir}/bridge.js", "--stdio"]
 command = "zcode"
 version_args = ["--version"]
 # 私有路径安装时显式列候选（PATH 查找探测不到的盲区）：
-paths = ["D:\tools\zcode\zcode.exe", "zcode"]
+# 注意 Windows 路径用 TOML literal string（单引号）——双引号 basic string
+# 里 \t 是制表符、\z 是非法转义，整份清单会解析失败：
+paths = ['D:\tools\zcode\zcode.exe', 'zcode']
 
 [capabilities]
 abort = false        # 能力诚实：桥没实现的不声明（image_input/stream_text 同）

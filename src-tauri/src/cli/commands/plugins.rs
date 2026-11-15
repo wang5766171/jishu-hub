@@ -312,6 +312,14 @@ fn finalize_composed_install(
 /// 广播——改写 `.pending-confirm` 标记文件，确认卡轮询读取补位热更链。
 fn add_hybrid(dir_path: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
     let dir = std::path::Path::new(dir_path);
+    // 第三轮评审修复：传入的是文件（如 agents 清单 .toml）时给通道指引，
+    // 不当目录拼 plugin.toml 报误导性路径错误（修前 "cannot read
+    // xxx.toml\plugin.toml: 系统找不到指定的文件"）。
+    if dir.is_file() {
+        return Err(CliError::InvalidArg(format!(
+            "{dir_path} 是文件——agent/manifest 清单请走 `jishu-cli plugins add <toml>`；add-hybrid 接收组合插件目录（含 plugin.toml）"
+        )));
+    }
     let toml_path = dir.join("plugin.toml");
     let toml_content = std::fs::read_to_string(&toml_path)
         .map_err(|e| CliError::InvalidArg(format!("cannot read {}: {e}", toml_path.display())))?;
