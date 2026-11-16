@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
-import { createElement } from "react";
+import { createElement, type ReactNode } from "react";
 import {
   HybridErrorBoundary,
   PLUGIN_API_VERSION,
+  clearLibraryScriptCacheForTest,
   ensureGlobalRegisterForTest,
   loadHybridComponent,
   setAssetUrlBuilderForTest,
+  setLibraryScriptInjectorForTest,
   setScriptInjectorForTest,
   setHybridErrorHandler,
   validateFactory,
@@ -99,5 +101,119 @@ describe("混合插件运行时（需求25 P1）", () => {
     );
     expect(container.textContent).toBe("");
     expect(onError).toHaveBeenCalledWith("p.boom", expect.any(Error));
+  });
+});
+
+describe("loadAsset 与崩溃兜底（需求14 M1：02 §3.2 / B1 / B3）", () => {
+  const FILES: Record<string, string> = {
+    "component.js": "fp1",
+    "echarts.min.js": "abc12345",
+    "b.js": "dead0000",
+  };
+
+  function apiCaptureFactory(
+    captured: { loadAsset?: (rel: string, kind?: "script" | "style" | "url") => Promise<string> },
+  ): HybridPluginFactory {
+    return {
+      version: PLUGIN_API_VERSION,
+      component: (api) => {
+        captured.loadAsset = api.loadAsset;
+        return () => null;
+      },
+    };
+  }
+
+  async function loadWithFiles(
+    pluginId: string,
+    factory: HybridPluginFactory,
+    files?: Record<string, string>,
+  ): Promise<void> {
+    const pending = loadHybridComponent(pluginId, "C:/plugs/x", "component.js", "fp1", files);
+    (globalThis as unknown as { JishuPlugin: { register(id: string, f: unknown): void } }).JishuPlugin.register(pluginId, factory);
+    const result = await pending;
+    expect(result).not.toBeInstanceOf(Error);
+  }
+
+  beforeEach(() => {
+    ensureGlobalRegisterForTest();
+    clearLibraryScriptCacheForTest();
+  });
+  afterEach(() => {
+    document.head.querySelectorAll("script[src*='asset.localhost']").forEach((el) => el.remove());
+  });
+
+  it("url 类：返回带内容指纹的 asset URL；白名单外/越界/子目录路径拒绝（B3 平铺约束）", async () => {
+    const captured: { loadAsset?: (rel: string, kind?: "script" | "style" | "url") => Promise<string> } = {};
+    await loadWithFiles("p.asset-url", apiCaptureFactory(captured), FILES);
+    expect(captured.loadAsset).toBeTypeOf("function");
+    await expect(captured.loadAsset!("echarts.min.js")).resolves.toBe(
+      "http://asset.localhost/C:/plugs/x/echarts.min.js?v=abc12345",
+    );
+    await expect(captured.loadAsset!("nope.js")).rejects.toThrow("不在插件文件清单");
+    await expect(captured.loadAsset!("../evil.js")).rejects.toThrow("非法资产路径");
+    await expect(captured.loadAsset!("/abs.js")).rejects.toThrow("非法资产路径");
+    // 子目录形态不在浅层 _files 清单内——平铺约束的可观测面。
+    await expect(captured.loadAsset!("sub/echarts.min.js")).rejects.toThrow("不在插件文件清单");
+  });
+
+  it("script 类：模块级缓存——同资产两次加载只注入一次（R4 性能语义）", async () => {
+    const calls: string[] = [];
+    setLibraryScriptInjectorForTest(async (url) => {
+      calls.push(url);
+    });
+    const captured: { loadAsset?: (rel: string, kind?: "script" | "style" | "url") => Promise<string> } = {};
+    await loadWithFiles("p.asset-script", apiCaptureFactory(captured), FILES);
+    await captured.loadAsset!("echarts.min.js", "script");
+    await captured.loadAsset!("echarts.min.js", "script");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("echarts.min.js?v=abc12345");
+  });
+
+  it("script 类失败不缓存（可重试）", async () => {
+    let fail = true;
+    setLibraryScriptInjectorForTest(async () => {
+      if (fail) throw new Error("net down");
+    });
+    const captured: { loadAsset?: (rel: string, kind?: "script" | "style" | "url") => Promise<string> } = {};
+    await loadWithFiles("p.asset-retry", apiCaptureFactory(captured), FILES);
+    await expect(captured.loadAsset!("b.js", "script")).rejects.toThrow("net down");
+    fail = false;
+    await expect(captured.loadAsset!("b.js", "script")).resolves.toContain("b.js");
+  });
+
+  it("无 files 白名单（旧调用形态）→ api 不注入 loadAsset（纯加法不破坏旧件）", async () => {
+    const captured: { loadAsset?: (rel: string, kind?: "script" | "style" | "url") => Promise<string> } = {};
+    await loadWithFiles("p.asset-nofiles", apiCaptureFactory(captured), undefined);
+    expect(captured.loadAsset).toBeUndefined();
+  });
+
+  it("崩溃兜底（B1）：声明 fallback 的边界渲染兜底节点；未声明维持崩溃即卸载", () => {
+    const onError = vi.fn();
+    setHybridErrorHandler(onError);
+    function Boom(): null {
+      throw new Error("插件炸了");
+    }
+    // createElement 三参形态在严格 tsc 下要求 props 携 children——测试内
+    // 以类型断言放宽（组件运行时契约不变）。
+    const Boundary = HybridErrorBoundary as unknown as (
+      props: { pluginId: string; children?: ReactNode; fallback?: ReactNode },
+    ) => ReactNode;
+    const { container: withFallback } = render(
+      createElement(Boundary as never, {
+        pluginId: "p.fb",
+        fallback: createElement("pre", null, "SOURCE"),
+        children: createElement(Boom),
+      }),
+    );
+    expect(withFallback.textContent).toBe("SOURCE");
+    expect(onError).toHaveBeenCalledWith("p.fb", expect.any(Error));
+
+    const { container: withoutFallback } = render(
+      createElement(Boundary as never, {
+        pluginId: "p.nofb",
+        children: createElement(Boom),
+      }),
+    );
+    expect(withoutFallback.textContent).toBe("");
   });
 });

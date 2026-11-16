@@ -711,19 +711,16 @@ fn parse_draft(response: &str) -> Result<PlannerDraft, String> {
     if trimmed.is_empty() {
         return Err("planner response did not contain a JSON object".to_string());
     }
-    match serde_json::from_str::<serde_json::Value>(trimmed) {
-        Ok(value) => {
-            if !value.is_object() {
-                return Err(format!(
-                    "invalid planner proposal JSON: top-level value is {:?}, expected an object",
-                    classify_top_level(&value)
-                ));
-            }
-            let draft: PlannerDraft = serde_json::from_value(value)
-                .map_err(|error| format!("invalid planner proposal JSON: {error}"))?;
-            return ensure_non_empty_commands(draft);
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if !value.is_object() {
+            return Err(format!(
+                "invalid planner proposal JSON: top-level value is {:?}, expected an object",
+                classify_top_level(&value)
+            ));
         }
-        Err(_) => {}
+        let draft: PlannerDraft = serde_json::from_value(value)
+            .map_err(|error| format!("invalid planner proposal JSON: {error}"))?;
+        return ensure_non_empty_commands(draft);
     }
     if let Some(slice) = first_top_level_object(trimmed) {
         let draft: PlannerDraft = serde_json::from_str(slice)
@@ -873,7 +870,9 @@ fn validate_plan_shape<S: AsRef<str>>(
                 agent_roles.insert(role_id.clone());
                 if description
                     .as_deref()
-                    .is_none_or(|value| value.trim().is_empty())
+                    // MSRV 1.79：is_none_or 需 1.82，用 map_or 等价表达
+                    //（三轮评审在 agents.rs 清理同款时此处漏网）。
+                    .map_or(true, |value| value.trim().is_empty())
                     || prompt.trim().is_empty()
                     || acceptance.is_empty()
                     || acceptance.iter().any(|item| item.trim().is_empty())
@@ -1049,9 +1048,11 @@ fn draft_to_commands(
                 "planner node '{node_id}' references an unknown dependency"
             ));
         }
-        let mut policy = NodePolicy::default();
-        policy.permission_scope = permissions;
-        policy.approval_policy = ApprovalPolicy::OnHighRisk;
+        let policy = NodePolicy {
+            permission_scope: permissions,
+            approval_policy: ApprovalPolicy::OnHighRisk,
+            ..Default::default()
+        };
         commands.push(GraphCommand::AddNode {
             command_id: gen_id("planner_cmd"),
             node: GraphNode {

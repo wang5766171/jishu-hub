@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const BUNDLED_TASK_PLAN_REGISTRY: &str = include_str!("../resources/task-plan/registry.json");
@@ -127,16 +127,10 @@ fn builtin_skills_for_dir(dir: &Path) -> Result<Vec<BuiltinTaskPlanSkill>, Strin
 }
 
 // ── Pi 扩展自动注册（Hub setup hook 每次启动幂等确保）── // FORCE COMPILER TO RE-READ STATIC EMBEDDED FILE CHANGES V12
-const CONDUCTOR_EXTENSION_TS: &str =
-    include_str!("../resources/extensions/jishu-task-conductor.ts");
-const CONDUCTOR_DISCUSS_SKILL: &str =
-    include_str!("../resources/task-plan/jishu-conductor-dev/discuss.SKILL.md");
-const CONDUCTOR_PLAN_SKILL: &str =
-    include_str!("../resources/task-plan/jishu-conductor-dev/plan.SKILL.md");
-const CONDUCTOR_EXECUTE_SKILL: &str =
-    include_str!("../resources/task-plan/jishu-conductor-dev/execute.SKILL.md");
-const REQUEST_USER_INPUT_EXTENSION_TS: &str =
-    include_str!("../resources/extensions/request-user-input.ts");
+// v0.9.7 需求2：任务执行器扩展（取代 conductor 三阶段状态机——去阶段化）。
+const TASK_RUNNER_EXTENSION_TS: &str = include_str!("../resources/extensions/jishu-task-runner.ts");
+const TASK_RUNNER_SKILL: &str =
+    include_str!("../resources/task-plan/jishu-conductor-dev/runner.SKILL.md");
 const JISHU_TOOL_APPROVAL_EXTENSION_TS: &str =
     include_str!("../resources/extensions/jishu-tool-approval.ts");
 const JISHU_BATCH_GUARD_EXTENSION_TS: &str =
@@ -145,8 +139,9 @@ const SESSION_CONTEXT_EXTENSION_TS: &str =
     include_str!("../resources/extensions/session-context.ts");
 /// v0.9.2 测试期：HTML 页面预览扩展（preview_html 工具——agent 可主动把
 /// 本地 HTML 文件渲染到 Hub 右侧面板）。
-const HTML_PREVIEW_EXTENSION_TS: &str =
-    include_str!("../resources/extensions/html-preview.ts");
+const HTML_PREVIEW_EXTENSION_TS: &str = include_str!("../resources/extensions/html-preview.ts");
+/// v0.9.5 需求1（原需求26）6b：通用 plugin-invoke 扩展（agent-tool 动态注册）。
+const PLUGIN_INVOKE_EXTENSION_TS: &str = include_str!("../resources/extensions/plugin-invoke.ts");
 
 /// 部署内嵌扩展源到 `<agent_dir>/<rel_path>`，自动建父目录；内容相同则跳过写入。
 pub(crate) fn deploy_extension_file(agent_dir: &Path, rel_path: &str, source: &str) {
@@ -190,32 +185,42 @@ pub(crate) fn register_extension_in_settings(agent_dir: &Path, rel_path: &str) {
     }
 }
 
-/// 自动注册 Conductor 扩展 + skill pack + settings.json extensions + 删除旧 skill。
-/// 在 Hub setup hook 调用，每次启动自动确保。
-pub fn ensure_conductor_extension() {
+/// v0.9.7 需求2：部署任务执行器扩展（jishu-task-runner，取代三阶段
+/// conductor——去阶段化）+ runner 技能包；退役 conductor 扩展与三份
+/// 阶段技能（文件删除 + settings 摘注册）。幂等。
+pub fn ensure_task_runner_extension() {
     let Ok(agent_dir) = jishu_agent_dir() else {
         return;
     };
-    ensure_conductor_extension_in(&agent_dir);
+    ensure_task_runner_extension_in(&agent_dir);
 }
 
-fn ensure_conductor_extension_in(agent_dir: &Path) {
-    const CONDUCTOR_EXT_REL: &str = "extensions/jishu-task-conductor.ts";
+fn ensure_task_runner_extension_in(agent_dir: &Path) {
+    const RUNNER_EXT_REL: &str = "extensions/jishu-task-runner.ts";
+    const RETIRED_CONDUCTOR_REL: &str = "extensions/jishu-task-conductor.ts";
 
-    // 1. 写扩展文件
-    deploy_extension_file(agent_dir, CONDUCTOR_EXT_REL, CONDUCTOR_EXTENSION_TS);
-
-    // 2. 写 skill pack
+    // 1. 写 runner 扩展 + 技能包（唯一正确位置：Pi 原生 agent 目录）。
+    deploy_extension_file(agent_dir, RUNNER_EXT_REL, TASK_RUNNER_EXTENSION_TS);
     let skill_dir = agent_dir.join("skills").join("jishu-conductor-dev");
     let _ = std::fs::create_dir_all(&skill_dir);
-    let _ = std::fs::write(skill_dir.join("discuss.SKILL.md"), CONDUCTOR_DISCUSS_SKILL);
-    let _ = std::fs::write(skill_dir.join("plan.SKILL.md"), CONDUCTOR_PLAN_SKILL);
-    let _ = std::fs::write(skill_dir.join("execute.SKILL.md"), CONDUCTOR_EXECUTE_SKILL);
+    let _ = std::fs::write(skill_dir.join("runner.SKILL.md"), TASK_RUNNER_SKILL);
 
-    // 2b. v0.9.2 测试期修复（用户裁决：不做双写兼容，收敛唯一正确目录）：
-    // 技能包唯一位置 = Pi 原生 agent 目录（上文第 2 步）；扩展侧 SKILLS_DIR
-    // 已改为按 Pi getAgentDir() 同规则解析（<根>/agent/skills）。此处清理
-    // 历史错误位置（<根>/skills 下的 conductor 技能包）的残留。
+    // 2. 注册 settings.json extensions（幂等）
+    register_extension_in_settings(agent_dir, RUNNER_EXT_REL);
+
+    // 3. 退役 conductor（v0.9.7 需求2 砍除#1/#2/#8）：扩展文件、settings
+    //    条目、三份阶段技能一并清除；历史残留位置同步清理。
+    let retired_ext = agent_dir.join(RETIRED_CONDUCTOR_REL);
+    if retired_ext.exists() {
+        let _ = std::fs::remove_file(&retired_ext);
+    }
+    unregister_extension_from_settings(agent_dir, RETIRED_CONDUCTOR_REL);
+    for stale_skill in ["discuss.SKILL.md", "plan.SKILL.md", "execute.SKILL.md"] {
+        let path = skill_dir.join(stale_skill);
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
     if let Some(root) = agent_dir.parent() {
         for stale in ["jishu-conductor-dev", "jishu-task-planner"] {
             let stale_dir = root.join("skills").join(stale);
@@ -224,20 +229,14 @@ fn ensure_conductor_extension_in(agent_dir: &Path) {
             }
         }
     }
-
-    // 3. 注册 settings.json extensions（幂等）
-    register_extension_in_settings(agent_dir, CONDUCTOR_EXT_REL);
-
-    // 4. 删除旧 skill（避免 agent 读旧 jishu-task-planner 干扰 Conductor）
     let old_skill = agent_dir.join("skills").join("jishu-task-planner");
     if old_skill.exists() {
         let _ = std::fs::remove_dir_all(&old_skill);
     }
 }
 
-/// 自动部署 `request_user_input` 扩展（conductor 的 discuss/plan 阶段依赖此工具）。
-/// 在 Hub setup hook 调用，每次启动自动确保。
 /// v0.9.3 需求22 P1：逐次工具审批扩展（自 pi 内置迁主仓部署，零 fork）。
+/// 在 Hub setup hook 调用，每次启动自动确保。
 pub fn ensure_jishu_tool_approval_extension() {
     let Ok(agent_dir) = jishu_agent_dir() else {
         return;
@@ -257,17 +256,98 @@ pub fn ensure_jishu_batch_guard_extension() {
     register_extension_in_settings(&agent_dir, REL);
 }
 
-pub fn ensure_request_user_input_extension() {
+/// v0.9.5 需求5：settings.json extensions 数组幂等移除 `rel_path`（register
+/// 的逆；数组移空则保留空数组，不动其它键）。
+pub(crate) fn unregister_extension_from_settings(agent_dir: &Path, rel_path: &str) {
+    let settings_path = agent_dir.join("settings.json");
+    let content = std::fs::read_to_string(&settings_path).unwrap_or_else(|_| "{}".to_string());
+    let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    if !settings.is_object() {
+        return;
+    }
+    let Some(arr) = settings
+        .get_mut("extensions")
+        .and_then(|v| v.as_array_mut())
+    else {
+        return;
+    };
+    let before = arr.len();
+    arr.retain(|v| v.as_str() != Some(rel_path));
+    if arr.len() == before {
+        return;
+    }
+    if let Ok(new_content) = serde_json::to_string_pretty(&settings) {
+        let _ = std::fs::write(&settings_path, new_content);
+    }
+}
+
+/// v0.9.5 需求5：下线自研 pi 扩展（一次性迁移，幂等）——删除已部署的
+/// 扩展文件 + settings.json extensions 注册条目。被 npm 包扩展替换：
+/// request-user-input.ts → @juicesharp/rpiv-ask-user-question（ask_user_question），
+/// jishu-subagent.ts → pi-subagents（subagent/bg_wait）。
+pub(crate) fn retire_extension(agent_dir: &Path, rel_path: &str) {
+    let target = agent_dir.join(rel_path);
+    if target.exists() {
+        let _ = std::fs::remove_file(&target);
+    }
+    unregister_extension_from_settings(agent_dir, rel_path);
+}
+
+/// v0.9.5 需求5：自研 request_user_input 扩展下线（能力由 npm 包
+/// rpiv-ask-user-question 的 ask_user_question 承接，GUI 确认卡链路不变）。
+pub fn retire_request_user_input_extension() {
     let Ok(agent_dir) = jishu_agent_dir() else {
         return;
     };
-    ensure_request_user_input_extension_in(&agent_dir);
+    retire_extension(&agent_dir, "extensions/request-user-input.ts");
 }
 
-fn ensure_request_user_input_extension_in(agent_dir: &Path) {
-    const RUI_EXT_REL: &str = "extensions/request-user-input.ts";
-    deploy_extension_file(agent_dir, RUI_EXT_REL, REQUEST_USER_INPUT_EXTENSION_TS);
-    register_extension_in_settings(agent_dir, RUI_EXT_REL);
+/// v0.9.5 需求5：自研 dispatch_subagent 委派扩展下线（能力由 npm 包
+/// pi-subagents 的 subagent 承接，前台流式工具卡交互不变）。
+pub fn retire_jishu_subagent_extension() {
+    let Ok(agent_dir) = jishu_agent_dir() else {
+        return;
+    };
+    retire_extension(&agent_dir, "extensions/jishu-subagent.ts");
+}
+
+/// v0.9.5 需求5：pi-subagents 运行时配置（幂等）——HUB 每消息一个 pi
+/// 进程，异步 runner 在 win32 非 detached 会被进程回收连带杀掉，故钉
+/// `asyncByDefault:false`（前台进程内子代理 + onUpdate 流式，与旧
+/// dispatch_subagent 工具卡一致）。落点 `extensions/subagent/config.json`
+///（包内 getAgentDir 经宿主 piConfig 解析到 ~/.jishu-agent/agent）。
+/// 仅当键缺失时补写——用户显式配置（true/false）优先。
+pub fn ensure_subagents_runtime_config() {
+    let Ok(agent_dir) = jishu_agent_dir() else {
+        return;
+    };
+    ensure_subagents_runtime_config_in(&agent_dir);
+}
+
+fn ensure_subagents_runtime_config_in(agent_dir: &Path) {
+    let config_path = agent_dir
+        .join("extensions")
+        .join("subagent")
+        .join("config.json");
+    let mut config: serde_json::Value = match std::fs::read_to_string(&config_path) {
+        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(v) if v.is_object() => v,
+            _ => serde_json::json!({}),
+        },
+        Err(_) => serde_json::json!({}),
+    };
+    if config.get("asyncByDefault").is_some() {
+        return;
+    }
+    config["asyncByDefault"] = serde_json::Value::Bool(false);
+    if let Some(parent) = config_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(content) = serde_json::to_string_pretty(&config) {
+        let _ = std::fs::write(&config_path, content);
+    }
 }
 
 /// 自动部署 `session-context` 扩展：把当前 session_id 注入 system prompt（每轮），
@@ -295,6 +375,18 @@ pub fn ensure_html_preview_extension() {
     const HP_EXT_REL: &str = "extensions/html-preview.ts";
     deploy_extension_file(&agent_dir, HP_EXT_REL, HTML_PREVIEW_EXTENSION_TS);
     register_extension_in_settings(&agent_dir, HP_EXT_REL);
+}
+
+/// v0.9.5 需求1（原需求26）6b：通用 plugin-invoke 扩展部署（幂等）——读取
+/// hub 物化的 agent-tools.json 动态注册 agent 工具（扩展文件静态，声明数据
+/// 运行时读；启停联动经 materialize_agent_tools 刷新物化面）。
+pub fn ensure_plugin_invoke_extension() {
+    let Ok(agent_dir) = jishu_agent_dir() else {
+        return;
+    };
+    const REL: &str = "extensions/plugin-invoke.ts";
+    deploy_extension_file(&agent_dir, REL, PLUGIN_INVOKE_EXTENSION_TS);
+    register_extension_in_settings(&agent_dir, REL);
 }
 
 pub fn read_installed_skill(dir: &Path, skill_id: &str) -> Result<Option<TaskPlanSkill>, String> {
@@ -383,7 +475,7 @@ fn parse_skill_markdown(
         .unwrap_or_else(|| fallback_id.to_string());
     let name = meta.get("name").cloned().unwrap_or_else(|| id.clone());
     let description = meta.get("description").cloned().unwrap_or_default();
-    let content_bytes = content.as_bytes().len() as u64;
+    let content_bytes = content.len() as u64;
     let content_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
     let (valid, error, roles, workflow_hints) = match parse_manifest(content) {
         Ok(manifest) => {
@@ -683,43 +775,119 @@ description: demo
     #[test]
     fn ensure_both_extensions_deploy_and_register() {
         let dir = ext_test_dir("both");
-        ensure_conductor_extension_in(&dir);
-        ensure_request_user_input_extension_in(&dir);
-        // 两个 .ts 扩展文件已部署
-        assert!(dir.join("extensions/jishu-task-conductor.ts").is_file());
-        assert!(dir.join("extensions/request-user-input.ts").is_file());
-        // conductor skill pack 仍在
+        ensure_task_runner_extension_in(&dir);
+        // runner .ts 扩展文件已部署
+        assert!(dir.join("extensions/jishu-task-runner.ts").is_file());
+        // runner skill pack 已部署
         assert!(dir
-            .join("skills/jishu-conductor-dev/discuss.SKILL.md")
+            .join("skills/jishu-conductor-dev/runner.SKILL.md")
             .is_file());
-        // settings.json 同时含两条扩展
+        // settings.json 含 runner 扩展
         let arr = settings_extensions(&dir);
-        assert!(arr.contains(&"extensions/jishu-task-conductor.ts".into()));
-        assert!(arr.contains(&"extensions/request-user-input.ts".into()));
+        assert!(arr.contains(&"extensions/jishu-task-runner.ts".into()));
+        // conductor 退役：预置旧扩展文件 + settings 条目后重跑，应被清除。
+        std::fs::write(dir.join("extensions/jishu-task-conductor.ts"), "// retired").unwrap();
+        let settings = serde_json::json!({
+            "extensions": [
+                "extensions/jishu-task-runner.ts",
+                "extensions/jishu-task-conductor.ts",
+            ],
+        });
+        std::fs::write(
+            dir.join("settings.json"),
+            serde_json::to_string_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+        ensure_task_runner_extension_in(&dir);
+        assert!(!dir.join("extensions/jishu-task-conductor.ts").exists());
+        assert!(!settings_extensions(&dir).contains(&"extensions/jishu-task-conductor.ts".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.9.5 需求5：自研扩展下线迁移——retire_extension 删文件 + 摘
+    /// settings.json 注册（幂等：重复调用无副作用，未部署过也安全）。
+    #[test]
+    fn retire_extension_removes_file_and_registration() {
+        let dir = ext_test_dir("retire");
+        std::fs::create_dir_all(dir.join("extensions")).unwrap();
+        std::fs::write(dir.join("extensions/x-retire.ts"), "old").unwrap();
+        // settings.json 预置：目标条目 + 其它条目共存
+        let settings = serde_json::json!({
+            "extensions": ["extensions/x-retire.ts", "extensions/keep.ts"],
+            "packages": ["npm:pi-subagents@0.72.0"],
+        });
+        std::fs::write(
+            dir.join("settings.json"),
+            serde_json::to_string_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+
+        retire_extension(&dir, "extensions/x-retire.ts");
+        assert!(!dir.join("extensions/x-retire.ts").exists());
+        let arr = settings_extensions(&dir);
+        assert!(!arr.contains(&"extensions/x-retire.ts".to_string()));
+        assert!(arr.contains(&"extensions/keep.ts".to_string()));
+        // packages 键不受影响（扩展注册与包注册分治）
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            parsed["packages"][0].as_str().unwrap(),
+            "npm:pi-subagents@0.72.0"
+        );
+        // 幂等：再次 retire 无副作用
+        retire_extension(&dir, "extensions/x-retire.ts");
+        assert!(settings_extensions(&dir).contains(&"extensions/keep.ts".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.9.5 需求5：pi-subagents 运行时配置——缺键补 asyncByDefault:false，
+    /// 已有显式值不覆盖。
+    #[test]
+    fn subagents_runtime_config_patched_only_when_key_missing() {
+        let dir = ext_test_dir("subagent-cfg");
+        let config_path = dir.join("extensions").join("subagent").join("config.json");
+        ensure_subagents_runtime_config_in(&dir); // 缺文件 → 建默认
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(cfg["asyncByDefault"].as_bool(), Some(false));
+        // 用户显式 true + 其它键 → 不覆盖、不丢失
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(
+                &serde_json::json!({"asyncByDefault": true, "maxSubagentDepth": 2}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        ensure_subagents_runtime_config_in(&dir);
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(cfg["asyncByDefault"].as_bool(), Some(true));
+        assert_eq!(cfg["maxSubagentDepth"].as_u64(), Some(2));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// v0.9.2 测试期修复回归（用户裁决：唯一正确目录，无双写）：skill pack
     /// 只写 Pi 原生 agent 目录；历史错误位置（<根>/skills）的残留被清理。
+    /// v0.9.7 需求2：runner 技能单份；旧三份阶段技能属退役清理面。
     #[test]
     fn conductor_skill_pack_single_location_and_stale_root_cleaned() {
         let root = ext_test_dir("root-skills");
         let agent_dir = root.join("agent");
         std::fs::create_dir_all(&agent_dir).unwrap();
-        // 预置历史错误位置的残留
+        // 预置历史错误位置的残留 + 旧阶段技能（退役对象）
         let stale = root.join("skills").join("jishu-conductor-dev");
         std::fs::create_dir_all(&stale).unwrap();
         std::fs::write(stale.join("discuss.SKILL.md"), "stale").unwrap();
+        let skills_dir = agent_dir.join("skills").join("jishu-conductor-dev");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("plan.SKILL.md"), "retired").unwrap();
 
-        ensure_conductor_extension_in(&agent_dir);
+        ensure_task_runner_extension_in(&agent_dir);
 
-        for phase in ["discuss", "plan", "execute"] {
-            assert!(agent_dir
-                .join("skills")
-                .join("jishu-conductor-dev")
-                .join(format!("{phase}.SKILL.md"))
-                .is_file());
-        }
+        assert!(skills_dir.join("runner.SKILL.md").is_file());
+        assert!(!skills_dir.join("plan.SKILL.md").exists());
         // 错误位置残留被清理（skills 目录本身若空也不强删——只清 conductor 相关）
         assert!(!stale.exists());
         let _ = std::fs::remove_dir_all(&root);

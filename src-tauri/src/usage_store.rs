@@ -372,7 +372,10 @@ fn record_compaction_on(
     .map_err(|e| e.to_string())
 }
 
-fn read_on(conn: &Connection, session_id: &str) -> Result<SessionUsageRow, String> {
+/// 第五轮评审 P2-5：错误类型还原为 rusqlite::Error——调用方按需折叠
+/// （get 折一切为全零行老口径；get_optional 仅折叠 QueryReturnedNoRows，
+/// 其余上抛），不再在此提前 String 化丢失错误类别。
+fn read_on(conn: &Connection, session_id: &str) -> Result<SessionUsageRow, rusqlite::Error> {
     conn.query_row(
         "SELECT input_tokens, output_tokens, cache_read, cache_write, total_cost,
                 context_remaining, context_window_total, est_thinking, est_text,
@@ -402,7 +405,6 @@ fn read_on(conn: &Connection, session_id: &str) -> Result<SessionUsageRow, Strin
             })
         },
     )
-    .map_err(|e| e.to_string())
 }
 
 /// 读取会话累计用量（无记录返回全零行）。
@@ -457,10 +459,7 @@ pub struct UsagePricingConfig {
 }
 
 fn load_pricing_config() -> Option<UsagePricingConfig> {
-    let path = db_path()
-        .ok()?
-        .parent()?
-        .join("usage-pricing.json");
+    let path = db_path().ok()?.parent()?.join("usage-pricing.json");
     let raw = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&raw).ok()
 }
@@ -569,7 +568,8 @@ fn daily_summary_on(conn: &Connection, since_secs: i64) -> Result<Vec<UsageDaily
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 pub fn get(session_id: &str) -> Result<SessionUsageRow, String> {
@@ -577,7 +577,24 @@ pub fn get(session_id: &str) -> Result<SessionUsageRow, String> {
     let conn = s.conn.lock().map_err(|e| e.to_string())?;
     match read_on(&conn, session_id) {
         Ok(row) => Ok(row),
+        // 老口径：miss/读失败一律全零行（chat/mcp_server 历史调用方依赖）。
         Err(_) => Ok(SessionUsageRow::default()),
+    }
+}
+
+/// 第四轮评审 P2：无记录语义——get 对 miss 返回全零行（chat/mcp_server
+/// 等历史调用方依赖该口径）；hub 开放面（hub_plugin_sessions join /
+/// usage_session 命令）需要区分「无记账」与「真零」，用本函数拿 None。
+/// 第五轮评审 P2-5：仅「查无此行」折叠为 None——数据库损坏/IO 失败等
+/// 真实错误原样上抛（修前一切 Err 都当「未记账」吞掉，权威源故障在
+/// 统计面不可见）；列表 join 调用方自行局部化（warn 后按 None 计）。
+pub fn get_optional(session_id: &str) -> Result<Option<SessionUsageRow>, String> {
+    let s = store()?;
+    let conn = s.conn.lock().map_err(|e| e.to_string())?;
+    match read_on(&conn, session_id) {
+        Ok(row) => Ok(Some(row)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -619,6 +636,16 @@ mod tests {
         assert_eq!(row.est_builtin_tool, 60);
         assert_eq!(row.tool_calls, 2);
         assert_eq!(row.compactions, 0);
+
+        // 第四轮评审 P2：miss 必须 Err——get_optional 的 None 语义分叉点
+        //（get 全零兜底 vs get_optional None，两者都以此为先决条件）。
+        // 第五轮评审 P2-5：miss 的错误类别必须是 QueryReturnedNoRows
+        //（get_optional 仅折叠该类，其余上抛——错误类别在此钉死）。
+        let miss = read_on(&conn, "no-such-session").unwrap_err();
+        assert!(
+            matches!(miss, rusqlite::Error::QueryReturnedNoRows),
+            "miss 应为 QueryReturnedNoRows，got: {miss:?}"
+        );
 
         let n: i64 = conn
             .query_row(
@@ -717,14 +744,14 @@ mod tests {
         assert_eq!(read_on(&conn, "new").unwrap().segments, 1);
     }
 
-/// v0.9.3 需求7：v2 旧库（usage_segment 无 cost 列）经 init_conn 迁移补列，
-/// 既有数据保留；新分段记账写入 cost。
-#[test]
-fn cost_column_migration_preserves_v2_data() {
-    let conn = Connection::open_in_memory().unwrap();
-    // 旧 v2 形状的 usage_segment（无 cost）+ user_version=2。
-    conn.execute_batch(
-        "CREATE TABLE usage_segment (
+    /// v0.9.3 需求7：v2 旧库（usage_segment 无 cost 列）经 init_conn 迁移补列，
+    /// 既有数据保留；新分段记账写入 cost。
+    #[test]
+    fn cost_column_migration_preserves_v2_data() {
+        let conn = Connection::open_in_memory().unwrap();
+        // 旧 v2 形状的 usage_segment（无 cost）+ user_version=2。
+        conn.execute_batch(
+            "CREATE TABLE usage_segment (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL,
             agent_id   TEXT NOT NULL DEFAULT '',
@@ -746,68 +773,68 @@ fn cost_column_migration_preserves_v2_data() {
         INSERT INTO usage_segment (session_id, agent_id, ts, input_tokens, output_tokens)
         VALUES ('legacy', 'jishu-self', 1700000000, 100, 50);
         PRAGMA user_version = 2;",
-    )
-    .unwrap();
-
-    init_conn(&conn).unwrap();
-
-    // 版本未变 → 未触发 DROP 重建，旧数据在且补了 cost 列（默认 0）。
-    let (tokens, cost): (i64, f64) = conn
-        .query_row(
-            "SELECT input_tokens, cost FROM usage_segment WHERE session_id='legacy'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(tokens, 100);
-    assert_eq!(cost, 0.0);
 
-    // 新记账带 cost。
-    let mut seg = seg(10, 5);
-    seg.total_cost = 0.02;
-    record_segment_on(&conn, "jishu-self", "new", &seg).unwrap();
-    let cost: f64 = conn
-        .query_row(
-            "SELECT cost FROM usage_segment WHERE session_id='new'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!((cost - 0.02).abs() < 1e-9);
-}
+        init_conn(&conn).unwrap();
 
-/// v0.9.3 需求7：按日聚合按**秒**比较与取日期（修复旧毫秒单位 bug——
-/// 旧查询下趋势恒空），cost 逐日累计。
-#[test]
-fn daily_summary_aggregates_by_day_in_seconds() {
-    let conn = Connection::open_in_memory().unwrap();
-    init_conn(&conn).unwrap();
-    let base = 1_750_000_000i64; // 2025-06 起
-    let day = 24 * 3600;
-    // 两天各两段，显式 ts（record_segment_on 用当前时间不可控）。
-    for (ts, in_tok, cost) in [
-        (base, 100, 0.01),
-        (base + 3600, 50, 0.02),
-        (base + day, 200, 0.05),
-    ] {
-        conn.execute(
-            "INSERT INTO usage_segment (session_id, agent_id, ts, input_tokens, cost)
-             VALUES ('s1', 'a', ?1, ?2, ?3)",
-            rusqlite::params![ts, in_tok, cost],
-        )
-        .unwrap();
+        // 版本未变 → 未触发 DROP 重建，旧数据在且补了 cost 列（默认 0）。
+        let (tokens, cost): (i64, f64) = conn
+            .query_row(
+                "SELECT input_tokens, cost FROM usage_segment WHERE session_id='legacy'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tokens, 100);
+        assert_eq!(cost, 0.0);
+
+        // 新记账带 cost。
+        let mut seg = seg(10, 5);
+        seg.total_cost = 0.02;
+        record_segment_on(&conn, "jishu-self", "new", &seg).unwrap();
+        let cost: f64 = conn
+            .query_row(
+                "SELECT cost FROM usage_segment WHERE session_id='new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!((cost - 0.02).abs() < 1e-9);
     }
 
-    let daily = daily_summary_on(&conn, base - day).unwrap();
-    assert_eq!(daily.len(), 2);
-    assert_eq!(daily[0].input_tokens, 150);
-    assert!((daily[0].cost - 0.03).abs() < 1e-9);
-    assert_eq!(daily[1].input_tokens, 200);
-    assert!((daily[1].cost - 0.05).abs() < 1e-9);
-    // 日期是真实日历日（旧 bug 下会是 1970 附近或恒空）。
-    assert_ne!(daily[0].day, "1970-01-01");
+    /// v0.9.3 需求7：按日聚合按**秒**比较与取日期（修复旧毫秒单位 bug——
+    /// 旧查询下趋势恒空），cost 逐日累计。
+    #[test]
+    fn daily_summary_aggregates_by_day_in_seconds() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_conn(&conn).unwrap();
+        let base = 1_750_000_000i64; // 2025-06 起
+        let day = 24 * 3600;
+        // 两天各两段，显式 ts（record_segment_on 用当前时间不可控）。
+        for (ts, in_tok, cost) in [
+            (base, 100, 0.01),
+            (base + 3600, 50, 0.02),
+            (base + day, 200, 0.05),
+        ] {
+            conn.execute(
+                "INSERT INTO usage_segment (session_id, agent_id, ts, input_tokens, cost)
+             VALUES ('s1', 'a', ?1, ?2, ?3)",
+                rusqlite::params![ts, in_tok, cost],
+            )
+            .unwrap();
+        }
 
-    // 窗口外不聚合：since 晚于次日 → 只剩空。
-    assert!(daily_summary_on(&conn, base + day + 1).unwrap().is_empty());
-}
+        let daily = daily_summary_on(&conn, base - day).unwrap();
+        assert_eq!(daily.len(), 2);
+        assert_eq!(daily[0].input_tokens, 150);
+        assert!((daily[0].cost - 0.03).abs() < 1e-9);
+        assert_eq!(daily[1].input_tokens, 200);
+        assert!((daily[1].cost - 0.05).abs() < 1e-9);
+        // 日期是真实日历日（旧 bug 下会是 1970 附近或恒空）。
+        assert_ne!(daily[0].day, "1970-01-01");
+
+        // 窗口外不聚合：since 晚于次日 → 只剩空。
+        assert!(daily_summary_on(&conn, base + day + 1).unwrap().is_empty());
+    }
 }

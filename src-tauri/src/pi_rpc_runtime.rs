@@ -1,5 +1,14 @@
 //! Pi native RPC protocol runtime (adapter for `--mode rpc`).
 //!
+//! 【§12 规模处置说明（v0.9.5 三轮评审 C13，拆分已执行）】本文件原 3900+
+//! 行超 2500 红线，已按预案完成三段纯移动拆出（零逻辑变更）：
+//! ①事件归一化 → [`normalize`]（normalize_pi_agent_event 与用量/压缩归因）；
+//! ②问答卡协议翻译 → [`protocol`]（rpiv-ask 哨兵/多选还原/自动应答静态表）；
+//! ③hub_invoke 分发 → [`hub_invoke`]（桥接命令与 HUB_APP_HANDLE）。
+//! 主文件保留连接循环（LoopState 状态机 + 三看门狗 + 合批 flush——按 §12
+//! 边界问强耦合状态机整体保留）与测试模块。子模块项经本文件根 `pub(crate)
+//! use` 重导出，`crate::pi_rpc_runtime::X` 外部路径不变。
+//!
 //! Pi's RPC mode uses simple JSON-line commands/responses rather than
 //! JSON-RPC 2.0. This module translates between Pi's native protocol
 //! and the `AcpControl` / `NormalizedEvent` interfaces used by the GUI.
@@ -8,6 +17,27 @@
 //! - Commands (stdin):  `{"type":"prompt","message":"..."}`, `{"type":"abort"}`
 //! - Responses (stdout): `{"type":"response","command":"prompt","success":true}`
 //! - Events (stdout):   AgentEvent objects (`message_update`, `tool_execution_*`, …)
+
+mod hub_invoke;
+mod normalize;
+mod protocol;
+
+// 子模块项经根重导出：外部 `crate::pi_rpc_runtime::X` 路径与文件内 tests 的
+// `super::X` 引用均保持拆分前形态（§12：原 pub 项经根 pub use 重导出）。
+// allow：部分名字的消费面是 #[cfg(test)] tests 模块——lib check 时未编译。
+#[allow(unused_imports)]
+pub(crate) use hub_invoke::{handle_hub_invoke, HUB_APP_HANDLE};
+#[allow(unused_imports)]
+pub(crate) use normalize::{
+    normalize_pi_agent_event, pi_compaction_record, pi_segment_usage, pi_turn_usage,
+};
+#[allow(unused_imports)]
+pub(crate) use protocol::{
+    convert_extension_ui_request, interaction_auto_answer, interaction_sentinels,
+    is_sentinel_option, migrate_auto_answer_key, multi_select_requests, rewrite_multiselect_input,
+    rewrite_multiselect_response, rewrite_sentinel_response, strip_sentinel_option,
+    take_interaction_auto_answer, PiToolApproval, PROTOCOL_TABLE_LIMIT,
+};
 
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,6 +53,8 @@ use crate::agent::normalized::{
     InteractionOrigin, InteractionTransport, NormalizedEvent, TurnEndReason, UsageStats,
 };
 use crate::agent::ResolvedSessionPromptInjection;
+// v0.9.5 需求2 测试期：连接循环关键事实 → 前端日志中心（[runtime] 类别）。
+use crate::dev_log_bridge::{dev_log_emitter, noop_dev_log_emitter, DevLogEmit};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -30,11 +62,12 @@ use crate::agent::ResolvedSessionPromptInjection;
 
 /// Spawn the Pi RPC driver: starts Pi in `--mode rpc`, returns an
 /// `AcpControl` that speaks Pi's native protocol internally.
+#[allow(clippy::too_many_arguments)] // 连接装配参数清单（各 transport 同形态），打包结构体属 API 重设计
 pub fn spawn_pi_rpc_session(
     app: tauri::AppHandle,
     agent_id: String,
     pending_session_id: String,
-    mut child: tokio::process::Child,
+    child: tokio::process::Child,
     _project_path: String,
     _requested_session_id: Option<String>,
     first_message: Option<String>,
@@ -42,6 +75,9 @@ pub fn spawn_pi_rpc_session(
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
 ) -> AcpControl {
+    // v0.9.5 需求2 测试期：日志中心桥发射器需借用 app——先于 emitter 构造
+    //（tauri_event_emitter 接收 app 所有权）。
+    let devlog = dev_log_emitter(&app);
     let emit = tauri_event_emitter(app, agent_id.clone());
     // 需求1 A7：Hub 侧 thinking 档位偏好（state.json），spawn 时应用。
     let thinking_pref = crate::hub::load_agent_thinking_level(&agent_id);
@@ -49,6 +85,7 @@ pub fn spawn_pi_rpc_session(
     let auto_compaction_pref = crate::hub::load_agent_auto_compaction(&agent_id);
     spawn_pi_rpc_session_inner(
         emit,
+        devlog,
         agent_id,
         pending_session_id,
         child,
@@ -77,6 +114,8 @@ pub fn spawn_pi_rpc_session_with_emitter(
 ) -> AcpControl {
     spawn_pi_rpc_session_inner(
         emit,
+        // 编排器会话无 AppHandle——非 GUI 会话不进日志中心。
+        noop_dev_log_emitter(),
         agent_id,
         pending_session_id,
         child,
@@ -93,6 +132,7 @@ pub fn spawn_pi_rpc_session_with_emitter(
 #[allow(clippy::too_many_arguments)]
 fn spawn_pi_rpc_session_inner(
     emit: AcpEventEmit,
+    devlog: DevLogEmit,
     agent_id: String,
     pending_session_id: String,
     mut child: tokio::process::Child,
@@ -103,6 +143,8 @@ fn spawn_pi_rpc_session_inner(
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
 ) -> AcpControl {
+    // v0.9.5：watchdog 杀进程用 pid（child 的所有权在下方移入清理任务）。
+    let child_pid = child.id();
     let stdin = child.stdin.take().expect("Pi RPC process must have stdin");
     let stdout = child
         .stdout
@@ -112,6 +154,9 @@ fn spawn_pi_rpc_session_inner(
 
     let stdin_arc = Arc::new(TokioMutex::new(stdin));
     let acp_session_id = Arc::new(std::sync::Mutex::new(None::<String>));
+    // 四轮评审 P2-1：退出清扫需读 resolve 后的真实会话 id（原件 move 进
+    // 连接循环，此处留一份给循环退出后的清扫路径）。
+    let acp_session_id_for_cleanup = acp_session_id.clone();
 
     // Capture stderr for diagnostics
     let stderr_buf = Arc::new(TokioMutex::new(String::new()));
@@ -124,11 +169,25 @@ fn spawn_pi_rpc_session_inner(
                 let mut buf = stderr_buf_clone.lock().await;
                 buf.push_str(&line);
                 buf.push('\n');
+                // v0.9.5 收口质量审查 P2：诊断用 stderr 环形截断——失败取证
+                // 只取尾部（stderr 富化取尾 500 字节），长会话全量堆内存无收益。
+                // 切割点对齐 UTF-8 字符边界（drain 落在多字节字符中间会 panic）。
+                const STDERR_TAIL_LIMIT: usize = 8 * 1024;
+                if buf.len() > STDERR_TAIL_LIMIT {
+                    let mut cut = buf.len() - STDERR_TAIL_LIMIT;
+                    while !buf.is_char_boundary(cut) {
+                        cut += 1;
+                    }
+                    buf.drain(..cut);
+                }
             }
         });
     }
 
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(8);
+
+    // v0.9.6 需求6 F4：收尾信号（true = 循环退出、进程已清理）。
+    let (finished_tx, _) = tokio::sync::watch::channel(false);
 
     let control = AcpControl {
         tx: cmd_tx,
@@ -138,14 +197,18 @@ fn spawn_pi_rpc_session_inner(
         // （true）；resume-fork 形态 first_message=None，停在 Idle 等待
         // ForkSession（false）。
         turn_active: Arc::new(AtomicBool::new(first_message.is_some())),
+        finished: Arc::new(finished_tx),
     };
     let control_clone = control.clone();
     let turn_active_for_loop = control.turn_active.clone();
     let turn_active_for_exit = control.turn_active.clone();
+    // v0.9.6 需求6 F4：退出路径发收尾信号（watch sender 克隆进清理任务）。
+    let finished_for_exit = control.finished.clone();
 
     tauri::async_runtime::spawn(async move {
         let result = pi_rpc_connection_loop(
             emit.clone(),
+            devlog.clone(),
             agent_id.clone(),
             pending_session_id.clone(),
             stdin_arc,
@@ -158,8 +221,28 @@ fn spawn_pi_rpc_session_inner(
             auto_compaction_pref,
             turn_active_for_loop,
             &on_session_resolved,
+            child_pid,
         )
         .await;
+
+        // 三轮评审 B2：会话连接退出——清扫本会话挂起的哨兵自动应答（未送达
+        // 的追问 input 永不到，条目不再滞留；协议表其余两张按 request_id 键、
+        // 由 PROTOCOL_TABLE_LIMIT 守卫）。四轮评审 P2-1：resolve 后登记键是
+        // pi 真实 id（migrate_auto_answer_key 已随迁），真实 id 键一并清扫；
+        // pending 键防御性同删（resolve 前退出时兜底）。
+        {
+            let real_id = acp_session_id_for_cleanup
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let mut reg = interaction_auto_answer()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.remove(&pending_session_id);
+            if let Some(real) = real_id {
+                reg.remove(&real);
+            }
+        }
 
         if let Err(err) = &result {
             // Enrich error with stderr output
@@ -170,11 +253,19 @@ fn spawn_pi_rpc_session_inner(
                 } else {
                     &stderr_content
                 };
-                format!("{}\n--- Pi stderr ---\n{}", err, tail.trim())
+                // 三轮评审 P1-4 补漏：此 Err 经 NormalizedEvent::Error 直达界面，
+                // 分隔行不得暴露内部引擎代号（Pi）。
+                format!("{}\n--- 智能体引擎 stderr ---\n{}", err, tail.trim())
             } else {
                 err.clone()
             };
             log::warn!("Pi RPC connection loop exited with error: {}", enriched_err);
+            devlog(
+                "error",
+                "连接循环退出（异常——Error+TurnComplete 已发前端）",
+                &pending_session_id,
+                json!({ "error": enriched_err }),
+            );
             let events = vec![
                 NormalizedEvent::SessionResolved {
                     session_id: pending_session_id.clone(),
@@ -195,6 +286,12 @@ fn spawn_pi_rpc_session_inner(
                 "Pi RPC connection loop exited normally for session {}",
                 pending_session_id
             );
+            devlog(
+                "info",
+                "连接循环退出（正常路径——idle 回收/Shutdown/EOF/watchdog 杀进程，见上方 runtime 日志）",
+                &pending_session_id,
+                json!({}),
+            );
         }
 
         // Ensure child exits
@@ -213,6 +310,9 @@ fn spawn_pi_rpc_session_inner(
         // v0.8.0 需求7：循环已退出（正常或出错），回合必然不再进行。
         turn_active_for_exit.store(false, Ordering::Relaxed);
 
+        // v0.9.6 需求6 F4：通知等待方（漂移回收）收尾完成。
+        let _ = finished_for_exit.send(true);
+
         on_finish();
     });
 
@@ -229,7 +329,74 @@ enum LoopState {
     CancelPending { pending_prompt: Option<String> },
 }
 
+/// v0.9.6 需求6 F2：回合分级看门狗相位。
+/// 取代 v0.9.5 的单闹钟 `prompt_ack_at`（20s，response 到达即解除——实测该
+/// 等价不成立：pi 的 prompt response success 只代表 preflight「started」，
+/// 回合真正启动（压缩预检/before_agent_start/LLM 首请求）之前的静默无人
+/// 看护，命中即永停 Prompting、前端永「思考中」且消息不落盘）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WatchdogPhase {
+    /// prompt 已写 stdin，等 rpc response。response 之前 pi 可能先跑自动压缩
+    /// 预检（summarize 的 LLM chunk 不外发 stdout——对 hub 整段静默，大上下文
+    /// +思考模型分钟级且无 transport 上限约束）+ auth 刷新（≤15s）+
+    /// before_agent_start 钩子（内置 MCP ≤10s；第三方理论无界）→ 宽窗。
+    AwaitResponse,
+    /// response(started) 已到，等首个回合事件。started→agent_start/turn_start
+    /// 之间无 I/O（仅扩展微任务链，MCP 重连秒级）→ 紧凑窗。
+    AwaitTurnStart,
+}
+
+/// v0.9.6 需求6 F2：各相位窗口（依据见 WatchdogPhase 注释；触发均出
+/// recoverable Error 引导重发，devlog 留证可调窗）。
+const WATCHDOG_AWAIT_RESPONSE: Duration = Duration::from_secs(300);
+const WATCHDOG_AWAIT_TURN_START: Duration = Duration::from_secs(15);
+
+/// v0.9.6 需求6 F2：窗口选择（纯函数，供单测）。
+/// v0.9.6 需求9 哲学修正（2026-11-07 评审 P2-1 清理）：原 in_compaction
+/// 宽窄窗参数随 InTurn 相位废除而失去消费者——删除死参数，窗口仅由相位决定。
+fn turn_watchdog_window(phase: WatchdogPhase) -> Duration {
+    match phase {
+        WatchdogPhase::AwaitResponse => WATCHDOG_AWAIT_RESPONSE,
+        WatchdogPhase::AwaitTurnStart => WATCHDOG_AWAIT_TURN_START,
+    }
+}
+
+/// v0.9.6 需求6 F2：事件驱动的相位转移（纯函数，供单测）。
+/// （需求9 哲学修正前的旧语义「升 InTurn/宽窄窗」已废除——见下方裁决注释。）
+/// v0.9.6 需求9 用户哲学裁决（2026-11-06）：「当时永远思考中不是 pi 死了，
+/// 更像是消息没到 pi……坚决的相信 pi 没问题」。看门狗职责收窄为**投递确认**
+/// ——回合一旦启动（首个回合事件到达）= 投递成功铁证，解除看门狗，此后
+/// 无条件信任 pi 直到收口（agent_settled/turn_complete）或进程退出（EOF）。
+/// 回合内的长静默（LLM 思考/工具执行/等待作答）全部是 pi 的正常形态，
+/// hub 不再猜测、不再判死（InTurn 相位废除——它按「pi 可能挂死」的假设
+/// 设计，实际病根在 hub 投递链路，且已两度误杀：等待作答/长构建）。
+fn watchdog_phase_on_event(_phase: WatchdogPhase, _event_type: &str) -> Option<WatchdogPhase> {
+    None // 调用点据此解除看门狗（见事件处理处）
+}
+
+/// CancelPending（abort 后）收尾 watchdog——pi 滞留时 agent_settled 永不到
+///（停止不了的兜底）——超时杀进程终结流。
+const CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(15);
+
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// 归一化事件合批的 flush 间隔上限。行驱动的 flush 检查（每条 stdout 行
+/// 处理尾部）之外，buf 非空时以此间隔兜底：无输出长命令执行期间 pi 静默
+/// 无新行，若只靠行驱动，ToolUseStart 会在 buf 里滞留整个执行期
+///（需求4 打包卡事故：start 滞留 15 分钟才随命令结束的事件一起冲出）。
+const EVENT_FLUSH_INTERVAL: Duration = Duration::from_millis(8);
+/// 兜底 flush 触发时距上次 flush 超过此值 = 事件在静默期异常滞留，打
+/// 日志中心 warn（正常合批静默放行，不刷屏）。
+const EVENT_FLUSH_LAG_WARN: Duration = Duration::from_secs(1);
+
+/// 需求8：get_state 握手总预算。原 30s 一刀切在「5 扩展包随装 + 大会话
+/// resume」冷启动下不够（jiti 冷编译扩展/会话 JSONL 重放/lens 首跑扫描，
+/// 用户实测 30s 超时后手动重发即成功——冷活在首进程后台已完成，第二进程
+/// 秒连）。改为同进程等到底：总预算 150s，每 30s 打进度日志（stdout 保持
+/// 打开即进程存活；真死亡走「stdout closed」路径即时报错）。
+const PI_STATE_HANDSHAKE_BUDGET: Duration = Duration::from_secs(150);
+/// 握手等待进度日志步长。
+const PI_STATE_HANDSHAKE_LOG_STEP: Duration = Duration::from_secs(30);
 
 pub(crate) fn apply_resolved_session_prompt_injection(
     message: String,
@@ -245,6 +412,7 @@ pub(crate) fn apply_resolved_session_prompt_injection(
 #[allow(clippy::too_many_arguments)]
 async fn pi_rpc_connection_loop(
     emit: AcpEventEmit,
+    devlog: DevLogEmit,
     agent_id: String,
     pending_session_id: String,
     stdin_arc: Arc<TokioMutex<ChildStdin>>,
@@ -257,6 +425,7 @@ async fn pi_rpc_connection_loop(
     auto_compaction_pref: Option<bool>,
     turn_active: Arc<AtomicBool>,
     on_session_resolved: &(dyn Fn(&str) + Send + Sync),
+    child_pid: Option<u32>,
 ) -> Result<(), String> {
     // 1. stdout reader sub-task
     let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel(64);
@@ -271,12 +440,52 @@ async fn pi_rpc_connection_loop(
     let mut initial_auto_compaction: Option<bool> = None;
     // v0.8.0 需求1 A5：fork 后进程重绑到分支会话，此变量随之更新——
     // 事件 envelope、prompt 注入、日志统一引用最新会话 id。
+    // 需求8：预算制等待（见 PI_STATE_HANDSHAKE_BUDGET 注释）——同进程
+    // 等到底，不杀进程不重发；期间每 30s 打 runtime 进度日志（日志中心
+    // 可见「正在等什么」），stdout 关闭（进程死）仍即时失败。
+    let handshake_deadline = tokio::time::Instant::now() + PI_STATE_HANDSHAKE_BUDGET;
+    let mut handshake_next_log = tokio::time::Instant::now() + PI_STATE_HANDSHAKE_LOG_STEP;
     let mut session_id = loop {
-        let line = tokio::time::timeout(Duration::from_secs(30), stdout_rx.recv())
-            .await
-            .map_err(|_| "Pi RPC get_state timeout (30s)".to_string())?
-            .ok_or_else(|| "Pi RPC stdout closed before get_state response. Pi may have crashed during startup.".to_string())?;
+        let remaining = handshake_deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "智能体引擎启动超时（{}s）——扩展装载/会话恢复较慢，重发消息可恢复",
+                PI_STATE_HANDSHAKE_BUDGET.as_secs()
+            ));
+        }
+        // 三轮评审 C11：等待拆 30s 步进——静默期（无 stdout 行）也能按步打
+        // 进度日志（修前进度检查在 recv 成功之后，静默挂起期日志中心零打
+        // 点，「正在等什么」对用户不可见）。步进超时≠预算尽：打点后继续等。
+        let wait_slice = remaining.min(PI_STATE_HANDSHAKE_LOG_STEP);
+        let line = match tokio::time::timeout(wait_slice, stdout_rx.recv()).await {
+            Ok(v) => {
+                v.ok_or_else(|| "智能体引擎在启动期间意外退出（连接中断），请重试。".to_string())?
+            }
+            Err(_) => {
+                // 步进到期（非总预算尽）——打进度日志继续等下一片。
+                let waited = PI_STATE_HANDSHAKE_BUDGET
+                    - handshake_deadline.saturating_duration_since(tokio::time::Instant::now());
+                devlog(
+                    "runtime",
+                    "智能体引擎握手等待中（扩展装载/会话恢复冷启动可能较慢）",
+                    &pending_session_id,
+                    json!({ "waitedSecs": waited.as_secs(), "budgetSecs": PI_STATE_HANDSHAKE_BUDGET.as_secs() }),
+                );
+                handshake_next_log = tokio::time::Instant::now() + PI_STATE_HANDSHAKE_LOG_STEP;
+                continue;
+            }
+        };
 
+        if tokio::time::Instant::now() >= handshake_next_log {
+            let waited = PI_STATE_HANDSHAKE_BUDGET - remaining;
+            devlog(
+                "runtime",
+                "智能体引擎握手等待中（扩展装载/会话恢复冷启动可能较慢）",
+                &pending_session_id,
+                json!({ "waitedSecs": waited.as_secs(), "budgetSecs": PI_STATE_HANDSHAKE_BUDGET.as_secs() }),
+            );
+            handshake_next_log += PI_STATE_HANDSHAKE_LOG_STEP;
+        }
         if line.trim().is_empty() {
             continue;
         }
@@ -329,6 +538,11 @@ async fn pi_rpc_connection_loop(
         let mut guard = acp_session_id.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(session_id.clone());
     }
+    // v0.9.5 四轮评审 P2-1（B2 收尾）：resolve（pending 幂等 id → pi 真实
+    // id）时迁移挂起应答键——登记（chat.rs respond 传 resolve 后的 id）与
+    // 消费（循环内 session_id）都用真实 id；不迁移则退出清扫的 pending 键
+    // 与登记键不同源，新会话场景（两 id 不同）清扫恒 miss。
+    migrate_auto_answer_key(&pending_session_id, &session_id);
 
     // Emit SessionResolved
     emit(
@@ -386,6 +600,17 @@ async fn pi_rpc_connection_loop(
     }
     on_session_resolved(&session_id);
 
+    // v0.9.6 需求6 F2：回合分级看门狗状态（相位 + 绝对时刻，事件到达刷新）：
+    // - turn_watchdog：AwaitResponse（等 response，宽窗——response 前可能先跑
+    //   压缩预检）→ AwaitTurnStart（response started 后等首个回合事件，紧凑窗）
+    //   → InTurn（回合事件流兜底窗；compaction 括号内宽窗）。取代 v0.9.5 的
+    //   prompt_ack_at 单闹钟（其「response 即解除」= 回合启动前静默盲区）。
+    // - cancel_settle_at：abort 进入 CancelPending 后 15s 未 agent_settled
+    //   的判定线——杀进程终结（pi 滞留时 turn_end(Aborted) 永不到）。
+    let mut turn_watchdog: Option<(WatchdogPhase, tokio::time::Instant)> = None;
+    let mut in_compaction = false;
+    let mut cancel_settle_at: Option<tokio::time::Instant> = None;
+
     // 3. Send first prompt. v0.8.0 需求1 A5：resume-fork 形态传 None——不发
     // prompt，连接停在 Idle 等待 ForkSession（历史会话静默分支，零历史污染）。
     let mut state = LoopState::Idle;
@@ -401,6 +626,13 @@ async fn pi_rpc_connection_loop(
         )
         .await?;
         log::debug!("Pi RPC sent first prompt");
+        // v0.9.6 需求6 F3：受理即记录待确认消息（注入后文本，与 pi 落盘
+        // 内容一致；message_end(user) 时对账清除）。
+        crate::pending_messages::record(&session_id, &agent_id, &first_message);
+        turn_watchdog = Some((
+            WatchdogPhase::AwaitResponse,
+            tokio::time::Instant::now() + turn_watchdog_window(WatchdogPhase::AwaitResponse),
+        ));
         state = LoopState::Prompting;
     }
     // v0.8.0 需求10：经 Steer 命令注入的文本登记——用于区分 pi 回显的
@@ -445,6 +677,26 @@ async fn pi_rpc_connection_loop(
         turn_active.store(!matches!(state, LoopState::Idle), Ordering::Relaxed);
         let cmd_future = command_rx.recv();
         let idle_deadline = tokio::time::Instant::now() + IDLE_TIMEOUT;
+        // v0.9.5 需求2 测试期：watchdog deadline（绝对时刻，事件到达清零——
+        // 非每轮重算，防模型慢时误杀）。
+        // 需求4 打包卡事故：buf 非空时把 flush 截止纳入 deadline——静默期
+        // 无新行驱动行尾 flush 检查，事件最多滞留一个 flush 间隔即被
+        // sleep 分支兜底发出。
+        let flush_deadline = if buf.is_empty() {
+            None
+        } else {
+            Some(tokio::time::Instant::from_std(last_flush) + EVENT_FLUSH_INTERVAL)
+        };
+        let next_deadline = [
+            Some(idle_deadline),
+            turn_watchdog.map(|(_, deadline)| deadline),
+            cancel_settle_at,
+            flush_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(idle_deadline);
 
         let exit = tokio::select! {
             cmd = cmd_future => {
@@ -463,14 +715,92 @@ async fn pi_rpc_connection_loop(
                                     "message": msg
                                 })).await?;
                                 log::info!("Pi RPC prompt sent to Pi ({} bytes)", msg.len());
+                                // v0.9.6 需求6 F3：受理即记录（Idle 直发路径）。
+                                crate::pending_messages::record(&session_id, &agent_id, &msg);
+                                turn_watchdog = Some((
+                                    WatchdogPhase::AwaitResponse,
+                                    tokio::time::Instant::now()
+                                        + turn_watchdog_window(WatchdogPhase::AwaitResponse),
+                                ));
                                 state = LoopState::Prompting;
+                                devlog(
+                                    "info",
+                                    "Prompt 直发 pi（Prompting，AwaitResponse 看门狗武装）",
+                                    &session_id,
+                                    json!({ "bytes": msg.len() }),
+                                );
                             }
                             LoopState::Prompting => {
-                                log::warn!("Pi RPC prompt ignored: still in Prompting state");
+                                // v0.9.5 需求2 测试期（会话 01a0d868 实证）：GUI 仅在
+                                // 自认空闲时发新消息（isStreaming 时前端走暂存/引导，不
+                                // 发 Prompt），此刻仍 Prompting = 循环视图滞留——settle
+                                // 后晚到的 agent_start 把 Idle 翻回 Prompting（无内容的
+                                // 生命周期事件），或滞留回合的模型流挂死。原「静默忽略」
+                                // = 用户消息丢失 + GUI 永等（turn 2 发「继续」后零事件）。
+                                // 改按「停止后重发」语义收口：取消滞留回合（含 pending
+                                // extension_ui 释放，abort 打断不了它的等待），本条消息进
+                                // pending_prompt，settle 后由 CancelPending 通道送达；pi
+                                // 无响应时 cancel watchdog 15s 杀进程兜底。
+                                log::warn!(
+                                    "Pi RPC prompt in Prompting state — aborting stale turn and resending"
+                                );
+                                if let Some(id) = pending_interaction_id.take() {
+                                    let _ = send_pi_command(&stdin_arc, &json!({
+                                        "type": "extension_ui_response",
+                                        "id": id,
+                                        "cancelled": true
+                                    })).await;
+                                }
+                                pending_turn_complete = Some(NormalizedEvent::TurnComplete {
+                                    reason: TurnEndReason::Aborted,
+                                    usage: None,
+                                });
+                                let _ = send_pi_command(&stdin_arc, &json!({
+                                    "type": "clear_queue"
+                                })).await;
+                                let _ = send_pi_command(&stdin_arc, &json!({
+                                    "type": "abort"
+                                })).await;
+                                // v0.9.5 三轮评审 P1-1：同 GUI 停止路径——进入
+                                // CancelPending 解除回合看门狗（互斥，防双闹钟
+                                // 竞速时 ack 先检查误报失联并丢弃缓冲消息）。
+                                turn_watchdog = None;
+                                cancel_settle_at =
+                                    Some(tokio::time::Instant::now() + CANCEL_SETTLE_TIMEOUT);
+                                state = LoopState::CancelPending {
+                                    pending_prompt: Some(msg),
+                                };
+                                devlog(
+                                    "warn",
+                                    "Prompting 态收到 Prompt：滞留回合取消重发（clear_queue+abort，消息缓冲，15s 收口看门狗）",
+                                    &session_id,
+                                    json!({}),
+                                );
                             }
                             LoopState::CancelPending { pending_prompt } => {
                                 log::warn!("Pi RPC prompt buffered: still CancelPending (awaiting agent_settled after abort)");
-                                *pending_prompt = Some(msg);
+                                // 三轮评审 C12：已有缓冲消息时拼接保留（\n 分隔）——
+                                // 修前静默覆盖丢前一条（编排器路径可触发：取消
+                                // 善中期连续派发多条）。拼接送达与 GUI 暂存多条
+                                // 合并发送同构。
+                                *pending_prompt = Some(match pending_prompt.take() {
+                                    Some(prev) => {
+                                        devlog(
+                                            "warn",
+                                            "CancelPending 态已缓冲一条，新消息拼接保留（不覆盖丢弃）",
+                                            &session_id,
+                                            json!({ "prevBytes": prev.len(), "newBytes": msg.len() }),
+                                        );
+                                        format!("{prev}\n{msg}")
+                                    }
+                                    None => msg,
+                                });
+                                devlog(
+                                    "warn",
+                                    "CancelPending 态收到 Prompt：缓冲，settle 后送达",
+                                    &session_id,
+                                    json!({}),
+                                );
                             }
                         }
                         false
@@ -578,6 +908,13 @@ async fn pi_rpc_connection_loop(
                                     "type": "abort"
                                 })).await;
                                 log::info!("Pi RPC cancel sent (clear_queue + abort)");
+                                // v0.9.5 三轮评审 P1-1：进入停止善中即解除回合
+                                // 看门狗——两看门狗互斥（回合看门狗只武装于
+                                // Idle/Prompting 的「等回合推进」，CancelPending 的
+                                // 兜底职责归 settle 看门狗），否则停止后误报「pi 未响应」。
+                                turn_watchdog = None;
+                                cancel_settle_at =
+                                    Some(tokio::time::Instant::now() + CANCEL_SETTLE_TIMEOUT);
                                 state = LoopState::CancelPending {
                                     pending_prompt: None,
                                 };
@@ -595,6 +932,32 @@ async fn pi_rpc_connection_loop(
                     Some(AcpCommand::RespondToInput { id, value, response }) => {
                         // Respond to a Pi extension_ui_request (planning-phase
                         // pause-resume). Pi is blocked waiting for this response.
+                        //
+                        // v0.9.6 需求8 F1：提交前权威校验——id 既不是当前 pending
+                        // 交互、也不在审批表中的「陈旧卡」（回合已被终结/进程重拉
+                        // 后残留的前端卡）直接报错，不再写 stdin：pi 对未知 id 的
+                        // extension_ui_response 静默丢弃（rpc-mode get 未命中即
+                        // return），写出去会让 hub 误报 Ok、卡消失而 agent 永远
+                        // 收不到——用户观感「提交了没反应」。报错让前端撤卡并提示。
+                        let is_current = pending_interaction_id.as_deref() == Some(id.as_str());
+                        let is_approval = pending_tool_approvals.contains_key(&id);
+                        if !is_current && !is_approval {
+                            log::warn!(
+                                "Pi RPC respond_to_input stale id={} (current={:?}) — rejecting",
+                                id,
+                                pending_interaction_id
+                            );
+                            devlog(
+                                "error",
+                                "交互提交被拒绝：该问题已过期（回合已结束或会话重启）——卡片将自动撤除",
+                                &session_id,
+                                json!({ "stale_id": id }),
+                            );
+                            let _ = response.send(Err(
+                                "该交互已过期（回合已结束或会话重启），请重新触发提问".to_string(),
+                            ));
+                            return Ok(());
+                        }
                         let result = send_pi_command(&stdin_arc, &json!({
                             "type": "extension_ui_response",
                             "id": id,
@@ -665,18 +1028,118 @@ async fn pi_rpc_connection_loop(
                             if cmd == "response" {
                                 let response_cmd = msg.get("command").and_then(|v| v.as_str()).unwrap_or_default();
                                 let success = msg.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+                                let disposition = msg
+                                    .get("data")
+                                    .and_then(|d| d.get("disposition"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                // v0.9.6 需求6 F2：response 不再「到达即解除」——
+                                // pi 的 prompt response success 只代表 preflight
+                                // 「started」（回合真正启动之前：压缩预检/
+                                // before_agent_start/LLM 首请求均在其后），解除即
+                                // 留下「永停 Prompting」盲区。按语义分流：
+                                // - prompt+started → AwaitTurnStart 紧凑窗（盯「受理
+                                //   后未开工」，started→首个回合事件无 I/O）
+                                // - prompt+queued（pi 原生排队，hub 当前策略不触发）
+                                //   → 挂 InTurn 窗（等当前回合事件流）
+                                // - prompt+handled（扩展吃掉，无回合）→ 解除
+                                // - steer/follow_up（注入当前回合不起新回合）→ 仅刷新
+                                // - 失败（Error+TurnComplete 已终结名单）→ 解除
+                                if success && response_cmd == "prompt" {
+                                    turn_watchdog = match disposition {
+                                        "started" => Some((
+                                            WatchdogPhase::AwaitTurnStart,
+                                            tokio::time::Instant::now()
+                                                + turn_watchdog_window(WatchdogPhase::AwaitTurnStart),
+                                        )),
+                                        // queued：pi 原生排队（合流进当前回合）——
+                                        // pi 语义保证回合事件流会继续，信任 pi 不设
+                                        // 看门狗（v0.9.6 需求9 哲学修正，原 InTurn）。
+                                        "queued" => None,
+                                        _ => None, // handled / n/a：无回合将启动
+                                    };
+                                } else if success
+                                    && (response_cmd == "steer" || response_cmd == "follow_up")
+                                {
+                                    if let Some((phase, _)) = turn_watchdog {
+                                        turn_watchdog = Some((
+                                            phase,
+                                            tokio::time::Instant::now()
+                                                + turn_watchdog_window(phase),
+                                        ));
+                                    }
+                                } else {
+                                    turn_watchdog = None;
+                                }
 
                                 match response_cmd {
                                     "prompt" | "steer" | "follow_up" => {
                                         if success {
                                             // Prompt accepted, events will follow
                                             log::info!("Pi RPC response for {}: success=true", response_cmd);
+                                            // 需求11 追加三 C：disposition 解析已上移至
+                                            // 看门狗分流处（v0.9.6 F2）；此处仅保留可观测日志。
+                                            if response_cmd == "prompt" {
+                                                devlog(
+                                                    "info",
+                                                    "pi 受理 prompt（response success，等待回合启动）",
+                                                    &session_id,
+                                                    json!({
+                                                        "disposition": if disposition.is_empty() { "n/a" } else { disposition },
+                                                        "watchdog": match turn_watchdog {
+                                                            Some((WatchdogPhase::AwaitTurnStart, _)) => "AwaitTurnStart",
+                                                            Some((WatchdogPhase::AwaitResponse, _)) => "AwaitResponse",
+                                                            None => "disarmed",
+                                                        },
+                                                    }),
+                                                );
+                                            }
                                         } else {
                                             log::error!("Pi RPC response for {}: success=false", response_cmd);
                                             let err_msg = msg
                                                 .get("error")
                                                 .and_then(|v| v.as_str())
                                                 .unwrap_or("Unknown prompt error");
+
+                                            // v0.9.6 需求9 F3：already processing 对账——
+                                            // 该错误说明 hub 状态机与 pi 实际态失同步
+                                            //（hub 以为空闲直发，pi 回合仍在跑）。此前
+                                            // 仅把 pi 的英文错误透传给用户且不做任何恢
+                                            // 复——pi 一直 busy 则每次发送都报错。现识别
+                                            // 后自动 abort pi（真取消滞留回合）转
+                                            // CancelPending 收口，提示用户重发即可成功。
+                                            if err_msg.contains("already processing") {
+                                                log::warn!(
+                                                    "Pi RPC prompt rejected (already processing) — state desync detected, aborting stale turn (session {session_id})"
+                                                );
+                                                devlog(
+                                                    "error",
+                                                    "检测到状态失同步（智能体仍在执行上一任务）：已自动取消滞留回合，请重新发送本条消息",
+                                                    &session_id,
+                                                    json!({ "pi_error": err_msg }),
+                                                );
+                                                buf.push(NormalizedEvent::Error {
+                                                    message: "智能体仍在执行上一任务（状态失同步），已自动取消滞留回合——请重新发送这条消息。".to_string(),
+                                                    recoverable: true,
+                                                });
+                                                buf.push(NormalizedEvent::TurnComplete {
+                                                    reason: TurnEndReason::Aborted,
+                                                    usage: None,
+                                                });
+                                                flush_buf(&emit, &session_id, &mut buf);
+                                                let _ = send_pi_command(&stdin_arc, &json!({
+                                                    "type": "clear_queue"
+                                                })).await;
+                                                let _ = send_pi_command(&stdin_arc, &json!({
+                                                    "type": "abort"
+                                                })).await;
+                                                pending_turn_complete = None;
+                                                turn_watchdog = None;
+                                                state = LoopState::CancelPending { pending_prompt: None };
+                                                cancel_settle_at =
+                                                    Some(tokio::time::Instant::now() + CANCEL_SETTLE_TIMEOUT);
+                                                continue;
+                                            }
 
                                             buf.push(NormalizedEvent::Error {
                                                 message: err_msg.to_string(),
@@ -688,7 +1151,22 @@ async fn pi_rpc_connection_loop(
                                             });
                                             flush_buf(&emit, &session_id, &mut buf);
 
+                                            // v0.9.5 收口质量审查 P1：失败响应本身已
+                                            // 终结名单（Error+TurnComplete 已发）——若此
+                                            // 刻仍在取消收尾中（CancelPending），settle 看
+                                            // 门狗与预备 Aborted 终结者均被本分支取代：
+                                            // 解除闹钟（防 15s 后误杀重发中的新回合）、
+                                            // 丢弃预备终结者（防迟到 agent_settled 对新一
+                                            // 轮补发陈旧 Aborted）。
+                                            if matches!(state, LoopState::CancelPending { .. }) {
+                                                cancel_settle_at = None;
+                                                pending_turn_complete = None;
+                                            }
                                             state = LoopState::Idle;
+                                            // v0.9.5 三轮评审 P1-1：失败已终结名单
+                                            // （Error+TurnComplete 已发），跳过下方通用
+                                            // !success 检查——否则同一失败报两次错。
+                                            continue;
                                         }
                                     }
                                     "abort" => {
@@ -706,7 +1184,7 @@ async fn pi_rpc_connection_loop(
                                         // 排队）分开，前端对 steering 自动重发、
                                         // followUp 回填输入框。
                                         if success {
-                                            let mut collect = |key: &str| -> Vec<String> {
+                                            let collect = |key: &str| -> Vec<String> {
                                                 let mut out: Vec<String> = Vec::new();
                                                 if let Some(arr) = msg
                                                     .get("data")
@@ -799,6 +1277,13 @@ async fn pi_rpc_connection_loop(
                                                 .and_then(|v| v.as_str());
                                             match branch_id {
                                                 Some(new_id) => {
+                                                    // v0.9.5 收口质量审查 P2：fork 重绑与
+                                                    // resolve 同为会话 id 变更点——挂起哨兵
+                                                    // 应答键随迁（与四轮 resolve 路径对称，
+                                                    // 防退出清扫恒 miss、只能等 256 达限兜底）。
+                                                    if session_id != new_id {
+                                                        migrate_auto_answer_key(&session_id, new_id);
+                                                    }
                                                     session_id = new_id.to_string();
                                                     {
                                                         let mut guard = acp_session_id
@@ -844,12 +1329,21 @@ async fn pi_rpc_connection_loop(
                                         usage: None,
                                     });
                                     flush_buf(&emit, &session_id, &mut buf);
+                                    // v0.9.5 收口质量审查 P1：与上方 prompt 失败分支
+                                    // 同款——失败响应已终结名单，取消收尾的 settle 看门
+                                    // 狗与预备 Aborted 终结者同步解除/丢弃。
+                                    if matches!(state, LoopState::CancelPending { .. }) {
+                                        cancel_settle_at = None;
+                                        pending_turn_complete = None;
+                                    }
                                     state = LoopState::Idle;
                                     continue;
                                 }
 
                                 // Periodic flush
-                                if buf.len() >= 32 || last_flush.elapsed() >= Duration::from_millis(8) {
+                                if buf.len() >= 32
+                                    || last_flush.elapsed() >= EVENT_FLUSH_INTERVAL
+                                {
                                     flush_buf(&emit, &session_id, &mut buf);
                                     last_flush = std::time::Instant::now();
                                 }
@@ -952,14 +1446,8 @@ async fn pi_rpc_connection_loop(
                                             &request_id,
                                             &approval_ctx,
                                         );
-                                        pending_tool_approvals.insert(
-                                            request_id.clone(),
-                                            PiToolApproval {
-                                                request_id: request_id.clone(),
-                                                tool: tool.to_string(),
-                                                summary: message.clone(),
-                                            },
-                                        );
+                                        pending_tool_approvals
+                                            .insert(request_id.clone(), PiToolApproval);
                                         buf.push(NormalizedEvent::ApprovalRequest {
                                             request_id,
                                             // 审批类型按工具名分类（bash→命令执行，
@@ -1021,11 +1509,53 @@ async fn pi_rpc_connection_loop(
                                 msg.get("method").and_then(|v| v.as_str()).unwrap_or("?"),
                                 msg.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
                             );
+                            // v0.9.5 需求5 测试期 T1：rpiv-ask 哨兵行适配——select
+                            // 末项为 "N. Type something." 时剥离（自定义入口收敛
+                            // 到 hub 卡片自带「其他」），登记 request_id→哨兵原文
+                            //（respond_chat_interaction 应答改写用）。
+                            // T1 + T5：先做 select 哨兵剥离与 input 多选题还原
+                            //（多选题还原把 method 改写为 multiSelect，须在下方
+                            // 哨兵追问自动应答的 input 判定之前）。
+                            let msg = rewrite_multiselect_input(strip_sentinel_option(msg));
+                            // T1：哨兵追问的 input 到达且本会话挂有自动应答文本
+                            // → 幕后直接回填，不转发前端（用户一次输入直接生效，
+                            // 扩展收到合法的「哨兵→input 文本」两步协议）。
+                            if msg.get("method").and_then(|v| v.as_str()) == Some("input") {
+                                let auto_answer = take_interaction_auto_answer(&session_id);
+                                if let Some(text) = auto_answer {
+                                    let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                    log::info!(
+                                        "[pi-ext] sentinel follow-up auto-answered (session {session_id}, id {id})"
+                                    );
+                                    let _ = send_pi_command(
+                                        &stdin_arc,
+                                        &json!({
+                                            "type": "extension_ui_response",
+                                            "id": id,
+                                            "value": text
+                                        }),
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                            }
                             if let Some(event) = convert_extension_ui_request(&msg) {
                                 // Track only requests that actually wait for a response.
                                 if matches!(event, NormalizedEvent::InteractionRequest { .. }) {
                                     if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
                                         pending_interaction_id = Some(id.to_string());
+                                        // v0.9.6 需求8 F3：交互到达即刷新回合看门狗——
+                                        // 用户思考/作答时间本应无界，UI 请求分支在
+                                        // 统一刷新点之前 continue，问题挂起 >InTurn 窗
+                                        // 曾被看门狗误杀（合成 Aborted→Idle→600s 后进程
+                                        // 回收→提交必报 No active ACP session）。
+                                        if let Some((phase, deadline)) = turn_watchdog.as_mut() {
+                                            let next = tokio::time::Instant::now()
+                                                + turn_watchdog_window(*phase);
+                                            if next > *deadline {
+                                                *deadline = next;
+                                            }
+                                        }
                                     }
                                 }
                                 // PhaseDivider arrives during agent_end and belongs at
@@ -1065,6 +1595,32 @@ async fn pi_rpc_connection_loop(
                             }
                         }
 
+                        // v0.9.6 需求6 F3：pi 在 message_end(role=user) 时把用户
+                        // 消息 append 落盘（agent-session appendMessage）——这是
+                        // 「消息真实落盘」的权威信号，据此清除 hub 侧 pending
+                        // 记录（record 时为注入后文本，两侧内容一致精确对账）。
+                        if event_type == "message_end" {
+                            let role = msg
+                                .get("message")
+                                .and_then(|m| m.get("role"))
+                                .and_then(|v| v.as_str());
+                            if role == Some("user") {
+                                let text = msg
+                                    .get("message")
+                                    .and_then(|m| m.get("content"))
+                                    .and_then(|c| c.as_array())
+                                    .map(|blocks| {
+                                        blocks
+                                            .iter()
+                                            .filter_map(|b| b.get("text").and_then(|v| v.as_str()))
+                                            .collect::<Vec<_>>()
+                                            .join("")
+                                    })
+                                    .unwrap_or_default();
+                                crate::pending_messages::ack_persisted(&session_id, &text);
+                            }
+                        }
+
                         // v0.8.0 需求10：压缩事件入 usage_compaction 表（压缩
                         // 前后规模 + firstKeptEntryId 数据定位 + 摘要调用开销
                         // 并入总量），为后续会话索引等能力提供数据支撑。
@@ -1076,10 +1632,62 @@ async fn pi_rpc_connection_loop(
                             );
                         }
 
+                        // v0.9.6 需求6 F2：任何 pi 事件到达 = pi 活着——刷新回合
+                        // 看门狗（按相位重算窗口，不再「到达即解除」）；compaction
+                        // 括号事件切换宽窄窗；回合生命周期事件把相位升到 InTurn。
+                        match event_type {
+                            "compaction_start" => in_compaction = true,
+                            "compaction_end" => in_compaction = false,
+                            _ => {}
+                        }
+                        if let Some((phase, _)) = turn_watchdog {
+                            // v0.9.6 需求9 哲学修正：回合事件=投递成功铁证 → 解除
+                            // 看门狗（此前升 InTurn 相位持续武装——对 pi 的无据
+                            // 不信任，已两度误杀等待作答/长构建场景）。
+                            match watchdog_phase_on_event(phase, event_type) {
+                                Some(next_phase) => {
+                                    turn_watchdog = Some((
+                                        next_phase,
+                                        tokio::time::Instant::now()
+                                            + turn_watchdog_window(next_phase),
+                                    ));
+                                }
+                                None => turn_watchdog = None,
+                            }
+                        }
                         if matches!(event_type, "agent_start" | "turn_start")
                             && !matches!(state, LoopState::CancelPending { .. })
                         {
+                            // v0.9.5 需求2 测试期：settle 后晚到的 agent_start 会把
+                            // Idle 翻回 Prompting（01a0d868 事故「路径 A」的签名）。
+                            // v0.9.6 需求9 哲学修正：翻转只记日志不再武装看门狗
+                            //（回合事件已至=pi 在正常工作，后续静默是 pi 的形态；
+                            // 滞留翻转的极端场景由用户停止/重发的取消通道兜底）。
+                            if matches!(state, LoopState::Idle) {
+                                devlog(
+                                    "info",
+                                    "回合启动（Idle→Prompting 翻转，信任 pi 不设看门狗）",
+                                    &session_id,
+                                    json!({ "event": event_type }),
+                                );
+                            }
                             state = LoopState::Prompting;
+                        }
+
+                        // 需求4 打包卡事故取证锚点：pi 事件到达 hub 的时刻进
+                        // 日志中心（[runtime]）。与前端 pipeline 的
+                        // "chunk tool_use_start" 对表——差值即归一化/转发链
+                        // 滞留；前端未见而此处已见 = 事件在 hub→前端链路丢失。
+                        if event_type == "tool_execution_start" {
+                            devlog(
+                                "info",
+                                "pi 事件到达 hub：tool_execution_start",
+                                &session_id,
+                                json!({
+                                    "call_id": msg.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("?"),
+                                    "tool": msg.get("toolName").and_then(|v| v.as_str()).unwrap_or("?"),
+                                }),
+                            );
                         }
 
                         // Track interaction tool call IDs: when tool_execution_start
@@ -1151,6 +1759,16 @@ async fn pi_rpc_connection_loop(
                             last_flush = std::time::Instant::now();
                         } else if pi_prompt_is_settled(event_type) {
                             log::info!("Pi RPC agent_settled received (state={})", loop_state_name(&state));
+                            // v0.9.5 需求11（pi 1.1.0）：agent_settled 新增 aborted 字段
+                            //（#10607）——直接听 pi 说这轮是取消还是完成，取代纯状态推断。
+                            let settled_aborted = msg
+                                .get("aborted")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            cancel_settle_at = None;
+                            // v0.9.6 需求6 F2：回合收口（settle）——回合看门狗
+                            // 解除（Idle 态的兜底职责归 IDLE_TIMEOUT 回收）。
+                            turn_watchdog = None;
                             if matches!(state, LoopState::CancelPending { .. }) {
                                 pending_turn_complete = Some(NormalizedEvent::TurnComplete {
                                     reason: TurnEndReason::Aborted,
@@ -1176,8 +1794,15 @@ async fn pi_rpc_connection_loop(
                             if pending_turn_complete.is_none()
                                 && matches!(state, LoopState::Prompting)
                             {
+                                // 需求11：Prompting 下 settle 但 pi 报 aborted——非用户取消路径
+                                //（provider 致命错误后 pi 自行中止等）精确标 Aborted，
+                                // 避免误标 Complete 掩盖异常收尾。
                                 pending_turn_complete = Some(NormalizedEvent::TurnComplete {
-                                    reason: TurnEndReason::Complete,
+                                    reason: if settled_aborted {
+                                        TurnEndReason::Aborted
+                                    } else {
+                                        TurnEndReason::Complete
+                                    },
                                     usage: None,
                                 });
                             }
@@ -1200,6 +1825,7 @@ async fn pi_rpc_connection_loop(
                             last_flush = std::time::Instant::now();
 
                             // A user prompt may arrive while cancellation is settling.
+                            let mut resent_buffered = false;
                             state = if let LoopState::CancelPending { pending_prompt } = &mut state {
                                 let buffered = pending_prompt.take();
                                 if let Some(msg) = buffered {
@@ -1212,6 +1838,19 @@ async fn pi_rpc_connection_loop(
                                         "type": "prompt",
                                         "message": msg
                                     })).await?;
+                                    // v0.9.6 需求6 F3：settle 后重发同样记录
+                                    //（缓冲期消息此前无 pending 记录）。
+                                    crate::pending_messages::record(&session_id, &agent_id, &msg);
+                                    // v0.9.6 需求6 F2：settle 后重发的 prompt 同样
+                                    // 纳入分级看门狗（与 Idle 直发一致，AwaitResponse
+                                    // 宽窗起）——滞留回合恢复后 pi 若再次无响应，
+                                    // 兜底终结而非永挂。
+                                    turn_watchdog = Some((
+                                        WatchdogPhase::AwaitResponse,
+                                        tokio::time::Instant::now()
+                                            + turn_watchdog_window(WatchdogPhase::AwaitResponse),
+                                    ));
+                                    resent_buffered = true;
                                     LoopState::Prompting
                                 } else {
                                     LoopState::Idle
@@ -1219,8 +1858,18 @@ async fn pi_rpc_connection_loop(
                             } else {
                                 LoopState::Idle
                             };
+                            devlog(
+                                "info",
+                                if resent_buffered {
+                                    "agent_settled：回合收口 → 重发缓冲 prompt（Prompting，20s 看门狗武装）"
+                                } else {
+                                    "agent_settled：回合收口 → Idle"
+                                },
+                                &session_id,
+                                json!({ "resent_buffered": resent_buffered, "aborted": settled_aborted }),
+                            );
                         } else if buf.len() >= 32
-                            || last_flush.elapsed() >= Duration::from_millis(8)
+                            || last_flush.elapsed() >= EVENT_FLUSH_INTERVAL
                         {
                             flush_buf(&emit, &session_id, &mut buf);
                             last_flush = std::time::Instant::now();
@@ -1232,22 +1881,175 @@ async fn pi_rpc_connection_loop(
                         // If Pi closed while we were expecting a response, treat as error
                         if matches!(state, LoopState::Prompting) {
                             return Err(format!(
-                                "Pi process exited unexpectedly (session {}). Check stderr for details.",
+                                "智能体引擎意外退出（会话 {}），请查看日志后重试。",
                                 session_id
                             ));
+                        }
+                        // v0.9.5 三轮评审 P1-2：停止善中期进程退出（崩溃/被杀）——
+                        // agent_settled 永不到，若不补发终结名单，前端本轮永远等
+                        // 不到 turn_complete（界面永挂「处理中」）。此处统一补发：
+                        // pending_turn_complete（取消路径已备好的 Aborted）或直接
+                        // 合成 Aborted。
+                        if matches!(state, LoopState::CancelPending { .. }) {
+                            flush_buf(&emit, &session_id, &mut buf);
+                            let terminator = pending_turn_complete
+                                .take()
+                                .unwrap_or(NormalizedEvent::TurnComplete {
+                                    reason: TurnEndReason::Aborted,
+                                    usage: None,
+                                });
+                            emit(&[terminator], &session_id);
+                            devlog(
+                                "warn",
+                                "停止善中期 pi 进程退出：补发 Aborted 终结（防界面永挂）",
+                                &session_id,
+                                json!({}),
+                            );
                         }
                         true
                     }
                 }
             }
-            _ = tokio::time::sleep_until(idle_deadline) => {
-                if matches!(state, LoopState::Idle) {
+            _ = tokio::time::sleep_until(next_deadline) => {
+                // 合批兜底 flush：静默期（无新 stdout 行驱动行尾检查）buf 里的
+                // 事件最多滞留一个 flush 间隔。滞留超阈值时打点——静默期事件
+                // 滞留的异常签名（对表：pi 到达打点 ↔ 前端 chunk 到达打点）。
+                if !buf.is_empty() && last_flush.elapsed() >= EVENT_FLUSH_INTERVAL {
+                    if last_flush.elapsed() >= EVENT_FLUSH_LAG_WARN {
+                        devlog(
+                            "warn",
+                            "事件合批兜底 flush：静默期滞留超阈值，事件随本批发出",
+                            &session_id,
+                            json!({
+                                "events": buf.len(),
+                                "since_last_flush_ms": last_flush.elapsed().as_millis() as u64,
+                            }),
+                        );
+                    }
+                    flush_buf(&emit, &session_id, &mut buf);
+                    last_flush = std::time::Instant::now();
+                }
+                if matches!(state, LoopState::Idle) && idle_deadline <= next_deadline {
                     log::info!(
                         "Pi RPC idle timeout ({}s), shutting down session {}",
                         IDLE_TIMEOUT.as_secs(),
                         session_id
                     );
                     true
+                } else if cancel_settle_at.is_some()
+                    && matches!(state, LoopState::CancelPending { .. })
+                    && tokio::time::Instant::now() >= cancel_settle_at.unwrap()
+                {
+                    // v0.9.5 三轮评审 P1-1：检查序 settle 优先于 ack（防御性——
+                    // 进入 CancelPending 已清 ack，两者互斥；即便未来新增武装
+                    // 路径遗漏清理，取消收口（含缓冲消息语义）也不被 ack 抢跑）。
+                    // v0.9.5 收口质量审查 P1：补状态守卫——仅 CancelPending 态可
+                    // 触发（失败响应等已翻 Idle 的路径由分支侧解除闹钟，此处双保险，
+                    // 防未来新增离开路径遗漏清理时误杀重发中的新回合）。
+                    // ⚠ abort 后 15s 未收尾（pi 滞留，agent_settled 永不到）——
+                    // 杀进程终结流。
+                    log::warn!(
+                        "[watchdog] Pi RPC cancel unsettled 15s (session {session_id}) — killing process"
+                    );
+                    devlog(
+                        "error",
+                        "cancel 看门狗触发：15s 未收口（pi 滞留）——杀 pi 进程终结",
+                        &session_id,
+                        json!({}),
+                    );
+                    flush_buf(&emit, &session_id, &mut buf);
+                    // v0.9.6 需求6 F5：缓冲中的用户消息未送达模型（杀进程后
+                    // pending_prompt 丢弃）——明确告知，配合 F3 的 pending 落盘
+                    // 保证重启后消息可见不丢。
+                    let buffered_unsent = matches!(&state, LoopState::CancelPending { pending_prompt: Some(_) });
+                    let mut terminal_events = Vec::with_capacity(2);
+                    if buffered_unsent {
+                        terminal_events.push(NormalizedEvent::Error {
+                            message: "停止超时，已强制结束智能体进程；缓冲中的消息未能送达模型，请重新发送。".to_string(),
+                            recoverable: true,
+                        });
+                    }
+                    terminal_events.push(NormalizedEvent::TurnComplete { reason: TurnEndReason::Aborted, usage: None });
+                    emit(&terminal_events, &session_id);
+                    if let Some(pid) = child_pid {
+                        let _ = crate::process_control::terminate_process_tree(pid);
+                    }
+                    true
+                } else if let Some((phase, deadline)) = turn_watchdog {
+                    if tokio::time::Instant::now() >= deadline {
+                        // v0.9.6 需求9 哲学修正：InTurn 相位已废除（回合启动即解除
+                        // 看门狗，无条件信任 pi）——此前的交互/工具执行豁免块
+                        // 随之移除（不可达死代码）。到达此处的仅剩投递确认相位
+                        //（AwaitResponse/AwaitTurnStart）的触发。
+                        // v0.9.6 需求6 F2：回合分级看门狗触发——按相位给出
+                        // 面向用户的差异化原因（秒数不写死在文案里，窗口常量
+                        // 可独立调整；窗口值进 devlog 取证）。
+                        let (reason_user, reason_log) = match phase {
+                            WatchdogPhase::AwaitResponse => (
+                                "智能体长时间无响应（可能在整理上下文或启动中）。请重新发送；若反复出现请重启会话。",
+                                "AwaitResponse：prompt 发出后长时间无 response（压缩预检/钩子/受理静默）",
+                            ),
+                            WatchdogPhase::AwaitTurnStart => (
+                                "智能体受理了消息但回合未能启动。请重新发送；若反复出现请重启会话。",
+                                "AwaitTurnStart：response started 后无回合事件（回合未开工）",
+                            ),
+                        };
+                        log::warn!(
+                            "[watchdog] Pi RPC turn watchdog fired (session {session_id}, phase={phase:?}, in_compaction={in_compaction}) — {reason_log}"
+                        );
+                        devlog(
+                            "error",
+                            &format!("回合看门狗触发（{phase:?}）：{reason_log}——合成 Aborted 终结，可重发"),
+                            &session_id,
+                            json!({
+                                "phase": format!("{phase:?}"),
+                                "in_compaction": in_compaction,
+                                "window_secs": turn_watchdog_window(phase).as_secs(),
+                            }),
+                        );
+                        flush_buf(&emit, &session_id, &mut buf);
+                        emit(
+                            &[
+                                NormalizedEvent::Error {
+                                    message: reason_user.to_string(),
+                                    recoverable: true,
+                                },
+                                NormalizedEvent::TurnComplete { reason: TurnEndReason::Aborted, usage: None },
+                            ],
+                            &session_id,
+                        );
+                        // v0.9.6 需求9 F2：真取消 pi——此前只合成事件置 Idle，pi
+                        // 侧回合/工具仍在跑（busy），hub Idle 与 pi busy 失同步：
+                        // 用户随后发「继续」走 Idle 直发（无 steer/followUp），pi
+                        // v1.2.0 busy 语义直接拒绝（"Agent is already processing…"），
+                        // 且构建不结束就一直报错。现改为 clear_queue+abort 真取消，
+                        // 转 CancelPending 收口（settle 到达回 Idle；15s 不 settle
+                        // 杀树兜底）——状态机与 pi 恢复同步，「继续」可正常重发。
+                        if let Some(id) = pending_interaction_id.take() {
+                            let _ = send_pi_command(&stdin_arc, &json!({
+                                "type": "extension_ui_response",
+                                "id": id,
+                                "cancelled": true
+                            })).await;
+                        }
+                        let _ = send_pi_command(&stdin_arc, &json!({
+                            "type": "clear_queue"
+                        })).await;
+                        let _ = send_pi_command(&stdin_arc, &json!({
+                            "type": "abort"
+                        })).await;
+                        log::info!(
+                            "[watchdog] abort sent to pi after synthetic termination (session {session_id}) — syncing state"
+                        );
+                        pending_turn_complete = None; // TurnComplete 已合成发出，防 settle 双发
+                        turn_watchdog = None;
+                        state = LoopState::CancelPending { pending_prompt: None };
+                        cancel_settle_at =
+                            Some(tokio::time::Instant::now() + CANCEL_SETTLE_TIMEOUT);
+                        false
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 }
@@ -1278,11 +2080,13 @@ async fn send_pi_command(
     stdin
         .write_all(line.as_bytes())
         .await
-        .map_err(|e| format!("Pi RPC stdin write failed (process may have exited): {e}"))?;
+        // 三轮评审 P1-4 补漏：两处以 ? 传播进连接循环 Err → 前端
+        // NormalizedEvent::Error，属用户可见文案——泛化内部代号（Pi RPC）。
+        .map_err(|e| format!("智能体引擎通信写入失败（进程可能已退出）：{e}"))?;
     stdin
         .flush()
         .await
-        .map_err(|e| format!("Pi RPC stdin flush failed: {e}"))?;
+        .map_err(|e| format!("智能体引擎通信刷新失败：{e}"))?;
     Ok(())
 }
 
@@ -1300,930 +2104,8 @@ async fn stdout_reader(stdout: tokio::process::ChildStdout, tx: tokio::sync::mps
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pi AgentEvent → NormalizedEvent
-// ---------------------------------------------------------------------------
-
-/// Convert Pi's native `AgentEvent` JSON objects to `NormalizedEvent`.
-///
-/// Pi events (from `@earendil-works/pi-agent-core`):
-/// - `agent_start`, `agent_end`
-/// - `turn_start`, `turn_end`
-/// - `message_start`, `message_update`, `message_end`
-/// - `tool_execution_start`, `tool_execution_update`, `tool_execution_end`
-/// 从 turn_end 的 message.usage 构造 UsageStats（v0.7.3 需求2：jishu-self 用量与水位）。
-/// context_tokens 公式对齐 pi `calculateContextTokens`（totalTokens 优先，否则四项求和）；
-/// context_window 来自启动时 get_state 的 model.contextWindow，缺失时仅报 in/out/cost。
-fn pi_turn_usage(event: &serde_json::Value, context_window: Option<u64>) -> Option<UsageStats> {
-    let usage = event.get("message").and_then(|m| m.get("usage"))?;
-    let num = |key: &str| usage.get(key).and_then(|v| v.as_f64()).map(|v| v as u64);
-    let input = num("input");
-    let output = num("output");
-    let cache_read = num("cacheRead");
-    let cache_write = num("cacheWrite");
-    let total_tokens = num("totalTokens");
-    let total_cost = usage
-        .get("cost")
-        .and_then(|c| c.get("total"))
-        .and_then(|v| v.as_f64());
-    if input.is_none()
-        && output.is_none()
-        && total_cost.is_none()
-        && total_tokens.is_none()
-        && cache_read.is_none()
-        && cache_write.is_none()
-    {
-        return None;
-    }
-    let context_tokens = total_tokens.filter(|v| *v > 0).or_else(|| {
-        Some(
-            input.unwrap_or(0)
-                + output.unwrap_or(0)
-                + cache_read.unwrap_or(0)
-                + cache_write.unwrap_or(0),
-        )
-    });
-    let context_remaining = context_window
-        .zip(context_tokens)
-        .map(|(total, used)| total.saturating_sub(used));
-    Some(UsageStats {
-        input_tokens: input,
-        output_tokens: output,
-        total_cost,
-        context_remaining,
-        context_window_total: context_window,
-    })
-}
-
-/// v0.8.0 需求10：分段用量 + 内容归因。usage 部分复用 pi_turn_usage（精确）；
-/// 归因部分对 turn_end 的 message.content 逐块估算（thinking/text/toolCall），
-/// toolResults 估算为工具结果进入后续上下文的规模。
-fn pi_segment_usage(
-    event: &serde_json::Value,
-    context_window: Option<u64>,
-) -> Option<crate::usage_store::SegmentUsage> {
-    let base = pi_turn_usage(event, context_window)?;
-    let mut seg = crate::usage_store::SegmentUsage {
-        stop_reason: event
-            .get("message")
-            .and_then(|m| m.get("stopReason"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        input_tokens: base.input_tokens.unwrap_or(0),
-        output_tokens: base.output_tokens.unwrap_or(0),
-        cache_read: event
-            .get("message")
-            .and_then(|m| m.get("usage"))
-            .and_then(|u| u.get("cacheRead"))
-            .and_then(|v| v.as_f64())
-            .map(|v| v as u64)
-            .unwrap_or(0),
-        cache_write: event
-            .get("message")
-            .and_then(|m| m.get("usage"))
-            .and_then(|u| u.get("cacheWrite"))
-            .and_then(|v| v.as_f64())
-            .map(|v| v as u64)
-            .unwrap_or(0),
-        total_tokens: 0,
-        total_cost: base.total_cost.unwrap_or(0.0),
-        context_remaining: base.context_remaining,
-        context_window_total: base.context_window_total,
-        ..Default::default()
-    };
-    seg.total_tokens = event
-        .get("message")
-        .and_then(|m| m.get("usage"))
-        .and_then(|u| u.get("totalTokens"))
-        .and_then(|v| v.as_f64())
-        .map(|v| v as u64)
-        .unwrap_or(0);
-
-    if let Some(blocks) = event
-        .get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_array())
-    {
-        for block in blocks {
-            let kind = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            match kind {
-                "thinking" => {
-                    seg.est_thinking += est_block_tokens(block.get("thinking"));
-                }
-                "text" => {
-                    seg.est_text += est_block_tokens(block.get("text"));
-                }
-                "toolCall" => {
-                    // pi-mcp-adapter 注册的 MCP 工具在 toolCall 块上无标志
-                    // （实测仅 type/id/name/arguments 四字段），按用户裁决统一
-                    // 归入工具桶；est_mcp_tool/mcp_calls 列留作前向预留。
-                    let _name = block.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    let est = est_block_tokens(Some(&serde_json::Value::Null))
-                        + est_block_tokens(block.get("arguments"));
-                    seg.est_builtin_tool += est;
-                    seg.tool_calls += 1;
-                }
-                _ => {}
-            }
-        }
-    }
-    if let Some(results) = event.get("toolResults").and_then(|v| v.as_array()) {
-        for r in results {
-            seg.est_tool_results += est_block_tokens(Some(r));
-        }
-    }
-    Some(seg)
-}
-
-/// 从 pi compaction_end 事件提取压缩记录（CompactionResult 字段）。
-fn pi_compaction_record(event: &serde_json::Value) -> crate::usage_store::CompactionRecord {
-    let num =
-        |v: Option<&serde_json::Value>| v.and_then(|x| x.as_f64()).map(|x| x as u64).unwrap_or(0);
-    let result = event.get("result");
-    let usage = result.and_then(|r| r.get("usage"));
-    let cost = usage
-        .and_then(|u| u.get("cost"))
-        .and_then(|c| c.get("total"))
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let summary_len = result
-        .and_then(|r| r.get("summary"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.chars().count())
-        .unwrap_or(0) as u64;
-    crate::usage_store::CompactionRecord {
-        reason: event
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        aborted: event
-            .get("aborted")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        tokens_before: num(result.and_then(|r| r.get("tokensBefore"))),
-        tokens_after: num(result.and_then(|r| r.get("estimatedTokensAfter"))),
-        first_kept_entry_id: result
-            .and_then(|r| r.get("firstKeptEntryId"))
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        summary_input: num(usage.and_then(|u| u.get("input"))),
-        summary_output: num(usage.and_then(|u| u.get("output"))),
-        summary_cost: cost,
-        est_summary: ((summary_len as f64) / 2.5).ceil() as u64,
-    }
-}
-
-/// 估算口径：≈2.5 字符/token（中英混合粗估，构成对比用，非计费值）。
-fn est_block_tokens(value: Option<&serde_json::Value>) -> u64 {
-    let text = match value {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(other) => other.to_string(),
-        None => return 0,
-    };
-    ((text.chars().count() as f64) / 2.5).ceil() as u64
-}
-
-pub(crate) fn normalize_pi_agent_event(
-    event: &serde_json::Value,
-    context_window: Option<u64>,
-    pending_steers: &mut Vec<String>,
-) -> Vec<NormalizedEvent> {
-    let event_type = match event.get("type").and_then(|v| v.as_str()) {
-        Some(t) => t,
-        None => return vec![],
-    };
-
-    match event_type {
-        // v0.8.0 需求10：上下文压缩生命周期——开始→状态指示；结束→状态清除
-        // + phase_divider(compaction) 分隔线（进内容流，turn_complete 时随
-        // content 一并提交，重载时由 pi_session 的 compaction 条目重建）。
-        // v0.9.1 需求14：pi 主轮自动重试（agent-session _prepareRetry，RPC
-        // 原样透传）——start（attempt/maxAttempts/delayMs/errorMessage）与
-        // end（success/attempt/finalError）归一为状态事件；GUI 会话区显性
-        // 展示「第 N/M 次重试中（原因）」直至最终失败原因。
-        "auto_retry_start" | "auto_retry_end" => {
-            let active = event_type == "auto_retry_start";
-            vec![NormalizedEvent::AutoRetryStatus {
-                active,
-                attempt: event.get("attempt").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                max_attempts: event
-                    .get("maxAttempts")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32,
-                delay_ms: event.get("delayMs").and_then(|v| v.as_u64()).unwrap_or(0),
-                error_message: event
-                    .get("errorMessage")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                success: event
-                    .get("success")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
-                final_error: event
-                    .get("finalError")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string),
-            }]
-        }
-        "compaction_start" | "compaction_end" => {
-            let active = event_type == "compaction_start";
-            let reason = event
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            if active {
-                vec![
-                    NormalizedEvent::PhaseDivider {
-                        phase: "compaction".to_string(),
-                        title: "上下文压缩中…".to_string(),
-                    },
-                    NormalizedEvent::CompactionStatus {
-                        active: true,
-                        reason,
-                    },
-                ]
-            } else {
-                // v0.9.1 需求3 #2：compaction_end 自带 aborted/errorMessage 字段
-                // （失败路径 agent-session.ts catch 分支），三态呈现——此前一律
-                // 「已压缩」把失败静默吞掉。
-                let aborted = event
-                    .get("aborted")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let error_message = event
-                    .get("errorMessage")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string());
-                let title = if error_message.is_some() {
-                    "上下文压缩失败".to_string()
-                } else if aborted {
-                    "上下文压缩已取消".to_string()
-                } else {
-                    "上下文已压缩".to_string()
-                };
-                let mut events = vec![
-                    NormalizedEvent::CompactionStatus {
-                        active: false,
-                        reason,
-                    },
-                    NormalizedEvent::PhaseDivider {
-                        phase: "compaction".to_string(),
-                        title,
-                    },
-                ];
-                if let Some(error) = error_message {
-                    // recoverable：压缩失败不中断会话，用户可重试（手动压缩/下一
-                    // 轮阈值触发自动重试）。
-                    events.push(NormalizedEvent::Error {
-                        message: error,
-                        recoverable: true,
-                    });
-                }
-                events
-            }
-        }
-
-        // -- Streaming text/thinking from assistant message ---------------
-        "message_update" => {
-            let ame = match event.get("assistantMessageEvent") {
-                Some(v) => v,
-                None => return vec![],
-            };
-            let sub_type = ame.get("type").and_then(|v| v.as_str()).unwrap_or_default();
-            match sub_type {
-                "text_delta" => {
-                    let delta = ame
-                        .get("delta")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default();
-                    if delta.is_empty() {
-                        vec![]
-                    } else {
-                        vec![NormalizedEvent::TextDelta {
-                            delta: delta.to_string(),
-                        }]
-                    }
-                }
-                "thinking_delta" => {
-                    let delta = ame
-                        .get("delta")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default();
-                    if delta.is_empty() {
-                        vec![]
-                    } else {
-                        vec![NormalizedEvent::Thinking {
-                            delta: delta.to_string(),
-                        }]
-                    }
-                }
-                _ => vec![],
-            }
-        }
-
-        // -- Tool execution lifecycle -------------------------------------
-        "tool_execution_start" => {
-            // v0.9.4 需求12 测试期诊断（用户实测：长命令执行期间前端无工具卡
-            // ——需区分「pi 未发 start」与「hub→前端链路丢」）。dev 终端可见。
-            log::info!(
-                "[tool-visibility] tool_execution_start call_id={} tool={}",
-                event.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("?"),
-                event.get("toolName").and_then(|v| v.as_str()).unwrap_or("?"),
-            );
-            let call_id = event
-                .get("toolCallId")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let tool = event
-                .get("toolName")
-                .and_then(|v| v.as_str())
-                .unwrap_or("tool")
-                .to_string();
-            let input = event
-                .get("args")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
-            if call_id.is_empty() {
-                vec![]
-            } else {
-                let interactions = interaction_requests_from_tool_call(&call_id, &tool, &input);
-                if interactions.is_empty() {
-                    let view = crate::agent::tool_view::classify_tool_view_for(
-                        "jishu-self",
-                        &tool,
-                        &input,
-                    );
-                    vec![NormalizedEvent::ToolUseStart {
-                        call_id,
-                        tool,
-                        input,
-                        view: Some(view),
-                    }]
-                } else {
-                    // Pi follows this tool start with an extension_ui_request
-                    // carrying the real response id. Emitting an interaction
-                    // here creates a duplicate, non-answerable question.
-                    vec![]
-                }
-            }
-        }
-        "tool_execution_update" => {
-            // v0.9.4 需求8：工具执行中间进度（bash 类长时工具的流式输出
-            // 快照）。pi 的 partialResult 是 AgentToolResult 形状——文本在
-            // content[].text（tools/bash.ts emitOutputUpdate），兜底直出
-            // output 字符串字段；均无则不发（不猜形状）。高频事件，前端
-            // event-pipeline 侧 per call_id 节流。
-            let call_id = event
-                .get("toolCallId")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let partial = event.get("partialResult");
-            let text: Option<String> = partial.and_then(|p| {
-                if let Some(arr) = p.get("content").and_then(|v| v.as_array()) {
-                    let mut s = String::new();
-                    for item in arr {
-                        if let Some(t) = item.get("text").and_then(|v| v.as_str()) {
-                            s.push_str(t);
-                        }
-                    }
-                    if !s.is_empty() { Some(s) } else { None }
-                } else if let Some(t) = p.get("output").and_then(|v| v.as_str()) {
-                    Some(t.to_string())
-                } else {
-                    None
-                }
-            });
-            if call_id.is_empty() || text.is_none() {
-                vec![]
-            } else {
-                vec![NormalizedEvent::ToolUseProgress {
-                    call_id,
-                    partial_output: text.unwrap(),
-                }]
-            }
-        }
-        "tool_execution_end" => {
-            let call_id = event
-                .get("toolCallId")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let is_error = event
-                .get("isError")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let result = event
-                .get("result")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
-            // v0.9.4 需求8 测试期修复：pi 的 result 同为 AgentToolResult 形态
-            //（文本在 content[].text，与 update 的 partialResult 同源）——原样
-            // 透传导致前端结果区显示原始 JSON（用户截图实证）。提取文本后以
-            // 字符串透传；非该形状（如 MCP 工具自带结构）保持原样不猜。
-            let output = match result {
-                serde_json::Value::Null => serde_json::Value::Null,
-                ref v @ serde_json::Value::Object(_) => {
-                    let text = v.get("content").and_then(|c| c.as_array()).map(|arr| {
-                        let mut s = String::new();
-                        for item in arr {
-                            if let Some(t) = item.get("text").and_then(|x| x.as_str()) {
-                                s.push_str(t);
-                            }
-                        }
-                        s
-                    });
-                    match text {
-                        Some(t) if !t.is_empty() => serde_json::Value::String(t),
-                        _ => v.clone(),
-                    }
-                }
-                other => other,
-            };
-            if call_id.is_empty() {
-                vec![]
-            } else {
-                vec![NormalizedEvent::ToolUseResult {
-                    call_id,
-                    output,
-                    is_error,
-                }]
-            }
-        }
-
-        // -- Turn lifecycle -----------------------------------------------
-        "turn_end" => {
-            let stop_reason = event
-                .get("message")
-                .and_then(|m| m.get("stopReason"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("end_turn");
-            // When stopReason is "toolUse", the turn ended because the LLM
-            // requested a tool call.  Pi will execute the tool and continue
-            // the conversation (generating more text_delta events).  We must
-            // NOT emit TurnComplete here — otherwise the frontend drops the
-            // streaming state and discards all subsequent events.
-            if stop_reason == "toolUse" {
-                return vec![];
-            }
-            let reason = match stop_reason {
-                "aborted" => TurnEndReason::Aborted,
-                "max_tokens" => TurnEndReason::MaxTokens,
-                "error" => TurnEndReason::Error,
-                _ => TurnEndReason::Complete,
-            };
-            vec![NormalizedEvent::TurnComplete {
-                reason,
-                usage: pi_turn_usage(event, context_window),
-            }]
-        }
-
-        // -- Session header (emitted in --mode json print mode) -----------
-        "session" => {
-            if let Some(sid) = event.get("id").and_then(|v| v.as_str()) {
-                vec![NormalizedEvent::SessionResolved {
-                    session_id: sid.to_string(),
-                }]
-            } else {
-                vec![]
-            }
-        }
-
-        // -- Steer injection marker --------------------------------------
-        // Pi emits `message_start`/`message_end` with `role=user` for a
-        // queued steer at the moment it is delivered (typically at a tool-call
-        // gap, mid-turn). Surface the steer text so the frontend can split the
-        // accumulated assistant content at the injection point and interleave
-        // the steer between the two assistant segments — matching the order Pi
-        // persists to the session JSONL. The companion `message_end` carries
-        // the same payload; one marker per steer is enough, so only
-        // `message_start` is converted. Assistant `message_start`
-        // (role=assistant) is still ignored: the assistant content arrives
-        // incrementally via `message_update` above.
-        "message_start" => {
-            // Detect PhaseDivider before checking the message role. Extension
-            // sendMessage markers use role=custom, while normal steer markers
-            // use role=user.
-            let custom_type = event
-                .get("message")
-                .and_then(|m| m.get("customType"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if custom_type.starts_with("jishu-conductor:phase-enter:") {
-                let phase = custom_type
-                    .strip_prefix("jishu-conductor:phase-enter:")
-                    .unwrap_or("");
-                // C4-slice2：声明驱动流水线阶段名——消息内容首行 `=== 阶段名 ===`
-                // 标记优先（与 session.rs 回放投影同一解析），回落内置映射。
-                let content_text = event
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let marker_title = content_text.lines().take(3).find_map(|line| {
-                    let trimmed = line.trim();
-                    trimmed
-                        .strip_prefix("=== ")
-                        .and_then(|rest| rest.strip_suffix(" ==="))
-                        .filter(|name| !name.is_empty())
-                        .map(str::to_string)
-                });
-                let title = marker_title.unwrap_or_else(|| {
-                    match phase {
-                        "discuss" => "需求讨论",
-                        "plan" => "流程规划",
-                        "execute" => "流程执行",
-                        "done" => "已完成",
-                        other => other,
-                    }
-                    .to_string()
-                });
-                return vec![NormalizedEvent::PhaseDivider {
-                    phase: phase.to_string(),
-                    title,
-                }];
-            }
-
-            let role = event
-                .get("message")
-                .and_then(|m| m.get("role"))
-                .and_then(|v| v.as_str());
-            if role != Some("user") {
-                return vec![];
-            }
-
-            let content = event
-                .get("message")
-                .and_then(|m| m.get("content"))
-                .and_then(|v| v.as_array())
-                .map(|blocks| {
-                    blocks
-                        .iter()
-                        .filter_map(|block| {
-                            if block.get("type").and_then(|v| v.as_str()) == Some("text") {
-                                block
-                                    .get("text")
-                                    .and_then(|v| v.as_str())
-                                    .map(str::to_string)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-                .unwrap_or_default();
-            if content.is_empty() {
-                return vec![];
-            }
-            // v0.8.0 需求10 修复：pi 对**每条**送达的用户消息都回显
-            // message_start(role=user)——含正常 prompt 与压缩前排队的消息；
-            // 只有经 Steer 命令注入的文本才是真正的引导（连接循环登记，
-            // 此处按文匹配消费），否则会把用户消息误标为「已引导」并重复渲染。
-            match pending_steers.iter().position(|s| s == &content) {
-                Some(idx) => {
-                    pending_steers.remove(idx);
-                    vec![NormalizedEvent::SteerInjected { content }]
-                }
-                None => vec![],
-            }
-        }
-
-        // 需求1 A7：thinking 级别变更（Pi clamp 后的生效值）。
-        "thinking_level_changed" => {
-            let level = event
-                .get("level")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            if level.is_empty() {
-                vec![]
-            } else {
-                vec![NormalizedEvent::ThinkingLevelChanged { level }]
-            }
-        }
-
-        // All other event types (agent_start, agent_end, turn_start,
-        // message_end) are ignored (tool_execution_update is mapped to
-        // ToolUseProgress — see the branch above).
-        _ => vec![],
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Event emission helpers
-// ---------------------------------------------------------------------------
-
-/// Convert a Pi `extension_ui_request` event to a `NormalizedEvent::InteractionRequest`.
-///
-/// Pi's extension_ui protocol emits requests for select/input/confirm. Only
-/// `select` and `input` are converted (they require a user response). Fire-and-
-/// forget methods (notify, setStatus, etc.) are ignored.
-/// v0.8.0 需求1 P-2：审批型 extension_ui 的待回写登记（Delegate 路径）。
-struct PiToolApproval {
-    request_id: String,
-    tool: String,
-    summary: String,
-}
-
-fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<NormalizedEvent> {
-    let method = msg.get("method").and_then(|v| v.as_str())?;
-    let id = msg.get("id").and_then(|v| v.as_str())?.to_string();
-    match method {
-        "select" | "multiSelect" => {
-            let allow_multiple = method == "multiSelect";
-            let title = msg
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("请选择")
-                .to_string();
-            let options = msg
-                .get("options")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| {
-                            v.as_str().map(|s| InteractionOption {
-                                option_id: s.to_string(),
-                                label: s.to_string(),
-                                description: None,
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            Some(NormalizedEvent::InteractionRequest {
-                request_id: id,
-                prompt: title,
-                options,
-                allow_multiple,
-                allow_custom_text: true,
-                required: true,
-                // Pi `extension_ui` is the production mid-turn baseline.
-                transport: InteractionTransport::PiRpc,
-                origin: InteractionOrigin::ExtensionUi,
-                delivery_hint: InteractionDeliveryHint::MidTurn,
-                correlation: None,
-            })
-        }
-        "input" => {
-            let title = msg
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("请输入")
-                .to_string();
-            Some(NormalizedEvent::InteractionRequest {
-                request_id: id,
-                prompt: title,
-                options: vec![],
-                allow_multiple: false,
-                allow_custom_text: true,
-                required: true,
-                transport: InteractionTransport::PiRpc,
-                origin: InteractionOrigin::ExtensionUi,
-                delivery_hint: InteractionDeliveryHint::MidTurn,
-                correlation: None,
-            })
-        }
-        // setStatus with key "jishu-conductor-phase" → PhaseDivider event
-        "setStatus" => {
-            let status_key = msg.get("statusKey").and_then(|v| v.as_str()).unwrap_or("");
-            let status_text = msg.get("statusText").and_then(|v| v.as_str()).unwrap_or("");
-            if status_key == "jishu-conductor-phase" && !status_text.is_empty() {
-                let title = match status_text {
-                    "discuss" => "需求讨论",
-                    "plan" => "流程规划",
-                    "execute" => "流程执行",
-                    "done" => "已完成",
-                    other => other,
-                };
-                Some(NormalizedEvent::PhaseDivider {
-                    phase: status_text.to_string(),
-                    title: title.to_string(),
-                })
-            } else {
-                None
-            }
-        }
-        // confirm, notify, setWidget, setTitle, set_editor_text:
-        // fire-and-forget or not mapped to InteractionRequest.
-        _ => None,
-    }
-}
-
-/// hub_invoke 桥接命令分发（Phase 2：Conductor 扩展 → Hub 后端）。
-///
-/// 扩展通过带保留标题前缀的 `extension_ui_request(method="select")` 发起同步调用，
-/// Hub 直接执行后端函数并通过 extension_ui_response 返回结果，不经过前端。
-/// 设计依据：`jishu-task-conductor_实施计划.md` Phase 2 任务 2.2。
-/// v0.9.2 测试期：桥接路径（hub_invoke）可用的全局 AppHandle——conductor_revise_plan
-/// 成功后向 webview 广播 task-instance-changed（前端据此重载任务图显示新节点）。
-/// lib.rs setup 时注册；未注册（测试/无头）时静默跳过。
-pub(crate) static HUB_APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> =
-    std::sync::OnceLock::new();
-
-fn handle_hub_invoke(
-    command: &str,
-    params: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    match command {
-        "conductor_sync_phase" => {
-            let request: crate::task_launch::ConductorSyncPhaseRequest =
-                serde_json::from_value(params.clone())
-                    .map_err(|e| format!("conductor_sync_phase 参数解析失败: {e}"))?;
-            let result = crate::task_launch::conductor_sync_phase(request)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        // v0.9.3 需求13 C4-slice2：/jishu-pipeline 扩展命令按插件 id 取
-        // 展开后的阶段声明（模板展开在 Rust 侧，扩展保持薄）。
-        "composed_plugin_pipeline" => {
-            let id = params
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or("composed_plugin_pipeline 参数缺少 id")?;
-            crate::agent::plugin::composed_pipeline_by_id(id)
-        }
-        "conductor_revise_plan" => {
-            let request: crate::task_launch::RevisePlanRequest =
-                serde_json::from_value(params.clone())
-                    .map_err(|e| format!("conductor_revise_plan 参数解析失败: {e}"))?;
-            let project_root = request.project_root.clone();
-            let task_id = request.task_id.clone();
-            let result = crate::task_launch::conductor_revise_plan(request)?;
-            // 前端刷新信号：桥接路径无 AppHandle 入参，经全局句柄广播
-            //（与 commands/task.rs 的 conductor_sync_phase 同一事件契约）。
-            if let Some(app) = HUB_APP_HANDLE.get() {
-                use tauri::Emitter;
-                let _ = app.emit(
-                    "task-instance-changed",
-                    serde_json::json!({
-                        "project_root": project_root,
-                        "task_id": task_id,
-                        "current_phase": "execution",
-                    }),
-                );
-            }
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "conductor_dispatch_to_node" => {
-            let request: crate::task_launch::DispatchToNodeRequest =
-                serde_json::from_value(params.clone())
-                    .map_err(|e| format!("conductor_dispatch_to_node 参数解析失败: {e}"))?;
-            let result = crate::task_launch::conductor_dispatch_to_node(request)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "conductor_load_task_state" => {
-            let project_root = params
-                .get("project_root")
-                .or_else(|| params.get("projectRoot"))
-                .and_then(|v| v.as_str())
-                .ok_or("conductor_load_task_state: project_root is required")?;
-            let task_id = params
-                .get("task_id")
-                .or_else(|| params.get("taskId"))
-                .and_then(|v| v.as_str())
-                .ok_or("conductor_load_task_state: task_id is required")?;
-            let result = crate::task_launch::conductor_load_task_state(project_root, task_id)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "orchestrator_validate_proposal" => {
-            let request: crate::task_launch::ValidateProposalRequest =
-                serde_json::from_value(params.clone())
-                    .map_err(|e| format!("orchestrator_validate_proposal 参数解析失败: {e}"))?;
-            let result = crate::task_launch::orchestrator_validate_proposal(request)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "orchestrator_start_run_from_revision" => {
-            let request: crate::task_launch::StartRunFromRevisionRequest =
-                serde_json::from_value(params.clone()).map_err(|e| {
-                    format!("orchestrator_start_run_from_revision 参数解析失败: {e}")
-                })?;
-            let result = crate::task_launch::orchestrator_start_run_from_revision(request)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        // v0.9.2 测试期：preview_html 工具落点——校验文件后向前端广播预览事件
-        //（会话插件 session.html-preview 的停靠面板接收渲染并自动展开）。
-        // v0.9.3 测试期（前端项目预览）：新增 url 模式——agent 开发前端项目时
-        // 先起 dev server（vite/webpack 等），预览应指向 http://localhost:端口
-        // （外链 CSS/JS、HMR 均由 dev server 提供；单文件 srcDoc 预览必然丢样
-        // 式——用户实测 agent 被迫内联资源）。仅放行本机回环地址。
-        "plugin_preview_html" => {
-            let session_id = params
-                .get("session_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            if let Some(url) = params
-                .get("url")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-            {
-                validate_loopback_preview_url(url)?;
-                if let Some(app) = HUB_APP_HANDLE.get() {
-                    use tauri::Emitter;
-                    let _ = app.emit(
-                        "session-plugin-preview",
-                        serde_json::json!({
-                            "url": url,
-                            "session_id": session_id,
-                        }),
-                    );
-                } else {
-                    return Err("Hub 界面未就绪，无法打开预览".to_string());
-                }
-                return serde_json::to_value(serde_json::json!({ "opened": true, "url": url }))
-                    .map_err(|e| e.to_string());
-            }
-            let file = params
-                .get("file")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-                .ok_or("plugin_preview_html: file is required")?;
-            let path = std::path::PathBuf::from(file);
-            if !path.is_file() {
-                return Err(format!("文件不存在: {file}"));
-            }
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_ascii_lowercase());
-            if !matches!(ext.as_deref(), Some("html") | Some("htm")) {
-                return Err("仅支持 .html / .htm 文件".to_string());
-            }
-            let size = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
-            if size > 2 * 1024 * 1024 {
-                return Err(format!("文件 {size} 字节超过 2MB 预览上限"));
-            }
-            // Windows canonicalize() 产出 \\?\C:\... verbatim 前缀，会被
-            // read_text_file 的 validate_path 当 UNC 路径拒绝（用户实测
-            // 「UNC paths are not allowed」）——剥前缀还原普通盘符路径。
-            let canonical = {
-                let s = path
-                    .canonicalize()
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .into_owned();
-                let stripped = s
-                    .strip_prefix(r"\\?\UNC\")
-                    .map(|rest| format!(r"\\{rest}"))
-                    .or_else(|| s.strip_prefix(r"\\?\").map(|rest| rest.to_string()))
-                    .unwrap_or(s);
-                stripped
-            };
-            if let Some(app) = HUB_APP_HANDLE.get() {
-                use tauri::Emitter;
-                let _ = app.emit(
-                    "session-plugin-preview",
-                    serde_json::json!({
-                        "file": canonical,
-                        "session_id": session_id,
-                    }),
-                );
-            } else {
-                return Err("Hub 界面未就绪，无法打开预览".to_string());
-            }
-            serde_json::to_value(serde_json::json!({ "opened": true, "file": canonical }))
-                .map_err(|e| e.to_string())
-        }
-        _ => Err(format!("未知 hub_invoke 命令: {command}")),
-    }
-}
-
-/// 预览 url 校验：仅放行 http/https 的本机回环地址（localhost / 127.0.0.1 /
-/// [::1]）。dev server 预览的安全边界——外网/内网地址一律拒绝（防把 Hub
-/// 面板当任意站点浏览器用）。
-fn validate_loopback_preview_url(url: &str) -> Result<(), String> {
-    let (scheme, rest) = url
-        .split_once("://")
-        .ok_or("预览地址需为 http/https URL（dev server 地址，如 http://localhost:5173）")?;
-    if scheme != "http" && scheme != "https" {
-        return Err("预览地址仅支持 http/https（dev server 地址）".to_string());
-    }
-    // authority = 端口前的主机部分（截掉路径/查询/锚点；剥 userinfo）。
-    let authority = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or("")
-        .rsplit('@')
-        .next()
-        .unwrap_or("");
-    let host = if authority.starts_with('[') {
-        authority.split(']').next().unwrap_or("").trim_start_matches('[') // IPv6 字面量 [::1]
-    } else {
-        authority.split(':').next().unwrap_or("")
-    };
-    match host {
-        "localhost" | "127.0.0.1" | "::1" => Ok(()),
-        other => Err(format!("仅支持本机回环地址预览（localhost/127.0.0.1），收到: {other}")),
-    }
-}
+// 三段（事件归一化 / 问答卡协议翻译 / hub_invoke 分发）已于三轮评审 C13 拆分
+// 拆出至 pi_rpc_runtime/{normalize,protocol,hub_invoke}.rs（零逻辑纯移动）。
 
 fn pi_prompt_is_settled(event_type: &str) -> bool {
     event_type == "agent_settled"
@@ -2250,6 +2132,247 @@ fn flush_buf(emit: &AcpEventEmit, session_id: &str, buf: &mut Vec<NormalizedEven
 mod tests {
     use super::handle_hub_invoke;
 
+    /// v0.9.5 需求5 测试期 T1：rpiv-ask 哨兵行判定——精确匹配
+    /// "N. Type something."（N 为纯数字），其他形态（含正常选项）不命中。
+    #[test]
+    fn sentinel_option_detection() {
+        assert!(super::is_sentinel_option("4. Type something."));
+        assert!(super::is_sentinel_option("1. Type something."));
+        assert!(!super::is_sentinel_option("1. 红 — 红色选项"));
+        assert!(!super::is_sentinel_option("Type something."));
+        assert!(!super::is_sentinel_option("x. Type something."));
+        assert!(!super::is_sentinel_option("12. Type something. extra"));
+    }
+
+    /// T1 ①：select 末项哨兵剥离 + 登记；非 select / 无哨兵原样返回。
+    #[test]
+    fn strip_sentinel_from_select_request() {
+        let msg = serde_json::json!({
+            "type": "extension_ui_request",
+            "method": "select",
+            "id": "t1-strip",
+            "title": "颜色？",
+            "options": ["1. 红 — 红", "2. 绿 — 绿", "3. Type something."]
+        });
+        let stripped = super::strip_sentinel_option(msg.clone());
+        let options = stripped["options"].as_array().unwrap();
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].as_str().unwrap(), "1. 红 — 红");
+        // 登记可取回（取用即消费）
+        {
+            let mut reg = super::interaction_sentinels()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            assert_eq!(
+                reg.remove("t1-strip").as_deref(),
+                Some("3. Type something.")
+            );
+        }
+        // 无哨兵：原样
+        let plain = serde_json::json!({
+            "method": "select", "id": "t1-plain", "options": ["a", "b"]
+        });
+        assert_eq!(super::strip_sentinel_option(plain.clone()), plain);
+        // input 方法：不动
+        let input = serde_json::json!({"method": "input", "id": "t1-in", "title": "q"});
+        assert_eq!(super::strip_sentinel_option(input.clone()), input);
+    }
+
+    /// v0.9.5 需求5 测试期 T5：多选题 input 还原——题干含序号选项块 +
+    /// 英文序号说明 → 改写 multiSelect（题干=问句、选项=序号行）；非该
+    /// 形态（普通 input / 选项块非全序号 / select）原样返回。
+    #[test]
+    fn multiselect_input_restored_from_rpc_fallback() {
+        let msg = serde_json::json!({
+            "type": "extension_ui_request",
+            "method": "input",
+            "id": "t5-multi",
+            "title": "[多选题] 哪些鸟不会飞？
+
+1. 企鹅 — 南极
+2. 鸵鸟 — 最大
+3. 天鹅 — 会飞
+
+Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a custom answer as plain text.",
+            "placeholder": "1,3"
+        });
+        let rewritten = super::rewrite_multiselect_input(msg);
+        assert_eq!(rewritten["method"].as_str().unwrap(), "multiSelect");
+        assert_eq!(
+            rewritten["title"].as_str().unwrap(),
+            "[多选题] 哪些鸟不会飞？"
+        );
+        let options = rewritten["options"].as_array().unwrap();
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].as_str().unwrap(), "1. 企鹅 — 南极");
+        assert!(super::multi_select_requests()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove("t5-multi"));
+
+        // 普通 input（无英文说明）不动
+        let plain =
+            serde_json::json!({"method": "input", "id": "t5-plain", "title": "随便说点什么"});
+        assert_eq!(super::rewrite_multiselect_input(plain.clone()), plain);
+        // 选项块含非序号行 → 不还原（防误伤含空行的题干）
+        let bad = serde_json::json!({
+            "method": "input", "id": "t5-bad",
+            "title": "问题
+
+1. 企鹅 — 南极
+补充说明一行
+
+Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a custom answer as plain text."
+        });
+        assert_eq!(super::rewrite_multiselect_input(bad.clone()), bad);
+        // select 方法不动
+        let sel = serde_json::json!({"method": "select", "id": "t5-sel", "title": "x", "options": ["1. a"]});
+        assert_eq!(super::rewrite_multiselect_input(sel.clone()), sel);
+    }
+
+    /// T5 ②：多选卡应答翻译——选中序号行 → "1,3"；纯自定义文本透传；
+    /// 未登记的请求原样返回。
+    #[test]
+    fn multiselect_response_translated_to_indices() {
+        {
+            let mut reg = super::multi_select_requests()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.insert("t5-rw".to_string());
+        }
+        let interaction = serde_json::json!({
+            "selected_options": ["1. 企鹅 — 南极", "3. 天鹅 — 会飞"]
+        });
+        assert_eq!(
+            super::rewrite_multiselect_response(
+                "t5-rw",
+                "1. 企鹅 — 南极
+3. 天鹅 — 会飞",
+                Some(&interaction)
+            ),
+            "1,3"
+        );
+        // 已消费：再答原样
+        assert_eq!(
+            super::rewrite_multiselect_response("t5-rw", "再来", Some(&interaction)),
+            "再来"
+        );
+        // 纯自定义（无选中）透传
+        {
+            let mut reg = super::multi_select_requests()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.insert("t5-custom".to_string());
+        }
+        let custom = serde_json::json!({"selected_options": []});
+        assert_eq!(
+            super::rewrite_multiselect_response("t5-custom", "鹦鹉不会飞", Some(&custom)),
+            "鹦鹉不会飞"
+        );
+        // 未登记请求不动
+        assert_eq!(
+            super::rewrite_multiselect_response("t5-unknown", "1. a", Some(&interaction)),
+            "1. a"
+        );
+    }
+
+    /// 四轮评审 P2-1：resolve 键迁移——pending 键的挂起应答随迁到真实 id；
+    /// 真实键已有值时保守不覆盖；同 id 不动。
+    #[test]
+    fn auto_answer_key_migration_on_resolve() {
+        {
+            let mut reg = super::interaction_auto_answer()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.insert("p21-pending".to_string(), "答案A".to_string());
+        }
+        super::migrate_auto_answer_key("p21-pending", "p21-real");
+        {
+            let reg = super::interaction_auto_answer()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            assert!(reg.get("p21-pending").is_none());
+            assert_eq!(reg.get("p21-real").map(String::as_str), Some("答案A"));
+        }
+        // 真实键已有值：保守不覆盖（迁移值丢弃）
+        {
+            let mut reg = super::interaction_auto_answer()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.insert("p21-pending2".to_string(), "旧答案".to_string());
+            reg.insert("p21-real2".to_string(), "已有答案".to_string());
+        }
+        super::migrate_auto_answer_key("p21-pending2", "p21-real2");
+        {
+            let reg = super::interaction_auto_answer()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            assert_eq!(reg.get("p21-real2").map(String::as_str), Some("已有答案"));
+            assert!(reg.get("p21-pending2").is_none());
+        }
+        // 同 id：无操作（不丢已有值）
+        super::migrate_auto_answer_key("p21-real", "p21-real");
+        {
+            let reg = super::interaction_auto_answer()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            assert_eq!(reg.get("p21-real").map(String::as_str), Some("答案A"));
+        }
+        // 清理（全局静态表，防污染其他用例）
+        {
+            let mut reg = super::interaction_auto_answer()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.remove("p21-real");
+            reg.remove("p21-real2");
+        }
+    }
+
+    /// T1 ②：应答改写——无选中项纯文本 + 挂有哨兵 → 回传哨兵并暂存文本；
+    /// 有选中项 / 未挂哨兵 → 原样。
+    #[test]
+    fn sentinel_response_rewrite_rules() {
+        // 准备登记（本测试独立 key）
+        {
+            let mut reg = super::interaction_sentinels()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.insert("t2-rw".to_string(), "3. Type something.".to_string());
+        }
+        let interaction = serde_json::json!({"selected_options": []});
+        let rewritten = super::rewrite_sentinel_response(
+            "t2-rw",
+            "t2-session",
+            "自定义：蓝色",
+            Some(&interaction),
+        );
+        assert_eq!(rewritten, "3. Type something.");
+        // 暂存文本可取（消费式）
+        {
+            let mut stash = super::interaction_auto_answer()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            assert_eq!(stash.remove("t2-session").as_deref(), Some("自定义：蓝色"));
+        }
+        // 已消费（登记被取走）：再次应答原样返回
+        assert_eq!(
+            super::rewrite_sentinel_response("t2-rw", "t2-session", "再来一次", Some(&interaction)),
+            "再来一次"
+        );
+        // 有选中项（普通选项点击）：即使挂哨兵也不改写
+        {
+            let mut reg = super::interaction_sentinels()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.insert("t2-opt".to_string(), "3. Type something.".to_string());
+        }
+        let with_selection = serde_json::json!({"selected_options": ["1. 红 — 红"]});
+        assert_eq!(
+            super::rewrite_sentinel_response("t2-opt", "s", "1. 红 — 红", Some(&with_selection)),
+            "1. 红 — 红"
+        );
+    }
+
     // v0.9.2 测试期：plugin_preview_html 校验阶梯——文件存在性/扩展名/大小
     // 逐级拒绝；合法文件在无 Hub 句柄的测试环境落到「界面未就绪」分支
     //（证明前两级校验已通过）。
@@ -2275,35 +2398,32 @@ mod tests {
             "ftp://localhost",
             "http://localhost.evil.com",
         ] {
-            let err = handle_hub_invoke(
-                "plugin_preview_html",
-                &serde_json::json!({"url": bad}),
-            )
-            .unwrap_err();
+            let err = handle_hub_invoke("plugin_preview_html", &serde_json::json!({"url": bad}))
+                .unwrap_err();
             // 各级拒绝（scheme/回环）皆可，断言核心：到不了「界面未就绪」
             //（即校验全部放行的路径）。
-            assert!(!err.contains("未就绪"), "url={bad} should be rejected: {err}");
+            assert!(
+                !err.contains("未就绪"),
+                "url={bad} should be rejected: {err}"
+            );
         }
         for ok in [
             "http://localhost:5173",
             "http://127.0.0.1:3000/index.html",
             "https://localhost",
         ] {
-            let err = handle_hub_invoke(
-                "plugin_preview_html",
-                &serde_json::json!({"url": ok}),
-            )
-            .unwrap_err();
-            assert!(err.contains("未就绪"), "url={ok} should pass validation: {err}");
+            let err = handle_hub_invoke("plugin_preview_html", &serde_json::json!({"url": ok}))
+                .unwrap_err();
+            assert!(
+                err.contains("未就绪"),
+                "url={ok} should pass validation: {err}"
+            );
         }
     }
 
     #[test]
     fn plugin_preview_html_rejects_non_html_extension() {
-        let md = std::env::temp_dir().join(format!(
-            "jishu-hub-preview-{}.md",
-            std::process::id()
-        ));
+        let md = std::env::temp_dir().join(format!("jishu-hub-preview-{}.md", std::process::id()));
         std::fs::write(&md, "x").unwrap();
         let err = handle_hub_invoke(
             "plugin_preview_html",
@@ -2316,10 +2436,8 @@ mod tests {
 
     #[test]
     fn plugin_preview_html_valid_file_reaches_hub_gate() {
-        let html = std::env::temp_dir().join(format!(
-            "jishu-hub-preview-{}.html",
-            std::process::id()
-        ));
+        let html =
+            std::env::temp_dir().join(format!("jishu-hub-preview-{}.html", std::process::id()));
         std::fs::write(&html, "<!DOCTYPE html><html></html>").unwrap();
         // 测试环境未注册 HUB_APP_HANDLE：合法文件应越过存在性/扩展名校验，
         // 落到「Hub 界面未就绪」而非文件错误。
@@ -2332,7 +2450,6 @@ mod tests {
         let _ = std::fs::remove_file(&html);
     }
 
-    #[test]
     /// 真实形态回归：写小说场景的分段（thinking + text + toolCall=write +
     /// toolResults），验证分段记账的精确字段与内容归因。
     #[test]
@@ -2414,6 +2531,7 @@ mod tests {
         assert_eq!(empty.first_kept_entry_id, None);
     }
 
+    #[test]
     fn pi_turn_usage_maps_turn_end_usage_with_watermark() {
         let event = serde_json::json!({
             "type": "turn_end",
@@ -2551,8 +2669,8 @@ mod tests {
         assert!(matches!(
             success.as_slice(),
             [
-                NormalizedEvent::CompactionStatus { active: false, .. },
-                NormalizedEvent::PhaseDivider { title, .. }
+                NormalizedEvent::PhaseDivider { title, .. },
+                NormalizedEvent::CompactionStatus { active: false, .. }
             ] if title == "上下文已压缩"
         ));
 
@@ -2567,8 +2685,8 @@ mod tests {
         assert!(matches!(
             aborted.as_slice(),
             [
-                NormalizedEvent::CompactionStatus { active: false, .. },
-                NormalizedEvent::PhaseDivider { title, .. }
+                NormalizedEvent::PhaseDivider { title, .. },
+                NormalizedEvent::CompactionStatus { active: false, .. }
             ] if title == "上下文压缩已取消"
         ));
 
@@ -2584,8 +2702,8 @@ mod tests {
         assert!(matches!(
             failed.as_slice(),
             [
-                NormalizedEvent::CompactionStatus { active: false, .. },
                 NormalizedEvent::PhaseDivider { title, .. },
+                NormalizedEvent::CompactionStatus { active: false, .. },
                 NormalizedEvent::Error { message, recoverable: true }
             ] if title == "上下文压缩失败" && message.contains("provider 500")
         ));
@@ -2607,8 +2725,7 @@ mod tests {
     /// streaming state early.  The consequence is that a tool returning
     /// `terminate: true` produces *no* TurnComplete anywhere, which is why the
     /// settle branch in `run_loop` has to synthesise one (B2.5 T3).
-    #[test]
-
+    ///
     /// v0.9.4 需求8：tool_execution_update → ToolUseProgress（partialResult
     /// 透传不解析；无 callId 丢弃）。
     #[test]
@@ -2628,7 +2745,10 @@ mod tests {
         );
         assert_eq!(events.len(), 1);
         match &events[0] {
-            NormalizedEvent::ToolUseProgress { call_id, partial_output } => {
+            NormalizedEvent::ToolUseProgress {
+                call_id,
+                partial_output,
+            } => {
                 assert_eq!(call_id, "call-1");
                 assert_eq!(partial_output, "step 3/45 done");
             }
@@ -2667,7 +2787,8 @@ mod tests {
         assert!(events.is_empty(), "no callId should be dropped: {events:?}");
     }
 
-        fn tool_use_turn_end_yields_no_events() {
+    #[test]
+    fn tool_use_turn_end_yields_no_events() {
         let events = normalize_pi_agent_event(
             &json!({
                 "type": "turn_end",
@@ -2961,5 +3082,45 @@ mod tests {
             "statusText": "50%"
         }))
         .is_none());
+    }
+
+    // ---- v0.9.6 需求6 F2：回合分级看门狗纯函数 ----
+
+    #[test]
+    fn watchdog_windows_delivery_scope() {
+        use super::*;
+        // v0.9.6 需求9 哲学修正后看门狗只剩投递确认两相位：紧凑窗 < 宽窗。
+        let ar = turn_watchdog_window(WatchdogPhase::AwaitResponse);
+        let ats = turn_watchdog_window(WatchdogPhase::AwaitTurnStart);
+        assert!(
+            ats < ar,
+            "AwaitTurnStart 紧凑窗 < AwaitResponse 宽窗: {ats:?} < {ar:?}"
+        );
+    }
+
+    #[test]
+    fn watchdog_disarms_on_turn_events() {
+        use super::*;
+        // v0.9.6 需求9 哲学裁决：回合事件=投递成功铁证 → 解除看门狗（返回
+        // None），此后无条件信任 pi；非回合事件也不武装（None）。
+        for ev in [
+            "agent_start",
+            "turn_start",
+            "message_start",
+            "message_end",
+            "tool_execution_start",
+            "tool_execution_end",
+            "agent_end",
+            "agent_settled",
+            "compaction_start",
+            "extension_ui_request",
+            "thinking_level_changed",
+        ] {
+            assert_eq!(
+                watchdog_phase_on_event(WatchdogPhase::AwaitTurnStart, ev),
+                None,
+                "事件 {ev} 应解除看门狗（信任 pi）"
+            );
+        }
     }
 }

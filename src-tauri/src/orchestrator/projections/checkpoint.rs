@@ -1,5 +1,8 @@
 use crate::orchestrator::events::{apply_events_to_projection, rebuild_projection};
-use crate::orchestrator::store::{StoreError, TaskStore};
+use crate::orchestrator::store::StoreError;
+#[cfg(test)]
+use crate::orchestrator::store::TaskStore;
+#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Maximum number of delta events to fetch in one incremental batch.
@@ -293,7 +296,7 @@ mod tests {
         // Add 9 NodeReady events (seq 2-10).
         for i in 2..=10 {
             events.push(build_event(
-                &format!("e{}", i),
+                format!("e{}", i),
                 "run1",
                 i,
                 TaskEventType::NodeReady,
@@ -327,7 +330,7 @@ mod tests {
         let delta_events: Vec<_> = (11..=15)
             .map(|i| {
                 build_event(
-                    &format!("e{}", i),
+                    format!("e{}", i),
                     "run1",
                     i,
                     TaskEventType::NodeReady,
@@ -494,7 +497,7 @@ mod tests {
         let cold_events: Vec<_> = (1..=5)
             .map(|i| {
                 build_event(
-                    &format!("e{}", i),
+                    format!("e{}", i),
                     "run1",
                     i,
                     TaskEventType::NodeReady,
@@ -533,7 +536,7 @@ mod tests {
         let warm_events: Vec<_> = (6..=10)
             .map(|i| {
                 build_event(
-                    &format!("e{}", i),
+                    format!("e{}", i),
                     "run1",
                     i,
                     TaskEventType::NodeReady,

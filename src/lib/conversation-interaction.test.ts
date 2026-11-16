@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  decorateInteractionOptions,
   formatInteractionResponseValue,
   formatInteractionReply,
   interactionRequestFromEvent,
@@ -159,5 +160,82 @@ describe("conversation interaction", () => {
     expect(mapped.origin).toBeUndefined();
     expect(mapped.deliveryHint).toBeUndefined();
     expect(mapped.correlation).toBeNull();
+  });
+});
+
+// v0.9.5 需求5 测试期：rpiv-ask 选项串展示净化。
+describe("decorateInteractionOptions（rpiv-ask 选项串净化）", () => {
+  it("剥序号前缀；各不相同的 description 转为次行", () => {
+    const out = decorateInteractionOptions([
+      { optionId: "1. 红 — 红色选项", label: "1. 红 — 红色选项", description: null },
+      { optionId: "2. 绿 — 绿色选项", label: "2. 绿 — 绿色选项", description: null },
+    ]);
+    expect(out[0]).toMatchObject({ label: "红", description: "红色选项" });
+    expect(out[1]).toMatchObject({ label: "绿", description: "绿色选项" });
+    // optionId 原样保留（提交协议不变）
+    expect(out[0].optionId).toBe("1. 红 — 红色选项");
+  });
+
+  it("统一占位 description（如「就选这个？」）不展示", () => {
+    const out = decorateInteractionOptions([
+      { optionId: "a", label: "1. 花瓶 — 就选这个？", description: null },
+      { optionId: "b", label: "2. 鸡蛋 — 就选这个？", description: null },
+      { optionId: "c", label: "3. 窗户 — 就选这个？", description: null },
+    ]);
+    expect(out.map((o) => o.label)).toEqual(["花瓶", "鸡蛋", "窗户"]);
+    expect(out.every((o) => o.description === null)).toBe(true);
+  });
+
+  it("无 description 后缀（剥哨兵后的纯标签）只剥序号", () => {
+    const out = decorateInteractionOptions([
+      { optionId: "a", label: "1. 红", description: null },
+      { optionId: "b", label: "2. 绿", description: null },
+    ]);
+    expect(out.map((o) => o.label)).toEqual(["红", "绿"]);
+    expect(out.every((o) => o.description === null)).toBe(true);
+  });
+
+  it("非 rpiv 形态（无序号前缀）原样返回", () => {
+    const out = decorateInteractionOptions([
+      { optionId: "a", label: "继续", description: null },
+      { optionId: "b", label: "停止", description: "放弃当前任务", },
+    ]);
+    expect(out[0]).toMatchObject({ label: "继续" });
+    expect(out[1]).toMatchObject({ label: "停止", description: "放弃当前任务" });
+  });
+
+  it("混排（部分有序号）不处理，避免误剥", () => {
+    const out = decorateInteractionOptions([
+      { optionId: "a", label: "1. 红", description: null },
+      { optionId: "b", label: "继续", description: null },
+    ]);
+    expect(out[0].label).toBe("1. 红");
+  });
+});
+
+// ── 需求9 #6："(Recommended)" 尾缀剥离 + recommended 标志 ──
+describe("decorateInteractionOptions Recommended 净化", () => {
+  it("rpiv 序号形态：剥尾部 (Recommended) 并置标志", () => {
+    const out = decorateInteractionOptions([
+      { optionId: "a", label: "1. 方案甲 (Recommended)", description: null },
+      { optionId: "b", label: "2. 方案乙", description: null },
+    ]);
+    expect(out[0]).toMatchObject({ label: "方案甲", recommended: true });
+    expect(out[1]).toMatchObject({ label: "方案乙", recommended: false });
+  });
+
+  it("非 rpiv 形态同样剥离（全角括号/多余空格）", () => {
+    const out = decorateInteractionOptions([
+      { optionId: "a", label: "继续部署（Recommended） ", description: null },
+    ]);
+    expect(out[0]).toMatchObject({ label: "继续部署", recommended: true });
+  });
+
+  it("label 中部含 Recommended 不误剥（只剥尾部）", () => {
+    const out = decorateInteractionOptions([
+      { optionId: "a", label: "Recommended 策略优先", description: null },
+    ]);
+    expect(out[0].label).toBe("Recommended 策略优先");
+    expect(out[0].recommended).toBe(false);
   });
 });

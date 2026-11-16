@@ -3,3 +3,4 @@
 /target/
 /gen/schemas
 /nsis/cli-source.nsh
+/target-check/

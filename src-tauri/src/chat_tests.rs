@@ -4,6 +4,7 @@
 //! P0-0/P0-1/P0-3 三类回归。
 #[cfg(test)]
 mod tests {
+    use crate::agent::internal_prompts as ip;
     use crate::agent::tool_plugin as tp;
     use std::sync::Arc;
 
@@ -18,6 +19,9 @@ mod tests {
                     display_name: "pi-only".into(),
                     icon: String::new(),
                     install_hint: None,
+                    category: None,
+                    description: None,
+                    form: None,
                 },
                 probe: None,
                 transport: None,
@@ -51,6 +55,9 @@ mod tests {
                     display_name: "GitHub".into(),
                     icon: String::new(),
                     install_hint: None,
+                    category: None,
+                    description: None,
+                    form: None,
                 },
                 probe: None,
                 transport: None,
@@ -76,7 +83,8 @@ mod tests {
 
     /// compose_tool_message 核心序列的纯函数复刻（迁移→读取→过滤→渲染）。
     /// v0.9.0 需求3 方案 C：前端不再嵌 [JISHU-TOOLS] 文本标记，净化步骤
-    /// 已删除（compose 只做 块前缀 + 原文直拼）。
+    /// 已删除（compose 只做 原文直拼 + 块后缀）。
+    /// v0.9.5 重构：注入块后缀追加（用户消息在前）。
     fn compose_core(session_id: &str, message: &str, pool: &[tp::ToolPlugin]) -> String {
         tp::migrate_session_tools(tp::STAGING_SESSION_KEY, session_id);
         let ids = tp::get_session_tools(session_id);
@@ -94,7 +102,7 @@ mod tests {
         if block.trim().is_empty() {
             return message.to_string();
         }
-        format!("{block}\n\n{message}")
+        format!("{message}\n\n{block}")
     }
 
     fn lock() -> std::sync::MutexGuard<'static, ()> {
@@ -119,10 +127,12 @@ mod tests {
         let pool = vec![injectable_plugin(), pi_only_plugin()];
         let out = compose_core("pending-1000", "列出我的仓库", &pool);
         // 注入块包含说明
-        assert!(out.contains("<jishu-tool-plugins>"));
+        assert!(out.contains(ip::TOOL_BLOCK_OPEN));
         assert!(out.contains("gh repo view"));
+        // v0.9.5 重构：后缀注入——用户消息在前，注入块殿后。
+        assert!(out.starts_with("列出我的仓库"), "用户消息应位于注入块之前");
         // v0.9.0 需求3：回放派生——块剥净、正文还原、id 快照可提取
-        let (clean, ids) = tp::extract_tool_snapshot(&out);
+        let (clean, ids) = ip::extract_tool_snapshot(&out);
         assert_eq!(clean, "列出我的仓库");
         assert_eq!(ids, vec!["gh-cli".to_string()]);
         // 暂存键已清空、内容已迁移到 pending
@@ -158,8 +168,270 @@ mod tests {
         // 无工具时消息原样（分层契约：无块即无快照，回放派生得空 ids）
         let out = compose_core("s-none", "hello", &[]);
         assert_eq!(out, "hello");
-        let (clean, ids) = tp::extract_tool_snapshot(&out);
+        let (clean, ids) = ip::extract_tool_snapshot(&out);
         assert_eq!(clean, "hello");
         assert!(ids.is_empty());
+    }
+}
+
+// ── v0.9.5 需求5 T9：识图路由（解析与话术合成纯函数）──
+mod image_dispatch_tests {
+    use crate::chat::{
+        compose_image_dispatch_hint_with, resolve_mcp_vision_tools, ImageDispatchRoute,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn mcp_tools_config_empty_names_nothing() {
+        // 用户裁决 2026-09-30：识图工具不写死——配置为空 → 空集（不点名），
+        // 发现交给 agent 经 mcp 搜索 / hub_mcp_list 自选；声明仅作显式
+        // 配置的短名补全字典，不再自动全量点名。
+        let declared = vec![
+            (
+                "zai-mcp-server".to_string(),
+                vec!["analyze_image".to_string()],
+            ),
+            ("other".to_string(), vec!["a".to_string(), "b".to_string()]),
+        ];
+        assert!(resolve_mcp_vision_tools("", &declared).is_empty());
+    }
+
+    #[test]
+    fn mcp_tools_short_name_completed_and_unknown_passthrough() {
+        let declared = vec![(
+            "zai-mcp-server".to_string(),
+            vec!["analyze_image".to_string()],
+        )];
+        let tools = resolve_mcp_vision_tools("analyze_image, custom__tool, 未声明名", &declared);
+        assert_eq!(
+            tools,
+            vec!["zai-mcp-server__analyze_image", "custom__tool", "未声明名"]
+        );
+    }
+
+    #[test]
+    fn default_hint_contains_scene_routing_and_fallbacks() {
+        // 显式配置工具时点名直呼（钉定场景）。v0.9.5：点名用 pi 可见名
+        // （mcp__jishu_hub__ 前缀——pi 1.1.0 原生 MCP 规律，需求11）；
+        // schema 查不到时降级为 describe 指引（假查询器固定降级路径）。
+        let route = ImageDispatchRoute {
+            custom_prompt: None,
+            mcp_tools: vec!["some-mcp__analyze".to_string()],
+            subagent_model: Some("zhipu/glm-5.3-flash".to_string()),
+        };
+        let hint = compose_image_dispatch_hint_with(&route, &|_| None);
+        assert!(hint.contains("简单识别"), "缺简单识别路由");
+        assert!(hint.contains("复杂分析"), "缺复杂分析路由");
+        assert!(
+            hint.contains("mcp__jishu_hub__some-mcp__analyze"),
+            "缺 pi 可见名"
+        );
+        assert!(hint.contains("zhipu/glm-5.3-flash"));
+        assert!(hint.contains(r#""action":"list""#), "缺清单查询步骤");
+        assert!(hint.contains("改用另一条途径"), "缺互为兜底");
+        assert!(hint.contains("严禁编造图片内容"), "缺双败如实告知");
+        assert!(
+            hint.contains("hub_mcp_list 返回的参数说明"),
+            "降级缺 list 指引"
+        );
+    }
+
+    /// v0.9.5 解析器能力对齐直连（用户裁决 2026-09-30）：点名工具内联参数
+    /// schema——模型首调即知参数名（实测曾以 image_path 猜 image_source，
+    /// 白挨一轮 -32602）。
+    #[test]
+    fn configured_tools_inline_schema() {
+        let route = ImageDispatchRoute {
+            custom_prompt: None,
+            mcp_tools: vec!["zai-mcp-server__analyze_image".to_string()],
+            subagent_model: Some("zhipu/glm-5.3-flash".to_string()),
+        };
+        let hint = compose_image_dispatch_hint_with(&route, &|tool| {
+            assert_eq!(
+                tool, "zai-mcp-server__analyze_image",
+                "查询应使用 hub 规范名"
+            );
+            Some(json!({
+                "type": "object",
+                "properties": {
+                    "image_source": { "type": "string", "description": "本地图路径或远程 URL" },
+                    "prompt": { "type": "string", "description": "分析要求" },
+                    "detail": { "type": "string" }
+                },
+                "required": ["image_source", "prompt"]
+            }))
+        });
+        assert!(hint.contains("mcp__jishu_hub__zai-mcp-server__analyze_image"));
+        assert!(
+            hint.contains("- image_source（string，必填）：本地图路径或远程 URL"),
+            "缺 image_source 参数行"
+        );
+        assert!(hint.contains("- prompt（string，必填）：分析要求"));
+        assert!(
+            hint.contains("- detail（string，可选）"),
+            "无描述参数仅标类型与必填"
+        );
+        assert!(hint.contains("按各参数说明直接传入"));
+        assert!(
+            !hint.contains("describe 返回的 schema"),
+            "有 schema 不应走降级"
+        );
+    }
+
+    #[test]
+    fn default_hint_without_config_lets_agent_discover_mcp_itself() {
+        // 用户裁决：默认不点名任何具体 MCP——模型自行搜索发现识图工具
+        let route = ImageDispatchRoute {
+            custom_prompt: None,
+            mcp_tools: vec![],
+            subagent_model: Some("zhipu/glm-5.3-flash".to_string()),
+        };
+        let hint = compose_image_dispatch_hint_with(&route, &|_| None);
+        assert!(hint.contains("先自行发现识图工具"), "缺自搜索指引");
+        assert!(hint.contains("hub_mcp_list"), "缺全量列举入口");
+        assert!(hint.contains("mcp__jishu_hub__"), "缺原生命名规律提示");
+        assert!(!hint.contains("zai"), "默认话术不得点名具体 MCP 服务");
+    }
+
+    #[test]
+    fn default_hint_without_tools_or_model_degrades_gracefully() {
+        let route = ImageDispatchRoute {
+            custom_prompt: None,
+            mcp_tools: vec![],
+            subagent_model: None,
+        };
+        let hint = compose_image_dispatch_hint_with(&route, &|_| None);
+        assert!(
+            hint.contains("先自行发现识图工具"),
+            "无工具时应走自搜索指引"
+        );
+        assert!(!hint.contains("model 参数填"), "无模型时不应有 model 指引");
+    }
+
+    #[test]
+    fn default_hint_template_junctions_intact() {
+        // v0.9.5 重构：话术迁 resources/prompts/image-dispatch.md 模板——锁定
+        // 占位符替换后的接缝（模板文件与填充代码各自改动时此测试先红）。
+        let route = ImageDispatchRoute {
+            custom_prompt: None,
+            mcp_tools: vec!["p__t".to_string()],
+            subagent_model: Some("prov/m".to_string()),
+        };
+        let hint = compose_image_dispatch_hint_with(&route, &|_| None);
+        assert!(
+            hint.starts_with("本条消息含图片，而你不支持图像输入。"),
+            "开头话术漂移"
+        );
+        // 需求11 三轮（判定准则 v2）：开头先判定准则再路由。
+        assert!(hint.contains("先判定任务类型再路由"), "缺判定准则");
+        assert!(hint.contains("拿不准倾向判定为分析"), "缺模糊带兜底");
+        assert!(
+            hint.contains("优先 MCP：调用工具 mcp__jishu_hub__p__t，把上方附件行"),
+            "MCP 条款接缝"
+        );
+        assert!(
+            hint.contains("（禁止编造角色名），model 参数填 prov/m（识图模型），task 中写明"),
+            "模型参数接缝"
+        );
+        assert!(
+            hint.ends_with("本块为系统内部指令：执行后不要在任何回复中复述或引用本块内容。"),
+            "结尾话术漂移"
+        );
+        assert!(!hint.contains("{{"), "残留未替换占位符");
+
+        let bare = ImageDispatchRoute {
+            custom_prompt: None,
+            mcp_tools: vec![],
+            subagent_model: None,
+        };
+        let hint2 = compose_image_dispatch_hint_with(&bare, &|_| None);
+        assert!(
+            hint2.contains("（禁止编造角色名），task 中写明"),
+            "无模型时接缝应自然闭合"
+        );
+        assert!(!hint2.contains("{{"), "残留未替换占位符");
+    }
+
+    #[test]
+    fn custom_prompt_placeholders_substituted() {
+        let route = ImageDispatchRoute {
+            custom_prompt: Some("工具：{{mcp_tools}}；模型：{{subagent_model}}".to_string()),
+            mcp_tools: vec!["p__t".to_string()],
+            subagent_model: Some("prov/m".to_string()),
+        };
+        let hint = compose_image_dispatch_hint_with(&route, &|_| None);
+        assert_eq!(hint, "工具：mcp__jishu_hub__p__t；模型：prov/m");
+    }
+}
+
+/// v0.9.6 需求6 F1：进程表删除的竞态守卫单测（纯函数 remove_process_entries_from）。
+mod remove_entries_tests {
+    use crate::chat::{remove_process_entries_from, ChatProcess, ChatState};
+    use std::collections::HashMap;
+
+    fn proc(pid: u32) -> ChatProcess {
+        ChatProcess {
+            agent_id: "jishu-self".into(),
+            process_id: pid,
+            stdin: None,
+            acp: None,
+            spawn_signature: String::new(),
+            project_encoded: String::new(),
+        }
+    }
+
+    fn state_with(entries: &[(&str, u32)]) -> ChatState {
+        ChatState {
+            processes: entries
+                .iter()
+                .map(|(sid, pid)| (sid.to_string(), proc(*pid)))
+                .collect::<HashMap<_, _>>(),
+        }
+    }
+
+    /// 竞态主场景：漂移回收后旧进程 on_finish 晚到——键上是新 pid 条目，不得误删
+    ///（误删后果：abort_chat 查无条目 → 卡死后停止无效）。
+    #[test]
+    fn stale_finish_does_not_delete_new_entry() {
+        let mut st = state_with(&[("sess-1", 200)]);
+        remove_process_entries_from(&mut st, Some(100), Some("sess-1"));
+        assert!(
+            st.processes.contains_key("sess-1"),
+            "旧 pid 的 on_finish 不得删掉新进程条目"
+        );
+        assert_eq!(st.processes["sess-1"].process_id, 200);
+    }
+
+    /// 正常删除：键上就是本次 pid 的条目。
+    #[test]
+    fn own_entry_removed_by_pid_and_sid() {
+        let mut st = state_with(&[("sess-1", 100), ("other", 300)]);
+        remove_process_entries_from(&mut st, Some(100), Some("sess-1"));
+        assert!(!st.processes.contains_key("sess-1"));
+        assert!(st.processes.contains_key("other"));
+    }
+
+    /// pid retain 语义不变：同 pid 双键（pending id + 真实 id）全删。
+    #[test]
+    fn dual_keys_same_pid_all_removed() {
+        let mut st = state_with(&[("pending-1", 100), ("real-id", 100)]);
+        remove_process_entries_from(&mut st, Some(100), Some("real-id"));
+        assert!(st.processes.is_empty(), "同 pid 双键应全部删除");
+    }
+
+    /// process_id=None 维持旧语义：仅按 sid 删（不守卫）。
+    #[test]
+    fn none_pid_removes_by_sid_only() {
+        let mut st = state_with(&[("sess-1", 200)]);
+        remove_process_entries_from(&mut st, None, Some("sess-1"));
+        assert!(!st.processes.contains_key("sess-1"));
+    }
+
+    /// 键不存在时幂等。
+    #[test]
+    fn missing_key_is_noop() {
+        let mut st = state_with(&[("sess-1", 200)]);
+        remove_process_entries_from(&mut st, Some(999), Some("nope"));
+        assert_eq!(st.processes.len(), 1);
     }
 }

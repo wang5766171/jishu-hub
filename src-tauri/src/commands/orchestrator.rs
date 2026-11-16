@@ -1,3 +1,10 @@
+//! v0.9.5 clippy 机械清理批次：本模块全部 Tauri IPC 命令返回
+//! `Result<T, TaskError>`——TaskError 是跨端结构化错误（字段即 IPC 协议
+//! 形状，前端按字段渲染文案与补救动作），装箱（Box）会改变全部命令的
+//! 线上形状与既有调用链，超出机械清理边界——模块整体豁免
+//! result_large_err（38 处命令签名同源告警）。
+#![allow(clippy::result_large_err)]
+
 use tauri::Emitter;
 
 use crate::AppState;
@@ -71,6 +78,8 @@ pub(crate) fn orchestrator_get_latest_graph_for_project(
         .task_service
         .lock()
         .map_err(|e| task_ipc_internal(e.to_string()))?;
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间）。
+    let project_root = crate::project::resolve_project_root_or_default(&project_root);
     task_service
         .latest_graph_for_project(std::path::Path::new(&project_root))
         .map_err(Into::into)
@@ -90,6 +99,8 @@ pub(crate) fn orchestrator_list_graphs_for_project(
         .task_service
         .lock()
         .map_err(|e| task_ipc_internal(e.to_string()))?;
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间）。
+    let project_root = crate::project::resolve_project_root_or_default(&project_root);
     task_service
         .list_graphs_for_project(std::path::Path::new(&project_root))
         .map_err(Into::into)
@@ -579,7 +590,9 @@ pub(crate) fn orchestrator_retry_node(
         .task_service
         .lock()
         .map_err(|e| task_ipc_internal(e.to_string()))?;
-    task_service.retry_node(&run_id, &node_id).map_err(Into::into)
+    task_service
+        .retry_node(&run_id, &node_id)
+        .map_err(Into::into)
 }
 
 #[cfg(feature = "orchestrator")]
@@ -594,7 +607,9 @@ pub(crate) fn orchestrator_skip_node(
         .task_service
         .lock()
         .map_err(|e| task_ipc_internal(e.to_string()))?;
-    task_service.skip_node(&run_id, &node_id).map_err(Into::into)
+    task_service
+        .skip_node(&run_id, &node_id)
+        .map_err(Into::into)
 }
 
 // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€

@@ -30,7 +30,10 @@ const THINKING_LEVEL_ALL: [&str; 7] = ["off", "minimal", "low", "medium", "high"
 /// - 无 map → 默认集 off..high。
 pub fn supported_thinking_levels(map: Option<&serde_json::Value>) -> Vec<String> {
     let Some(obj) = map.and_then(serde_json::Value::as_object) else {
-        return THINKING_LEVEL_ALL[..5].iter().map(|s| s.to_string()).collect();
+        return THINKING_LEVEL_ALL[..5]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
     };
     THINKING_LEVEL_ALL
         .iter()
@@ -245,7 +248,10 @@ mod tests {
         assert_eq!(opts.len(), 2);
         assert_eq!(opts[0].value, "zhipu/glm-5.3");
         assert_eq!(opts[0].label, "智谱 · glm-5.3");
-        assert_eq!(opts[0].thinking_levels, vec!["off", "low", "medium", "high"]);
+        assert_eq!(
+            opts[0].thinking_levels,
+            vec!["off", "low", "medium", "high"]
+        );
         assert!(opts[0].reasoning);
         assert_eq!(opts[1].thinking_levels, vec!["off"]);
         assert!(!opts[1].reasoning);
@@ -308,7 +314,10 @@ mod tests {
 
     #[test]
     fn version_desc_matches_frontend_semantics() {
-        assert_eq!(by_version_desc("glm-5.3", "glm-5.2"), std::cmp::Ordering::Less);
+        assert_eq!(
+            by_version_desc("glm-5.3", "glm-5.2"),
+            std::cmp::Ordering::Less
+        );
         assert_eq!(
             by_version_desc("glm-4.5", "glm-5.1"),
             std::cmp::Ordering::Greater
@@ -319,6 +328,9 @@ mod tests {
             std::cmp::Ordering::Less
         );
         // 无数字排最后。
-        assert_eq!(by_version_desc("custom", "glm-4.5"), std::cmp::Ordering::Greater);
+        assert_eq!(
+            by_version_desc("custom", "glm-4.5"),
+            std::cmp::Ordering::Greater
+        );
     }
 }

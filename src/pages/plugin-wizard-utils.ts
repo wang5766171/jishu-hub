@@ -1,0 +1,99 @@
+/**
+ * 插件创建向导共享工具（v0.9.5 三轮评审 P1-3 修复）。
+ *
+ * 此前三个创建向导（compose/pipeline/hybrid）各自内联了同款 tomlStr 与
+ * slug 生成，存在三个洞（一轮评审 P1-3 + 三轮复核确认）：
+ * ① tomlStr 不转义换行——多行提示词生成非法 TOML，保存必报「TOML 解析失败」；
+ * ② slug 正则 `[^a-z0-9]+` 不认非 ASCII——纯中文名全部坍缩为同一 id
+ *   （session.flow / session.custom / session.hybrid），第二个同名向导静默
+ *   覆盖第一个；
+ * ③ 保存前不查 id 占用。
+ *
+ * 修复：tomlStr 改 JSON.stringify（JSON 字符串转义集是 TOML basic string
+ * 转义集的子集，控制字符/引号/反斜杠全部合法转义）；slug 改 Unicode 感知
+ * （保留 unicode 字母数字——中文名直接进 id，后端 id 仅要求 session. 前缀
+ * 无字符集限制，Windows 目录名支持中文）；保存前查占用（重名提示改名，
+ * 阻止静默覆盖）。
+ */
+
+/**
+ * TOML 基本字符串安全序列化：JSON.stringify 的转义输出（\" \\ \n \r \t
+ * \uXXXX 等）全部是 TOML basic string 的合法转义序列，可直接内联进 TOML。
+ * 换行控制字符经此路径正确转义（修前裸换行导致 TOML 解析失败）。
+ */
+export function tomlStr(v: string): string {
+  return JSON.stringify(v);
+}
+
+/**
+ * 名称 → 组合插件 id 后缀（Unicode 感知）：保留 unicode 字母/数字（含中文
+ * 与全角），其余字符折叠为 `-`。不同中文名产生不同 id——修前 `[^a-z0-9]+`
+ * 把纯中文名全部坍缩为 fallback，互相静默覆盖。空名回落 fallback。
+ */
+export function slugify(name: string, fallback: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || fallback;
+}
+
+/** 插件形态（v0.9.7 需求3 十六轮用户裁决：**形态 = 九类挂载位粒度**——
+ * 此前十/十一轮的五值合并口径作废，标题栏动作/输入框尾挂件等不得再被并入
+ * 「会话」「悬浮窗」大桶）。九类 = PluginMount 联合全量（types.ts 代码审计）；
+ * 二十轮增「菜单」类（新任务下方入口，需求7 修1d 的 [menu] 段声明件，
+ * ≤5）。另保留两值覆盖无挂载件：主题外观（app-theme 声明件）与无 UI 呈现
+ * （MCP/Skill/CLI 等无挂载位件统一标注，十一轮裁决）。挂载位即形态——
+ * 创建落值直接写挂载位（form = mount），展示推导取首个非事件钩子挂载。 */
+export type PluginForm =
+  | "block-renderer"
+  | "tool-result-renderer"
+  | "header-action"
+  | "sidebar-panel"
+  | "dock-panel"
+  | "rail-widget"
+  | "composer-trailing"
+  | "app-overlay"
+  | "event-hook"
+  | "menu"
+  | "theme"
+  | "none";
+
+/** 形态全集（展示顺序=筛选 chips 顺序：会话内三类 → 侧栏/面板/挂件/浮层 →
+ * 事件钩子 → 主题 → 无 UI）。与后端 PLUGIN_FORM_VALUES 同枚举（非法声明
+ * 展示侧忽略走推导）。 */
+export const PLUGIN_FORM_VALUES: PluginForm[] = [
+  "block-renderer",
+  "tool-result-renderer",
+  "header-action",
+  "sidebar-panel",
+  "dock-panel",
+  "rail-widget",
+  "composer-trailing",
+  "app-overlay",
+  "event-hook",
+  "menu",
+  "theme",
+  "none",
+];
+
+/** 形态值合法性判断（未知/旧五值声明返回 false，消费方走推导兜底）。 */
+export function isPluginForm(v: unknown): v is PluginForm {
+  return typeof v === "string" && (PLUGIN_FORM_VALUES as string[]).includes(v);
+}
+
+/**
+ * 创建前占用检测：id 已被既有组合插件占用时返回 false（调用方提示改名，
+ * 阻止静默覆盖——保存按 id 全量替换目录内容）。
+ */
+export async function composedIdTaken(id: string): Promise<boolean> {
+  const { invokeCommand } = await import("@/hooks/use-invoke");
+  try {
+    const manifests = (await invokeCommand("composed_plugin_manifests")) as Array<{ id?: string }>;
+    return Array.isArray(manifests) && manifests.some((m) => m?.id === id);
+  } catch {
+    // 清单拉取失败（后端异常）：不阻断创建——保存本身有后端校验兜底。
+    return false;
+  }
+}

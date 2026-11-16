@@ -22,6 +22,8 @@ pub enum DecisionChannel {
     /// 交互会话（GUI chat）——Delegate 可弹 UI 打扰用户。
     Interactive,
     /// 无头任务（HeadlessTask）——无用户在场，Delegate 等价拒绝。
+    /// 预留：headless 流水线通道（v0.8.0 需求1 框架面，未接线）。
+    #[allow(dead_code)]
     HeadlessTask,
     /// 编排器节点派发——Delegate 等待编排器审批流。
     Orchestrator,
@@ -30,7 +32,10 @@ pub enum DecisionChannel {
 /// 审批动作三分类（wire 语义，对齐 normalized::ApprovalKind）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalKindWire {
+    /// 预留：按工具类别的粗分 wire 变体（当前经 ApprovalKind::for_tool 动态分类）。
+    #[allow(dead_code)]
     Command,
+    #[allow(dead_code)]
     FileWrite,
     Other,
 }
@@ -38,6 +43,8 @@ pub enum ApprovalKindWire {
 /// 决策上下文：策略唯一输入（不可变快照，策略无副作用）。
 #[derive(Debug, Clone)]
 pub struct ApprovalContext {
+    /// 预留：无头通道策略件读取（HeadlessDenyPolicy 接线时启用）。
+    #[allow(dead_code)]
     pub channel: DecisionChannel,
     pub kind: ApprovalKindWire,
     pub session_id: String,
@@ -54,6 +61,8 @@ pub struct ApprovalContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyDecision {
     Allow,
+    /// 预留：策略链直接拒绝（当前链产物仅 Allow/Delegate，Deny 经 HeadlessDenyPolicy）。
+    #[allow(dead_code)]
     Deny,
     Delegate,
 }
@@ -101,6 +110,7 @@ impl PolicyChain {
         ChainOutcome::Delegate
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.policies.is_empty()
     }
@@ -118,6 +128,7 @@ impl std::fmt::Debug for PolicyChain {
 // 内置策略（v1 五个 + 编排器档位门控两个）
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 /// 无头通道拒绝：HeadlessTask → Deny；其余委托。替换 agent_runtime 无头
 /// 会话审批的硬编码自动拒绝（挂载点 1 生效后该分支成为防御断言）。
 pub struct HeadlessDenyPolicy;
@@ -168,6 +179,7 @@ impl ApprovalPolicy for AlwaysAllowPolicy {
     }
 }
 
+#[allow(dead_code)]
 /// 直接委托（即弹窗/等审批；编排器 Always 档 / 测试用）。
 pub struct AlwaysAskPolicy;
 
@@ -209,9 +221,9 @@ impl OnceApprovalPolicy {
         // 注意含 tool 名（02 §2.3 偏离修正，测试锁定）：文档口径 kind+payload
         // 键会让「批准过 bash」误放行「grep」——同形状不同工具是不同动作。
         format!(
-            "{}|{}|{}",
+            "{}|{:?}|{}",
             ctx.tool.as_deref().unwrap_or(""),
-            format!("{:?}", ctx.kind),
+            ctx.kind,
             keys.join(",")
         )
     }
@@ -316,6 +328,7 @@ fn chain_for_tool_mode(mode: Option<&str>, session_id: &str) -> PolicyChain {
     }
 }
 
+#[allow(dead_code)]
 /// 无头会话默认链（经注册表挂会话记忆）。
 pub fn for_headless_session(session_id: &str) -> PolicyChain {
     PolicyChain::new(vec![
@@ -424,22 +437,42 @@ mod tests {
     #[test]
     fn headless_deny_only_targets_headless_channel() {
         let p = HeadlessDenyPolicy;
-        assert_eq!(p.evaluate(&ctx(DecisionChannel::HeadlessTask, None)), PolicyDecision::Deny);
-        assert_eq!(p.evaluate(&ctx(DecisionChannel::Interactive, None)), PolicyDecision::Delegate);
-        assert_eq!(p.evaluate(&ctx(DecisionChannel::Orchestrator, None)), PolicyDecision::Delegate);
+        assert_eq!(
+            p.evaluate(&ctx(DecisionChannel::HeadlessTask, None)),
+            PolicyDecision::Deny
+        );
+        assert_eq!(
+            p.evaluate(&ctx(DecisionChannel::Interactive, None)),
+            PolicyDecision::Delegate
+        );
+        assert_eq!(
+            p.evaluate(&ctx(DecisionChannel::Orchestrator, None)),
+            PolicyDecision::Delegate
+        );
     }
 
     #[test]
     fn low_risk_only_allows_known_readonly_kinds() {
         let p = LowRiskAutoAllowPolicy;
         for tool in ["read", "grep", "glob", "thinking"] {
-            assert_eq!(p.evaluate(&ctx(DecisionChannel::Interactive, Some(tool))), PolicyDecision::Allow, "{tool}");
+            assert_eq!(
+                p.evaluate(&ctx(DecisionChannel::Interactive, Some(tool))),
+                PolicyDecision::Allow,
+                "{tool}"
+            );
         }
         for tool in ["bash", "write", "edit", "unknown", "webfetch"] {
-            assert_eq!(p.evaluate(&ctx(DecisionChannel::Interactive, Some(tool))), PolicyDecision::Delegate, "{tool}");
+            assert_eq!(
+                p.evaluate(&ctx(DecisionChannel::Interactive, Some(tool))),
+                PolicyDecision::Delegate,
+                "{tool}"
+            );
         }
         // 无工具名 → 委托（保守）。
-        assert_eq!(p.evaluate(&ctx(DecisionChannel::Interactive, None)), PolicyDecision::Delegate);
+        assert_eq!(
+            p.evaluate(&ctx(DecisionChannel::Interactive, None)),
+            PolicyDecision::Delegate
+        );
     }
 
     #[test]
@@ -459,7 +492,10 @@ mod tests {
         memory.remember_once("s1", &OnceApprovalPolicy::action_key(&first));
         assert_eq!(chain.evaluate(&first), ChainOutcome::Allow("once-approval"));
         // 不同会话不共享记忆。
-        let other_session = ApprovalContext { session_id: "s2".into(), ..ctx(DecisionChannel::Interactive, Some("bash")) };
+        let other_session = ApprovalContext {
+            session_id: "s2".into(),
+            ..ctx(DecisionChannel::Interactive, Some("bash"))
+        };
         assert_eq!(chain.evaluate(&other_session), ChainOutcome::Delegate);
         // 只读工具即使无记忆也被 low-risk 放行（链顺序语义）。
         assert_eq!(
@@ -511,7 +547,8 @@ mod tests {
         let mut arrival = ctx(DecisionChannel::Interactive, Some("bash"));
         // session_id 与链/记忆桶一致（evaluate 有 ctx.session_id == policy.session 前置）。
         arrival.session_id = "s-roundtrip".into();
-        arrival.payload = serde_json::json!({ "tool": "bash", "summary": "rm -rf", "mode": "smart" });
+        arrival.payload =
+            serde_json::json!({ "tool": "bash", "summary": "rm -rf", "mode": "smart" });
         // 注入内存 Once 记忆（对齐 ：452 测试的既有模式）：default_memory 是
         // SQLite 持久库（approval.db 跨进程重启）——本测试自 remember 后若走
         // 默认库，下一轮跑测首评直接命中 Allow 而失败（v0.9.4 需求6 全量跑测
@@ -531,12 +568,16 @@ mod tests {
             "s-roundtrip",
             &OnceApprovalPolicy::action_key(&replayed),
         );
-        assert_eq!(chain.evaluate(&arrival), ChainOutcome::Allow("once-approval"));
+        assert_eq!(
+            chain.evaluate(&arrival),
+            ChainOutcome::Allow("once-approval")
+        );
         // 登记已被取走清理；同动作不同工具仍委托（action_key 含工具名）。
         assert!(take_arrival_context("req-1").is_none());
         let mut other_tool = arrival.clone();
         other_tool.tool = Some("write".into());
-        other_tool.payload = serde_json::json!({ "tool": "write", "summary": "x", "mode": "smart" });
+        other_tool.payload =
+            serde_json::json!({ "tool": "write", "summary": "x", "mode": "smart" });
         assert_eq!(chain.evaluate(&other_tool), ChainOutcome::Delegate);
     }
 

@@ -111,6 +111,13 @@ export interface SessionStreamState {
   /** v0.9.1 需求14：重试耗尽的最终失败（end success=false + finalError）——
    * 保留至下一轮开始（emptyState 重置），页面显性展示最终失败原因。 */
   retryFailed: { attempt: number; finalError: string } | null;
+  /** v0.9.5 需求2 测试期修复（会话 01a0ed19 实证）：回合令牌——每次 start()
+   *  铸造新值（模块级递增），push 逐字段重建时透传。停止幂等的判别依据：
+   *  abortLocalCommitRef 记录「已本地提交的回合令牌」，同令牌（同回合）
+   *  重复点停止永久跳过重复提交（替代旧 10s 墙钟时间窗——窗口过期后
+   *  同一滞留流再次提交 = 「停止后消息重复渲染」根因）；新回合（新
+   *  start）令牌不同，自动放行，无需任何清理配合。 */
+  turnToken: number;
 }
 
 function emptyState(
@@ -139,8 +146,12 @@ function emptyState(
     interactionSplits: [],
     autoRetry: null,
     retryFailed: null,
+    turnToken: nextTurnToken++,
   };
 }
+
+/** v0.9.5 需求2 测试期修复：回合令牌单调源（见 SessionStreamState.turnToken）。 */
+let nextTurnToken = 1;
 
 export interface InteractionResponseCheckpoint {
   key: string;
@@ -148,6 +159,17 @@ export interface InteractionResponseCheckpoint {
 }
 
 function canStartContinuationStream(chunk: StreamChunk): boolean {
+  // v0.9.6 需求1：compaction 终态 divider（已压缩/已取消/失败——Rust
+  // normalize.rs 硬编码文案，与终态判定集合同步维护）不自动起流——它只
+  // 可能出现在流已被 compaction_status(active=false) 终结之后，起流即
+  // 「复活出无人终结的流」（灰字「上下文压缩中...」永挂的根因）。
+  if (
+    chunk.data.kind === "phase_divider"
+    && (chunk.data as { phase?: string }).phase === "compaction"
+    && COMPACTION_TERMINAL_TITLES.has((chunk.data as { title?: string }).title ?? "")
+  ) {
+    return false;
+  }
   return chunk.data.kind === "text_delta"
     || chunk.data.kind === "thinking"
     || chunk.data.kind === "tool_use_start"
@@ -157,11 +179,33 @@ function canStartContinuationStream(chunk: StreamChunk): boolean {
     || chunk.data.kind === "interaction_request";
 }
 
+/** v0.9.6 需求1：compaction 分隔线终态文案集合（与 Rust normalize.rs
+ * compaction_end 三态 title 同步维护——两侧同版本发布，无跨版本兼容问题）。 */
+const COMPACTION_TERMINAL_TITLES = new Set([
+  "上下文已压缩",
+  "上下文压缩已取消",
+  "上下文压缩失败",
+]);
+
 class StreamStore {
   /** Canonical key -> state. */
   private sessions = new Map<string, SessionStreamState>();
   /** Any-id -> canonical key. */
   private aliases = new Map<string, string>();
+  /** v0.9.5 需求2 测试期（会话 01a0d868 实证）：曾完成连接解析的会话 id
+   *  （session_resolved 到达过；跨回合记忆，drop 不清——同 conductorPhases
+   *  先例）。复用进程的后续回合连接只解析一次、不会再发 session_resolved，
+   *  markPromptAccepted 凭此记忆把已建立连接的回合直接升级③「思考中」，
+   *  避免模型首响应慢/滞留时误导性显示②「正在赶来」（需求12 修过一次，
+   *  后被「③权威信号=session_resolved」的测试期修复回归）。 */
+  private resolvedOnce = new Set<string>();
+  /** 三轮评审 C20：resolvedOnce 登记时的进程 id（连接世代）——进程死后
+   *  重连（新 pid）时 markPromptAccepted 不再凭旧记忆直升③「思考中」
+   *  （修前重连窗口误报阶段）；复用连接（同 pid）保持原优化。 */
+  private resolvedPid = new Map<string, number>();
+  /** 本回合 send 返回的进程 id（noteProcess 供给，session_resolved 到达
+   *  时快照进 resolvedPid）。 */
+  private currentPid = new Map<string, number>();
   /** Per-session conductor phase (from phase_divider events). Independent of
    *  stream state so it survives drop() — used to tell conductor-driven
    *  followUp (execute node advance) apart from a final turn. */
@@ -192,22 +236,48 @@ class StreamStore {
     this.aliases.set(canonicalId, key);
   }
 
-  /** v0.9.4 需求12：send_message 受理确认（chat-input IPC 返回后调用）——
-   *  阶段文案②→③切换信号（与 hasReceivedEvent 独立：受理后模型未吐字 =
-   *  等待模型响应而非连接中）。 */
-  markPromptAccepted(sid: string): void {
+  /** v0.9.4 需求12：send_message 受理确认（IPC 返回后调用）——
+   *  已建立连接（本会话曾 session_resolved，复用进程路径）的回合直接
+   *  升级③「思考中」；spawn 中的新连接保持②「正在赶来」等权威信号。
+   *  C20：带 pid 时比对连接世代——新进程（重连）不直升，等 session_resolved。 */
+  markPromptAccepted(sid: string, pid?: number): void {
     const key = this.canonical(sid);
     const prev = this.sessions.get(key);
     if (!prev || prev.promptAccepted) return;
-    this.sessions.set(key, { ...prev, promptAccepted: true });
-    devLog("store", "send 受理确认（②→③：等待模型响应）", { id: sid });
+    const rememberedPid = this.resolvedPid.get(key);
+    const generationMatch =
+      pid === undefined || rememberedPid === undefined || rememberedPid === pid;
+    const established = !prev.sessionResolved && this.resolvedOnce.has(key) && generationMatch;
+    this.sessions.set(key, {
+      ...prev,
+      promptAccepted: true,
+      ...(established ? { sessionResolved: true, hasReceivedEvent: true } : {}),
+    });
+    devLog(
+      "store",
+      established
+        ? "send 受理确认（复用连接：直入③思考中）"
+        : pid !== undefined && !generationMatch
+          ? "send 受理确认（新进程重连：保持②正在赶来，等 session_resolved）"
+          : "send 受理确认（连接建立中，保持②正在赶来）",
+      { id: sid, pid: pid ?? null, rememberedPid: rememberedPid ?? null },
+    );
     this.scheduleFlush();
   }
 
+  /** C20：登记本回合进程 id（send_message 返回的 process_id——连接世代
+   *  信号；session_resolved 到达时快照进 resolvedPid）。 */
+  noteProcess(sid: string, pid: number): void {
+    this.currentPid.set(this.canonical(sid), pid);
+  }
+
   /** v0.9.4 需求12 测试期修复：session_resolved 到达（连接建立）——②→③
-   * 权威切换（同时视为 hasReceivedEvent：连接后必有内容流）。 */
+   * 权威切换（同时视为 hasReceivedEvent：连接后必有内容流）。
+   * v0.9.5 需求2 测试期：登记 resolvedOnce（跨回合记忆，drop 不清）。 */
   markSessionResolved(sid: string): void {
     const key = this.canonical(sid);
+    this.resolvedOnce.add(key);
+    this.resolvedOnce.add(sid);
     const prev = this.sessions.get(key);
     if (!prev || prev.sessionResolved) return;
     this.sessions.set(key, { ...prev, sessionResolved: true, hasReceivedEvent: true });
@@ -234,7 +304,7 @@ class StreamStore {
     let { content, text, thinking, error, tools, resolvedId, steps, steerSplits, steerTexts, interactionSplits, autoRetry, retryFailed } = prev;
     let { hasReceivedEvent: hasEvent, sessionResolved } = prev;
     const pendingToolIds = prev.pendingToolIds;
-    const { pendingUserMessage, abortKey, isStreaming } = prev;
+    const { pendingUserMessage, abortKey, isStreaming, turnToken } = prev;
     const chunks = [...prev.chunks, chunk];
 
     const data = chunk.data;
@@ -309,7 +379,18 @@ class StreamStore {
         tool.id === data.call_id ? { ...tool, output: data.output, isError: data.is_error, endedAt } : tool
       ));
       if (!content.some((block) => block.type === "tool_result" && block.tool_use_id === data.call_id)) {
-        content = [...content, { type: "tool_result", tool_use_id: data.call_id, content: data.output }];
+        // 需求12 二轮：details 随块透传（待办面板等消费方实时取快照）。
+        content = [
+          ...content,
+          {
+            type: "tool_result",
+            tool_use_id: data.call_id,
+            content: data.output,
+            ...(data.details && typeof data.details === "object"
+              ? { details: data.details as Record<string, unknown> }
+              : {}),
+          },
+        ];
       }
     } else if (data.kind === "message") {
       const newTools = [...tools];
@@ -335,6 +416,18 @@ class StreamStore {
       const realId = data.session_id;
       if (typeof realId === "string" && realId.length >= 8) {
         resolvedId = realId;
+        // v0.9.5 需求2 测试期：与 markSessionResolved 同源登记（真实 id +
+        // 规范键都记，markPromptAccepted 升级③时可靠命中）。C20：同刻
+        // 快照连接世代 pid（currentPid 由 noteProcess 供给）。
+        this.resolvedOnce.add(realId);
+        this.resolvedOnce.add(key);
+        {
+          const pid = this.currentPid.get(key);
+          if (pid !== undefined) {
+            this.resolvedPid.set(realId, pid);
+            this.resolvedPid.set(key, pid);
+          }
+        }
         if (realId !== key) {
           this.aliases.set(realId, key);
         }
@@ -445,6 +538,7 @@ class StreamStore {
       interactionSplits,
       autoRetry,
       retryFailed,
+      turnToken,
     });
     this.scheduleFlush();
   }

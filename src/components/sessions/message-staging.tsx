@@ -9,8 +9,8 @@
  *
  * Reference: Codex Desktop's input behavior during agent output.
  */
-import { useState } from "react";
-import { Edit3, Send, Trash2 } from "lucide-react";
+import { useRef, useState } from "react";
+import { Edit3, GripVertical, Send, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { InlineImages } from "@/components/sessions/inline-image";
@@ -34,6 +34,8 @@ interface MessageStagingProps {
   onEdit: (id: string, content: string) => void;
   onDelete: (id: string) => void;
   onSend: (id: string, content: string) => void;
+  /** 需求11-3：拖拽调序（fromId 移到 toId 位置）。 */
+  onReorder?: (fromId: string, toId: string) => void;
   sendLabel?: string;
   /** When set, a guide send is in flight — disable every send buttons so a
    *  rapid double-click (or stacking across messages) can't fire the send
@@ -50,6 +52,7 @@ export function MessageStaging({
   onEdit,
   onDelete,
   onSend,
+  onReorder,
   sendLabel,
   sendLoadingId,
   toolNames,
@@ -57,6 +60,8 @@ export function MessageStaging({
   const { t } = useTranslation();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
+  // 需求11-3：拖拽调序——HTML5 原生（手柄发起，条目为落点）。
+  const dragIdRef = useRef<string | null>(null);
 
   if (messages.length === 0) return null;
 
@@ -78,6 +83,14 @@ export function MessageStaging({
       {messages.map((msg) => (
         <div
           key={msg.id}
+          onDragOver={(e) => { if (onReorder && dragIdRef.current && dragIdRef.current !== msg.id) e.preventDefault(); }}
+          onDrop={(e) => {
+            if (onReorder && dragIdRef.current && dragIdRef.current !== msg.id) {
+              e.preventDefault();
+              onReorder(dragIdRef.current, msg.id);
+            }
+            dragIdRef.current = null;
+          }}
           className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2"
         >
           {editingId === msg.id ? (
@@ -109,6 +122,17 @@ export function MessageStaging({
             </div>
           ) : (
             <>
+              {onReorder && (
+                <span
+                  draggable
+                  onDragStart={() => { dragIdRef.current = msg.id; }}
+                  onDragEnd={() => { dragIdRef.current = null; }}
+                  className="mt-0.5 shrink-0 cursor-grab text-muted-foreground/50 hover:text-muted-foreground"
+                  title={t("sessions.stagingDrag", "拖动调整顺序")}
+                >
+                  <GripVertical className="h-3.5 w-3.5" />
+                </span>
+              )}
               <div className="min-w-0 flex-1 space-y-1.5">
                 {/* v0.9.4 需求8 补充（用户截图：暂存卡片无图片）：附件缩略预览
                     ——fileLines（入列时已上传）组装为标记块喂 InlineImages，

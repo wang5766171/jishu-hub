@@ -1,5 +1,6 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import { listSessionPlugins } from "../registry";
+import { devLog } from "@/lib/dev-log";
 import type { BlockRendererMount, BlockTypeRendererMount, CodeBlockRendererMount } from "../types";
 
 /**
@@ -17,14 +18,23 @@ export function BlockRenderersProvider({
   children: ReactNode;
 }) {
   const renderers = useMemo(
-    () =>
-      listSessionPlugins()
+    () => {
+      // 需求14 M1（02 §3.3「用户插件 > 内置」遮蔽，B2）：matchBlockRenderer
+      // 按序首命中——非 builtin（source=config/dynamic，组合件含用户混合件）
+      // 排在内置 TS 件之前；组合族内部「用户件先于内置组合件（mermaid 等）」
+      // 由后端 composed_session_manifests 排序保证（builtin 殿后）。两配合
+      // 完成整条遮蔽链：用户混合件 > 内置组合件 > 内置 TS 件。
+      const ordered = [...listSessionPlugins()].sort(
+        (a, b) => Number(a.source === "builtin") - Number(b.source === "builtin"),
+      );
+      return ordered
         .filter((plugin) => enabled.has(plugin.id))
         .flatMap((plugin) =>
           plugin.mounts.filter(
             (mount): mount is BlockRendererMount => mount.kind === "block-renderer",
           ),
-        ),
+        );
+    },
     [enabled],
   );
   return <BlockRenderersContext.Provider value={renderers}>{children}</BlockRenderersContext.Provider>;
@@ -44,7 +54,13 @@ export function matchBlockRenderer(
   for (const renderer of renderers) {
     if (renderer.matching !== "code") continue;
     if (renderer.languages.length === 0 || !renderer.languages.includes(lang)) continue;
-    if (renderer.detect(lang, code)) return renderer;
+    if (renderer.detect(lang, code)) {
+      // 需求14：遮蔽命中观测——哪个插件接管了哪个语言的代码块。
+      const meta = renderer as { pluginId?: string };
+      devLog("capability", `block-renderer hit: ${lang} → ${meta.pluginId ?? "unknown"}`,
+        { language: lang, pluginId: meta.pluginId });
+      return renderer;
+    }
   }
   return null;
 }
@@ -64,4 +80,37 @@ export function matchBlockTypeRenderer(
 
 export function useBlockRenderers(): BlockRendererMount[] {
   return useContext(BlockRenderersContext);
+}
+/** 8b（v0.9.5 需求1）：工具返回值渲染咨询——按工具名匹配已启用插件的
+ *  tool-result-renderer 挂载（toolName 精确优先，toolPattern 正则兜底）。
+ *  非 hooks 语境（ToolCallCard body 内同步调用）——直接扫 listSessionPlugins
+ *  （注册表快照，loader 装载后稳定）。 */
+export function matchToolResultRenderer(
+  toolName: string,
+): { component: import("react").ComponentType<Record<string, unknown>>; options?: Record<string, unknown> } | null {
+  for (const plugin of listSessionPlugins()) {
+    for (const mount of plugin.mounts) {
+      if (mount.kind !== "tool-result-renderer") continue;
+      const m = mount as import("../types").ToolResultRendererMount;
+      if (m.toolName && m.toolName === toolName) {
+        return { component: m.component, options: m.options };
+      }
+    }
+  }
+  for (const plugin of listSessionPlugins()) {
+    for (const mount of plugin.mounts) {
+      if (mount.kind !== "tool-result-renderer") continue;
+      const m = mount as import("../types").ToolResultRendererMount;
+      if (m.toolPattern) {
+        try {
+          if (new RegExp(m.toolPattern).test(toolName)) {
+            return { component: m.component, options: m.options };
+          }
+        } catch {
+          // 非法正则跳过
+        }
+      }
+    }
+  }
+  return null;
 }

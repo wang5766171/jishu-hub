@@ -18,7 +18,8 @@ import {
   useSessionSidebar,
 } from "../../shell/session-sidebar";
 import { listSessionPlugins, useEnabledSessionPlugins } from "../registry";
-import { sidebarPanelsOf } from "../types";
+import { sidebarPanelsOf, dockPanelsOf } from "../types";
+import { useAllPluginBehaviors } from "../config-plane";
 import type { SessionKernelContext } from "../types";
 
 export function SessionSidebarLayer({ ctx }: { ctx: SessionKernelContext }) {
@@ -28,11 +29,19 @@ export function SessionSidebarLayer({ ctx }: { ctx: SessionKernelContext }) {
   const dragState = useRef<{ pointerId: number } | null>(null);
   const [, setDragging] = useState(false);
 
+  // 批次4：行为键「右侧栏」归所——dock-panel 插件被用户设为侧栏形态时，
+  // 侧栏层以首个停靠挂载渲染（与 sidebar-panel 声明同待遇）。
+  const behaviors = useAllPluginBehaviors();
   const mount = (() => {
     if (!sidebar.openId) return null;
     const plugin = listSessionPlugins().find((p) => p.id === sidebar.openId);
     if (!plugin || !enabled.has(plugin.id)) return null;
-    return { plugin, mount: sidebarPanelsOf(plugin)[0] ?? null };
+    const declared = sidebarPanelsOf(plugin)[0] ?? null;
+    const viaBehavior =
+      !declared && behaviors[plugin.id]?.defaultSlot === "sidebar"
+        ? dockPanelsOf(plugin)[0] ?? null
+        : null;
+    return { plugin, mount: declared ?? viaBehavior };
   })();
 
   // 拖拽调宽：宽度 = 窗口右缘到光标（与文件预览同语义）；捕获在稳定容器，

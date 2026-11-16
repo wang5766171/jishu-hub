@@ -1,7 +1,7 @@
 use super::*;
 
 use super::elicitation::AcpQuestion;
-use super::protocol::{write_jsonrpc_request, AcpWriter};
+use super::protocol::AcpWriter;
 
 #[derive(Debug)]
 pub(super) struct PendingPermission {
@@ -29,6 +29,8 @@ pub(super) struct PendingElicitation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ElicitAction {
     Accept,
+    /// 预留：elicitation 拒绝分支（协议完备性，当前 UI 侧无拒绝入口）。
+    #[allow(dead_code)]
     Decline,
     Cancel,
 }

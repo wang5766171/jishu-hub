@@ -185,10 +185,29 @@ export function JishuAgentSettingsBlock({
         : (tools ?? PI_ALL_TOOLS);
   const toolsEditable = toolPreset === "custom";
   const toggleTool = (name: string, on: boolean) => {
+    // 需求11 追加三 B：保留不在勾选目录但已激活的工具（codemode 开关写入
+    // 的实验工具不在 PI_TOOL_CATALOG，勾选其他工具时不得丢失）。
+    const extras = displayTools.filter((t) => !PI_TOOL_CATALOG.includes(t) && t !== name);
     const next = on
-      ? PI_TOOL_CATALOG.filter((t) => displayTools.includes(t) || t === name)
+      ? [...PI_TOOL_CATALOG.filter((t) => displayTools.includes(t) || t === name), ...extras]
       : displayTools.filter((t) => t !== name);
     setTools(next);
+  };
+
+  // 需求11 追加三 B：代码模式（codemode）开关——pi 1.1.0 内置实验工具，
+  // 模型可在 quickjs 沙箱写 JS 并行编排其他工具；以 defaultTools 名单一员
+  // 落盘（绝对名单语义，spawn --tools 透传激活）。只读预设不适用（禁用）。
+  const codemodeOn = (toolsPayload ?? PI_ALL_TOOLS).includes("codemode");
+  const toggleCodemode = (on: boolean) => {
+    if (toolPreset === "readonly") return;
+    const base = toolsPayload ?? PI_ALL_TOOLS;
+    const next = on
+      ? [...base.filter((t) => t !== "codemode"), "codemode"]
+      : base.filter((t) => t !== "codemode");
+    setTools(next);
+    // 「全部」预设下开启——名单不再是全集，切到自定义保持语义一致
+    //（重新装载时 deriveToolPreset 对非已知集合也判 custom）。
+    if (on && toolPreset === "all") setToolPreset("custom");
   };
 
   return (
@@ -355,6 +374,21 @@ export function JishuAgentSettingsBlock({
               {t(`config.tools.${name}`)}
             </label>
           ))}
+        </div>
+        <div className="flex items-center gap-2.5 text-xs">
+          <Switch
+            checked={codemodeOn}
+            disabled={toolPreset === "readonly"}
+            onCheckedChange={toggleCodemode}
+            aria-label={t("config.codemode", "代码模式（实验）")}
+          />
+          <span className="font-medium">{t("config.codemode", "代码模式（实验）")}</span>
+          <span className="text-[10px] text-muted-foreground/80">
+            {t(
+              "config.codemodeHint",
+              "模型可在沙箱内写脚本并行编排工具（pi codemode，quickjs 隔离无网络/文件系统）；对全体新会话生效",
+            )}
+          </span>
         </div>
         <p className="text-[10px] leading-relaxed text-muted-foreground/70">
           {toolPreset === "readonly"

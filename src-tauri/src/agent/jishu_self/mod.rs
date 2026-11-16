@@ -6,12 +6,11 @@ pub(crate) mod pi_model;
 pub(crate) mod pi_models_config;
 pub(crate) mod pi_runtime;
 pub(crate) mod pi_session;
-pub(crate) mod session_title;
 mod probe;
-mod store;
+pub(crate) mod session_title;
 
 use crate::agent::capability::AgentCapabilities;
-use crate::agent::{AgentInfo, AgentPlugin, ChatRequest, ResolvedSessionPromptInjection};
+use crate::agent::{AgentInfo, ChatRequest, ResolvedSessionPromptInjection};
 use crate::project_config::ProjectSettings;
 use std::path::PathBuf;
 
@@ -22,14 +21,18 @@ impl JishuSelfAgent {
         Self
     }
 
-    /// Standalone async MCP install — does not borrow &self, so it can be
+    /// Standalone async MCP ensure — does not borrow &self, so it can be
     /// awaited without holding the AgentRegistry MutexGuard.
+    /// v0.9.5 需求11（pi 1.1.0）：pi 原生 MCP client 落地，pi-mcp-adapter
+    /// 扩展退役（D0 开源优先：上游原生覆盖桥接层）——本方法改为「确保
+    /// pi 用户级 mcp.json 的 jishu-hub 条目 + 清理 adapter 残留」。
     pub async fn install_mcp_standalone() -> Result<String, String> {
-        Self::run_mcp_package_command("install").await
+        Self::ensure_native_mcp_entry().await
     }
 
-    /// pi-mcp-adapter 安装位置（pi install npm:pkg 落
-    /// `<config_dir>/npm/node_modules/<pkg>`，与 check_mcp 同口径）。
+    /// pi-mcp-adapter（已退役）安装位置残留检测——pi install npm:pkg 落
+    /// `<config_dir>/npm/node_modules/<pkg>`，与 check_mcp 的
+    /// adapter_residual 同口径（存在即需 cleanup_retired_adapter 清理）。
     pub(crate) fn mcp_adapter_dir() -> Option<std::path::PathBuf> {
         pi_config_dir().map(|dir| {
             std::path::Path::new(&dir)
@@ -39,30 +42,171 @@ impl JishuSelfAgent {
         })
     }
 
-    /// v0.9.1 需求11：MCP 适配器自动安装（幂等）——hub 安装期（NSIS
-    /// POSTINSTALL `--install-agent` / GUI 环境检测内装）与每次启动后台
-    /// 自愈共用：已安装 → Ok(false)；缺失 → `pi install npm:pi-mcp-adapter`
-    /// → Ok(true)。失败返回 Err（调用方仅告警不阻断——环境检测页的手动
-    /// 安装按钮保留为离线兜底）。
-    pub async fn ensure_mcp_adapter_installed() -> Result<bool, String> {
-        let Some(dir) = Self::mcp_adapter_dir() else {
-            return Err("cannot resolve ~/.jishu-agent/agent directory".to_string());
+    /// v0.9.5 需求11：pi 原生 MCP 接入自愈（幂等）——hub 安装期/启动后台
+    /// 共用：①确保 `~/.jishu-agent/agent/mcp.json`（pi 原生用户级位，
+    /// configDir 下）有 jishu-hub 条目（command=jishu-cli, args=[mcp,serve]，
+    /// 与其他三家同构）；②清理退役 adapter 残留（settings.json packages
+    /// 条目 + npm/node_modules 目录）——残留的 `/mcp` 命令会压制 pi 内置
+    /// builtin:mcp 扩展（实测 pi 1.1.0 警告二选一）。纯文件操作，离线可用。
+    /// 返回描述性消息（changed=true 表示本次有变更）。
+    pub async fn ensure_native_mcp_entry() -> Result<String, String> {
+        let mut changed = false;
+        // ① mcp.json 条目（键级，不动用户其它 server 条目）
+        match Self::upsert_native_hub_entry() {
+            Ok(c) => changed |= c,
+            Err(e) => return Err(format!("ensure mcp.json entry failed: {e}")),
+        }
+        // ② adapter 残留清理
+        match Self::cleanup_retired_adapter() {
+            Ok(c) => changed |= c,
+            Err(e) => log::warn!("[mcp-native] adapter cleanup deferred: {e}"),
+        }
+        Ok(if changed {
+            "pi 原生 MCP 接入已就绪（jishu-hub 条目写入 + adapter 残留清理）".to_string()
+        } else {
+            "pi 原生 MCP 接入已就绪（无需变更）".to_string()
+        })
+    }
+
+    /// mcp.json 键级 upsert jishu-hub 条目；返回是否有变更。
+    fn upsert_native_hub_entry() -> Result<bool, String> {
+        use serde_json::json;
+        let path = crate::agent::jishu_self::paths::mcp_json_path().map_err(|e| e.to_string())?;
+        let cli = crate::agent::jishu_self::resolve_jishu_cli_binary()
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .to_string();
+        let desired = json!({
+            "command": cli,
+            "args": ["mcp", "serve"],
+            // 需求11 追加四：pi 1.1.0 原生 MCP 默认 exposure=codemode（工具
+            // 不进模型 schema——识图话术的 hub_mcp_list 无调用入口，P0 切换
+            // 时漏验的可见性盲区）。toolExposure 放行两个代理工具为 direct：
+            // hub_mcp_list（发现）/ hub_mcp_call（代理调用）进 schema，其余
+            // 工具维持 codemode（不全量注入，context 增量最小）。
+            "toolExposure": {
+                "hub_mcp_list": "direct",
+                "hub_mcp_call": "direct",
+            },
+        });
+        let mut root: serde_json::Value = if path.exists() {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|c| serde_json::from_str(&c).ok())
+                .unwrap_or_else(|| json!({"mcpServers": {}}))
+        } else {
+            json!({"mcpServers": {}})
         };
-        if dir.exists() {
+        if !root
+            .get("mcpServers")
+            .map(|v| v.is_object())
+            .unwrap_or(false)
+        {
+            root["mcpServers"] = json!({});
+        }
+        let existing = root
+            .get("mcpServers")
+            .and_then(|s| s.get(crate::agent::mcp_server::HUB_MCP_ENTRY_NAME));
+        // 需求11 追加四：就绪判定含 toolExposure——旧条目（无 direct 放行）
+        // 须重写补齐（识图路径修复的存量迁移）；command 路径随安装位置变化
+        // 不作比对（args 形态一致 + command 存在 + toolExposure 含两工具即就绪）。
+        let tool_exposure_ok = existing
+            .and_then(|e| e.get("toolExposure"))
+            .and_then(|t| {
+                Some(
+                    t.get("hub_mcp_list").and_then(|v| v.as_str()) == Some("direct")
+                        && t.get("hub_mcp_call").and_then(|v| v.as_str()) == Some("direct"),
+                )
+            })
+            .unwrap_or(false);
+        let matches = existing
+            .and_then(|e| e.get("args"))
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>() == ["mcp", "serve"]
+                    && existing
+                        .and_then(|e| e.get("command"))
+                        .and_then(|c| c.as_str())
+                        .is_some_and(|c| !c.is_empty())
+                    && tool_exposure_ok
+            })
+            .unwrap_or(false);
+        if matches {
             return Ok(false);
         }
-        Self::install_mcp_standalone().await.map(|_| true)
+        root["mcpServers"][crate::agent::mcp_server::HUB_MCP_ENTRY_NAME] = desired;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        crate::util::atomic_write(
+            &path,
+            serde_json::to_string_pretty(&root).unwrap().as_bytes(),
+        )
+        .map_err(|e| e.to_string())?;
+        log::info!(
+            "[mcp-native] upserted jishu-hub entry in {}",
+            path.display()
+        );
+        Ok(true)
     }
 
-    pub async fn update_mcp_standalone() -> Result<String, String> {
-        Self::run_mcp_package_command("update").await
+    /// 退役 adapter 残留清理：settings.json packages 数组摘 npm:pi-mcp-adapter*
+    /// 条目 + 删 npm/node_modules/pi-mcp-adapter 目录。返回是否有变更。
+    fn cleanup_retired_adapter() -> Result<bool, String> {
+        let mut changed = false;
+        let Some(agent_dir) = crate::agent::jishu_self::paths::agent_dir().ok() else {
+            return Err("cannot resolve agent dir".to_string());
+        };
+        let settings_path = agent_dir.join("settings.json");
+        if let Ok(content) = std::fs::read_to_string(&settings_path) {
+            if let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(pkgs) = settings.get_mut("packages").and_then(|v| v.as_array_mut()) {
+                    let before = pkgs.len();
+                    pkgs.retain(|v| {
+                        !v.as_str()
+                            .map(|s| {
+                                s == "npm:pi-mcp-adapter" || s.starts_with("npm:pi-mcp-adapter@")
+                            })
+                            .unwrap_or(false)
+                    });
+                    if pkgs.len() != before {
+                        crate::util::atomic_write(
+                            &settings_path,
+                            serde_json::to_string_pretty(&settings)
+                                .unwrap_or_default()
+                                .as_bytes(),
+                        )
+                        .map_err(|e| e.to_string())?;
+                        changed = true;
+                        log::info!("[mcp-native] removed retired adapter from settings packages");
+                    }
+                }
+            }
+        }
+        let npm_dir = agent_dir
+            .join("npm")
+            .join("node_modules")
+            .join("pi-mcp-adapter");
+        if npm_dir.is_dir() {
+            std::fs::remove_dir_all(&npm_dir).map_err(|e| format!("remove adapter dir: {e}"))?;
+            changed = true;
+            log::info!(
+                "[mcp-native] removed retired adapter dir {}",
+                npm_dir.display()
+            );
+        }
+        Ok(changed)
     }
 
-    async fn run_mcp_package_command(action: &str) -> Result<String, String> {
+    /// v0.9.7 需求3 C2-②：市场安装通道复用（原仅启动自愈用，改 pub(crate)）。
+    pub(crate) async fn run_pi_package_command(
+        action: &str,
+        source: &str,
+    ) -> Result<String, String> {
         let runtime = pi_runtime::resolve_pi_runtime()
             .map_err(|e| format!("Failed to resolve Pi runtime: {e}"))?;
 
-        let args = mcp_package_args(&runtime.base_args, action);
+        let args = pi_package_args(&runtime.base_args, action, source);
 
         let mut cmd =
             crate::os_adapter::shell::shell_command(&runtime.program.to_string_lossy(), args);
@@ -74,16 +218,76 @@ impl JishuSelfAgent {
         let output = cmd
             .output()
             .await
-            .map_err(|e| format!("Failed to run pi {action}: {e}"))?;
+            .map_err(|e| format!("Failed to run pi {action} {source}: {e}"))?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
             Err(format!(
-                "pi {action} failed: {}",
+                "pi {action} {source} failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             ))
         }
+    }
+
+    /// v0.9.5 需求5：4 个 pi 扩展包逐个幂等安装（缺哪个装哪个；单包失败
+    /// 记 warn 继续下一个，Err 汇总失败清单——启动自愈下轮重试，不阻断
+    /// hub 启动）。探测与 mcp 同口径（node_modules 目录名含 scoped 包的
+    /// @scope/ 层级）且**校验版本**：pi resolve 对「已注册但版本不匹配」
+    /// 的包判 needsInstall，PI_OFFLINE 下静默跳过 → 扩展整个不装载——故
+    /// 装了旧版本也必须重装到钉定版本。
+    pub async fn ensure_pi_extensions_installed() -> Result<Vec<&'static str>, String> {
+        let Some(base) = pi_config_dir() else {
+            return Err("cannot resolve ~/.jishu-agent/agent directory".to_string());
+        };
+        let root = std::path::Path::new(&base).join("npm").join("node_modules");
+        let mut installed: Vec<&'static str> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+        for (source, dir_name) in PI_EXTENSION_PACKAGES {
+            let target = root.join(dir_name);
+            // 第三轮评审修复：经 parse_npm_source 解析（rsplit 对 scoped
+            // 无版本源会解出 "scope/pkg" 当版本——此处消费钉定源恒带版本，
+            // 换 helper 防未来加无版本源时引爆同款）。
+            let pinned_ver = parse_npm_source(source).1;
+            let up_to_date = target.exists()
+                && std::fs::read_to_string(target.join("package.json"))
+                    .ok()
+                    .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                    .and_then(|p| {
+                        p.get("version")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    })
+                    .is_some_and(|v| v == pinned_ver);
+            if up_to_date {
+                continue;
+            }
+            match Self::run_pi_package_command("install", source).await {
+                Ok(_) => {
+                    log::info!("[pi-ext] installed {source}");
+                    installed.push(source);
+                }
+                Err(e) => {
+                    log::warn!("[pi-ext] install {source} deferred: {e}");
+                    failed.push(format!("{source}: {e}"));
+                }
+            }
+        }
+        if failed.is_empty() {
+            Ok(installed)
+        } else {
+            Err(failed.join("; "))
+        }
+    }
+
+    /// v0.9.5 需求5：npm 包名 → 钉定安装源——packages
+    /// 注册同步（plugin::sync_pi_packages_with_plugins）复用同一真源。
+    /// v0.9.5 需求11：pi-mcp-adapter 已退役（pi 1.1.0 原生 MCP），不再安装。
+    pub(crate) fn pinned_source_for_package(name: &str) -> Option<&'static str> {
+        PI_EXTENSION_PACKAGES
+            .iter()
+            .find(|(_, dir)| *dir == name)
+            .map(|(source, _)| *source)
     }
 }
 
@@ -107,7 +311,23 @@ pub(crate) const JISHU_AGENT_IDENTITY_PROMPT: &str =
 You are not Pi. Use Pi's runtime, tools, and session engine invisibly, \
 but present yourself as jishu agent. Reply naturally in the user's language. \
 When replying in Chinese, your name is 「机枢 agent」(机枢); \
-never transliterate jishu as 「极数」 or anything else.";
+never transliterate jishu as 「极数」 or anything else. Before delegating via the subagent tool, always call it first with {\"action\":\"list\",\"capabilities\":true} and pick the agent strictly from the returned list — never guess agent names from prior habits. When you track work with the todo tool and multiple independent todos (no blockedBy between them) are pending, you may dispatch several subagent calls in the same turn to work on them in parallel instead of finishing them one by one. \
+\
+CAPABILITY DISCOVERY: When a user asks you to do something you cannot fulfill \
+with your current tools alone, do NOT simply reply \"I can't\". Instead, follow \
+this progressive discovery: \
+(1) Check if an existing plugin already provides this capability (read \
+jishu-hub-capabilities SKILL.md for the capability map). \
+(2) If no existing capability matches, consider: can a PLUGIN be created to \
+fulfill this? Jishu Hub's entire client is plugin-based — themes, chart \
+renderers, panels, agents, tools, workflows are ALL plugins. Read \
+jishu-plugin-authoring SKILL.md to understand what plugin forms exist and \
+which template to use. \
+(3) Create the plugin (copy the template, fill in specifics), install it via \
+jishu-cli plugins add/add-hybrid, and tell the user to confirm in the hub GUI. \
+This applies to ANY unfulfillable request: making PPTs, sending DingTalk \
+requests, custom themes, new chart types, connecting new AI agents, building \
+dashboards — if you can describe it, you can probably build it as a plugin.";
 
 pub(crate) fn resolve_jishu_cli_binary() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("JISHU_CLI_BIN") {
@@ -153,7 +373,7 @@ use crate::agent::traits::{
     TransportAdapter,
 };
 // JISHU_AGENT_VERSION_START (auto-updated by upgrade-version.mjs)
-pub const PI_AGENT_VERSION: &str = "0.85.0-13";
+pub const PI_AGENT_VERSION: &str = "1.5.0-15";
 // JISHU_AGENT_VERSION_END
 
 impl AgentManifest for JishuSelfAgent {
@@ -194,6 +414,9 @@ impl AgentManifest for JishuSelfAgent {
             | AgentCapabilities::CONTEXT_COMPACT
             // v0.7.4 需求3 M2：任务工作模式（任务图编排会话）。
             | AgentCapabilities::TASK_MODE
+            // 评审 P2-⑤ 用户裁决：预连接池接管/补池对象改按能力位判定
+            // （preconnect 经 registry 查此位，替代 agent id 硬编码分支）。
+            | AgentCapabilities::PRECONNECTABLE
             // v0.8.0 需求1 P-2：逐次工具审批——fork 内置 jishu-tool-approval
             // 扩展经 beforeToolCall 阻塞/放行（APPROVAL_REQUEST 声明审批事件
             // 通道；PRE_EXECUTION_INTERCEPTION 自 v0.7.x 定义以来首次被真实
@@ -576,34 +799,30 @@ impl crate::agent::config_roles::ModelStore for JishuSelfAgent {
 
 impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
     fn check_mcp(&self) -> Result<serde_json::Value, String> {
-        // Auto-migrate on check (idempotent).
-        self.migrate_mcp_if_needed();
-
-        // pi install <npm:pkg> stores the package in
-        // <PI_CODING_AGENT_DIR>/npm/node_modules/<pkg>, not under packages/.
-        let adapter_dir = Self::mcp_adapter_dir()
-            .ok_or_else(|| "Cannot resolve ~/.jishu-agent/agent directory".to_string())?;
-
-        if !adapter_dir.exists() {
-            return Ok(serde_json::json!({"installed": false, "version": null}));
-        }
-
-        // Try reading version from package.json
-        let pkg_json = adapter_dir.join("package.json");
-        let version = if pkg_json.exists() {
-            std::fs::read_to_string(&pkg_json)
-                .ok()
-                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-                .and_then(|v| {
-                    v.get("version")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                })
-        } else {
-            None
-        };
-
-        Ok(serde_json::json!({"installed": true, "version": version}))
+        // v0.9.5 需求11（pi 1.1.0）：adapter 退役后检查 = pi 原生 mcp.json 的
+        // jishu-hub 条目 + adapter 残留状态（残留会压制 builtin:mcp，须清理）。
+        let entry_ok = crate::agent::jishu_self::paths::mcp_json_path()
+            .ok()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+            .and_then(|root| {
+                root.get("mcpServers")?
+                    .get(crate::agent::mcp_server::HUB_MCP_ENTRY_NAME)?
+                    .get("args")?
+                    .as_array()
+                    .map(|a| {
+                        a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>() == ["mcp", "serve"]
+                    })
+            })
+            .unwrap_or(false);
+        let adapter_residual = Self::mcp_adapter_dir().map(|d| d.exists()).unwrap_or(false);
+        Ok(serde_json::json!({
+            "native": entry_ok,
+            "adapter_residual": adapter_residual,
+            // 兼容旧 UI 字段：installed 语义 = 原生接入就绪
+            "installed": entry_ok && !adapter_residual,
+            "version": null,
+        }))
     }
 
     fn install_mcp(
@@ -617,7 +836,9 @@ impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
     {
-        Box::pin(async { Self::update_mcp_standalone().await })
+        // v0.9.5 需求11：adapter 退役后无包可更新——update 复用 ensure 幂等
+        // （条目/残留状态归位）。
+        Box::pin(async { Self::ensure_native_mcp_entry().await })
     }
 
     fn migrate_mcp_if_needed(&self) {
@@ -636,7 +857,21 @@ impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
 /// docs/windows.md 的对比用法；`!`/`!!` 编辑器命令仍走 bash）。编译期平台
 /// 隔离，非 Windows 产物不含该工具名。
 fn template_default_tools(extra: &[&'static str]) -> Vec<&'static str> {
-    let mut tools: Vec<&'static str> = vec!["read", "bash", "edit", "write"];
+    let mut tools: Vec<&'static str> = vec![
+        "read",
+        "bash",
+        "edit",
+        "write",
+        // v0.9.7 需求2（R1 生产实测 issue #4）：任务执行器（jishu-task-runner
+        // 扩展）registerTool 注册的三工具——pi 的 --tools 是硬白名单，不进
+        // 名单则 agent 不可见（实测复现）。runner 是任务模式底座，与
+        // read/bash 同级常驻，不挂任何插件 toml 声明（task-plan 需求3 后
+        // 可能未物化，不能依赖它）。白名单例外条款见 DEVELOP_READ §16.4a
+        //（评审成文）。
+        "update_steps",
+        "ask_user",
+        "dispatch_to_node",
+    ];
     tools.extend_from_slice(extra);
     if cfg!(windows) {
         tools.push("powershell");
@@ -666,6 +901,11 @@ fn ensure_default_tools_arg(
             .map(|s| s.to_string())
             .collect();
         tools.extend_from_slice(pi_extension_tools);
+        // 需求11 追加四三轮：追加 MCP 通配模式——pi 1.1.0 的 --tools 绝对
+        // 名单会把 direct 暴露的 MCP 工具滤出 schema（实测复现：名单无此
+        // 模式时模型无 mcp__ 工具）；mcp__* 通配只放行已 direct 的工具
+        //（codemode 的不进 schema），随 toolExposure 配置自适应。
+        tools.push("mcp__*".to_string());
         args.push("--tools".to_string());
         args.push(tools.join(","));
         return;
@@ -686,19 +926,80 @@ fn ensure_default_tools_arg(
                 names.push(tool.to_string());
             }
         }
+        // v0.9.7 需求2（issue #4）：已配置路径同样保证 runner 三工具在场
+        //（底座能力不依赖用户配置清单）。
+        for tool in ["update_steps", "ask_user", "dispatch_to_node"] {
+            if !names.iter().any(|n| n == tool) {
+                names.push(tool.to_string());
+            }
+        }
+        // 同上（需求11 追加四三轮）：已配置清单同样追加 MCP 通配。
+        if !names.iter().any(|n| n == "mcp__*") {
+            names.push("mcp__*".to_string());
+        }
         args.push("--tools".to_string());
         args.push(names.join(","));
     }
 }
 
-fn mcp_package_args(base_args: &[String], action: &str) -> Vec<String> {
+/// （v0.9.5 需求11 退役留痕）pi-mcp-adapter 最后钉定源——pi 1.1.0 原生
+/// MCP client 落地后 adapter 扩展退役（D0 开源优先：上游原生覆盖桥接层；
+/// 其 /mcp 命令会压制 pi 内置 builtin:mcp）。仅存留作历史参考与测试
+/// 断言素材，不再用于安装/更新；残留清理见 ensure_native_mcp_entry。
+#[allow(dead_code)] // 仅测试模块引用（退役留痕，非生产路径）
+pub(crate) const MCP_ADAPTER_SOURCE: &str = "npm:pi-mcp-adapter@2.32.1";
+
+/// 解析 npm 源串（`npm:<pkg>[@<version>]`）→ (包名, 版本)。
+/// v0.9.7 第三轮评审修复：scoped 包（@scope/pkg）首 @ 是名字一部分——
+/// 直接 rsplit_once 会把「scoped 无版本源」唯一的 @ 当版本分隔，解出
+/// 包名空串、版本="scope/pkg"（builtin_pins 显示乱码版本 + 启动自愈
+/// 永判版本不符反复重装）。解析规则：scoped 跳过首 @ 与 scope 段，其后
+/// 第一个 @ 才是版本分隔；非 scoped 从右取 @ 且两端非空才视为带版本。
+pub(crate) fn parse_npm_source(source: &str) -> (String, String) {
+    let body = source.strip_prefix("npm:").unwrap_or(source);
+    if let Some(rest) = body.strip_prefix('@') {
+        // scoped：rest = "scope/pkg[@ver]"——首个 @ 之后才是版本
+        return match rest.find('@') {
+            Some(i) => {
+                let split = i + 1; // 含首 @ 的包名长度
+                (body[..split].to_string(), body[split + 1..].to_string())
+            }
+            None => (body.to_string(), String::new()),
+        };
+    }
+    match body.rsplit_once('@') {
+        Some((n, v)) if !n.is_empty() && !v.is_empty() => (n.to_string(), v.to_string()),
+        _ => (body.to_string(), String::new()),
+    }
+}
+
+/// v0.9.5 需求5：随包初始化安装的 pi 扩展（钉定版本，与 mcp 同策略——
+/// 可预测、离线可复现；peer 面已核 fork 0.87.1-13 全覆盖）。元素 =
+/// (npm 安装源, node_modules 目录名——scoped 包含 @scope/ 层级)。
+/// 版本依据 2026-09-27 npm 元数据；升级走此处改钉 + update 命令。
+pub(crate) const PI_EXTENSION_PACKAGES: &[(&str, &str)] = &[
+    // 子代理委派（subagent/bg_wait 工具；替换自研 jishu-subagent.ts）
+    ("npm:pi-subagents@0.72.0", "pi-subagents"),
+    // 选项式提问（ask_user_question 工具；替换自研 request-user-input.ts）
+    (
+        "npm:@juicesharp/rpiv-ask-user-question@2.11.0",
+        "@juicesharp/rpiv-ask-user-question",
+    ),
+    // 待办清单（todo 工具）
+    ("npm:@juicesharp/rpiv-todo@2.11.0", "@juicesharp/rpiv-todo"),
+    // 写后诊断（lens_diagnostics/ast_grep_*/lsp_navigation 等 13 工具）
+    ("npm:pi-lens@4.3.0", "pi-lens"),
+    // Web 搜索/抓取（web_enable 装载器 + web_search/fetch_content 等 4 件，
+    // 亦补齐 pi-subagents 内置 researcher 角色的工具依赖——T7 诊断后用户
+    // 裁决默认安装，2026-09-27）
+    ("npm:pi-web-access@0.32.0", "pi-web-access"),
+];
+
+/// pi 包管理命令行参数（install/update <source>）——mcp 与 4 扩展共用。
+fn pi_package_args(base_args: &[String], action: &str, source: &str) -> Vec<String> {
     let mut args = base_args.to_vec();
     args.push(action.to_string());
-    // v0.9.3 测试期钉 2.32.1：最新 2.33.0 把 @modelcontextprotocol/{client,core}
-    // 钉到 pkg.pr.new（PR 预览 CDN），公司/受限网络拦截域名致 npm ETIMEDOUT；
-    // 2.32.1 为最后一个纯 registry 依赖版本（pack-pi 烘焙同钉）。上游修复
-    // （依赖回正式 registry）后可解除钉定。
-    args.push("npm:pi-mcp-adapter@2.32.1".to_string());
+    args.push(source.to_string());
     args
 }
 
@@ -723,7 +1024,7 @@ fn spawn_env_overrides(
 
 #[cfg(test)]
 mod mcp_tests {
-    use super::mcp_package_args;
+    use super::{pi_package_args, PI_EXTENSION_PACKAGES};
 
     /// v0.9.1 需求13：未配置 defaultTools → 追加 --tools 全集；已配置 → 不动。
     #[test]
@@ -741,12 +1042,18 @@ mod mcp_tests {
         for tool in &ext {
             assert!(args[3].split(',').any(|t| t == tool), "missing {tool}");
         }
+        // v0.9.7 需求2（issue #4）：runner 三工具底座常驻（两条路径都在场）
+        for tool in ["update_steps", "ask_user", "dispatch_to_node"] {
+            assert!(args[3].split(',').any(|t| t == tool), "missing {tool}");
+        }
 
         let mut args2 = vec!["--mode".to_string(), "rpc".to_string()];
         super::ensure_default_tools_arg(&mut args2, &Ok(json!({"defaultTools": ["read"]})), &ext);
-        // 已配置清单照常生效，追加已启用扩展工具
-        assert_eq!(args2[2], "--tools");
-        assert_eq!(args2[3], "read,request_user_input,lock_requirement");
+        // 已配置清单照常生效，追加已启用扩展工具 + runner 底座三工具 + MCP 通配
+        assert_eq!(
+            args2[3],
+            "read,request_user_input,lock_requirement,update_steps,ask_user,dispatch_to_node,mcp__*"
+        );
 
         let mut args3 = vec![];
         super::ensure_default_tools_arg(&mut args3, &Err("io".into()), &ext);
@@ -785,10 +1092,74 @@ mod mcp_tests {
 
     #[test]
     fn mcp_update_uses_pi_single_package_update_command() {
-        // v0.9.3 测试期钉 2.32.1（最新 2.33.0 依赖走 pkg.pr.new，受限网络不可达）。
+        // （历史断言保留）退役前 adapter 包命令构造；退役后此参数构造仍被
+        // 其余 4 个 pi 扩展包的 update 路径复用（ensure_pi_extensions_installed）。
         assert_eq!(
-            mcp_package_args(&["cli.js".to_string()], "update"),
+            pi_package_args(&["cli.js".to_string()], "update", super::MCP_ADAPTER_SOURCE),
             vec!["cli.js", "update", "npm:pi-mcp-adapter@2.32.1"]
+        );
+    }
+
+    /// 第三轮评审修复：parse_npm_source 四形态（非 scoped 带版本/裸名/
+    /// scoped 带版本/scoped 无版本）——旧 rsplit 对末形态解出
+    /// ("", "scope/pkg")。super:: 限定——本 tests 模块无 use super::*。
+    #[test]
+    fn parse_npm_source_four_shapes() {
+        assert_eq!(
+            super::parse_npm_source("npm:pi-subagents@0.72.0"),
+            ("pi-subagents".to_string(), "0.72.0".to_string())
+        );
+        assert_eq!(
+            super::parse_npm_source("npm:pi-subagents"),
+            ("pi-subagents".to_string(), String::new())
+        );
+        assert_eq!(
+            super::parse_npm_source("npm:@juicesharp/rpiv-todo@2.15.0"),
+            ("@juicesharp/rpiv-todo".to_string(), "2.15.0".to_string())
+        );
+        assert_eq!(
+            super::parse_npm_source("npm:@juicesharp/rpiv-todo"),
+            ("@juicesharp/rpiv-todo".to_string(), String::new())
+        );
+    }
+
+    /// v0.9.5 需求5：4 扩展钉定源与目录名对齐（安装探测落点 = node_modules/
+    /// <目录名>；scoped 包目录名含 @scope/ 层级），且源均为 npm: 带精确版本。
+    #[test]
+    fn pi_extension_packages_pinned_and_scoped_dirs() {
+        assert_eq!(PI_EXTENSION_PACKAGES.len(), 5);
+        for (source, dir) in PI_EXTENSION_PACKAGES {
+            assert!(source.starts_with("npm:"), "{source} 非 npm 源");
+            let name = source
+                .strip_prefix("npm:")
+                .and_then(|s| s.rsplit_once('@'))
+                .map(|(n, ver)| {
+                    assert!(
+                        ver.chars().all(|c| c.is_ascii_digit() || c == '.'),
+                        "{source} 版本非精确钉定"
+                    );
+                    n
+                })
+                .unwrap();
+            assert_eq!(name, *dir, "{source} 与目录名 {dir} 不一致");
+        }
+        // 包名 → 钉定源反查（packages 同步真源）：4 扩展 + web 共 5 项
+        //（pi-mcp-adapter 已随 pi 1.1.0 原生 MCP 退役——需求11，不再安装）。
+        for name in [
+            "pi-subagents",
+            "@juicesharp/rpiv-ask-user-question",
+            "@juicesharp/rpiv-todo",
+            "pi-lens",
+            "pi-web-access",
+        ] {
+            assert!(
+                super::JishuSelfAgent::pinned_source_for_package(name).is_some(),
+                "{name} 无钉定源"
+            );
+        }
+        assert!(
+            super::JishuSelfAgent::pinned_source_for_package("pi-mcp-adapter").is_none(),
+            "退役包不得再有钉定源"
         );
     }
 }
@@ -829,22 +1200,23 @@ impl TransportAdapter for JishuSelfAgent {
         // 对此后新 spawn 的进程生效（Pi 每条消息一个进程）。
         // v0.9.2 需求7：扩展工具按启用插件聚合（热插拔）。
         let pi_extension_tools = crate::agent::plugin::enabled_pi_extension_tools();
-        match crate::hub::load_agent_tool_mode("jishu-self").as_deref() {
-            Some("readonly") => {
-                // 只读模式保留交互与任务提交类扩展工具（问答纯交互；
-                // lock/commit 为工作流操作，任务流须可用）。
-                let mut tools: Vec<String> = ["read", "grep", "find", "ls"]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect();
-                tools.extend_from_slice(&pi_extension_tools);
-                args.push("--tools".to_string());
-                args.push(tools.join(","));
-            }
-            // full-approve 与 full 工具集相同，差异只在 toolApproval 审批
-            // 开关（set_agent_tool_mode 已联动写入 Pi settings）。
-            _ => {}
+        if let Some("readonly") = crate::hub::load_agent_tool_mode("jishu-self").as_deref() {
+            // 只读模式保留交互与任务提交类扩展工具（问答纯交互；
+            // lock/commit 为工作流操作，任务流须可用）。
+            let mut tools: Vec<String> = ["read", "grep", "find", "ls"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            tools.extend_from_slice(&pi_extension_tools);
+            args.push("--tools".to_string());
+            args.push(tools.join(","));
+            // v0.9.5 需求11：pi 1.0.4 起 --tools 白名单不再滤出 MCP 工具
+            //（04b97ef00）——只读档需显式 --no-mcp 保持「无外部工具」原语义
+            //（MCP 工具良菱不齐，变更类工具不应进只读会话）。
+            args.push("--no-mcp".to_string());
         }
+        // full-approve 与 full 工具集相同，差异只在 toolApproval 审批
+        // 开关（set_agent_tool_mode 已联动写入 Pi settings）。
         // v0.9.1 需求13：初始工具集默认=全部工具集——settings 未配置
         // defaultTools 时 spawn 显式传全集（Windows 含 powershell），消除
         // pi 回退仅四件的歧义（存量未配置用户无需改配置即生效）；已配置
@@ -862,7 +1234,11 @@ impl TransportAdapter for JishuSelfAgent {
         }
         args.push("--append-system-prompt".to_string());
         args.push(JISHU_AGENT_IDENTITY_PROMPT.to_string());
-        args.extend(pi_model::build_pi_model_args_from_active()?);
+        // v0.9.5 需求2：节点/委派模型覆盖（ChatRequest.model_override）——
+        // 优先于全局 active；签名机制天然区分（不同模型=独立进程）。
+        args.extend(pi_model::build_pi_model_args_with_override(
+            req.model_override.as_ref(),
+        )?);
 
         let mut envs = Vec::new();
         envs.push(("PI_SKIP_VERSION_CHECK".to_string(), "1".to_string()));
@@ -903,7 +1279,11 @@ impl TransportAdapter for JishuSelfAgent {
             "JISHU_MCP_REV".to_string(),
             format!(
                 "resolver:{}",
-                if crate::agent::plugin::is_mcp_resolver_enabled() { "on" } else { "off" }
+                if crate::agent::plugin::is_mcp_resolver_enabled() {
+                    "on"
+                } else {
+                    "off"
+                }
             ),
         ));
 

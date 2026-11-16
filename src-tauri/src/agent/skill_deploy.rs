@@ -18,6 +18,14 @@
 //! 自建目录不碰（对标 MCP 条目同名保护）。幂等：内容一致跳过写。
 //! 触发点：lib.rs 启动 + rebuild_registry（启停/卸载/编辑保存，与 mcp sync
 //! 同钩子）。
+//!
+//! v0.9.5 需求9（新者胜，废除母本单向镜像）：目录形式源的分发不再是
+//! 「母本覆盖目标」——目标侧（agent/用户改了分发副本）较新时**回写母本**
+//! 并传播到其余目标；目标侧独有文件按**方向判定**处置（追加裁决）：目标
+//! 侧较新 → 收编入母本，母本较新（用户编辑插件删内容等）→ 视为旧版残留
+//! 随母本删除，删除可传播。用户裁决：不允许旧母本静默吞掉任何一侧的新
+//! 内容，要么新者胜、要么交用户裁决（GUI 冲突选择为后续演进，见
+//! docs/v0.9.5/需求9）。
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -77,6 +85,18 @@ pub fn render_skill_md(id: &str, description: &str, body: &str) -> String {
 }
 
 /// 归属记录 key：`<agent_id>:<plugin_id>`。
+/// 多 skill / 目录源声明的部署目录名：`<pid>__<name>`；skill 名与插件 id
+/// 相同时直接用 skill 名（`x__x` 重复无信息量——单 skill 插件目录名 = id
+/// 的既有语义自然对齐）。frontmatter name 保持声明原值不变。回填还原
+///（plugin_get 的 strip_prefix unwrap_or 兜底）与此规则互逆。
+pub fn skill_dir_name(pid: &str, name: &str) -> String {
+    if name == pid {
+        pid.to_string()
+    } else {
+        format!("{pid}__{name}")
+    }
+}
+
 fn own_key(agent_id: &str, plugin_id: &str) -> String {
     format!("{agent_id}:{plugin_id}")
 }
@@ -115,8 +135,9 @@ fn save_deploy_registry(set: &HashSet<String>) {
 /// 目录名（单数 [skill] = 插件 id；[[skill]] 数组与目录源 =
 /// `<plugin_id>__<name>`，对标 MCP 工具命名）；`content` = 完整 SKILL.md
 /// 内容（toml 源经 render_skill_md 渲染，目录源文件即权威原文）。
-/// v0.9.4 需求3：目录源附带 `source_dir`——分发侧镜像同步整个 skill 目录
-///（references/scripts 等附属文件一并落地），不再只写 SKILL.md 单文件。
+/// v0.9.4 需求3：目录源附带 `source_dir`——分发侧同步整个 skill 目录
+///（references/scripts 等附属文件一并落地，v0.9.5 需求9 改双向新者胜），
+/// 不再只写 SKILL.md 单文件。
 #[derive(Debug, Clone)]
 pub struct SkillDeclEntry {
     pub dir_name: String,
@@ -126,9 +147,49 @@ pub struct SkillDeclEntry {
     pub source_dir: Option<PathBuf>,
 }
 
-/// 目录形式源：`plugins/<id>/skills/<name>/SKILL.md`——文件即权威（自带
-/// frontmatter，部署原文照抄）。新增 skill = 加子目录，更新 skill = 改文件，
-/// rebuild（启动/启停/编辑保存）时自动同步——对标 MCP 的动态发现语义。
+/// 目录形式源：`plugins/<id>/skills/<name>/SKILL.md`——自带 frontmatter，
+/// 部署原文照抄。新增 skill = 加子目录，更新 skill = 改文件（任一侧，含
+/// agent 目录里的分发副本——v0.9.5 需求9 新者胜），rebuild（启动/启停/
+/// 编辑保存）时自动同步——对标 MCP 的动态发现语义。
+/// SKILL.md frontmatter 的 description 解析（单源权威）：普通标量取值剥
+/// 双/单引号；块标量（`|`/`|-`/`>`/`>-`）取后续更深缩进行**空格折叠**为
+/// 单行——描述供技能卡展示与注入文本消费，单行散文是目标形态。块内空行
+/// 视为内容结束（YAML 段落语义的实用近似）。skillhub manifest 生成与本
+/// 目录源展开两链共用（评审 P2：双实现口径漂移合一）。
+pub(crate) fn frontmatter_description(content: &str) -> String {
+    let lines: Vec<&str> = content
+        .lines()
+        .skip_while(|l| !l.starts_with("---"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("---"))
+        .collect();
+    let idx = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("description:"));
+    let Some(i) = idx else {
+        return String::new();
+    };
+    let key_indent = lines[i].len() - lines[i].trim_start().len();
+    let raw = lines[i]
+        .splitn(2, "description:")
+        .nth(1)
+        .unwrap_or("")
+        .trim();
+    if !matches!(raw, "|" | "|-" | ">" | ">-") {
+        return raw.trim_matches('"').trim_matches('\'').to_string();
+    }
+    // 块标量：收集后续比键行缩进更深的非空行，空格折叠。
+    lines[i + 1..]
+        .iter()
+        .take_while(|l| {
+            let t = l.trim();
+            !t.is_empty() && (l.len() - l.trim_start().len()) > key_indent
+        })
+        .map(|l| l.trim())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub(crate) fn dir_source_skills(plugin_root: &Path, plugin_id: &str) -> Vec<SkillDeclEntry> {
     let skills_dir = plugin_root.join("skills");
     let Ok(entries) = std::fs::read_dir(&skills_dir) else {
@@ -146,17 +207,10 @@ pub(crate) fn dir_source_skills(plugin_root: &Path, plugin_id: &str) -> Vec<Skil
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        // frontmatter description 简析（status/提示展示用；缺失不阻断部署）。
-        let description = content
-            .lines()
-            .skip_while(|l| !l.starts_with("---"))
-            .skip(1)
-            .take_while(|l| !l.starts_with("---"))
-            .find_map(|l| l.strip_prefix("description:"))
-            .map(|v| v.trim().to_string())
-            .unwrap_or_default();
+        // frontmatter description（status/提示展示用；缺失不阻断部署）。
+        let description = frontmatter_description(&content);
         out.push(SkillDeclEntry {
-            dir_name: format!("{plugin_id}__{name}"),
+            dir_name: skill_dir_name(plugin_id, &name),
             description,
             content,
             source_dir: Some(entry.path()),
@@ -180,15 +234,13 @@ pub fn load_skill_decls() -> Vec<SkillDeclEntry> {
         let pid = plugin.id().to_string();
         if let Some(decl) = plugin.file.skill.as_ref() {
             for (name, description, body) in decl.entries() {
-                let dir_name = name.map(|n| format!("{pid}__{n}")).unwrap_or_else(|| pid.clone());
+                let dir_name = name
+                    .map(|n| skill_dir_name(&pid, n))
+                    .unwrap_or_else(|| pid.clone());
                 out.push(SkillDeclEntry {
                     dir_name,
                     description: description.to_string(),
-                    content: render_skill_md(
-                        name.unwrap_or(&pid),
-                        description,
-                        body,
-                    ),
+                    content: render_skill_md(name.unwrap_or(&pid), description, body),
                     source_dir: None,
                 });
             }
@@ -217,12 +269,24 @@ pub fn load_skill_decls() -> Vec<SkillDeclEntry> {
 /// 但仍受 skill-resolver 总开关治理（关闭即随全量回收）。
 pub fn builtin_skill_decls() -> Vec<SkillDeclEntry> {
     let content = include_str!("../../resources/skills/jishu-hub-capabilities/SKILL.md");
-    vec![SkillDeclEntry {
-        dir_name: BUILTIN_CAPABILITY_SKILL_DIR.to_string(),
-        description: BUILTIN_CAPABILITY_SKILL_DESC.to_string(),
-        content: content.to_string(),
-        source_dir: None,
-    }]
+    let authoring = include_str!("../../resources/skills/jishu-plugin-authoring/SKILL.md");
+    vec![
+        SkillDeclEntry {
+            dir_name: BUILTIN_CAPABILITY_SKILL_DIR.to_string(),
+            description: BUILTIN_CAPABILITY_SKILL_DESC.to_string(),
+            content: content.to_string(),
+            source_dir: None,
+        },
+        // v0.9.5 需求1（原需求26）4a：插件创作四层指南（判断/模板/API/陷阱）
+        //——「对话即创建」的路由层：agent 读后能产出正确形态的插件并经
+        // CLI 安装（add 统一寻址 / validate / add-hybrid）。
+        SkillDeclEntry {
+            dir_name: PLUGIN_AUTHORING_SKILL_DIR.to_string(),
+            description: PLUGIN_AUTHORING_SKILL_DESC.to_string(),
+            content: authoring.to_string(),
+            source_dir: None,
+        },
+    ]
 }
 
 /// 内置能力 skill 的目录名（= frontmatter name，部署与回收的归属粒度）。
@@ -232,6 +296,12 @@ pub const BUILTIN_CAPABILITY_SKILL_DIR: &str = "jishu-hub-capabilities";
 /// 供测试校验两者同步）。
 pub const BUILTIN_CAPABILITY_SKILL_DESC: &str = "在 Jishu Hub 会话中向用户呈现内容前必读——图表/流程图/框架/关系图直接输出 mermaid 代码块、网页/原型输出 html 代码块（会话界面原生渲染，无需生成文件）；HTML 交付文件预览用 preview_html 工具；MCP 工具与 skill 的调用指引。";
 
+/// 插件创作 skill 目录名（v0.9.5 需求1（原需求26）4a）。
+pub const PLUGIN_AUTHORING_SKILL_DIR: &str = "jishu-plugin-authoring";
+
+/// 路由描述（与 SKILL.md frontmatter 同步；单点供测试校验）。
+pub const PLUGIN_AUTHORING_SKILL_DESC: &str = "创建/安装 Jishu Hub 插件前必读——四层指南：①判断指南（用户想要什么 → 该造哪种插件：智能体工具/会话界面组合式/混合代码/流水线/自建智能体/MCP/Skill）；②六形态可复制模板（plugin.toml + component.js 完整示例）；③混合插件 component.js API 参考（JishuPlugin.register/h/useState/props 形状）；④陷阱与最佳实践。配套 CLI：plugins add（统一寻址）/ validate / add-hybrid。用户说\"加一个插件/让 AI 能 X/在会话里显示 X\"时按本指南产出并安装。";
+
 #[derive(Debug, Default, serde::Serialize)]
 pub struct SkillSyncReport {
     /// 逐项动作行（`claude-code/code-review: Deployed` 等），日志与 CLI status 用。
@@ -240,64 +310,181 @@ pub struct SkillSyncReport {
 
 impl SkillSyncReport {
     fn push(&mut self, agent_id: &str, skill_dir: &str, action: &str) {
-        self.actions.push(format!("{agent_id}/{skill_dir}: {action}"));
+        self.actions
+            .push(format!("{agent_id}/{skill_dir}: {action}"));
     }
 }
 
-/// 整目录镜像同步（v0.9.4 需求3）：src → dst 逐文件比对（缺失/变更 →
-/// 复制），dst 中 src 没有的文件删除（文件即权威，插件禁用前的手工改动
-/// 会被镜像纠正）。全量一致返回 "Skipped"，有动作返回 "Deployed"。
-/// 复制用 fs::copy（skill 附件均为小文本/脚本，无需断点；目录先建后拷）。
+/// 整目录双向同步（v0.9.5 需求9，废除 v0.9.4 需求3 的母本单向镜像）：
+/// 逐文件内容一致跳过；不一致时 **mtime 新者胜**——目标侧较新（agent/
+/// 用户改了分发副本；同刻视为目标侧编辑，覆盖保时间戳的手工拷贝形态）
+/// → 回写源并保留目标 mtime，同轮后续目标经源自然收敛；源侧较新 → 正常
+/// 下发。目标侧独有文件按锚点方向判定（`anchor_target_newer`）：目标新
+/// → 收编入源；母本新 → 随母本删除（删除传播）。返回 "Skipped" /
+/// "Deployed" / "Adopted" / "Deployed+Adopted"。复制用 fs::copy（skill
+/// 附件均为小文本/脚本）。
 fn sync_skill_folder(src: &Path, dst: &Path) -> Result<&'static str, String> {
-    let mut changed = false;
-    // 收集源侧相对路径 → 内容比对/复制。
-    fn walk_src(src: &Path, dst: &Path, prefix: &str, changed: &mut bool) -> Result<(), String> {
-        for entry in std::fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
-            let s = entry.path();
-            let d = dst.join(&name);
-            if std::fs::metadata(&s).map(|m| m.is_dir()).unwrap_or(false) {
-                std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
-                walk_src(&s, &d, &rel, changed)?;
-            } else {
-                let need = match std::fs::read(&d) {
-                    Ok(existing) => existing != std::fs::read(&s).map_err(|e| e.to_string())?,
-                    Err(_) => true,
-                };
-                if need {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    let mut deployed = false;
+    let mut adopted = false;
+    walk_merge(src, dst, "", &mut deployed, &mut adopted)?;
+    let target_newer = anchor_target_newer(src, dst);
+    resolve_extras(dst, src, target_newer, &mut deployed, &mut adopted)?;
+    Ok(if deployed && adopted {
+        "Deployed+Adopted"
+    } else if adopted {
+        "Adopted"
+    } else if deployed {
+        "Deployed"
+    } else {
+        "Skipped"
+    })
+}
+
+/// 目标侧独有文件的方向判定锚点：SKILL.md 的 mtime 双侧比对（内容比对
+/// 不参与——逐文件归 walk_merge）。目标锚点较新（含同刻，宁可收编不丢
+/// 数据）→ 目标侧是保留版，独有文件收编；母本锚点较新（如用户编辑插件
+/// 重写文件、删除了内容）→ 独有文件视为旧版残留，随母本删除。目标缺
+/// 锚点（首部署/空目录）按母本新。已知边界：删除是唯一改动且未触碰任何
+/// 留存文件时，锚点无法感知（删除不留时间戳）——编辑器保存须 touch
+/// SKILL.md 或记删除墓碑（用户编辑插件功能的前置约束，见需求9 01）。
+fn anchor_target_newer(src: &Path, dst: &Path) -> bool {
+    let s = src.join("SKILL.md");
+    let d = dst.join("SKILL.md");
+    let (Ok(sm), Ok(dm)) = (std::fs::metadata(&s), std::fs::metadata(&d)) else {
+        // 目标缺锚点（首部署/空目录）按母本新；母本缺锚点属异常形态，
+        // 保守按目标新（宁可收编不丢数据）。
+        return std::fs::metadata(&d).is_ok();
+    };
+    mtime_secs_from(&dm) >= mtime_secs_from(&sm)
+}
+
+fn mtime_secs_from(m: &std::fs::Metadata) -> u64 {
+    m.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// mtime 秒级截断——跨文件系统/拷贝工具的亚秒精度不可靠，同秒即视为
+/// 同刻（目标侧胜）。
+fn mtime_secs(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 拷贝并把 from 侧的 mtime 带到 to——回写/收编专用：若让 fs::copy 把
+/// 源刷成当前时刻，同轮后续目标会误判「源更新」而错误覆盖（多目标顺序
+/// 处理需收敛到全局最新，mtime 必须如实保留）。
+fn copy_preserving_mtime(from: &Path, to: &Path) -> Result<(), String> {
+    let mtime = std::fs::metadata(from)
+        .and_then(|m| m.modified())
+        .map(filetime::FileTime::from)
+        .map_err(|e| e.to_string())?;
+    std::fs::copy(from, to).map_err(|e| e.to_string())?;
+    filetime::set_file_mtime(to, mtime).map_err(|e| e.to_string())
+}
+
+/// src 侧为准逐文件与 dst 比对：内容一致跳过；不一致 mtime 新者胜
+/// （同刻目标胜）；dst 缺失 → 下发。
+fn walk_merge(
+    src: &Path,
+    dst: &Path,
+    prefix: &str,
+    deployed: &mut bool,
+    adopted: &mut bool,
+) -> Result<(), String> {
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let rel = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let s = entry.path();
+        let d = dst.join(&name);
+        if std::fs::metadata(&s).map(|m| m.is_dir()).unwrap_or(false) {
+            std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+            walk_merge(&s, &d, &rel, deployed, adopted)?;
+            continue;
+        }
+        let s_bytes = std::fs::read(&s).map_err(|e| format!("read {rel}: {e}"))?;
+        match std::fs::read(&d) {
+            Ok(d_bytes) if d_bytes == s_bytes => {}
+            Ok(_) => {
+                if mtime_secs(&d) >= mtime_secs(&s) {
+                    copy_preserving_mtime(&d, &s).map_err(|e| format!("adopt {rel}: {e}"))?;
+                    *adopted = true;
+                    log::warn!("[skill-deploy] {rel}: 目标侧较新，已回写母本（新者胜）");
+                } else {
                     if let Some(parent) = d.parent() {
                         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                     }
                     std::fs::copy(&s, &d).map_err(|e| format!("copy {rel}: {e}"))?;
-                    *changed = true;
+                    *deployed = true;
                 }
             }
-        }
-        Ok(())
-    }
-    // 目标侧多余文件/空目录清理。
-    fn walk_dst(src: &Path, dst: &Path, changed: &mut bool) -> Result<(), String> {
-        for entry in std::fs::read_dir(dst).map_err(|e| e.to_string())?.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let s = entry.path();
-            let d = src.join(&name);
-            if std::fs::metadata(&s).map(|m| m.is_dir()).unwrap_or(false) {
-                walk_dst(&d, &s, changed)?;
-                if std::fs::read_dir(&s).map_err(|e| e.to_string())?.next().is_none() {
-                    let _ = std::fs::remove_dir(&s);
+            Err(_) => {
+                if let Some(parent) = d.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                 }
-            } else if !d.exists() {
-                std::fs::remove_file(&s).map_err(|e| e.to_string())?;
-                *changed = true;
+                std::fs::copy(&s, &d).map_err(|e| format!("copy {rel}: {e}"))?;
+                *deployed = true;
             }
         }
-        Ok(())
     }
-    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
-    walk_src(src, dst, "", &mut changed)?;
-    walk_dst(src, dst, &mut changed)?;
-    Ok(if changed { "Deployed" } else { "Skipped" })
+    Ok(())
+}
+
+/// dst 侧独有文件按方向处置（需求9 追加裁决：不能一律收编）：目标侧较
+/// 新 → 收编入 src 并传播；母本较新（用户编辑插件删内容等）→ 视为旧版
+/// 残留删除，让删除能随母本传播。空目录清理保留。
+fn resolve_extras(
+    dst: &Path,
+    src: &Path,
+    target_newer: bool,
+    deployed: &mut bool,
+    adopted: &mut bool,
+) -> Result<(), String> {
+    let Ok(entries) = std::fs::read_dir(dst) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let d = entry.path();
+        let s = src.join(&name);
+        if std::fs::metadata(&d).map(|m| m.is_dir()).unwrap_or(false) {
+            resolve_extras(&d, &s, target_newer, deployed, adopted)?;
+            if std::fs::read_dir(&d)
+                .map_err(|e| e.to_string())?
+                .next()
+                .is_none()
+            {
+                let _ = std::fs::remove_dir(&d);
+            }
+        } else if !s.exists() {
+            if target_newer {
+                if let Some(parent) = s.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                copy_preserving_mtime(&d, &s).map_err(|e| format!("adopt extra {name}: {e}"))?;
+                *adopted = true;
+                log::warn!("[skill-deploy] {name}: 目标侧较新，独有文件收编入母本");
+            } else {
+                std::fs::remove_file(&d).map_err(|e| format!("remove extra {name}: {e}"))?;
+                *deployed = true;
+                log::warn!(
+                    "[skill-deploy] {name}: 母本较新，目标侧独有文件视为旧版残留，随母本删除"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 同步入口（条件语义）：skill-resolver（系统插件，默认启用）开 → 分发启用
@@ -332,8 +519,8 @@ fn sync_with(
     for (agent_id, root) in targets {
         for decl in &decls {
             let dir = root.join(&decl.dir_name);
-            // v0.9.4 需求3：目录形式源 → 整目录镜像同步（SKILL.md 一致且
-            // 附属文件一致才 Skipped；目标多余文件删除——文件即权威语义）。
+            // v0.9.5 需求9：目录形式源 → 整目录双向同步（新者胜：目标侧
+            // 较新回写母本并传播；目标独有文件收编；内容全一致才 Skipped）。
             let action = match &decl.source_dir {
                 Some(src) => match sync_skill_folder(src, &dir) {
                     Ok(a) => a,
@@ -422,8 +609,17 @@ mod tests {
     use super::*;
     use crate::agent::manifest::env_test_lock;
 
-    /// v0.9.4 需求3：目录形式源整目录镜像同步——首部署/增量跳过/更新传播/
-    /// 删多余四态。附属文件（references/scripts）与 SKILL.md 一并落地。
+    /// 测试用固定时间基（未来时刻，保证显式抬高的 mtime 恒大于部署写入
+    /// 产生的真实当前时刻——秒级同刻会走「目标胜」分支）。
+    const MTIME_BASE: u64 = 1_800_000_000;
+
+    fn set_mtime(path: &Path, secs: u64) {
+        filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(secs as i64, 0)).unwrap();
+    }
+
+    /// 目录形式源整目录同步——首部署/增量跳过/更新传播/独有文件收编四态
+    ///（v0.9.4 需求3 原为「镜像删除」，v0.9.5 需求9 改新者胜双向同步）。
+    /// 附属文件（references/scripts）与 SKILL.md 一并落地。
     #[test]
     fn dir_source_folder_sync_full_lifecycle() {
         let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -433,11 +629,15 @@ mod tests {
         let skill = src.path().join("my-skill");
         std::fs::create_dir_all(skill.join("references")).unwrap();
         std::fs::create_dir_all(skill.join("scripts")).unwrap();
-        std::fs::write(skill.join("SKILL.md"), "---
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---
 name: my-skill
 description: d
 ---
-body").unwrap();
+body",
+        )
+        .unwrap();
         std::fs::write(skill.join("references/guide.md"), "guide-v1").unwrap();
         std::fs::write(skill.join("scripts/tool.mjs"), "tool-v1").unwrap();
 
@@ -459,7 +659,10 @@ body").unwrap();
             std::fs::read_to_string(dst.join("references/guide.md")).unwrap(),
             "guide-v1"
         );
-        assert_eq!(std::fs::read_to_string(dst.join("scripts/tool.mjs")).unwrap(), "tool-v1");
+        assert_eq!(
+            std::fs::read_to_string(dst.join("scripts/tool.mjs")).unwrap(),
+            "tool-v1"
+        );
         assert!(dst.join("SKILL.md").is_file());
 
         // 2. 增量：无变化 → Skipped。
@@ -467,24 +670,135 @@ body").unwrap();
         assert!(report.actions.iter().any(|a| a.contains("Skipped")));
         assert!(!report.actions.iter().any(|a| a.contains("Deployed")));
 
-        // 3. 更新传播：源侧改 references/guide.md + 新增 scripts/sub/deep.txt。
+        // 3. 更新传播：源侧改 references/guide.md + 新增 scripts/sub/deep.txt
+        //（源侧显式抬高 mtime——部署写入的目标文件 mtime=当下，秒级同刻
+        // 会落入「目标胜」分支）。
         std::fs::write(skill.join("references/guide.md"), "guide-v2").unwrap();
+        set_mtime(&skill.join("references/guide.md"), MTIME_BASE + 10);
         std::fs::create_dir_all(skill.join("scripts/sub")).unwrap();
         std::fs::write(skill.join("scripts/sub/deep.txt"), "deep").unwrap();
+        set_mtime(&skill.join("scripts/sub/deep.txt"), MTIME_BASE + 10);
         let report = sync_with(vec![decl.clone()], &targets, true);
         assert!(report.actions.iter().any(|a| a.contains("Deployed")));
         assert_eq!(
             std::fs::read_to_string(dst.join("references/guide.md")).unwrap(),
             "guide-v2"
         );
-        assert_eq!(std::fs::read_to_string(dst.join("scripts/sub/deep.txt")).unwrap(), "deep");
+        assert_eq!(
+            std::fs::read_to_string(dst.join("scripts/sub/deep.txt")).unwrap(),
+            "deep"
+        );
 
-        // 4. 镜像删除：源侧删 scripts/tool.mjs → 目标侧同步消失。
+        // 4. v0.9.5 需求9：目标侧较新（部署刷新过目标锚点 mtime）→
+        //    源侧删掉的文件不被镜像删除，改收编回源。
         std::fs::remove_file(skill.join("scripts/tool.mjs")).unwrap();
+        let report = sync_with(vec![decl.clone()], &targets, true);
+        assert!(report.actions.iter().any(|a| a.contains("Adopted")));
+        assert!(
+            dst.join("scripts/tool.mjs").exists(),
+            "目标侧文件保留（不再镜像删除）"
+        );
+        assert!(skill.join("scripts/tool.mjs").exists(), "独有文件收编回源");
+        assert!(dst.join("SKILL.md").is_file());
+
+        // 5. 需求9 追加裁决：母本锚点较新（模拟未来用户编辑插件删内容
+        //    ——编辑重写母本文件抬高 mtime）→ 目标侧独有文件视为旧版
+        //    残留删除，删除随母本传播。
+        std::fs::write(dst.join("references/leftover.md"), "stale").unwrap();
+        set_mtime(&skill.join("SKILL.md"), MTIME_BASE + 300);
         let report = sync_with(vec![decl], &targets, true);
         assert!(report.actions.iter().any(|a| a.contains("Deployed")));
-        assert!(!dst.join("scripts/tool.mjs").exists());
+        assert!(
+            !dst.join("references/leftover.md").exists(),
+            "母本较新：独有文件随母本删除（删除可传播）"
+        );
         assert!(dst.join("SKILL.md").is_file());
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// v0.9.5 需求9（新者胜）：目标侧编辑（agent/用户改分发副本）→ 回写
+    /// 母本并同轮传播其余目标；同刻不同内容（保时间戳手工拷贝形态）→
+    /// 目标胜；全量一致后收敛 Skipped。事故场景回归：旧母本不再覆盖新编辑。
+    #[test]
+    fn target_edit_adopts_back_and_propagates() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let src = tempfile::tempdir().unwrap();
+        let skill = src.path().join("s9");
+        std::fs::create_dir_all(skill.join("references")).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: s9\ndescription: d\n---\nv1",
+        )
+        .unwrap();
+        std::fs::write(skill.join("references/guide.md"), "guide-v1").unwrap();
+        set_mtime(&skill.join("SKILL.md"), MTIME_BASE);
+        set_mtime(&skill.join("references/guide.md"), MTIME_BASE);
+
+        let t1 = tempfile::tempdir().unwrap();
+        let t2 = tempfile::tempdir().unwrap();
+        let targets = vec![
+            ("a1".to_string(), t1.path().join("skills")),
+            ("a2".to_string(), t2.path().join("skills")),
+        ];
+        let decl = SkillDeclEntry {
+            dir_name: "s9".to_string(),
+            description: "d".to_string(),
+            content: std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            source_dir: Some(skill.clone()),
+        };
+
+        // 1. 首部署两目标。
+        sync_with(vec![decl.clone()], &targets, true);
+        let d1 = t1.path().join("skills/s9");
+        let d2 = t2.path().join("skills/s9");
+        assert!(d1.join("SKILL.md").is_file() && d2.join("SKILL.md").is_file());
+
+        // 2. 目标侧编辑（较新）→ 回写母本 + 同轮传播另一目标。
+        std::fs::write(d1.join("references/guide.md"), "guide-v2-by-target").unwrap();
+        set_mtime(&d1.join("references/guide.md"), MTIME_BASE + 100);
+        let report = sync_with(vec![decl.clone()], &targets, true);
+        assert!(report.actions.iter().any(|a| a.contains("Adopted")));
+        assert_eq!(
+            std::fs::read_to_string(skill.join("references/guide.md")).unwrap(),
+            "guide-v2-by-target",
+            "目标侧较新回写母本（不再被旧母本覆盖）"
+        );
+        assert_eq!(
+            std::fs::read_to_string(d2.join("references/guide.md")).unwrap(),
+            "guide-v2-by-target",
+            "同轮传播其余目标"
+        );
+
+        // 3. 同刻不同内容（保时间戳手工拷贝形态）→ 目标胜。
+        std::fs::write(
+            d2.join("SKILL.md"),
+            "---\nname: s9\ndescription: d\n---\nv2-tie",
+        )
+        .unwrap();
+        set_mtime(&d2.join("SKILL.md"), MTIME_BASE + 200);
+        set_mtime(&skill.join("SKILL.md"), MTIME_BASE + 200);
+        let report = sync_with(vec![decl.clone()], &targets, true);
+        assert!(report.actions.iter().any(|a| a.contains("Adopted")));
+        assert_eq!(
+            std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            "---\nname: s9\ndescription: d\n---\nv2-tie",
+            "同刻目标胜（手工拷贝视为目标侧编辑）"
+        );
+
+        // 4. 收敛：第一轮把 v2-tie 补发到仍为 v1 的 a1（a1 在 a2 之前
+        //    处理、未见到 a2 采纳的新内容），第二轮全量一致。
+        sync_with(vec![decl.clone()], &targets, true);
+        assert_eq!(
+            std::fs::read_to_string(d1.join("SKILL.md")).unwrap(),
+            "---\nname: s9\ndescription: d\n---\nv2-tie"
+        );
+        let report = sync_with(vec![decl], &targets, true);
+        assert!(report.actions.iter().any(|a| a.contains("Skipped")));
+        assert!(!report.actions.iter().any(|a| a.contains("Deployed")));
+        assert!(!report.actions.iter().any(|a| a.contains("Error")));
 
         std::env::remove_var("JISHU_HUB_HOME");
     }
@@ -511,11 +825,101 @@ body").unwrap();
         };
         let targets = vec![("test-agent".to_string(), dst_root.path().join("skills"))];
         sync_with(vec![decl], &targets, true);
-        assert!(dst_root.path().join("skills/p2__gone-skill/references/a.md").is_file());
+        assert!(dst_root
+            .path()
+            .join("skills/p2__gone-skill/references/a.md")
+            .is_file());
 
         // 空清单 → 回收整个目录。
         sync_with(Vec::new(), &targets, true);
         assert!(!dst_root.path().join("skills/p2__gone-skill").exists());
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// 修复回归（目录形式骨架校验缺口）：plugin.toml 剥离 [skill] 段的
+    /// 骨架插件经 load_manifests 放行后，load_skill_decls 展开目录源
+    /// decl——修复前插件加载失败 → decl 失联 → sync_with 回收已分发
+    /// skill 目录（用户 skill “莫名消失”的真正机制）。
+    #[test]
+    fn bare_skeleton_plugin_expands_dir_source_decls() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+
+        let plugin_root = tmp.path().join("plugins").join("pack9");
+        let skill_dir = plugin_root.join("skills").join("demo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo\ndescription: 描述\n---\n正文",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_root.join("plugin.toml"),
+            "schema = 1\nkind = \"tool\"\n\n[info]\nid = \"pack9\"\ndisplay_name = \"Pack 9\"\n",
+        )
+        .unwrap();
+
+        let decls = load_skill_decls();
+        let entry = decls
+            .iter()
+            .find(|d| d.dir_name == "pack9__demo")
+            .expect("skeleton dir-source plugin expands to decl");
+        assert!(entry.content.contains("正文"));
+        assert_eq!(entry.source_dir.as_deref(), Some(skill_dir.as_path()));
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// skill 名与插件 id 相同时部署目录名去重（`x__x` 无意义，直接用
+    /// skill 名）；并验证旧重复名目录经归属记录自动迁移（失联回收 +
+    /// 新名分发），无需手工迁移。
+    #[test]
+    fn dir_name_dedupes_when_skill_name_equals_plugin_id() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(skill_dir_name("vm", "setup"), "vm__setup");
+        assert_eq!(skill_dir_name("vm", "vm"), "vm");
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let src = tempfile::tempdir().unwrap();
+        let skill = src.path().join("vm");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: vm\ndescription: d\n---\nb",
+        )
+        .unwrap();
+        let decl = SkillDeclEntry {
+            dir_name: skill_dir_name("vm", "vm"),
+            description: "d".to_string(),
+            content: std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            source_dir: Some(skill),
+        };
+        assert_eq!(decl.dir_name, "vm");
+
+        let root = tempfile::tempdir().unwrap();
+        let targets = vec![("test-agent".to_string(), root.path().join("skills"))];
+        // 预置旧重复名目录 + 归属记录（存量用户环境形态）。
+        let legacy = root.path().join("skills/vm__vm");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("SKILL.md"), "old").unwrap();
+        save_deploy_registry(
+            &[
+                "test-agent:vm__vm".to_string(),
+                "test-agent:other".to_string(),
+            ]
+            .into_iter()
+            .collect(),
+        );
+
+        sync_with(vec![decl], &targets, true);
+        assert!(root.path().join("skills/vm/SKILL.md").is_file(), "新名分发");
+        assert!(!legacy.exists(), "旧重复名目录失联回收（自动迁移）");
+        let owned = load_deploy_registry();
+        assert!(owned.contains("test-agent:vm"));
+        assert!(!owned.contains("test-agent:vm__vm"));
 
         std::env::remove_var("JISHU_HUB_HOME");
     }
@@ -547,7 +951,7 @@ body").unwrap();
         let targets = vec![("test-agent".to_string(), root.path().join("skills"))];
 
         let decls = builtin_skill_decls();
-        assert_eq!(decls.len(), 1);
+        assert_eq!(decls.len(), 2); // capabilities + plugin-authoring（4a）
         let content = &decls[0].content;
 
         // frontmatter 与常量同步（description 是系统提示词里的路由层）。
@@ -561,20 +965,21 @@ body").unwrap();
 
         // 部署 + 幂等（内容一致 → Skipped）。
         let report = sync_with(decls.clone(), &targets, true);
-        assert!(report
-            .actions
-            .iter()
-            .any(|a| a.contains(&format!("test-agent/{BUILTIN_CAPABILITY_SKILL_DIR}: Deployed"))));
+        assert!(report.actions.iter().any(|a| a.contains(&format!(
+            "test-agent/{BUILTIN_CAPABILITY_SKILL_DIR}: Deployed"
+        ))));
         let deployed = std::fs::read_to_string(
-            root.path().join("skills").join(BUILTIN_CAPABILITY_SKILL_DIR).join("SKILL.md"),
+            root.path()
+                .join("skills")
+                .join(BUILTIN_CAPABILITY_SKILL_DIR)
+                .join("SKILL.md"),
         )
         .unwrap();
         assert_eq!(deployed, *content);
         let report = sync_with(decls, &targets, true);
-        assert!(report
-            .actions
-            .iter()
-            .any(|a| a.contains(&format!("test-agent/{BUILTIN_CAPABILITY_SKILL_DIR}: Skipped"))));
+        assert!(report.actions.iter().any(|a| a.contains(&format!(
+            "test-agent/{BUILTIN_CAPABILITY_SKILL_DIR}: Skipped"
+        ))));
 
         std::env::remove_var("JISHU_HUB_HOME");
     }
@@ -595,14 +1000,20 @@ body").unwrap();
 
         // 1) 首次分发 → Deployed + 归属记录。
         let report = sync_with(vec![decl("s1", "content-v1")], &targets, true);
-        assert!(report.actions.iter().any(|a| a.contains("test-agent/s1: Deployed")));
+        assert!(report
+            .actions
+            .iter()
+            .any(|a| a.contains("test-agent/s1: Deployed")));
         let md = std::fs::read_to_string(root.path().join("skills/s1/SKILL.md")).unwrap();
         assert_eq!(md, "content-v1");
         assert!(load_deploy_registry().contains("test-agent:s1"));
 
         // 2) 内容一致 → Skipped。
         let report = sync_with(vec![decl("s1", "content-v1")], &targets, true);
-        assert!(report.actions.iter().any(|a| a.contains("test-agent/s1: Skipped")));
+        assert!(report
+            .actions
+            .iter()
+            .any(|a| a.contains("test-agent/s1: Skipped")));
 
         // 3) 内容变化 → 覆盖更新。
         let report = sync_with(vec![decl("s1", "content-v2")], &targets, true);
@@ -617,7 +1028,10 @@ body").unwrap();
         std::fs::create_dir_all(&user_dir).unwrap();
         std::fs::write(user_dir.join("SKILL.md"), "user own").unwrap();
         let report = sync_with(Vec::new(), &targets, false); // 清空清单 = 回收自家
-        assert!(report.actions.iter().any(|a| a.contains("test-agent/s1: Removed")));
+        assert!(report
+            .actions
+            .iter()
+            .any(|a| a.contains("test-agent/s1: Removed")));
         assert!(user_dir.exists(), "用户自建同名目录不受影响");
         assert!(load_deploy_registry().is_empty());
 
@@ -654,7 +1068,10 @@ body").unwrap();
 
         // 清单仅剩 p1__b → 只回收 p1__a。
         let report = sync_with(vec![decl("p1__b", "b-content")], &targets, true);
-        assert!(report.actions.iter().any(|a| a.contains("test-agent/p1__a: Removed")));
+        assert!(report
+            .actions
+            .iter()
+            .any(|a| a.contains("test-agent/p1__a: Removed")));
         assert!(!root.path().join("skills/p1__a").exists());
         assert!(root.path().join("skills/p1__b/SKILL.md").is_file());
 
@@ -683,6 +1100,45 @@ body").unwrap();
         assert!(decls[0].content.starts_with("---\nname: foo\n"));
     }
 
+    /// 评审 P2-15：SKILL.md frontmatter 的 YAML 块标量 description（`|-`）
+    /// 取后续缩进行空格折叠（单源 frontmatter_description——skillhub 与目录
+    /// 源两链共用；此前把记号「|-」当值显示在技能卡上）。
+    #[test]
+    fn dir_source_skills_block_scalar_description() {
+        let root = tempfile::tempdir().unwrap();
+        let foo = root.path().join("skills").join("foo");
+        std::fs::create_dir_all(&foo).unwrap();
+        std::fs::write(
+            foo.join("SKILL.md"),
+            "---\nname: foo\ndescription: |-\n  第一行说明。\n  第二行说明。\nversion: \"1.0\"\n---\n\n正文。\n",
+        )
+        .unwrap();
+        let decls = dir_source_skills(root.path(), "p1");
+        assert_eq!(decls.len(), 1);
+        assert_eq!(decls[0].description, "第一行说明。 第二行说明。");
+    }
+
+    /// 单源解析补充形态：引号值剥除 / 折叠块（>）与字面块（|）同折叠 /
+    /// 块内空行终止收集。
+    #[test]
+    fn frontmatter_description_edge_shapes() {
+        use super::frontmatter_description;
+        assert_eq!(
+            frontmatter_description("---\nname: a\ndescription: \"引号说明\"\n---\n"),
+            "引号说明"
+        );
+        assert_eq!(
+            frontmatter_description("---\nname: b\ndescription: >\n  甲\n  乙\n---\n"),
+            "甲 乙"
+        );
+        // 块内空行后缩进内容不并入（段落近似）。
+        assert_eq!(
+            frontmatter_description("---\nname: c\ndescription: |-\n  首段\n\n  次段\n---\n"),
+            "首段"
+        );
+        assert_eq!(frontmatter_description("---\nname: d\n---\n"), "");
+    }
+
     #[test]
     fn manifest_skill_targets_projection() {
         // v0.9.0 需求20 第四轮：manifest 智能体 [skills].dir → 分发目标投影。
@@ -695,6 +1151,9 @@ body").unwrap();
                 display_name: id.to_string(),
                 icon: String::new(),
                 install_hint: None,
+                category: None,
+                description: None,
+                form: None,
             },
             probe: None,
             transport: Some(ms::TransportSection {

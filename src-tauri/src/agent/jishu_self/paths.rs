@@ -48,12 +48,6 @@ pub(crate) fn models_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
 pub(crate) fn mcp_json_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(agent_dir()?.join("mcp.json"))
 }
-
-/// 会话根目录（项目路径编码为子目录）。
-pub(crate) fn sessions_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    Ok(agent_dir()?.join("sessions"))
-}
-
 /// settings.json/models.json 自动备份目录。
 pub(crate) fn backups_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(agent_dir()?.join("backups"))

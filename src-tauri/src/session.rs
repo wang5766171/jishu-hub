@@ -6,7 +6,7 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-fn serialize_pathbuf<S: serde::Serializer>(path: &PathBuf, s: S) -> Result<S::Ok, S::Error> {
+fn serialize_pathbuf<S: serde::Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&path.to_string_lossy())
 }
 
@@ -35,7 +35,7 @@ pub enum ContentBlock {
     Text {
         text: String,
         /// v0.9.0 需求3 方案 C：本条用户消息关联的工具插件 id 快照（回放时
-        /// 从注入块派生填充，见 tool_plugin::extract_tool_snapshot）。
+        /// 从注入块派生填充，见 agent::internal_prompts::extract_tool_snapshot）。
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tool_ids: Vec<String>,
     },
@@ -55,6 +55,11 @@ pub enum ContentBlock {
         /// 显示 Error 徽标；pi JSONL 的 isError / opencode 的 status=error）。
         #[serde(default, skip_serializing_if = "is_false")]
         is_error: bool,
+        /// v0.9.5 需求12：pi 工具结果的结构化 details（如 rpiv-todo 的全量
+        /// 任务快照 TaskDetails.tasks）——会话插件（待办看板）消费；
+        /// 可选字段，旧数据/无 details 工具不携带，向后兼容。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
     },
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
@@ -188,7 +193,10 @@ fn parse_content_blocks(value: &serde_json::Value) -> Vec<ContentBlock> {
             if s.trim().is_empty() {
                 vec![]
             } else {
-                vec![ContentBlock::Text { text: s.clone(), tool_ids: Vec::new() }]
+                vec![ContentBlock::Text {
+                    text: s.clone(),
+                    tool_ids: Vec::new(),
+                }]
             }
         }
         serde_json::Value::Array(arr) => arr
@@ -1009,6 +1017,8 @@ fn prompt_matches_question(value: &serde_json::Value, prompt: &str) -> bool {
     })
 }
 
+/// 仅测试使用（生产路径经 pi 会话适配器读 JSONL）。
+#[cfg(test)]
 pub fn load_session(path: &Path) -> Option<Session> {
     load_session_with_filter(path, |_| false)
 }
@@ -1029,7 +1039,7 @@ where
         if serde_json::from_str::<serde_json::Value>(line)
             .ok()
             .as_ref()
-            .map(|v| should_skip_record(v))
+            .map(&should_skip_record)
             .unwrap_or(false)
         {
             continue;
@@ -1046,7 +1056,8 @@ where
             if msg.role == "user" {
                 for block in &mut msg.content {
                     if let ContentBlock::Text { text, tool_ids } = block {
-                        let (clean, ids) = crate::agent::tool_plugin::extract_tool_snapshot(text);
+                        let (clean, ids) =
+                            crate::agent::internal_prompts::extract_tool_snapshot(text);
                         *text = clean;
                         *tool_ids = ids;
                     }
@@ -1115,8 +1126,11 @@ where
     // v0.8.1 需求10 → v0.9.0 需求3：会话列表名清洗注入块（文本标记已废弃）——
     // 标题必须呈现用户真实问题，不得泄漏插件注入块（§16.3 剥离契约）。
     let display_name = last_ai_title
-        .map(|t| crate::agent::tool_plugin::strip_tool_block(&t))
-        .or_else(|| first_user_text.map(|t| smart_summary(&crate::agent::tool_plugin::strip_tool_block(&t))));
+        .map(|t| crate::agent::internal_prompts::strip_internal_prompts(&t))
+        .or_else(|| {
+            first_user_text
+                .map(|t| smart_summary(&crate::agent::internal_prompts::strip_internal_prompts(&t)))
+        });
 
     let project_path = path
         .parent()
@@ -1134,11 +1148,6 @@ where
         agent_id: None,
     })
 }
-
-pub fn list_sessions(project_dir: &Path) -> Vec<Session> {
-    list_sessions_with_filter(project_dir, |_| false)
-}
-
 pub fn list_sessions_with_filter<F>(project_dir: &Path, should_skip_record: F) -> Vec<Session>
 where
     F: Fn(&serde_json::Value) -> bool + Copy,
@@ -1168,7 +1177,7 @@ where
         }
     }
 
-    sessions_with_time.sort_by(|a, b| b.1.cmp(&a.1));
+    sessions_with_time.sort_by_key(|s| std::cmp::Reverse(s.1));
     sessions_with_time.into_iter().map(|(s, _)| s).collect()
 }
 
@@ -1215,7 +1224,10 @@ mod tests {
     fn test_smart_summary_keeps_version_numbers() {
         assert_eq!(smart_summary("开启v0.9.4版本开发"), "开启v0.9.4版本开发");
         assert_eq!(smart_summary("Fix v2.1 bug"), "Fix v2.1 bug");
-        assert_eq!(smart_summary("升级到 3.14.2 后闪退"), "升级到 3.14.2 后闪退");
+        assert_eq!(
+            smart_summary("升级到 3.14.2 后闪退"),
+            "升级到 3.14.2 后闪退"
+        );
         // 半角逗号后跟空格 → 仍是句界。
         assert_eq!(smart_summary("Fix A, then B"), "Fix A");
         // 多行取首行。

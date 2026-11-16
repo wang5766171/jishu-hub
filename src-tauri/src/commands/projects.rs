@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use crate::hub;
 use crate::project;
 use crate::project_config;
-use crate::{agent, with_app_state, AppState};
+use crate::{with_app_state, AppState};
 
 #[tauri::command]
 pub(crate) async fn scan_projects(
@@ -52,6 +52,8 @@ pub(crate) fn init_project(
     agent_id: String,
     project_path: String,
 ) -> Result<bool, String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间）。
+    let project_path = project::resolve_project_root_or_default(&project_path);
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
@@ -60,12 +62,26 @@ pub(crate) fn init_project(
         .init_project(&project_path)
 }
 
+// v0.9.7 需求5 E1/E3：默认工作空间（幂等 ensure；hide 尊重语义见 project.rs）。
+#[tauri::command]
+pub(crate) fn get_default_workspace() -> Result<project::Project, String> {
+    project::ensure_default_workspace()
+}
+
+// v0.9.7 需求5 E3：前端左上角「默认」徽标判定（路径判同逻辑与 E5 会话子目录共用单源）。
+#[tauri::command]
+pub(crate) fn is_default_workspace(path: String) -> Result<bool, String> {
+    Ok(project::is_default_workspace(std::path::Path::new(&path)))
+}
+
 #[tauri::command]
 pub(crate) fn load_project_settings(
     state: tauri::State<'_, Mutex<AppState>>,
     agent_id: String,
     project_path: String,
 ) -> Result<project_config::ProjectSettings, String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间）。
+    let project_path = project::resolve_project_root_or_default(&project_path);
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
@@ -80,6 +96,8 @@ pub(crate) fn load_project_settings_local(
     agent_id: String,
     project_path: String,
 ) -> Result<project_config::ProjectSettings, String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间）。
+    let project_path = project::resolve_project_root_or_default(&project_path);
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
@@ -95,6 +113,8 @@ pub(crate) fn save_project_settings(
     project_path: String,
     settings: project_config::ProjectSettings,
 ) -> Result<(), String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间）。
+    let project_path = project::resolve_project_root_or_default(&project_path);
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
@@ -110,6 +130,8 @@ pub(crate) fn save_project_settings_local(
     project_path: String,
     settings: project_config::ProjectSettings,
 ) -> Result<(), String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间）。
+    let project_path = project::resolve_project_root_or_default(&project_path);
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
@@ -124,6 +146,8 @@ pub(crate) fn load_claude_md(
     agent_id: String,
     project_path: String,
 ) -> Result<Option<String>, String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间）。
+    let project_path = project::resolve_project_root_or_default(&project_path);
     let s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
@@ -281,6 +305,8 @@ fn walk_project_files(
 /// 列出项目内可引用的文件（相对路径，`/` 分隔），忽略依赖/构建目录与二进制。
 #[tauri::command]
 pub(crate) fn list_project_files(project_root: String) -> Result<Vec<String>, String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间）。
+    let project_root = project::resolve_project_root_or_default(&project_root);
     let root = std::path::Path::new(&project_root);
     if !root.is_dir() {
         return Err("Project root is not a directory".to_string());
@@ -331,7 +357,7 @@ mod file_list_tests {
         for i in 0..80 {
             std::fs::write(root.join(format!("f{i:03}.txt")), "x").unwrap();
         }
-        let mut out = Vec::new();
+        let out = Vec::new();
         // 用小上限验证截断逻辑（正式上限 5000 不在测试中构造）
         let mut capped = out;
         walk_project_files(&root, std::path::Path::new(""), 0, &mut capped);

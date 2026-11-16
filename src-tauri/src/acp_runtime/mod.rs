@@ -65,9 +65,10 @@ pub enum AcpCommand {
     /// to the transport's mid-turn write-back channel:
     /// - PiRpc → `extension_ui_response` (production mid-turn baseline).
     /// - ACP   → a pending `elicitation/create` (claude_code, capability-gated;
-    ///           populated in Phase 3). ACP agents without an elicitation channel
-    ///           (opencode) have no mid-turn business path and must be answered
-    ///           as a follow-up message (handled by the frontend, not here).
+    ///   populated in Phase 3). ACP agents without an elicitation channel
+    ///   (opencode) have no mid-turn business path and must be answered
+    ///   as a follow-up message (handled by the frontend, not here).
+    ///
     /// `id` is the interaction request id; `value` is the user's choice/input.
     /// `response` carries the write-back outcome so the caller reports an
     /// authoritative `InteractionDelivery` (design R6).
@@ -96,6 +97,10 @@ pub struct AcpControl {
     /// 回合其 turn_complete 无法送达前端（streamStore 永远停在 isStreaming），
     /// 前端重挂载时经 `chat_turn_active` 以此标志对账。
     pub(crate) turn_active: Arc<AtomicBool>,
+    /// v0.9.6 需求6 F4：连接循环收尾信号（watch，true = 已收尾：进程退出、
+    /// 清理完成）。漂移回收路径在重拉进程前有限等待，防新旧进程并发写同一
+    /// 会话文件（shutdown 是 fire-and-forget，不等收尾即重拉是竞态根源）。
+    pub(crate) finished: Arc<tokio::sync::watch::Sender<bool>>,
 }
 
 impl AcpControl {
@@ -231,6 +236,16 @@ impl AcpControl {
     pub async fn shutdown(&self) {
         let _ = self.tx.send(AcpCommand::Shutdown).await;
     }
+
+    /// v0.9.6 需求6 F4：等待连接循环收尾（进程退出 + 清理完成）。
+    /// 已收尾立即返回；未收尾挂起至信号（调用方用 timeout 限幅）。
+    pub async fn wait_finished(&self) {
+        let mut rx = self.finished.subscribe();
+        if *rx.borrow() {
+            return;
+        }
+        let _ = rx.changed().await;
+    }
 }
 
 /// Where the ACP connection loop sends its normalized events. A callback (not an
@@ -279,7 +294,7 @@ pub(crate) use self::interaction::{permission_option_id, write_permission_respon
 pub(crate) use self::protocol::acp_initialize_params;
 pub use self::protocol::{handle_acp_response_line, write_jsonrpc_request, AcpResponse};
 
-use self::elicitation::{extract_ask_user_prompts, parse_acp_elicitation, AcpElicitation};
+use self::elicitation::{extract_ask_user_prompts, parse_acp_elicitation};
 use self::interaction::{
     cancel_pending_elicitations, elicit_result_payload, parse_sub_request_id,
     permission_request_key, reject_pending_permissions, route_acp_interaction_response,
@@ -334,6 +349,8 @@ fn pop_next_acp_follow_up(pending_follow_ups: &mut VecDeque<String>) -> Option<S
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 
+// 连接循环的启动参数按协议固定传递，参数面无法再收窄。
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_acp_session(
     app: tauri::AppHandle,
     agent_id: String,
@@ -398,6 +415,9 @@ pub fn spawn_acp_session_with_policy(
 
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(8);
 
+    // v0.9.6 需求6 F4：收尾信号（true = 循环退出、进程已清理）。
+    let (finished_tx, _) = tokio::sync::watch::channel(false);
+
     // stdout reader + event sink are constructed here so the connection loop can
     // run against a synthetic line stream / channel sink (tests, orchestrator).
     let (stdout_tx, stdout_rx) = tokio::sync::mpsc::channel(64);
@@ -410,10 +430,13 @@ pub fn spawn_acp_session_with_policy(
         supports_interaction_mid_turn: Arc::new(AtomicBool::new(true)),
         // 首回合 prompt 在连接初始化后立即发出，构造时即为 true。
         turn_active: Arc::new(AtomicBool::new(true)),
+        finished: Arc::new(finished_tx),
     };
     let control_clone = control.clone();
     let turn_active_for_loop = control.turn_active.clone();
     let turn_active_for_exit = control.turn_active.clone();
+    // v0.9.6 需求6 F4：退出路径发收尾信号（watch sender 克隆进清理任务）。
+    let finished_for_exit = control.finished.clone();
 
     tauri::async_runtime::spawn(async move {
         let result = acp_connection_loop(
@@ -469,6 +492,9 @@ pub fn spawn_acp_session_with_policy(
         // v0.8.0 需求7：循环已退出（正常或出错），回合必然不再进行。
         turn_active_for_exit.store(false, Ordering::Relaxed);
 
+        // v0.9.6 需求6 F4：通知等待方（漂移回收）收尾完成。
+        let _ = finished_for_exit.send(true);
+
         on_finish();
     });
 
@@ -479,6 +505,8 @@ pub fn spawn_acp_session_with_policy(
 // Internal: persistent connection loop
 // ---------------------------------------------------------------------------
 
+// 连接循环需持有全部通道端点与状态句柄，参数无法再收窄。
+#[allow(clippy::too_many_arguments)]
 async fn acp_connection_loop(
     emit: AcpEventEmit,
     pending_session_id: String,

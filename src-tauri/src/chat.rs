@@ -5,8 +5,8 @@ use tauri::{AppHandle, Manager};
 use tokio::io::AsyncWriteExt;
 use tokio::process::ChildStdin;
 
-use crate::agent_runtime::{self, AgentTurnRequest};
 use crate::agent;
+use crate::agent_runtime::{self, AgentTurnRequest};
 use crate::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +26,10 @@ pub struct ChatProcess {
     /// 长驻进程的 --model/--provider/通道 env 在 spawn 时固定，GUI 切换配置
     /// 只落盘不触达旧进程——发送时比对签名，漂移且回合空闲则回收重拉。
     pub spawn_signature: String,
+    /// v0.9.6 需求4：所属项目编码（encode_project_path；标题栏项目标签据此
+    /// 归属——chat_active_sessions 返回给前端）。orchestrator 镜像条目无
+    /// 项目上下文，填空串。
+    pub project_encoded: String,
 }
 
 pub struct ChatState {
@@ -40,7 +44,7 @@ impl ChatState {
     }
 }
 
-/// v0.8.1 需求7：会话启用工具集非空时，把工具说明块前缀附加到 prompt。
+/// v0.8.1 需求7：会话启用工具集非空时，把工具说明块作为后缀附加到 prompt。
 /// ACP 存活会话早退路径与新回合路径共用（P0 修复：早退路径曾跳过注入，
 /// 持久进程第二轮起注入块从未附加）。
 /// M0：注入前先把暂存键（新会话输入框勾选）并入本会话键。
@@ -49,15 +53,343 @@ impl ChatState {
 /// v0.9.0 需求3 方案 C：前端不再嵌 [JISHU-TOOLS] 文本标记，净化步骤删除
 /// （版本级裁决：手输字面标记亦不防御）；本条消息的工具快照由注入块
 /// 随 prompt 持久化、回放经 extract_tool_snapshot 派生。
+/// v0.9.5 重构：注入块（图片委派/工具/MCP 提示）统一后缀追加，标记对与
+/// 剥离链单源于 agent::internal_prompts。
+/** 图片委派提示（需求2→需求5 T9 识图路由）：消息含附件行「图片N（批次 …）
+ *  : <路径>」且激活模型 input 不含 image → 注入识图路由话术（识图路由插件
+ *  session.image-dispatch 可用 → 其配置生效；不可用 → 内置兜底话术）。
+ *  话术按场景路由：简单识别优先 MCP 识图工具、复杂分析优先 subagent，
+ *  互为兜底，双败如实告知用户。
+ *  v0.9.5 重构：注入位置改**后缀**（追加在用户消息之后，用户裁决），默认
+ *  话术经 internal_prompts 版本登记（PROMPT_IMAGE_DISPATCH）。 */
+fn append_image_dispatch_hint(message: &str) -> String {
+    let has_image_line = message
+        .lines()
+        .any(|l| l.contains("（批次") && l.contains("图片") && l.contains(':'));
+    if !has_image_line {
+        return message.to_string();
+    }
+    if active_model_supports_image() {
+        return message.to_string();
+    }
+    let route = resolve_image_dispatch_route();
+    format!(
+        "{message}
+{}{}{}",
+        agent::internal_prompts::IMAGE_DISPATCH_OPEN,
+        compose_image_dispatch_hint(&route),
+        agent::internal_prompts::IMAGE_DISPATCH_CLOSE,
+    )
+}
+
+/// T9：识图路由解析结果（话术合成输入）。
+pub(crate) struct ImageDispatchRoute {
+    /// 自定义话术（插件启用且用户配置非空时）。
+    pub custom_prompt: Option<String>,
+    /// 解析后的 mcp 识图工具全名（插件id__工具名；空 = 未指定且未声明）。
+    pub mcp_tools: Vec<String>,
+    /// subagent 识图模型（优先级列表首个可用；None = 无可见识图模型）。
+    pub subagent_model: Option<String>,
+}
+
+/// 识图路由插件 id（内置组合插件，plugin.rs BUILTIN_COMPOSED_MANIFESTS）。
+const IMAGE_DISPATCH_PLUGIN_ID: &str = "session.image-dispatch";
+
+/// T9：路由解析——插件启停（禁用 = 内置兜底话术，自定义配置失效）、
+/// 配置值（plugins-config.json）、mcp 工具解析（短名补全/声明自动发现）、
+/// subagent 模型优先级校验（全不命中回落自动）。
+fn resolve_image_dispatch_route() -> ImageDispatchRoute {
+    let disabled = agent::plugin::load_plugin_config().disabled;
+    let plugin_enabled = !disabled.iter().any(|d| d == IMAGE_DISPATCH_PLUGIN_ID);
+    let config = if plugin_enabled {
+        agent::plugin_options::load_all()
+            .get(IMAGE_DISPATCH_PLUGIN_ID)
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        Default::default()
+    };
+    let cfg_str = |key: &str| -> String {
+        config
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    let declared = collect_declared_vision_tools(&disabled);
+    ImageDispatchRoute {
+        custom_prompt: {
+            let p = cfg_str("prompt");
+            if p.is_empty() {
+                None
+            } else {
+                Some(p)
+            }
+        },
+        mcp_tools: resolve_mcp_vision_tools(&cfg_str("mcp_tools"), &declared),
+        subagent_model: resolve_subagent_vision_model(&cfg_str("subagent_models")),
+    }
+}
+
+/// 扫描已启用的 [mcp] 插件声明的识图工具（manifest vision_tools 字段，
+/// 排除禁用插件），产出 (插件 id, 工具名列表)。仅作用户显式配置
+/// 「mcp 识图工具」时的短名补全字典——不用于默认点名（用户裁决
+/// 2026-09-30：默认发现交给 agent 经 hub_mcp_list 自选）。
+fn collect_declared_vision_tools(disabled: &[String]) -> Vec<(String, Vec<String>)> {
+    let (_agents, tools, _errors) = agent::manifest::load_manifests(&[]);
+    tools
+        .into_iter()
+        .filter(|(file, _)| !disabled.contains(&file.info.id))
+        .filter_map(|(file, _)| {
+            let vision = file
+                .mcp
+                .as_ref()?
+                .vision_tools
+                .as_ref()?
+                .iter()
+                .filter(|t| !t.trim().is_empty())
+                .map(|t| t.trim().to_string())
+                .collect::<Vec<_>>();
+            if vision.is_empty() {
+                None
+            } else {
+                Some((file.info.id.clone(), vision))
+            }
+        })
+        .collect()
+}
+
+/// T9 纯函数：mcp 识图工具解析——**配置为空 → 空集（不点名）**（用户裁决
+/// 2026-09-30：识图工具不写死，声明自动点名 = 隐性绑定——其他用户未必用
+/// 同一个识图插件；发现交给 agent 经 mcp 搜索 / hub_mcp_list 列表自选）。
+/// 非空 → 逐项短名补全（在声明里按 `id__工具` 或工具名匹配；补不上保留
+/// 原文交模型试）。declared 仅作显式配置的短名补全字典。
+pub(crate) fn resolve_mcp_vision_tools(
+    configured: &str,
+    declared: &[(String, Vec<String>)],
+) -> Vec<String> {
+    let parse = |raw: &str| -> Vec<String> {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    if configured.is_empty() {
+        return Vec::new();
+    }
+    parse(configured)
+        .into_iter()
+        .map(|entry| {
+            if entry.contains("__") {
+                return entry;
+            }
+            for (id, tools) in declared {
+                if tools.contains(&entry) {
+                    return format!("{id}__{entry}");
+                }
+            }
+            entry
+        })
+        .collect()
+}
+
+/// T9 纯函数：subagent 识图模型解析——优先级列表逐项校验 models.json 取
+/// 首个命中；空/全不命中回落自动（首个可见识图模型）。
+fn resolve_subagent_vision_model(configured: &str) -> Option<String> {
+    let candidates: Vec<String> = configured
+        .split(',')
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .collect();
+    for qualified in &candidates {
+        if model_exists(qualified) {
+            return Some(qualified.clone());
+        }
+    }
+    first_visible_vision_model()
+}
+
+/// provider/model 在 models.json 中存在。
+fn model_exists(qualified: &str) -> bool {
+    let Some((provider_id, model_id)) = qualified.split_once('/') else {
+        return false;
+    };
+    agent::jishu_self::pi_models_config::get_provider(provider_id)
+        .ok()
+        .flatten()
+        .and_then(|p| p.models.map(|ms| ms.iter().any(|m| m.id == model_id)))
+        .unwrap_or(false)
+}
+
+/// T9：话术合成——自定义话术（支持 {{mcp_tools}}/{{subagent_model}} 占位符）
+/// 或内置默认（resources/prompts/image-dispatch.md 模板，场景路由 + 互为
+/// 兜底 + 双败如实告知；模板占位符 {{mcp_clause}}/{{subagent_model_note}}
+/// 在此填充）。
+/// 生产入口：schema 查询走 mcp_server 的进程内缓存（短截止 + 降级）。
+pub(crate) fn compose_image_dispatch_hint(route: &ImageDispatchRoute) -> String {
+    compose_image_dispatch_hint_with(route, &agent::mcp_server::cached_tool_input_schema)
+}
+
+/// 话术合成（schema 查询器可注入——单测用假查询器，不 spawn 真实后端）。
+/// v0.9.5 解析器能力对齐直连（用户裁决 2026-09-30）：点名工具给 **pi 可见
+/// 名**（hub 规范名 pi 不识别，实测 Tool not found），并**内联参数 schema**
+///——直连时模型在工具清单里即可见 schema，经解析器点名调用同样要给到，
+/// 免去 describe 一跳与参数猜测；schema 查不到则降级为 list 指引（模型
+/// 自愈路径不变）。
+/// v0.9.5 需求11（pi 1.1.0）：adapter 退役切 pi 原生 MCP——可见名规律
+/// `mcp__jishu_hub__插件id__工具`（与其余三家一致），话术中的发现/调用
+/// 指引同步改为原生方式（hub_mcp_list 直调，无 mcp 代理工具/describe）。
+pub(crate) fn compose_image_dispatch_hint_with(
+    route: &ImageDispatchRoute,
+    schema_of: &dyn Fn(&str) -> Option<serde_json::Value>,
+) -> String {
+    // 点名/占位符统一用 pi 可见名（模型可直接调用的名字）。
+    let mcp_tools_text = if route.mcp_tools.is_empty() {
+        "（未指定——请自行搜索选择识图工具）".to_string()
+    } else {
+        route
+            .mcp_tools
+            .iter()
+            .map(|t| agent::mcp_server::pi_visible_tool_name(t))
+            .collect::<Vec<_>>()
+            .join(" / ")
+    };
+    let model_text = route.subagent_model.clone().unwrap_or_default();
+    if let Some(custom) = &route.custom_prompt {
+        return custom
+            .replace("{{mcp_tools}}", &mcp_tools_text)
+            .replace("{{subagent_model}}", &model_text);
+    }
+    // 默认（未配置工具）不点名任何具体 MCP 服务——识图工具的发现与选择
+    // 交给模型自身（用户裁决 2026-09-27：具体工具因人而异，点名即绑定）；
+    // 显式配置 mcp_tools 时才钉定直呼其名。
+    let mcp_clause = if route.mcp_tools.is_empty() {
+        "先自行发现识图工具——调 hub_mcp_list（mcp__jishu_hub__hub_mcp_list）实时列出全部可用工具与参数说明，从中挑一个能分析图片的，把上方附件行「图片N（批次 …）」中的图片磁盘路径按其参数说明传入；若确实没有识图类工具，本条跳过、直接走第二条".to_string()
+    } else {
+        let mut clause = format!(
+            "调用工具 {mcp_tools_text}，把上方附件行「图片N（批次 …）」中的图片磁盘路径传入"
+        );
+        let mut schemas = String::new();
+        for tool in &route.mcp_tools {
+            // 查询用 hub 规范名（插件id__工具）——缓存与声明按插件 id 索引。
+            if let Some(schema) = schema_of(tool) {
+                let params = render_schema_params(&schema);
+                if !params.is_empty() {
+                    schemas.push_str(&format!(
+                        "\n{} 的参数：\n{}\n",
+                        agent::mcp_server::pi_visible_tool_name(tool),
+                        params
+                    ));
+                }
+            }
+        }
+        if schemas.is_empty() {
+            clause.push_str("；参数以 hub_mcp_list 返回的参数说明为准");
+        } else {
+            clause.push_str("；参数如下（按各参数说明直接传入）：\n");
+            clause.push_str(schemas.trim_end());
+        }
+        clause
+    };
+    let model_note = match &route.subagent_model {
+        Some(m) => format!("，model 参数填 {m}（识图模型）"),
+        None => String::new(),
+    };
+    agent::internal_prompts::PROMPT_IMAGE_DISPATCH
+        .body()
+        .replace("{{mcp_clause}}", &mcp_clause)
+        .replace("{{subagent_model_note}}", &model_note)
+}
+
+/// inputSchema → 参数说明行（`- 名（类型，必填/可选）：说明`）。MCP 工具
+/// 参数为第一层扁平对象；无 properties → 空串（调用方视为无 schema 降级）。
+fn render_schema_params(schema: &serde_json::Value) -> String {
+    let Some(props) = schema.get("properties").and_then(|v| v.as_object()) else {
+        return String::new();
+    };
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+        .unwrap_or_default();
+    let mut lines = Vec::new();
+    for (name, spec) in props {
+        let ty = spec.get("type").and_then(|v| v.as_str()).unwrap_or("any");
+        let req = if required.contains(&name.as_str()) {
+            "必填"
+        } else {
+            "可选"
+        };
+        match spec.get("description").and_then(|v| v.as_str()) {
+            Some(desc) if !desc.is_empty() => {
+                lines.push(format!("- {name}（{ty}，{req}）：{desc}"));
+            }
+            _ => lines.push(format!("- {name}（{ty}，{req}）")),
+        }
+    }
+    lines.join("\n")
+}
+
+/** 激活模型的图像输入能力（models.json 条目 input 含 "image"）。 */
+fn active_model_supports_image() -> bool {
+    let Ok(Some(active)) = crate::agent::jishu_self::jishu_settings::get_active() else {
+        return false;
+    };
+    let Ok(Some(provider)) =
+        crate::agent::jishu_self::pi_models_config::get_provider(&active.provider)
+    else {
+        return false;
+    };
+    provider
+        .models
+        .as_ref()
+        .map(|models| {
+            models
+                .iter()
+                .any(|m| m.id == active.model && m.input.iter().any(|i| i == "image"))
+        })
+        .unwrap_or(false)
+}
+
+/** 首个可见识图模型（provider/model，v0.9.5 需求5 复刻旧 jishu-subagent
+ *  autoSelectVisionModel 语义）：models.json 顺序扫描 input 含 image 的
+ *  模型，经渠道可见性（jishu-self）过滤；无可见项 → None（提示词退化为
+ *  不指定模型，由模型自行决策）。 */
+fn first_visible_vision_model() -> Option<String> {
+    let config = crate::agent::jishu_self::pi_models_config::load().ok()?;
+    let visible = crate::channel_models_store::visible_models_env_value("jishu-self")
+        .map(|v| v.split(',').map(str::to_string).collect::<Vec<String>>());
+    for (provider, pconf) in &config.providers {
+        for model in pconf.models.iter().flatten() {
+            if !model.input.iter().any(|i| i == "image") {
+                continue;
+            }
+            let qualified = format!("{provider}/{}", model.id);
+            let ok = match &visible {
+                Some(list) => list.iter().any(|v| v == &qualified),
+                None => true, // 无可见性记录 = 全可见（向后兼容）
+            };
+            if ok {
+                return Some(qualified);
+            }
+        }
+    }
+    None
+}
+
 fn compose_tool_message(
     state: &tauri::State<'_, Mutex<AppState>>,
     session_id: &str,
     message: String,
 ) -> String {
-    agent::tool_plugin::migrate_session_tools(
-        agent::tool_plugin::STAGING_SESSION_KEY,
-        session_id,
-    );
+    // v0.9.5 重构（用户裁决）：内部提示词一律**后缀**注入——用户消息在最前，
+    // 图片委派块紧随其后（直指上方附件行），工具块 / MCP 提示殿后。历史格式
+    // （v0.9.5 前的前缀/小写标记）不做剥离兼容（版本级裁决）。
+    let message = append_image_dispatch_hint(&message);
+    agent::tool_plugin::migrate_session_tools(agent::tool_plugin::STAGING_SESSION_KEY, session_id);
     let tool_ids = agent::tool_plugin::get_session_tools(session_id);
     let Ok(s) = state.lock() else {
         return message;
@@ -72,7 +404,7 @@ fn compose_tool_message(
         if hint.is_empty() {
             return message;
         }
-        return format!("{hint}\n\n{message}");
+        return format!("{message}\n\n{hint}");
     }
     let matched: Vec<&agent::tool_plugin::ToolPlugin> = tools
         .iter()
@@ -85,7 +417,7 @@ fn compose_tool_message(
     if block.trim().is_empty() {
         return message;
     }
-    format!("{block}\n\n{message}")
+    format!("{message}\n\n{block}")
 }
 
 #[tauri::command]
@@ -96,7 +428,27 @@ pub async fn send_message(
     project_path: String,
     session_id: Option<String>,
     message: String,
+    model_override: Option<(String, String)>,
 ) -> Result<ChatSession, String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间；正常路径不受影响）。
+    let project_path = crate::project::resolve_project_root_or_default(&project_path);
+    // v0.9.7 需求14：会话级模型注入——显式 override（节点/委派链）优先，其次
+    // 会话锁定模型（新会话/transient 无记录回落全局 active）。
+    let model_override = crate::session_models::resolve_override(
+        &session_id.clone().unwrap_or_default(),
+        model_override,
+    );
+    // v0.9.7 需求5 E5：恢复既有会话（真实 id 直传）→ 幂等确保会话子目录
+    //（默认空间专属；非默认空间 no-op）。
+    if let Some(ref sid) = session_id {
+        if !crate::agent::command_config::is_transient_session_id(sid) {
+            let _ =
+                crate::project::ensure_session_workspace(std::path::Path::new(&project_path), sid);
+        }
+    }
+    // v0.9.6 需求4：项目编码先缓存（project_path 随后 move 进 turn 请求，
+    // 进程表条目需要它做项目归属）。
+    let spawn_project_encoded = crate::project::encode_project_path(&project_path);
     log::info!(
         "send_message: agent={}, project={}, session={:?}, message_len={}",
         agent_id,
@@ -137,6 +489,20 @@ pub async fn send_message(
                 );
                 if let Some(acp) = process.acp.as_ref() {
                     acp.shutdown().await;
+                    // v0.9.6 需求6 F4：shutdown 是 fire-and-forget——不等旧进程
+                    // 收尾就重拉，新旧进程会短暂并发写同一会话 JSONL（旧进程
+                    // flush 大文件/被 5s 超时强杀期间仍在写）。有限等待收尾
+                    //（≤8s：child.wait 5s + 杀树余量）再重拉；超时不阻塞
+                    //（F1 守卫保证旧 on_finish 不误删新条目，旧进程随后被强杀）。
+                    let finished = tokio::time::timeout(
+                        std::time::Duration::from_secs(8),
+                        acp.wait_finished(),
+                    )
+                    .await
+                    .is_ok();
+                    log::info!(
+                        "drift recycle: old process {pid} finished={finished}, proceeding to respawn"
+                    );
                 }
                 remove_process_entries(&app, Some(pid), Some(sid))?;
             } else if let Some(acp) = process.acp.as_ref() {
@@ -167,6 +533,10 @@ pub async fn send_message(
     // 不注入——边界：工具插件是 GUI 会话能力）。
     let message = compose_tool_message(&state, &pending_session_id, message);
 
+    // v0.9.7 需求5 E5：新会话真实 id 解析回调里确保会话子目录（project_path
+    // 稍后 move 进 AgentTurnRequest，先克隆）。
+    let project_path_for_resolve = project_path.clone();
+
     let prepared = {
         let s = state
             .lock()
@@ -179,6 +549,7 @@ pub async fn send_message(
                 session_id: Some(pending_session_id.clone()),
                 message,
                 timeout_secs: 0,
+                model_override,
             },
         )?
     };
@@ -215,6 +586,15 @@ pub async fn send_message(
             // M0：会话工具集随 id 解析搬家（pending-<ts> → 真实 id），第二条
             // 消息起 compose 按真实键命中注入。
             agent::tool_plugin::migrate_session_tools(&sid_for_resolve, real_id);
+            // v0.9.6 需求6 F3：pending 消息记录同点迁移（首条消息以临时 id
+            // 记录，ack/加载按真实 id 对账）。
+            crate::pending_messages::rename_session(&sid_for_resolve, real_id);
+            // v0.9.7 需求5 E5：默认空间会话子目录随真实 id 就位（幂等；
+            // 上传/agent 产物的按会话分目录依赖它存在）。
+            let _ = crate::project::ensure_session_workspace(
+                std::path::Path::new(&project_path_for_resolve),
+                real_id,
+            );
         },
     )
     .await?;
@@ -232,6 +612,7 @@ pub async fn send_message(
             stdin: handle.stdin.clone(),
             acp: handle.acp.clone(),
             spawn_signature,
+            project_encoded: spawn_project_encoded,
         };
         s.processes
             .insert(handle.session_id.clone(), process.clone());
@@ -270,6 +651,9 @@ fn current_spawn_signature(
             session_id: Some(session_id.to_string()),
             message: String::new(),
             timeout_secs: 0,
+            // v0.9.7 需求14：签名基准含会话锁定模型——会话切模型后，空闲
+            // 发送的漂移检测才能触发按新模型重拉进程。
+            model_override: crate::session_models::get_session_model(session_id),
         },
     )
     .ok()?;
@@ -285,13 +669,35 @@ fn remove_process_entries(
     let mut state = chat_state
         .lock()
         .map_err(|_| "Chat state lock poisoned".to_string())?;
+    remove_process_entries_from(&mut state, process_id, session_id);
+    Ok(())
+}
+
+/// v0.9.6 需求6 F1：从进程表删除条目（纯函数，供单测）。
+/// sid 删除带 pid 守卫——仅当该键当前条目确属本次 pid 才删：
+/// 漂移回收 spawn 新进程后旧进程 on_finish 晚到（同键已是新条目），
+/// 无条件按键删会误删新进程条目 → abort_chat 查无条目（卡死后停止无效）
+/// 与 turn_active 失真。`process_id=None` 时维持旧语义（仅按 sid 删）。
+pub(crate) fn remove_process_entries_from(
+    state: &mut ChatState,
+    process_id: Option<u32>,
+    session_id: Option<&str>,
+) {
     if let Some(pid) = process_id {
         state.processes.retain(|_, item| item.process_id != pid);
     }
     if let Some(sid) = session_id {
+        if let Some(pid) = process_id {
+            let owns_key = state
+                .processes
+                .get(sid)
+                .is_some_and(|p| p.process_id == pid);
+            if !owns_key {
+                return;
+            }
+        }
         state.processes.remove(sid);
     }
-    Ok(())
 }
 
 #[tauri::command]
@@ -515,33 +921,47 @@ fn agent_supports_compact(app: &AppHandle, agent_id: &str) -> Result<bool, Strin
 
 /// Manually compact the session context (v0.7.4 需求1 A3). Capability-gated
 /// (CONTEXT_COMPACT); resolves when compaction finishes.
+///
+/// v0.9.6 需求2：历史会话（无活跃进程：重启后/闲置回收后）不再报
+/// "No active ACP session found"——先静默拉起仅 resume 的进程（与 fork
+/// 同款兜底，「先连接会话再压缩」），连接完成后再压缩。
 #[tauri::command]
 pub async fn compact_agent_session(
     app: AppHandle,
+    agent_id: String,
+    project_path: String,
     session_id: String,
     instructions: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let (acp, agent_id) = {
-        let chat_state = app.state::<Mutex<ChatState>>();
-        let state = chat_state
-            .lock()
-            .map_err(|_| "Chat state lock poisoned".to_string())?;
-        let process = state
-            .processes
-            .get(&session_id)
-            .ok_or_else(|| format!("No active ACP session found for {session_id}"))?;
-        (
+    // v0.9.7 需求5 E2：project_root 兜底换算（历史会话静默拉起时要用 cwd）。
+    let project_path = crate::project::resolve_project_root_or_default(&project_path);
+    let (acp, agent_id) = match existing_chat_process(&app, &session_id, &agent_id) {
+        Some(process) => (
             process
                 .acp
                 .clone()
                 .ok_or_else(|| format!("No active ACP session found for {session_id}"))?,
             process.agent_id.clone(),
-        )
+        ),
+        // 无进程（重启/闲置回收）→ 先连接：静默拉起仅 resume 的进程再压缩。
+        None => {
+            let (acp, process) =
+                spawn_resume_session_process(&app, &agent_id, &project_path, &session_id).await?;
+            (acp, process.agent_id.clone())
+        }
     };
     if !agent_supports_compact(&app, &agent_id)? {
         return Err("Context compaction is not supported by this agent".to_string());
     }
-    acp.compact(instructions).await
+    // v0.9.6 需求2：大上下文压缩可达 2 分钟+（summarize 长调用），超时上限
+    // 放宽到 180s（fork 的 45s 不够用）。超时只是 IPC 放弃等待——压缩在
+    // 智能体侧继续，compaction_end 事件仍走事件链路刷新 UI。
+    tokio::time::timeout(
+        std::time::Duration::from_secs(180),
+        acp.compact(instructions),
+    )
+    .await
+    .map_err(|_| "压缩超时（3 分钟无完成回执）——压缩可能仍在后台进行，请稍后查看会话".to_string())?
 }
 
 /// Fork the live session at its current end (v0.8.0 需求1 A5). The Pi RPC
@@ -560,6 +980,8 @@ pub async fn fork_agent_session(
     project_path: String,
     session_id: String,
 ) -> Result<serde_json::Value, String> {
+    // v0.9.7 需求5 E2：project_root 兜底换算（历史会话静默拉起时要用 cwd）。
+    let project_path = crate::project::resolve_project_root_or_default(&project_path);
     {
         let app_state = app.state::<Mutex<crate::AppState>>();
         let s = app_state
@@ -583,7 +1005,7 @@ pub async fn fork_agent_session(
                 .ok_or_else(|| "This session has no forkable runtime".to_string())?,
             process,
         ),
-        None => spawn_resume_fork_process(&app, &agent_id, &project_path, &session_id).await?,
+        None => spawn_resume_session_process(&app, &agent_id, &project_path, &session_id).await?,
     };
 
     let result = tokio::time::timeout(std::time::Duration::from_secs(45), acp.fork_session())
@@ -623,10 +1045,12 @@ fn existing_chat_process(app: &AppHandle, session_id: &str, agent_id: &str) -> O
     (process.agent_id == agent_id).then(|| process.clone())
 }
 
-/// 历史会话 fork 的静默 resume：拉起一个仅恢复会话、不发首条消息的 PiRpc
+/// 历史会话的静默 resume：拉起一个仅恢复会话、不发首条消息的 PiRpc
 /// 进程（start_gui_piresume_session，first_message=None），注册进进程表并
-/// 等待会话解析完成后返回。clone 由调用方经 AcpControl 发起。
-async fn spawn_resume_fork_process(
+/// 等待会话解析完成后返回。v0.9.6 需求2：由 fork 专属泛化为 fork/compact
+/// 共用（「先连接会话再压缩」的连接段）；clone/compact 由调用方经
+/// AcpControl 发起。
+async fn spawn_resume_session_process(
     app: &AppHandle,
     agent_id: &str,
     project_path: &str,
@@ -645,6 +1069,7 @@ async fn spawn_resume_fork_process(
                 session_id: Some(session_id.to_string()),
                 message: String::new(),
                 timeout_secs: 0,
+                model_override: None,
             },
         )?
     };
@@ -680,6 +1105,9 @@ async fn spawn_resume_fork_process(
             // M0：会话工具集随 id 解析搬家（pending-<ts> → 真实 id），第二条
             // 消息起 compose 按真实键命中注入。
             agent::tool_plugin::migrate_session_tools(&sid_for_resolve, real_id);
+            // v0.9.6 需求6 F3：pending 消息记录同点迁移（首条消息以临时 id
+            // 记录，ack/加载按真实 id 对账）。
+            crate::pending_messages::rename_session(&sid_for_resolve, real_id);
         },
     )
     .await?;
@@ -695,6 +1123,7 @@ async fn spawn_resume_fork_process(
         stdin: None,
         acp: Some(acp.clone()),
         spawn_signature,
+        project_encoded: crate::project::encode_project_path(project_path),
     };
     {
         let chat_state = app.state::<Mutex<ChatState>>();
@@ -740,10 +1169,55 @@ pub fn chat_turn_active(app: AppHandle, session_id: String) -> bool {
     }
 }
 
+/// v0.9.6 需求4：全局活跃回合会话清单（标题栏项目标签的数据源）。
+/// 遍历进程表返回 turn_active 的条目（含项目归属编码）；turn_active 判据
+/// 与 chat_turn_active 同源（ACP/Pi/Codex 连接循环标志；CLI 无 acp 的
+/// 条目以「进程存在」等价——回合结束即被 on_finish 移除）。编排器镜像
+/// 条目（project_encoded 空）跳过——无项目归属，不参与标签聚合。
+#[tauri::command]
+pub fn chat_active_sessions(app: AppHandle) -> Vec<ActiveChatSession> {
+    let chat_state = app.state::<Mutex<ChatState>>();
+    let Ok(state) = chat_state.lock() else {
+        return Vec::new();
+    };
+    state
+        .processes
+        .iter()
+        .filter(|(_, process)| !process.project_encoded.is_empty())
+        .filter(|(_, process)| match &process.acp {
+            Some(acp) => acp.turn_active(),
+            None => true,
+        })
+        .map(|(session_id, process)| ActiveChatSession {
+            // v0.9.6 需求4 补充②：优先真实会话 id（resolve 后）——复用连接的第二
+            // 回合不发 session_resolved，进程表只有 pending-* 键，而前端
+            // turn-complete 信号带真实 id：两侧不一致会让状态灯反查失败
+            //（R3 实测教训）。pending/真实双键条目归并为同一真实 id，前端
+            // 按项目聚合天然去重。
+            session_id: process
+                .acp
+                .as_ref()
+                .and_then(|acp| acp.resolved_session_id())
+                .unwrap_or_else(|| session_id.clone()),
+            agent_id: process.agent_id.clone(),
+            project_encoded: process.project_encoded.clone(),
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ActiveChatSession {
+    pub session_id: String,
+    pub agent_id: String,
+    pub project_encoded: String,
+}
+
 /// v0.8.0 需求10：读取会话累计用量（SQLite 权威来源；无记录返回全零行）。
 /// 记账在 Rust turn_end 侧完成（usage_store），前端只读展示。
 #[tauri::command]
-pub fn get_session_usage(session_id: String) -> Result<crate::usage_store::SessionUsageRow, String> {
+pub fn get_session_usage(
+    session_id: String,
+) -> Result<crate::usage_store::SessionUsageRow, String> {
     crate::usage_store::get(&session_id)
 }
 
@@ -859,7 +1333,6 @@ pub async fn respond_chat_interaction(
         origin,
         supports_interaction_mid_turn,
     );
-
     let persist_answer = || -> Result<(), String> {
         if !persist_with_session_adapter {
             return Ok(());
@@ -883,8 +1356,35 @@ pub async fn respond_chat_interaction(
             // request (PiRpc extension UI, ACP elicitation, codex app-server
             // requestUserInput). `respond_to_input` is the shared write-back
             // entry point each runtime implements.
+            // v0.9.5 需求5 测试期 T1：PiRpc select 的「其他」纯文本应答在挂有
+            // 哨兵时改写为哨兵原文回传（扩展协议要求选项原文），用户文本由
+            // pi_rpc 侧在哨兵追问 input 到达时自动应答；持久化仍记用户原文。
+            // T5：多选题还原卡的应答翻译（选中项 → "1,3" 序号串）优先——
+            // 两登记集按 request_id 互斥（T1 键为 select id，T5 键为 input id）。
+            let wire_value = if persist_with_session_adapter {
+                let translated = crate::pi_rpc_runtime::rewrite_multiselect_response(
+                    &request_id,
+                    &value,
+                    interaction.as_ref(),
+                );
+                if translated != value {
+                    log::info!(
+                        "[pi-ext] multi-select response translated to indices (session {session_id})"
+                    );
+                    translated
+                } else {
+                    crate::pi_rpc_runtime::rewrite_sentinel_response(
+                        &request_id,
+                        &session_id,
+                        &value,
+                        interaction.as_ref(),
+                    )
+                }
+            } else {
+                value.clone()
+            };
             if let Some(acp) = acp {
-                acp.respond_to_input(request_id, value).await?;
+                acp.respond_to_input(request_id, wire_value).await?;
             }
             if let Err(error) = persist_answer() {
                 log::warn!(
@@ -909,5 +1409,304 @@ pub async fn respond_chat_interaction(
                 ),
             )
         }
+    }
+}
+
+// ── v0.9.7 需求13：编辑最近用户消息（截断重发） ──────────────────────────────
+//
+// 用户语义：编辑会话最后一条用户消息 = 停止进行中的回复（如有）+ 清空该
+// 消息及其后的全部内容 + 以编辑后文本重发。pi RPC 无原位编辑命令（fork
+// 会产生新会话文件，违背「原会话基础上修改」），故在 hub 侧截断 pi 会话
+// JSONL：定位当前路径最后一条 user 消息行，文本校验（防 UI 与文件不同步
+// 错删）通过后，备份原文件并截断该行及其后所有行；杀掉会话进程（流式中
+// =停止回复，进程内存态随之丢弃）。重发由前端走常规 send_message——resume
+// 读截断后的文件，新消息挂回原会话（原位效果）。
+
+/// 截断纯函数（tempdir 单测覆盖）：返回保留行数。
+/// 行结构（pi jsonl）：`{"type":"message","message":{"role","content":[…]},…}`。
+fn truncate_lines_after_last_user(lines: &[&str], expect_text: &str) -> Result<usize, String> {
+    for (i, line) in lines.iter().enumerate().rev() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("message") {
+            continue;
+        }
+        let msg = match v.get("message") {
+            Some(m) => m,
+            None => continue,
+        };
+        if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        // 首 text 块（send 侧单块形态；startsWith 容错工具注入块后缀/任务
+        // 前缀包装造成的差异——expect 传的是落盘原文，正常全等命中）。
+        let text = msg
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+            })
+            .and_then(|b| b.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        if !text.starts_with(expect_text) {
+            return Err(
+                "会话最后一条用户消息与预期不一致，已取消编辑（请刷新会话后重试）".to_string(),
+            );
+        }
+        if i == 0 {
+            return Err("该消息之前没有可保留的内容（首条消息不可编辑）".to_string());
+        }
+        return Ok(i);
+    }
+    Err("会话中未找到用户消息".to_string())
+}
+
+/// session_info 行判定（pi jsonl：`{"type":"session_info",…}`——会话命名/
+/// 标题条目）。
+fn is_session_info_line(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line)
+        .ok()
+        .and_then(|v| {
+            v.get("type")
+                .and_then(|t| t.as_str())
+                .map(|t| t == "session_info")
+        })
+        .unwrap_or(false)
+}
+
+/// 构造截断后的内容：保留行 + 将删区段中的 session_info 行重新追加。
+/// 评审 P1-3b：命名条目落在会话尾部，直接截断会把它们一并删掉，导致标题
+/// 反复重生成；截断后回补，使命名幂等闸（已命名不再重命名）持续有效。
+/// 修复轮回归收口（评审 P1）：回补行的 parentId 必须重写为截断点前一条
+/// 的 id——原样搬运会指向已删条目，pi 侧上下文投影（buildSessionPath 无
+/// 孤儿回退）在断链处截停，保留区历史将全部掉出 LLM 上下文。回补多条时
+/// 依次链到前一条回补行，保持树链完整。
+fn truncated_content(lines: &[&str], keep: usize) -> String {
+    // 保留区末条 id（回补链的锚点；解析失败置 null——pi 对 null parentId
+    // 视为树根，安全）。
+    let kept_tail_id: Option<String> = lines[..keep]
+        .iter()
+        .rev()
+        .find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string));
+    let mut anchor = kept_tail_id;
+    let mut out: Vec<String> = lines[..keep].iter().map(|l| l.to_string()).collect();
+    for line in &lines[keep..] {
+        if !is_session_info_line(line) {
+            continue;
+        }
+        let rewritten = serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .map(|mut v| {
+                if let Some(obj) = v.as_object_mut() {
+                    match anchor.clone() {
+                        Some(id) => {
+                            obj.insert("parentId".to_string(), serde_json::json!(id));
+                        }
+                        None => {
+                            obj.remove("parentId");
+                        }
+                    }
+                    // 锚点前移到本行自身 id，维持回补链。
+                    anchor = obj.get("id").and_then(|i| i.as_str()).map(str::to_string);
+                }
+                v.to_string()
+            })
+            // 解析失败的 session_info 行原样保留（is_session_info_line 已
+            // 保证可解析，此处仅防御）。
+            .unwrap_or_else(|| line.to_string());
+        out.push(rewritten);
+    }
+    format!("{}\n", out.join("\n"))
+}
+
+/// 定位会话 jsonl（root/<项目目录>/<ts>_<sid>.jsonl 两层扫描）并执行截断。
+fn truncate_session_after_last_user(
+    session_id: &str,
+    expect_text: &str,
+) -> Result<std::path::PathBuf, String> {
+    let root = agent::jishu_self::pi_session::pi_sessions_root()?;
+    let suffix = format!("_{session_id}.jsonl");
+    let mut found: Option<std::path::PathBuf> = None;
+    for dir in std::fs::read_dir(&root)
+        .map_err(|e| e.to_string())?
+        .flatten()
+    {
+        let dir_path = dir.path();
+        if !dir_path.is_dir() {
+            continue;
+        }
+        for f in std::fs::read_dir(&dir_path)
+            .map_err(|e| e.to_string())?
+            .flatten()
+        {
+            if f.file_name().to_string_lossy().ends_with(&suffix) {
+                found = Some(f.path());
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    let file = found.ok_or_else(|| format!("会话文件未找到: {session_id}"))?;
+    let content = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    let keep = truncate_lines_after_last_user(&lines, expect_text)?;
+    // 备份（覆盖式单份，恢复路径明确）+ 原子写截断。
+    let mut backup = file.clone().into_os_string();
+    backup.push(".edit-bak");
+    let backup = std::path::PathBuf::from(backup);
+    std::fs::copy(&file, &backup).map_err(|e| format!("备份失败: {e}"))?;
+    let kept = truncated_content(&lines, keep);
+    crate::util::atomic_write(&file, kept.as_bytes())
+        .map_err(|e| format!("写入截断会话失败: {e}"))?;
+    log::info!(
+        "edit_last_user_message: truncated {} to {keep} lines (backup: {})",
+        file.display(),
+        backup.display()
+    );
+    Ok(file)
+}
+
+/// 编辑最近用户消息：截断会话文件 + 回收该会话进程（agent_id 定位，流式
+/// 中即停止回复）。重发由前端走常规发送链（resume 重拉进程）。
+#[tauri::command]
+pub(crate) async fn edit_last_user_message(
+    app: AppHandle,
+    agent_id: String,
+    session_id: String,
+    expect_text: String,
+) -> Result<(), String> {
+    // 评审 P1-3：先杀进程再截断——顺序对调的取舍：若先截断，进行中的流式
+    // 回复仍持有文件句柄继续追加，新写入内容会越过截断点（旧回复「复活」
+    // 或 JSONL 半行损坏）。shutdown 无返回值（内部自行收口，无失败面可
+    // 告警）；wait_finished 最多等 3s——超时后接受残余写风险继续截断
+    // （进程已请求停止，残余窗口远小于旧序「先截断后杀」的敞口）。
+    if let Some(process) = existing_chat_process(&app, &session_id, &agent_id) {
+        if let Some(acp) = process.acp.as_ref() {
+            acp.shutdown().await;
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(3), acp.wait_finished()).await;
+        }
+        let chat_state = app.state::<Mutex<ChatState>>();
+        let mut s = chat_state.lock().map_err(|e| e.to_string())?;
+        remove_process_entries_from(&mut s, Some(process.process_id), Some(&session_id));
+    }
+    // 再截断（数据操作失败即返回；进程已回收，重发走常规发送链）。
+    truncate_session_after_last_user(&session_id, &expect_text)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg_line(id: &str, parent: &str, role: &str, text: &str) -> String {
+        serde_json::json!({
+            "type": "message",
+            "id": id,
+            "parentId": parent,
+            "message": { "role": role, "content": [{ "type": "text", "text": text }] },
+        })
+        .to_string()
+    }
+
+    /// 需求13：截断定位与校验——从尾向前找 user 行、文本 startsWith 校验、
+    /// 保留其前全部行；不匹配/首行/无 user 各自报错。
+    #[test]
+    fn truncate_lines_locates_and_validates() {
+        let info = r#"{"type":"session_info","id":"s0"}"#.to_string();
+        let u1 = msg_line("a", "s0", "user", "AAA");
+        let r1 = msg_line("b", "a", "assistant", "回复");
+        let u2 = msg_line("c", "b", "user", "BBB");
+        let r2 = msg_line("d", "c", "assistant", "bbb-reply");
+        let lines: Vec<&str> = vec![&info, &u1, &r1, &u2, &r2];
+        // 正常：截到 BBB 前（保留 3 行）。
+        assert_eq!(truncate_lines_after_last_user(&lines, "BBB").unwrap(), 3);
+        // 工具注入块后缀差异：startsWith 容错。
+        let injected = msg_line(
+            "c2",
+            "b",
+            "user",
+            "BBB
+
+[JISHU-TOOLS:x]",
+        );
+        let lines2: Vec<&str> = vec![&info, &u1, &injected];
+        assert_eq!(truncate_lines_after_last_user(&lines2, "BBB").unwrap(), 2);
+        // 文本不符：拒绝。
+        assert!(truncate_lines_after_last_user(&lines, "XXX").is_err());
+        // user 在首行（无可保留内容）：拒绝。
+        let first = msg_line("a", "", "user", "AAA");
+        let only: Vec<&str> = vec![&first];
+        assert!(truncate_lines_after_last_user(&only, "AAA").is_err());
+        // 无 user 行：拒绝。
+        let a2 = msg_line("b", "s0", "assistant", "x");
+        let no_user: Vec<&str> = vec![&info, &a2];
+        assert!(truncate_lines_after_last_user(&no_user, "A").is_err());
+    }
+
+    /// 评审 P1-3b：尾部 session_info（命名条目）不随截断丢失——构造含命名
+    /// 条目的会话，截断后 session_info 必须仍在（命名幂等闸持续有效）。
+    #[test]
+    fn truncate_keeps_tail_session_info_entries() {
+        // 修复轮回归测试（评审 P1）：使用 pi 真实形状——session_info 带
+        // name 键且 parentId 指向其前一条（session_title.rs append_session_info
+        // 与 pi 侧 appendSessionInfo 均如此）。原夹具用虚构的 title 键且无
+        // parentId，恰好测不出「回补行 parentId 悬空→上下文断链」缺陷。
+        let info =
+            r#"{"type":"session_info","id":"s0","parentId":null,"name":"初始名"}"#.to_string();
+        let u1 = msg_line("a", "s0", "user", "AAA");
+        let r1 = msg_line("b", "a", "assistant", "回复");
+        let u2 = msg_line("c", "b", "user", "BBB");
+        let r2 = msg_line("d", "c", "assistant", "bbb-reply");
+        // 命名条目落在会话尾部（位于截断将删区段内），parentId 指向将删的 r2。
+        let title =
+            r#"{"type":"session_info","id":"t9","parentId":"d","timestamp":"2026-11-14T00:00:00Z","name":"标题"}"#.to_string();
+        let lines: Vec<&str> = vec![&info, &u1, &r1, &u2, &r2, &title];
+        let keep = truncate_lines_after_last_user(&lines, "BBB").unwrap();
+        assert_eq!(keep, 3);
+        let kept = truncated_content(&lines, keep);
+        let kept_lines: Vec<&str> = kept.lines().collect();
+        // 消息截断生效：BBB 及其后的回复被删（3 行保留 + 回补 1 条命名）。
+        assert_eq!(kept_lines.len(), 4);
+        assert!(!kept.contains("bbb-reply"), "被截断的消息必须删除");
+        assert!(!kept.contains("\"BBB\""), "被截断的用户消息必须删除");
+        // 命名条目回补仍在（含标题内容），且 parentId 重写为保留区末条
+        // （r1 的 id="b"）——悬空父链会让 pi 侧上下文投影在断链处截停，
+        // 保留区历史全部掉出 LLM 上下文。
+        let appended: serde_json::Value = serde_json::from_str(kept_lines[3]).unwrap();
+        assert_eq!(appended["type"], "session_info");
+        assert_eq!(appended["name"], "标题");
+        assert_eq!(
+            appended["parentId"], "b",
+            "回补行 parentId 必须重写为保留区末条 id（不可指向已删条目）"
+        );
+    }
+
+    /// 修复轮回归（评审 P1）：回补多条 session_info 时依次链到前一条，
+    /// 且保留区无条目（keep=0 场景理论上不存在——首条消息不可编辑——
+    /// 此处锁防御行为：parentId 移除=树根，不悬空）。
+    #[test]
+    fn truncate_rewrites_session_info_parent_chain() {
+        let u1 = msg_line("a", "", "user", "AAA");
+        let r1 = msg_line("b", "a", "assistant", "回1");
+        let u2 = msg_line("c", "b", "user", "BBB");
+        let t1 = r#"{"type":"session_info","id":"t1","parentId":"c","name":"名1"}"#.to_string();
+        let t2 = r#"{"type":"session_info","id":"t2","parentId":"t1","name":"名2"}"#.to_string();
+        let lines: Vec<&str> = vec![&u1, &r1, &u2, &t1, &t2];
+        let keep = truncate_lines_after_last_user(&lines, "BBB").unwrap();
+        assert_eq!(keep, 2);
+        let kept = truncated_content(&lines, keep);
+        let kept_lines: Vec<&str> = kept.lines().collect();
+        assert_eq!(kept_lines.len(), 4);
+        let j1: serde_json::Value = serde_json::from_str(kept_lines[2]).unwrap();
+        let j2: serde_json::Value = serde_json::from_str(kept_lines[3]).unwrap();
+        assert_eq!(j1["parentId"], "b", "首条回补链到保留区末条");
+        assert_eq!(j2["parentId"], "t1", "次条回补链到前一条回补行");
     }
 }

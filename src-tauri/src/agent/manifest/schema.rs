@@ -8,8 +8,16 @@ use serde::{Deserialize, Serialize};
 /// manifest 格式版本；不认识的版本整文件拒绝（misconfiguration fails loud）。
 pub const SCHEMA_VERSION: i64 = 1;
 
-/// chat_command / cwd 模板中允许的全部变量。
+/// chat_command / cwd 模板中允许的**动态**变量（含用户/会话内容——acp_command
+/// 的「静态 argv」防线拒的就是这一集）。
 pub const TEMPLATE_VARS: [&str; 3] = ["{prompt}", "{cwd}", "{session_id}"];
+
+/// 需求14 M3（B16）：**静态**变量集——每插件安装期常量、无动态内容。
+/// `{plugin_dir}` = 插件目录（ManifestAgent 从自身清单落点派生，不接受
+/// 清单自报路径）：桥脚本随插件分发（zcode.toml + bridge.js 目录形态），
+/// `acp_command = ["node", "{plugin_dir}/bridge.js", "--stdio"]`。
+/// acp_command 校验只拒动态集（plugin_dir 与静态 argv 防注入初衷不冲突）。
+pub const STATIC_TEMPLATE_VARS: [&str; 1] = ["{plugin_dir}"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -163,6 +171,13 @@ pub struct McpSection {
     pub url: Option<String>,
     #[serde(default)]
     pub headers: Option<std::collections::HashMap<String, String>>,
+    /// v0.9.5 需求5 T9：声明本 server 的识图工具名。仅作识图路由插件
+    /// 「mcp 识图工具」显式配置的短名补全字典（如 analyze_image →
+    /// 插件id__analyze_image）——默认不据此点名（用户裁决 2026-09-30：
+    /// 发现交给 agent 经 hub_mcp_list 自选）。声明是提示性质，不影响
+    /// MCP 装载/转发。
+    #[serde(default)]
+    pub vision_tools: Option<Vec<String>>,
 }
 
 /// Skill 声明（v0.9.0 需求20，kind = "tool" 专属段）：
@@ -229,7 +244,65 @@ pub struct InfoSection {
     pub icon: String,
     #[serde(default)]
     pub install_hint: Option<String>,
+    /// 需求14 M4（G10 分类显式化）：业务分类显式声明（八类枚举，见
+    /// PLUGIN_CATEGORIES；未声明由前端推断链兜底，声明值优先）。加字段
+    /// = schema 变更（旧 hub 拒新清单——本地清单生态无跨版本分发，K10 已评估）。
+    #[serde(default)]
+    pub category: Option<String>,
+    /// 需求14 测试期补（T12）：中文说明——管理面卡片此前对 manifest 智能体
+    /// 恒空（tool 家族在 [tool].description）。skill 模板6 两处本就带着该
+    /// 字段（deny_unknown_fields 下照抄装不上），补位使模板合法且卡片有说明。
+    #[serde(default)]
+    pub description: Option<String>,
+    /// v0.9.7 需求3（2026-11-14 标签裁决 + 11-15 十六轮形态裁决）：
+    /// **插件形态显式声明**——创建时智能体显式写明「创建到哪个位置」。
+    /// 形态 = 挂载位粒度（会话件直接写挂载位名，二十/二十二轮增 menu 后
+    /// 为十类）+ theme/none 两兜底，枚举见 PLUGIN_FORM_VALUES；未声明由
+    /// 前端按挂载位推导兜底。
+    #[serde(default)]
+    pub form: Option<String>,
 }
+
+/// 插件形态枚举（标签三类体系的第三类）。v0.9.7 需求3 十六轮用户裁决：
+/// **形态 = 挂载位粒度**（PluginMount 联合全量：会话内渲染/工具结果
+/// 渲染/标题栏动作/侧边栏面板/停靠面板/贴边挂件/输入框尾挂件/应用浮层/
+/// 事件钩子，二十/二十二轮增菜单页后为十类），另保留两兜底值：theme
+/// （主题外观，app-theme 声明件）与 none（无 UI 呈现——无挂载位的
+/// MCP/Skill/CLI 等统一标注）。
+/// 旧五值中的 session/sidebar/floating 保留合法：旧清单编辑保存不被拒；
+/// 展示侧对旧值不入新集、走挂载位推导自动升级为挂载位粒度。
+pub const PLUGIN_FORM_VALUES: &[&str] = &[
+    "block-renderer",
+    "tool-result-renderer",
+    "header-action",
+    "sidebar-panel",
+    "dock-panel",
+    "rail-widget",
+    "composer-trailing",
+    "app-overlay",
+    "event-hook",
+    "menu",
+    "theme",
+    "none",
+    // 旧五值残留（保存兼容，新创建不得再写）：
+    "session",
+    "sidebar",
+    "floating",
+];
+
+/// 分类枚举合法值（与前端 PLUGIN_CATEGORIES 一致；fail loud 防拼错静默落错 tab）。
+/// 需求14 M2：appearance = 外观（主题插件，03 §2 场景 10 新增分类）。
+pub const PLUGIN_CATEGORY_VALUES: &[&str] = &[
+    "agent",
+    "core",
+    "session",
+    "pipeline",
+    "mcp",
+    "skill",
+    "cli",
+    "custom",
+    "appearance",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -239,6 +312,11 @@ pub struct ProbeSection {
     pub version_args: Option<Vec<String>>,
     #[serde(default)]
     pub version_regex: Option<String>,
+    /// 需求14 M3（R6 探测补缺）：可选候选路径列表——私有路径安装的 CLI
+    ///（如 D:\tools\zcode\zcode.exe）PATH 查找探测不到，显式列出候选
+    /// （绝对路径或含可执行名的相对段），probe 时逐个尝试。
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -323,7 +401,21 @@ fn default_true() -> bool {
 
 impl AgentManifestFile {
     /// 加载期校验：全部规则纯函数，返回 Err(原因) 时整文件拒绝。
+    ///
+    /// 严格语义：单文件（agents/<id>.toml）与创建/更新命令的内存校验走
+    /// 此入口——kind = "tool" 必须携带至少一个能力段。
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_with_bare_tool(false)
+    }
+
+    /// 校验（目录形式 skill 插件感知，v0.9.4 需求3 落盘链路与加载校验的
+    /// 豁免缺口修复）：`plugin_create_skill_folder` / `plugin_update` 落盘
+    /// 目录形式插件（plugins/<id>/plugin.toml）时刻意剥离 [skill] 段
+    ///（skills/<name>/SKILL.md 文件即权威，避免双源），落盘产物即
+    /// “无能力段骨架”。`allow_bare_tool = true` 放行该形态——调用方
+    /// 须先探测插件目录 skills/ 下确实存在 SKILL.md 源（见
+    /// manifest::dir_form_has_skill_source），凭空裸骨架仍被拒绝。
+    pub fn validate_with_bare_tool(&self, allow_bare_tool: bool) -> Result<(), String> {
         if self.schema != SCHEMA_VERSION {
             return Err(format!(
                 "unsupported schema version {} (expected {})",
@@ -336,9 +428,30 @@ impl AgentManifestFile {
         if self.info.display_name.trim().is_empty() {
             return Err("info.display_name must not be empty".to_string());
         }
+        // 需求14 M4：分类声明必须是八类枚举之一（拼错 fail loud，不静默落错 tab）。
+        if let Some(category) = &self.info.category {
+            if !PLUGIN_CATEGORY_VALUES.contains(&category.as_str()) {
+                return Err(format!(
+                    "info.category 无效：{category:?}（合法：{}）",
+                    PLUGIN_CATEGORY_VALUES.join("/")
+                ));
+            }
+        }
+        // v0.9.7 需求3 标签裁决：形态声明枚举校验（同 category fail loud 口径）。
+        // 第三轮评审修复：错误信息只列新值——旧三值虽保存兼容，但列入
+        // 「合法」会诱导把拼错值「改」成已废弃口径。第四轮评审修复：措辞去
+        // 「九类」计数（二十轮增 menu 后挂载位已十个，数字口径易再过时）。
+        if let Some(form) = &self.info.form {
+            if !PLUGIN_FORM_VALUES.contains(&form.as_str()) {
+                return Err(format!(
+                    "info.form 无效：{form:?}（合法：{}；旧值 session/sidebar/floating 仅保存兼容，新插件请用挂载位形态）",
+                    PLUGIN_FORM_VALUES[..12].join("/")
+                ));
+            }
+        }
         match self.kind {
             ManifestKind::Agent => self.validate_agent()?,
-            ManifestKind::Tool => self.validate_tool()?,
+            ManifestKind::Tool => self.validate_tool(allow_bare_tool)?,
         }
         if let Some(probe) = &self.probe {
             if probe.command.trim().is_empty() {
@@ -354,7 +467,9 @@ impl AgentManifestFile {
 
     /// kind = "tool"：[tool] 必填；agent 专属段（transport/session/
     /// capabilities/config）全部禁止；[pi_extension] 允许并存（自适应插件）。
-    fn validate_tool(&self) -> Result<(), String> {
+    /// `allow_bare_tool`：目录形式 skill 骨架放行（见
+    /// [`validate_with_bare_tool`] 文档）。
+    fn validate_tool(&self, allow_bare_tool: bool) -> Result<(), String> {
         if self.transport.is_some() {
             return Err("[transport] is only allowed for agent plugins".to_string());
         }
@@ -461,11 +576,13 @@ impl AgentManifestFile {
         let tool = match self.tool.as_ref() {
             Some(tool) => tool,
             // 仅 [pi_extension]/[mcp]/[panel]/[skill] 无 [tool]：合法（深度
-            // 形态 / 纯结构化工具 / 纯面板 / 纯 skill 插件）。
+            // 形态 / 纯结构化工具 / 纯面板 / 纯 skill 插件）；目录形式
+            // skill 骨架（能力声明在 skills/ 目录，调用方已探测）同放行。
             None if self.pi_extension.is_some()
                 || self.mcp.is_some()
                 || self.panel.is_some()
-                || self.skill.is_some() =>
+                || self.skill.is_some()
+                || allow_bare_tool =>
             {
                 return Ok(());
             }
@@ -512,14 +629,12 @@ impl AgentManifestFile {
                             .to_string(),
                     );
                 }
-                if transport.pipe_stdin {
-                    if cmd.iter().any(|s| s.contains("{prompt}")) {
-                        return Err(
-                            "transport.pipe_stdin = true but chat_command contains {prompt} \
+                if transport.pipe_stdin && cmd.iter().any(|s| s.contains("{prompt}")) {
+                    return Err(
+                        "transport.pipe_stdin = true but chat_command contains {prompt} \
                              (prompt travels via stdin, remove it from the command)"
-                                .to_string(),
-                        );
-                    }
+                            .to_string(),
+                    );
                 }
                 for seg in cmd {
                     check_template_vars(seg)?;
@@ -595,9 +710,11 @@ fn check_template_vars(segment: &str) -> Result<(), String> {
             .map(|i| start + i)
             .ok_or_else(|| format!("unbalanced '{{' in template segment {segment:?}"))?;
         let var = &rest[start..=end];
-        if !TEMPLATE_VARS.contains(&var) {
+        // 需求14 M3（B16）：静态集（{plugin_dir}）在 chat_command/cwd 同样
+        // 合法（展开为安装期常量，与动态集同走 argv 单段直传）。
+        if !TEMPLATE_VARS.contains(&var) && !STATIC_TEMPLATE_VARS.contains(&var) {
             return Err(format!(
-                "unknown template variable {var} in {segment:?} (allowed: {TEMPLATE_VARS:?})"
+                "unknown template variable {var} in {segment:?} (allowed: {TEMPLATE_VARS:?} or {STATIC_TEMPLATE_VARS:?})"
             ));
         }
         rest = &rest[end + 1..];
@@ -646,6 +763,9 @@ mod tests {
                 display_name: "Demo".to_string(),
                 icon: String::new(),
                 install_hint: None,
+                category: None,
+                description: None,
+                form: None,
             },
             probe: None,
             transport: Some(TransportSection {
@@ -671,6 +791,39 @@ mod tests {
     #[test]
     fn valid_manifest_passes() {
         assert!(base_manifest().validate().is_ok());
+    }
+
+    /// v0.9.7 需求3 标签裁决：[info].form 形态枚举校验（拼错 fail loud，
+    /// 与 category 同口径）。
+    #[test]
+    fn form_field_enum_validation() {
+        let mut m = base_manifest();
+        m.info.form = Some("sidebar".to_string());
+        assert!(m.validate().is_ok());
+        m.info.form = Some("无 UI 呈现".to_string());
+        assert!(m.validate().is_err(), "中文值应拒绝（枚举为英文键）");
+        m.info.form = Some("panel".to_string());
+        assert!(m.validate().is_err(), "拼错/超集值应拒绝");
+    }
+
+    /// 目录形式 skill 骨架（v0.9.4 需求3 落盘产物：剥离 [skill] 段后无任何
+    /// 能力段）——严格模式拒绝；探测到 skills/ 目录源后（allow_bare_tool）
+    /// 放行。凭空裸骨架（无目录源佐证）仍被拒绝。
+    #[test]
+    fn bare_tool_skeleton_gated_by_dir_skill_source() {
+        let mut m = base_manifest();
+        m.kind = ManifestKind::Tool;
+        m.transport = None;
+        let err = m.validate().unwrap_err();
+        assert!(err.contains("requires a [tool] section"), "got: {err}");
+        assert!(m.validate_with_bare_tool(true).is_ok());
+        // 骨架携带其他能力段时不受该开关影响（既有豁免分支仍生效）。
+        let mut with_skill = m.clone();
+        with_skill.skill = Some(SkillDecl::One(SkillSection {
+            description: "d".to_string(),
+            body: "b".to_string(),
+        }));
+        assert!(with_skill.validate().is_ok());
     }
 
     #[test]
@@ -765,6 +918,7 @@ mod tests {
             command: "demo".to_string(),
             version_args: None,
             version_regex: Some("([".to_string()),
+            paths: None,
         });
         assert!(m.validate().unwrap_err().contains("version_regex"));
     }
@@ -905,6 +1059,7 @@ display_name = "X"
         t.transport = None;
         t.tool = None;
         t.mcp = Some(McpSection {
+            vision_tools: None,
             transport: McpTransportKind::Stdio,
             command: Some("npx".into()),
             args: None,

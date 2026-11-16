@@ -236,7 +236,7 @@ fn process_sse_chunks(
             }
         };
 
-        let view = crate::agent::tool_view::classify_tool_view(&name, &args);
+        let view = crate::agent::tool_view::classify_tool_view(name, &args);
         emitter(NormalizedEvent::ToolUseStart {
             call_id: id.clone(),
             tool: name.clone(),

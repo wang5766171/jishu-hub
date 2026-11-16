@@ -45,7 +45,10 @@ fn node_is_ready(
     if let Some(preds) = predecessors.get(node.node_id.as_str()) {
         for pred_id in preds {
             let pred_status = status_map.get(*pred_id).unwrap_or(&NodeRunStatus::Blocked);
-            if !matches!(pred_status, NodeRunStatus::Succeeded | NodeRunStatus::Skipped) {
+            if !matches!(
+                pred_status,
+                NodeRunStatus::Succeeded | NodeRunStatus::Skipped
+            ) {
                 return false;
             }
         }
@@ -104,7 +107,7 @@ pub fn compute_ready_set(snapshot: &GraphSnapshot, runs: &[NodeRun], now: i64) -
             }
             predecessors
                 .entry(edge.target_node_id.as_str())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(edge.source_node_id.as_str());
         }
     }
@@ -178,11 +181,11 @@ impl ReadySetComputer {
                 }
                 predecessors
                     .entry(edge.target_node_id.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(edge.source_node_id.clone());
                 dependents
                     .entry(edge.source_node_id.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(edge.target_node_id.clone());
             }
         }
@@ -382,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_compute_ready_set_simple_chain() {
-        let mut n1 = GraphNode {
+        let n1 = GraphNode {
             node_id: "A".into(),
             parent_id: None,
             title: "A".into(),
@@ -833,10 +836,9 @@ mod tests {
                 role_requirement: None,
                 capability_requirements: vec![],
                 agent_assignment_constraint: None,
-                policy: {
-                    let mut p = crate::orchestrator::domain::policy::NodePolicy::default();
-                    p.priority = 0;
-                    p
+                policy: crate::orchestrator::domain::policy::NodePolicy {
+                    priority: 0,
+                    ..Default::default()
                 },
                 metadata: Default::default(),
                 executable_payload: None,
@@ -854,10 +856,9 @@ mod tests {
                 role_requirement: None,
                 capability_requirements: vec![],
                 agent_assignment_constraint: None,
-                policy: {
-                    let mut p = crate::orchestrator::domain::policy::NodePolicy::default();
-                    p.priority = 10;
-                    p
+                policy: crate::orchestrator::domain::policy::NodePolicy {
+                    priority: 10,
+                    ..Default::default()
                 },
                 metadata: Default::default(),
                 executable_payload: None,

@@ -112,34 +112,6 @@ pub fn spawn_codex_app_server_session(
         on_session_resolved,
     )
 }
-
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_codex_app_server_session_with_policy(
-    app: tauri::AppHandle,
-    agent_id: String,
-    pending_session_id: String,
-    child: tokio::process::Child,
-    project_path: String,
-    requested_session_id: Option<String>,
-    first_message: String,
-    policy: crate::agent::policy::PolicyChain,
-    on_finish: impl FnOnce() + Send + 'static,
-    on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
-) -> AcpControl {
-    let emit = tauri_event_emitter(app, agent_id);
-    spawn_codex_app_server_session_inner(
-        emit,
-        pending_session_id,
-        child,
-        project_path,
-        requested_session_id,
-        first_message,
-        policy,
-        on_finish,
-        on_session_resolved,
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
 fn spawn_codex_app_server_session_inner(
     emit: AcpEventEmit,
@@ -184,15 +156,19 @@ fn spawn_codex_app_server_session_inner(
     let supports_interaction_mid_turn = Arc::new(AtomicBool::new(true));
     // v0.8.0 需求7：codex turn/start 在连接初始化后立即发出（初始即 Prompting）。
     let turn_active = Arc::new(AtomicBool::new(true));
+    // v0.9.6 需求6 F4：收尾信号（与 pi/ACP runtime 同款，漂移回收等待用）。
+    let (finished_tx, _) = tokio::sync::watch::channel(false);
 
     let control = AcpControl {
         tx: cmd_tx,
         acp_session_id: acp_session_id.clone(),
         supports_interaction_mid_turn: supports_interaction_mid_turn.clone(),
         turn_active: turn_active.clone(),
+        finished: Arc::new(finished_tx),
     };
     let control_clone = control.clone();
     let turn_active_for_exit = turn_active.clone();
+    let finished_for_exit = control.finished.clone();
     // v0.9.0 需求5：连接循环与错误出口共享的用量累积器。
     let usage_cell = Arc::new(UsageCell::new(None));
     let usage_cell_for_loop = usage_cell.clone();
@@ -243,10 +219,7 @@ fn spawn_codex_app_server_session_inner(
                 NormalizedEvent::TurnComplete {
                     reason: TurnEndReason::Error,
                     // v0.9.0 需求5：连接异常退出也带出最后已知用量（可能为 None）。
-                    usage: usage_cell
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .take(),
+                    usage: usage_cell.lock().unwrap_or_else(|e| e.into_inner()).take(),
                 },
             ];
             emit(&events, &pending_session_id);
@@ -273,6 +246,8 @@ fn spawn_codex_app_server_session_inner(
 
         // v0.8.0 需求7：循环已退出（正常或出错），回合必然不再进行。
         turn_active_for_exit.store(false, Ordering::Relaxed);
+        // v0.9.6 需求6 F4：通知等待方（漂移回收）收尾完成。
+        let _ = finished_for_exit.send(true);
 
         on_finish();
     });
@@ -650,7 +625,7 @@ async fn wait_for_response(
         };
         match classify_line(&msg) {
             LineKind::Response { id, result, error } => {
-                if id == Value::from(expected_id) {
+                if id == expected_id {
                     if let Some(err) = error {
                         let message = err
                             .get("message")
@@ -789,10 +764,7 @@ async fn handle_line(
                 buf.push(NormalizedEvent::TurnComplete {
                     reason,
                     // v0.9.0 需求5：轮末带出累积用量（tokenUsage 累积器 take）。
-                    usage: usage_cell
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .take(),
+                    usage: usage_cell.lock().unwrap_or_else(|e| e.into_inner()).take(),
                 });
                 // v0.7.0：turn/completed 是 turn 的最后一条消息，之后 codex 进入 idle，
                 // 没有更多事件触发 flush_maybe。必须强制 flush，否则 TurnComplete 留在
@@ -957,10 +929,7 @@ async fn handle_command(
                 buf.push(NormalizedEvent::TurnComplete {
                     reason: TurnEndReason::Aborted,
                     // v0.9.0 需求5：无活跃回合取消时带出最后已知用量（对齐 ACP cancel）。
-                    usage: usage_cell
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .take(),
+                    usage: usage_cell.lock().unwrap_or_else(|e| e.into_inner()).take(),
                 });
                 flush_buf(emit, session_id, buf);
                 *state = LoopState::Idle {
@@ -1018,7 +987,6 @@ async fn handle_command(
 
 /// Register a server request and emit the matching NormalizedEvent. No stdin
 /// write — the write-back happens when the user later answers (command path).
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 async fn register_server_request(
     id: &Value,
@@ -1105,51 +1073,57 @@ async fn register_server_request(
                 }
             }
         }
-        "item/commandExecution/requestApproval" => try_policy_or_register(
-            id,
-            params,
-            thread,
-            &turn,
-            ApprovalKind::Command,
-            ApprovalWriteback::Decision,
-            pending_approvals,
-            emit,
-            session_id,
-            buf,
-            policy,
-            writer,
-        )
-        .await,
-        "item/fileChange/requestApproval" => try_policy_or_register(
-            id,
-            params,
-            thread,
-            &turn,
-            ApprovalKind::FileWrite,
-            ApprovalWriteback::Decision,
-            pending_approvals,
-            emit,
-            session_id,
-            buf,
-            policy,
-            writer,
-        )
-        .await,
-        "item/permissions/requestApproval" => try_policy_or_register(
-            id,
-            params,
-            thread,
-            &turn,
-            ApprovalKind::Other,
-            ApprovalWriteback::Decision,
-            pending_approvals,
-            emit,
-            session_id,
-            buf,
-            policy,
-            writer,
-        )
-        .await,
+        "item/commandExecution/requestApproval" => {
+            try_policy_or_register(
+                id,
+                params,
+                thread,
+                &turn,
+                ApprovalKind::Command,
+                ApprovalWriteback::Decision,
+                pending_approvals,
+                emit,
+                session_id,
+                buf,
+                policy,
+                writer,
+            )
+            .await
+        }
+        "item/fileChange/requestApproval" => {
+            try_policy_or_register(
+                id,
+                params,
+                thread,
+                &turn,
+                ApprovalKind::FileWrite,
+                ApprovalWriteback::Decision,
+                pending_approvals,
+                emit,
+                session_id,
+                buf,
+                policy,
+                writer,
+            )
+            .await
+        }
+        "item/permissions/requestApproval" => {
+            try_policy_or_register(
+                id,
+                params,
+                thread,
+                &turn,
+                ApprovalKind::Other,
+                ApprovalWriteback::Decision,
+                pending_approvals,
+                emit,
+                session_id,
+                buf,
+                policy,
+                writer,
+            )
+            .await
+        }
         other => {
             // Unhandled server request (e.g. mcpServer/elicitation/request).
             // We cannot answer it correctly without the schema; left unregistered
@@ -1164,10 +1138,11 @@ async fn register_server_request(
     }
 }
 
-
 /// v0.8.0 需求2 Phase 2 挂载点 1（codex）：审批到达先过策略链——
 /// Allow/Deny 直接 `respond` 回写不打扰用户；Delegate 走 register_approval
 /// 弹 UI。回写结果形状对齐 codex 协议（decision: approved/denied）。
+// 策略评估需要完整的审批上下文与回写通道，参数无法再收窄。
+#[allow(clippy::too_many_arguments)]
 async fn try_policy_or_register(
     id: &Value,
     params: &Value,
@@ -1441,6 +1416,7 @@ fn normalize_notification(method: &str, params: &Value) -> Vec<NormalizedEvent> 
                 call_id,
                 output,
                 is_error: exit_code != 0,
+                details: None,
             }]
         }
         "item/fileChange/started" | "item/fileChange/updated" => {
@@ -1498,6 +1474,7 @@ fn normalize_notification(method: &str, params: &Value) -> Vec<NormalizedEvent> 
                 call_id,
                 output: serde_json::json!({ "path": path, "status": "done" }),
                 is_error: false,
+                details: None,
             }]
         }
         // thread/started and turn/started carry only state we track directly in
@@ -1541,20 +1518,17 @@ fn initialize_params(experimental_api: bool) -> Value {
 /// Extract the turn id from a `turn/start` response result `{turn:{id,…}}`,
 /// tolerant of `id` vs `turnId`.
 fn extract_turn_id(resp: &Value) -> Option<String> {
-    resp.get("turn").or_else(|| Some(resp)).and_then(id_like)
+    resp.get("turn").or(Some(resp)).and_then(id_like)
 }
 
 fn extract_turn_id_from_params(params: &Value) -> Option<String> {
-    params
-        .get("turn")
-        .or_else(|| Some(params))
-        .and_then(id_like)
+    params.get("turn").or(Some(params)).and_then(id_like)
 }
 
 /// Extract the thread id from a `thread/start` response result `{thread:{id,…}}`,
 /// tolerant of `id` vs `threadId`.
 fn extract_thread_id(resp: &Value) -> Option<String> {
-    resp.get("thread").or_else(|| Some(resp)).and_then(id_like)
+    resp.get("thread").or(Some(resp)).and_then(id_like)
 }
 
 fn id_like(obj: &Value) -> Option<String> {
@@ -2040,7 +2014,10 @@ mod tests {
         });
         capture_token_usage("thread/tokenUsage/updated", &payload, &cell);
         assert_eq!(
-            cell.lock().unwrap().as_ref().and_then(|u| u.context_remaining),
+            cell.lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|u| u.context_remaining),
             Some(90)
         );
         // 非目标方法不触碰 cell。

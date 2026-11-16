@@ -1,12 +1,12 @@
 [package]
 name = "jishu-hub"
-version = "0.9.4"
+version = "0.9.7"
 description = "A desktop hub for managing AI agent projects, sessions, and configuration"
 authors = ["wang5766171"]
 license = "MIT"
 repository = "https://github.com/wang5766171/jishu-hub"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.79"
 default-run = "jishu-hub"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -38,6 +38,9 @@ tauri-plugin-dialog = "2"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 tokio = { version = "1", features = ["process", "io-util", "net", "time", "macros", "sync"] }
+# v0.9.7 需求1 T3：首启解压 pi-runtime.zip——store 容器（压缩交 NSIS lzma，
+# zip 本体不二次压缩、控制二进制体积）；deflate 特性仅兜底可解非 store 条目。
+zip = { version = "2", default-features = false, features = ["deflate"] }
 base64 = "0.22"
 open = "5"
 bitflags = "2"
@@ -51,6 +54,9 @@ uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.12", features = ["stream", "rustls-tls", "blocking", "json"], default-features = false }
 futures-util = "0.3"
 sha2 = "0.10"
+# v0.9.5 需求9：skill 分发回写母本时保留目标侧 mtime（新者胜判定的
+# 多目标收敛前提）。
+filetime = "0.2"
 tauri-plugin-notification = "2.4.0"
 # v0.9.3 测试期（通知点击跳回·通知中心补点）：protocol 激活的 toast 需要
 # 自定义 XML（winrt 封装库不暴露 launch 属性）；scheme 注册与运行中实例

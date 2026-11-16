@@ -12,7 +12,6 @@ import {
   ClipboardList,
   FolderOpen,
   GitBranch,
-  MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -23,7 +22,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { RefObject } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore, type RefObject } from "react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { streamStore } from "@/hooks/use-stream-store";
 import { cn } from "@/lib/utils";
@@ -36,12 +35,16 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { ActivitySpinner } from "@/components/ui/activity-spinner";
+import { useSessionUnread } from "@/features/session-kernel/session-unread";
+import { useEnabledSessionPlugins } from "@/features/session-kernel/plugins/registry";
+import { requestMenuPage } from "@/features/session-kernel/shell/menu-page";
+import { composedPlugins, composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
+import { Zap } from "lucide-react";
 import { TaskSessionTree } from "@/features/task-workspace/sidebar/task-session-tree";
 import { formatRelativeTime, TerminalIcon } from "./chat-page-utils";
 import type { ConfirmDialogOptions } from "@/components/ui/confirm-dialog";
 import type { Project, Session, SessionSearchResult } from "@/types";
-import type { TaskLaunchInstanceSummary, TaskPhase } from "@/features/task-instance/types";
+import type { TaskLaunchInstanceSummary } from "@/features/task-instance/types";
 
 export interface ChatSidebarProps {
   currentProject: Project | null;
@@ -75,7 +78,7 @@ export interface ChatSidebarProps {
   activeTaskInstanceId: string | null;
   activeTaskInstanceIdRef: RefObject<string | null>;
   findTaskInstance: (taskId: string) => TaskLaunchInstanceSummary | null;
-  openTaskPhaseWorkspace: (task: TaskLaunchInstanceSummary, phase: TaskPhase, readOnly?: boolean) => void;
+  openTaskSession: (task: TaskLaunchInstanceSummary, readOnly?: boolean) => void;
   handleTaskCancelRun: () => void;
   setTaskLaunchSessions: (fn: (current: TaskLaunchInstanceSummary[]) => TaskLaunchInstanceSummary[]) => void;
   confirmDialog: (options: ConfirmDialogOptions) => Promise<boolean>;
@@ -83,6 +86,9 @@ export interface ChatSidebarProps {
   handleNewSession: () => void;
   handleRefresh: () => void | Promise<void>;
   handleOpenTaskConversation: () => void;
+  /** 需求7 修1d：菜单形式插件入口（新任务下方，≤5）——点击=新会话预填
+   * 该插件 [menu].prompt 发起。 */
+  onLaunchMenuPlugin: (prompt: string) => void;
   handleSelectSession: (sessionId: string) => void;
   handleFloatSession: (sessionId: string) => void;
   handleResumeSession: (sessionId: string) => void | Promise<void>;
@@ -94,6 +100,8 @@ export interface ChatSidebarProps {
 }
 
 export function ChatSidebar(props: ChatSidebarProps) {
+  // v0.9.6 补充⑨：会话未读快照（绿/红点）——选中会话即已读清除。
+  const sessionUnread = useSessionUnread();
   const {
     currentProject,
     projectDisplayName,
@@ -123,13 +131,14 @@ export function ChatSidebar(props: ChatSidebarProps) {
     activeTaskInstanceId,
     activeTaskInstanceIdRef,
     findTaskInstance,
-    openTaskPhaseWorkspace,
+    openTaskSession,
     handleTaskCancelRun,
     setTaskLaunchSessions,
     confirmDialog,
     handleNewSession,
     handleRefresh,
     handleOpenTaskConversation,
+    onLaunchMenuPlugin,
     handleSelectSession,
     handleFloatSession,
     handleResumeSession,
@@ -140,6 +149,27 @@ export function ChatSidebar(props: ChatSidebarProps) {
     setRenameTaskTarget,
   } = props;
   const { t } = useTranslation();
+  // v0.9.7 需求5 E3（Q12）：当前空间是默认工作空间时，左上角空间名旁展示
+  // 「默认」徽标（判定单源在后端 is_default_workspace——与 E5 会话子目录共用）。
+  const [isDefaultWorkspace, setIsDefaultWorkspace] = useState(false);
+  const projectPathForBadge = currentProject?.path ?? null;
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectPathForBadge) {
+      setIsDefaultWorkspace(false);
+      return;
+    }
+    invokeCommand<boolean>("is_default_workspace", { path: projectPathForBadge })
+      .then((result) => {
+        if (!cancelled) setIsDefaultWorkspace(Boolean(result));
+      })
+      .catch(() => {
+        if (!cancelled) setIsDefaultWorkspace(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectPathForBadge]);
   return (
     <>
       {/* Left sidebar */}
@@ -158,6 +188,14 @@ export function ChatSidebar(props: ChatSidebarProps) {
             <span className={cn("truncate text-sm font-semibold flex-1 min-w-0 leading-none pt-[1px]", currentProject ? "text-foreground" : "text-muted-foreground")} title={currentProject ? projectDisplayName : undefined}>
               {currentProject ? projectDisplayName : t("sessions.noProject")}
             </span>
+            {isDefaultWorkspace && (
+              <span
+                className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground"
+                title={t("sessions.defaultWorkspaceBadge")}
+              >
+                {t("sessions.defaultWorkspaceBadge")}
+              </span>
+            )}
           </div>
           {/* Actions */}
           <div className="flex items-center gap-1.5 px-3 h-11 pt-2 pb-1">
@@ -198,6 +236,7 @@ export function ChatSidebar(props: ChatSidebarProps) {
               <ClipboardList className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
               <span className="truncate leading-none pt-[1px]">{t("tasks.startTask")}</span>
             </button>
+            <MenuPluginEntries onLaunch={onLaunchMenuPlugin} enabled={Boolean(projectId)} />
           </div>
           {/* Search */}
           <div className="px-3 h-10 pb-2">
@@ -299,18 +338,14 @@ export function ChatSidebar(props: ChatSidebarProps) {
           <TaskSessionTree
             tasks={displayTaskLaunchSessions}
             activeTaskId={activeTaskInstanceId}
+            isSessionStreaming={(sid) => streamingSessionIds.includes(sid)}
+            sessionUnreadOf={(sid) => sessionUnread[sid]}
             onSelectTask={(task) => {
               // 树的 TaskSessionTreeTask 是 TaskLaunchInstanceSummary 的结构子集，
-              // 回传时按 task_id 反查完整实例（openTaskPhaseWorkspace 需要 project_root 等字段）。
+              // 回传时按 task_id 反查完整实例（openTaskSession 需要 project_root 等字段）。
               const instance = findTaskInstance(task.task_id);
               if (!instance) return;
-              const phase: TaskPhase =
-                instance.current_phase === "planning"
-                  ? "planning"
-                  : instance.current_phase === "execution" || instance.current_phase === "graph"
-                    ? "execution"
-                    : "requirements";
-              openTaskPhaseWorkspace(instance, phase);
+              openTaskSession(instance);
             }}
             onRenameTask={(task) => setRenameTaskTarget(findTaskInstance(task.task_id))}
             onCancelTask={(task) => {
@@ -392,9 +427,21 @@ export function ChatSidebar(props: ChatSidebarProps) {
                       {rowRefreshing ? (
                         <RotateCw className="h-3 w-3 shrink-0 animate-spin text-[var(--icon-action)]" />
                       ) : rowStreaming ? (
-                        <ActivitySpinner className="h-3.5 w-3.5 text-[var(--icon-action)]" />
+                        /* v0.9.6 补充⑨：进行中=蓝色呼吸点（原加载动效改统一灯语言） */
+                        <span className="flex h-3.5 w-3 shrink-0 items-center justify-center">
+                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+                        </span>
+                      ) : !isActive && sessionUnread[session.id] ? (
+                        /* 补充⑫（2026-11-07 用户裁决）：未读绿/红点统一移到行首
+                           （原在标题后，与进行中蓝点位置不一致）；行首三态互斥——
+                           流式蓝呼吸 / 未读绿红 / 空闲占位，宽度恒定。 */
+                        <span className="flex h-3.5 w-3 shrink-0 items-center justify-center" title={sessionUnread[session.id] === "failed" ? t("sessions.taskUnreadFailed", "有失败结果未读") : t("sessions.taskUnreadDone", "有完成结果未读")}>
+                          <span className={cn("h-1.5 w-1.5 rounded-full", sessionUnread[session.id] === "failed" ? "bg-red-500" : "bg-emerald-500")} />
+                        </span>
                       ) : (
-                        <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
+                        /* 补充⑩（2026-11-06 用户裁决）：空闲态去掉气泡图标——
+                           保留固定占位（与呼吸点同尺寸），状态圆点更突出且行宽不跳 */
+                        <span className="flex h-3.5 w-3 shrink-0 items-center justify-center" />
                       )}
                       <span className="truncate flex-1 text-left min-w-0 leading-none pt-[1px]">{name}</span>
                       {searchHit ? (
@@ -463,5 +510,71 @@ export function ChatSidebar(props: ChatSidebarProps) {
         <div className={cn("flex-1", !sidebarCollapsed && "hidden")} />
       </div>
     </>
+  );
+}
+
+
+/** 需求7 修1d：菜单形式插件入口——启用中的 [menu] 声明组合插件（≤5，
+ * 保存期已校验上限，此处只渲染）。点击 = 新会话预填该插件的 prompt。 */
+function MenuPluginEntries({
+  onLaunch,
+  enabled,
+}: {
+  onLaunch: (prompt: string) => void;
+  enabled: boolean;
+}) {
+  const { t } = useTranslation();
+  const enabledIds = useEnabledSessionPlugins();
+  const composedRev = useSyncExternalStore(subscribeComposed, composedVersion, () => 0);
+  const entries = useMemo(() => {
+    // 描述符透传 [menu] 段（engine 装配）；与启用集取交集。
+    // 二十二轮（用户裁决 2026-11-15）：菜单件带面板挂载（dock/sidebar）
+    // → 点击**直接打开独立面板**（requestPanelActivation 通道，能力中心
+    // 同款调度）；纯菜单件维持原语义（新会话预填 prompt）。
+    return composedPlugins()
+      .filter((p) => p.menu && enabledIds.has(p.id))
+      .slice(0, 5)
+      .map((p) => ({
+        id: p.id,
+        label: p.menu!.label,
+        prompt: p.menu!.prompt,
+        // 二十二轮：menu 挂载件（代码实现的独立页面）点击开页；
+        // 纯 [menu] 件维持预填开会话（需求7 修1d 原语义兼容）。
+        hasPage: p.mounts.some((m) => m.kind === "menu"),
+      }));
+    // composedRev 进依赖：清单装载/启停变化后重算。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabledIds, composedRev]);
+  if (entries.length === 0) return null;
+  return (
+    <div className="mt-1 space-y-0.5">
+      {entries.map((e) => (
+        <button
+          key={e.id}
+          type="button"
+          disabled={!enabled}
+          onClick={() => {
+            if (!enabled) return;
+            if (e.hasPage) {
+              requestMenuPage(e.id);
+              return;
+            }
+            onLaunch(e.prompt);
+          }}
+          className={cn(
+            // 二十一轮补修：图标与新任务按钮对齐（pl-2/gap-2.5/h-8/图标 3.5
+            // 同款几何——修前 pl-4+h-7+图标 3，图标起点缩进一截不齐）。
+            "flex h-8 w-full items-center gap-2.5 rounded-lg pl-2 pr-2 text-xs transition-fast",
+            enabled
+              ? "text-foreground/80 hover:bg-accent"
+              : "opacity-40 cursor-not-allowed"
+          )}
+          title={e.hasPage ? `${e.label}${t("plugins.menuOpenPage", "（打开页面）")}` : e.label}
+        >
+          <Zap className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
+          <span className="truncate leading-none pt-[1px]">{e.label}</span>
+        </button>
+      ))}
+    </div>
   );
 }

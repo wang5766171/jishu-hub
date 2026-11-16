@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod adapters;
 pub mod capability;
@@ -20,16 +19,22 @@ pub mod policy_store;
 // v0.8.1 需求1 M2（Phase 3）：声明式 agent manifest——标准形态 CLI/ACP agent 零代码接入。
 pub mod manifest;
 pub mod normalized;
+pub mod pi_extension_import;
 // v0.8.1 需求2：统一插件模型（内建/manifest 插件的描述符、启停配置、装配管线）。
 pub mod adaptive;
 // v0.9.0 需求1 P2：hub MCP 聚合 server + 四家配置注入（方案 b 聚合代理）。
 pub mod mcp_inject;
-pub mod plugin_options;
 pub mod mcp_server;
+pub mod plugin_options;
 pub mod skill_deploy;
 // v0.9.0 需求2：pi 扩展部署管线（[pi_extension].entry → pi extensions 目录）。
 pub mod pi_deploy;
+// v0.9.5 重构：内部提示词统一管理（标记对 + 话术版本登记 + 回放剥离单源）。
+pub mod internal_prompts;
+// v0.9.7 需求3 C2-③：技能市场（腾讯 SkillHub 对接）。
+pub mod piindex;
 pub mod plugin;
+pub mod skillhub;
 pub mod tool_plugin;
 pub mod traits;
 
@@ -360,7 +365,16 @@ impl AgentRegistry {
         let mut plugins = plugins;
         plugins.extend(plugin::session_plugin_descriptors(&disabled));
         // v0.9.3 需求13 C1：组合式插件（manifest 驱动，前端引擎装配）。
-        plugins.extend(plugin::composed_session_plugin_specs(&disabled));
+        // v0.9.5 需求5 测试期修复：按 id 去重——内置会话描述符与部署组合
+        // 清单可能同 id（session.mermaid-render 双注册，插件中心渲染重复
+        // 卡 + React key 冲突致 tab 切换串台）；内置登记优先保留。
+        let known_ids: std::collections::HashSet<String> =
+            plugins.iter().map(|p| p.id.clone()).collect();
+        plugins.extend(
+            plugin::composed_session_plugin_specs(&disabled)
+                .into_iter()
+                .filter(|p| !known_ids.contains(&p.id)),
+        );
 
         Self {
             agents,
@@ -666,6 +680,11 @@ pub struct ChatRequest {
     pub project_path: String,
     pub session_id: Option<String>,
     pub message: String,
+    /// v0.9.5 需求2：模型覆盖 (provider, model)——None 用全局 active；
+    /// 流程节点子会话按节点声明模型 spawn（spawn 签名机制天然区分：
+    /// 不同模型=不同签名=独立进程，互不干扰）。仅 jishu-self 消费
+    ///（--provider/--model 为 pi 参数）；其余 adapter 忽略。
+    pub model_override: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

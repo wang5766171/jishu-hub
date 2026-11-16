@@ -8,7 +8,7 @@ pub const DEFAULT_MAX_REPAIR_DEPTH: u32 = 2;
 
 /// Policy attached to each GraphNode.
 /// Proposed by Planner, adjusted by user, validated and enforced by Task Orchestrator.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodePolicy {
     #[serde(default)]
     pub timeout_ms: Option<u64>,
@@ -45,26 +45,6 @@ impl NodePolicy {
     /// Effective repair depth limit. `None` policy → `DEFAULT_MAX_REPAIR_DEPTH`.
     pub fn repair_depth_limit(&self) -> u32 {
         self.max_repair_depth.unwrap_or(DEFAULT_MAX_REPAIR_DEPTH)
-    }
-}
-
-impl Default for NodePolicy {
-    fn default() -> Self {
-        Self {
-            timeout_ms: None,
-            retry_policy: RetryPolicy::default(),
-            permission_scope: PermissionScope::default(),
-            approval_policy: ApprovalPolicy::default(),
-            resource_requirements: ResourceRequirements::default(),
-            read_set: vec![],
-            write_set: vec![],
-            token_budget: None,
-            cost_budget_usd: None,
-            preferred_capabilities: vec![],
-            priority: 0,
-            idempotency_policy: IdempotencyPolicy::default(),
-            max_repair_depth: None,
-        }
     }
 }
 
@@ -149,6 +129,7 @@ impl Default for PermissionScope {
 /// When approval is required.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ApprovalPolicy {
     /// Never requires approval.
     Never,
@@ -157,13 +138,8 @@ pub enum ApprovalPolicy {
     /// Requires approval before every execution.
     Always,
     /// Requires approval when risk exceeds threshold.
+    #[default]
     OnHighRisk,
-}
-
-impl Default for ApprovalPolicy {
-    fn default() -> Self {
-        Self::OnHighRisk
-    }
 }
 
 /// Resource requirements for the Resource Arbiter.
@@ -189,21 +165,17 @@ pub struct ResourceRequirements {
 /// How idempotency is handled for retries and recovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum IdempotencyPolicy {
     /// No side effects, safe to retry freely.
     None,
     /// Use a generated idempotency key.
+    #[default]
     IdempotencyKey,
     /// Must verify checkpoint before retry.
     CheckpointRequired,
     /// Not safe to retry — fail fast.
     NoRetry,
-}
-
-impl Default for IdempotencyPolicy {
-    fn default() -> Self {
-        Self::IdempotencyKey
-    }
 }
 
 #[cfg(test)]
@@ -251,15 +223,19 @@ mod tests {
 
     #[test]
     fn repair_depth_limit_honors_explicit_max() {
-        let mut policy = NodePolicy::default();
-        policy.max_repair_depth = Some(5);
+        let policy = NodePolicy {
+            max_repair_depth: Some(5),
+            ..Default::default()
+        };
         assert_eq!(policy.repair_depth_limit(), 5);
     }
 
     #[test]
     fn repair_depth_limit_zero_disables_repair() {
-        let mut policy = NodePolicy::default();
-        policy.max_repair_depth = Some(0);
+        let policy = NodePolicy {
+            max_repair_depth: Some(0),
+            ..Default::default()
+        };
         assert_eq!(policy.repair_depth_limit(), 0);
     }
 

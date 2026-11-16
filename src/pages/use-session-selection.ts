@@ -18,8 +18,9 @@ import {
   getCachedSessionMessages,
   setCachedSessionMessages,
 } from "@/features/session-kernel/kernel/session-cache";
+import { clearUnread } from "@/features/session-kernel/session-unread";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
-import { stripTaskLaunchInstructionFromMessages } from "./chat-page-utils";
+import { filterInvisibleUserMessages } from "./chat-page-utils";
 import type { Message, Project, Session } from "@/types";
 import type { TaskLaunchPhase } from "./chat-page-utils";
 
@@ -38,6 +39,8 @@ export interface SessionSelectionDeps {
   scrollMemory: RefObject<Map<string, number | "bottom">>;
   visitedSessions: RefObject<Set<string>>;
   scrollAction: RefObject<{ type: "bottom" } | { type: "restore"; top: number } | null>;
+  /** 需求9 补充3：指令投递时同步武装滚动遮蔽（定位完成前内容不上屏）。 */
+  armScroll: () => void;
   // 流式标记
   newSessionStreamIdsRef: RefObject<Set<string>>;
   // 任务态重置（切常规会话清任务选中）
@@ -46,6 +49,8 @@ export interface SessionSelectionDeps {
   setTaskLaunchReadOnly: (v: boolean) => void;
   taskLaunchOpenRef: RefObject<boolean>;
   taskLaunchPhaseRef: RefObject<TaskLaunchPhase>;
+  /** 需求9 #4 补：任务首条 goal（mark_session 建实例即写标题用）。 */
+  taskLaunchGoalRef: RefObject<string | null>;
   activeTaskInstanceIdRef: RefObject<string | null>;
   activeTaskRequirementFileRef: RefObject<string | null>;
   lastKnownStatusRef: RefObject<string | null>;
@@ -73,12 +78,14 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
     scrollMemory,
     visitedSessions,
     scrollAction,
+    armScroll,
     newSessionStreamIdsRef,
     setTaskModeActive,
     setTaskLaunchOpen,
     setTaskLaunchReadOnly,
     taskLaunchOpenRef,
     taskLaunchPhaseRef,
+    taskLaunchGoalRef,
     activeTaskInstanceIdRef,
     activeTaskRequirementFileRef,
     lastKnownStatusRef,
@@ -123,6 +130,9 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
     }
     // 首条消息：以 /jishu-task 命令激活 conductor 扩展，由其驱动 discuss→plan→execute。
     // domain 默认 dev（Batch 4 增加 research 后可由 UI 选择）。
+    // 需求9 #4 补：捕获纯 goal——mark_session 建实例即写标题（单步任务
+    // agent 不调 update_steps，步骤上报链不触发）。
+    taskLaunchGoalRef.current = message;
     return `/jishu-task dev ${message}`;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -161,6 +171,9 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
       scrollMemory.current.set(selectedSessionRef.current, atBottom ? "bottom" : el.scrollTop);
     }
     const isFirstVisit = !visitedSessions.current.has(sessionId);
+    // v0.9.6 需求4 补充⑨：打开会话=已读——清绿/红未读标记（所有选中路径
+    // 汇聚点：列表点击/标签导航/通知跳转）。
+    clearUnread(sessionId);
     setSelectedSession(sessionId);
     selectedSessionRef.current = sessionId;
     // Live steer placeholders keep their per-session keys（渲染按
@@ -185,7 +198,7 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
           sessionId,
           encodedName: projectId,
         });
-        let visibleMessages = stripTaskLaunchInstructionFromMessages(messages);
+        let visibleMessages = filterInvisibleUserMessages(messages);
         // v0.8.0 需求7：缓存缺失但该会话正在流式输出（本应用生命周期内首次
         // 打开的后台流式会话）——CLI 已把当前回合的用户消息落盘，直接渲染会
         // 与流式气泡的 pendingUserMessage 各出现一次。从最后一条与回合
@@ -215,10 +228,12 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
     refreshSessionUsageRef.current?.(sessionId);
 
     if (isFirstVisit) {
+      armScroll();
       scrollAction.current = { type: "bottom" };
       visitedSessions.current.add(sessionId);
     } else {
       const saved = scrollMemory.current.get(sessionId);
+      armScroll();
       scrollAction.current = saved === "bottom"
         ? { type: "bottom" }
         : saved !== undefined

@@ -1,5 +1,5 @@
-use std::sync::Mutex;
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use tauri::Manager;
 
@@ -95,6 +95,9 @@ fn rebuild_registry(app: &tauri::AppHandle, state: &tauri::State<'_, Mutex<AppSt
     let _ = crate::agent::skill_deploy::sync_skill_deployments(false);
     // v0.9.0 需求2：pi 扩展部署随插件启停同步。
     crate::agent::pi_deploy::ensure_pi_extension_deployments();
+    // v0.9.5 需求5：npm 扩展包注册（settings.json packages）随插件启停
+    // 对齐——禁用即摘条目（扩展不装载，含事件钩子），启用即补钉定源。
+    crate::agent::plugin::sync_pi_packages_with_plugins();
 }
 
 /// 启停插件并热生效（core 插件拒绝；写 plugins.json 持久化；agent 与 tool
@@ -111,6 +114,11 @@ pub(crate) fn plugin_set_enabled(
     agent::plugin::set_plugin_enabled(&plugin_id, enabled)?;
     rebuild_registry(&app, &state);
     agent::plugin::clear_pending_confirm_marker(&plugin_id);
+    // v0.9.7 需求12：预连接插件开关联动（禁用即杀池/启用即重建）——非该
+    // 插件的启停也可能间接影响（registry 重建），统一走一次联动（幂等）。
+    let _ = with_app_state(&state, |s| {
+        crate::preconnect::on_settings_changed(&s.registry)
+    });
     log::info!(
         "[plugin] {} {}d (registry rebuilt)",
         plugin_id,
@@ -179,8 +187,26 @@ pub(crate) fn plugin_remove(
         }
     }
 
-    std::fs::remove_file(&source_path).map_err(|e| format!("Cannot remove {source_path}: {e}"))?;
-    let _ = agent::plugin::set_plugin_enabled(&plugin_id, true); // 清 disabled 引用（忽略结果：id 即将消失）
+    // 需求14 测试期修复（T14R，同 CLI remove）：目录形态删整目录防附带文件
+    //（bridge.js 等）孤儿残留；单文件形态维持删文件。
+    let source = std::path::Path::new(&source_path);
+    let is_dir_form = source
+        .file_name()
+        .map(|n| n == "plugin.toml")
+        .unwrap_or(false)
+        && source
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n == plugin_id.as_str())
+            .unwrap_or(false);
+    if is_dir_form {
+        let dir = source.parent().expect("plugin.toml has parent");
+        std::fs::remove_dir_all(dir)
+            .map_err(|e| format!("Cannot remove {}: {e}", dir.display()))?;
+    } else {
+        std::fs::remove_file(source).map_err(|e| format!("Cannot remove {source_path}: {e}"))?;
+    }
+    agent::plugin::forget_plugin_disabled(&plugin_id); // 清 disabled 引用（T16 同款）
     rebuild_registry(&app, &state);
     log::info!("[plugin] removed {} ({})", plugin_id, source_path);
     Ok(())
@@ -219,30 +245,52 @@ pub(crate) fn session_tool_list(
     tools
         .iter()
         .filter(|p| p.enabled)
-        .map(|p| SessionToolInfo {
-            id: p.id().to_string(),
-            display_name: p.file.info.display_name.clone(),
-            description: p
+        .map(|p| {
+            // v0.9.4 需求3 补口：目录形式 skill 骨架（无 [skill] 段，能力
+            // 声明在插件目录 skills/）——描述/injectable/category 以目录源
+            // 为准，与插件中心 tool_descriptor 同口径。
+            let dir_root = p
+                .source_path
+                .parent()
+                .filter(|r| r.file_name().is_some_and(|n| n == p.id()));
+            let dir_skills = dir_root
+                .map(|r| agent::skill_deploy::dir_source_skills(r, p.id()))
+                .unwrap_or_default();
+            let has_dir_skill = !dir_skills.is_empty();
+            let description = p
                 .file
                 .tool
                 .as_ref()
                 .map(|t| t.description.clone())
-                .unwrap_or_default(),
-            usage: p
-                .file
-                .tool
-                .as_ref()
-                .map(|t| t.usage.clone())
-                .unwrap_or_default(),
-            enabled: selected.contains(p.id()),
-            injectable: p.file.tool.is_some() || p.file.mcp.is_some() || p.file.skill.is_some(),
-            category: if p.file.mcp.is_some() {
-                "mcp".to_string()
-            } else if p.file.skill.is_some() {
-                "skill".to_string()
-            } else {
-                "cli".to_string()
-            },
+                .unwrap_or_else(|| {
+                    dir_skills
+                        .first()
+                        .map(|d| d.description.clone())
+                        .unwrap_or_default()
+                });
+            SessionToolInfo {
+                id: p.id().to_string(),
+                display_name: p.file.info.display_name.clone(),
+                description,
+                usage: p
+                    .file
+                    .tool
+                    .as_ref()
+                    .map(|t| t.usage.clone())
+                    .unwrap_or_default(),
+                enabled: selected.contains(p.id()),
+                injectable: p.file.tool.is_some()
+                    || p.file.mcp.is_some()
+                    || p.file.skill.is_some()
+                    || has_dir_skill,
+                category: if p.file.mcp.is_some() {
+                    "mcp".to_string()
+                } else if p.file.skill.is_some() || has_dir_skill {
+                    "skill".to_string()
+                } else {
+                    "cli".to_string()
+                },
+            }
         })
         .collect()
 }
@@ -292,7 +340,7 @@ pub(crate) fn plugin_get(
     state: tauri::State<'_, Mutex<AppState>>,
     plugin_id: String,
 ) -> Result<serde_json::Value, String> {
-    let s = state
+    let _s = state
         .lock()
         .map_err(|_| "App state lock poisoned".to_string())?;
     // agent 与 tool 两类 manifest 插件都在 ~/.jishu-hub/agents/ 下——直接按
@@ -350,12 +398,14 @@ pub(crate) fn plugin_get(
 #[tauri::command]
 pub(crate) fn composed_plugin_save(
     app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
     id: String,
     toml: String,
 ) -> Result<(), String> {
     agent::plugin::save_composed_manifest(&id, &toml)?;
-    use tauri::Emitter;
-    let _ = app.emit("plugins-changed", ());
+    // 需求14 补齐：保存后重建 registry——plugin_list 才能看到新插件
+    //（外观页 enabledIds 过滤依赖 plugin_list；不重建则新装主题不可见）。
+    rebuild_registry(&app, &state);
     Ok(())
 }
 
@@ -368,12 +418,92 @@ pub(crate) fn plugin_confirm_pending() -> Vec<agent::plugin::PendingHybridPlugin
     agent::plugin::pending_confirm_list()
 }
 
-/// v0.9.3 需求13 C3：删除用户组合插件（内置拒绝）并广播。
+/// CLI plugins validate 的跨进程信箱（v0.9.5 需求1（原需求26）1c）：读请求
+/// 标记（CLI 写入的 .cli-validate-req-<nonce>.json——manifest JSON + componentJs
+/// 源码自包含，前端零任意路径访问）。返回 None 表示无待处理请求。
+/// 三轮评审信箱并发修复：请求/响应文件名带 nonce 后缀——多终端并发
+/// validate 不再共用单一文件互相覆盖（修前第二个 CLI 覆盖第一个的请求，
+/// nonce 不匹配各自超时）。取最早写入的请求（FIFO）。
 #[tauri::command]
-pub(crate) fn composed_plugin_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {
+pub(crate) fn cli_validate_poll() -> Option<serde_json::Value> {
+    let hub = agent::manifest::hub_home();
+    let mut oldest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    let Ok(entries) = std::fs::read_dir(&hub) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(".cli-validate-req-") || !name.ends_with(".json") {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        // MSRV 1.79：is_none_or 需 1.82，用 map_or 等价表达。
+        if oldest.as_ref().map_or(true, |(t, _)| mtime < *t) {
+            oldest = Some((mtime, entry.path()));
+        }
+    }
+    let (_, req_path) = oldest?;
+    let Ok(content) = std::fs::read_to_string(&req_path) else {
+        return None;
+    };
+    // 同 nonce 的旧响应残留——清掉避免本次误配（nonce 匹配在 CLI 侧）。
+    if let Some(nonce) = serde_json::from_str::<serde_json::Value>(&content)
+        .ok()
+        .and_then(|v| v.get("nonce").and_then(|n| n.as_u64()))
+    {
+        let resp_path = hub.join(format!(".cli-validate-resp-{nonce}.json"));
+        if resp_path.exists() {
+            let _ = std::fs::remove_file(&resp_path);
+        }
+    }
+    serde_json::from_str(&content).ok()
+}
+
+/// CLI validate 信箱回写：前端校验器（validateManifest/validatePipeline——
+/// 与 GUI 向导同一份 TS 实现）跑完写 .cli-validate-resp-<nonce>.json，CLI
+/// 轮询匹配 nonce 取结果（并发隔离，见 poll 注释）。
+#[tauri::command]
+pub(crate) fn cli_validate_submit(response: serde_json::Value) -> Result<(), String> {
+    let nonce = response
+        .get("nonce")
+        .and_then(|n| n.as_u64())
+        .ok_or("cli_validate_submit 响应缺少 nonce")?;
+    let resp_path = agent::manifest::hub_home().join(format!(".cli-validate-resp-{nonce}.json"));
+    crate::util::atomic_write(&resp_path, response.to_string().as_bytes())
+        .map_err(|e| format!("cannot write validate response: {e}"))
+}
+
+/// 混合插件预览代码写入（v0.9.5 需求1（原需求26）2b）：向导编辑器源码 →
+/// `plugins/.preview/component.js`（assetProtocol scope 内的隐藏目录，
+/// 无 plugin.toml 不会破插件扫描；原子写）→ 返回指纹（内容长度+毫秒时戳，
+/// 前端 loadHybridComponent 按指纹热更重注入）。预览链完全复用正式装载
+/// 链（非沙箱——评审 P1-6：iframe 沙箱与 CSP/assetProtocol 冲突）。
+#[tauri::command]
+pub(crate) fn hybrid_preview_write(source: String) -> Result<String, String> {
+    let dir = agent::plugin::composed_plugins_dir().join(".preview");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create preview dir: {e}"))?;
+    let fingerprint = format!("{}-{}", source.len(), crate::util::now_ms());
+    let target = dir.join("component.js");
+    crate::util::atomic_write(&target, source.as_bytes())
+        .map_err(|e| format!("cannot write preview component: {e}"))?;
+    Ok(fingerprint)
+}
+
+/// v0.9.3 需求13 C3：删除用户组合插件（内置拒绝）并广播。
+/// 用户实测补修（2026-11-15「删除后卡片残留」）：补 rebuild_registry——
+/// 修前只删盘+emit，registry 仍含已删件，插件页 refresh 读旧数据卡片
+/// 不消失（plugin_remove 同位置有 rebuild，本命令漏配对）。
+#[tauri::command]
+pub(crate) fn composed_plugin_delete(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
+    id: String,
+) -> Result<(), String> {
     agent::plugin::delete_composed_plugin(&id)?;
-    use tauri::Emitter;
-    let _ = app.emit("plugins-changed", ());
+    rebuild_registry(&app, &state);
     Ok(())
 }
 
@@ -388,9 +518,72 @@ pub(crate) fn composed_plugin_manifests() -> Result<Vec<serde_json::Value>, Stri
         .collect())
 }
 
+/// v0.9.7 需求3 补充：Pi Index 在线目录检索（awesome-pi 清单，本地过滤）。
+#[tauri::command]
+pub(crate) async fn piindex_search(
+    keyword: Option<String>,
+) -> Result<Vec<agent::piindex::PiindexEntry>, String> {
+    agent::piindex::piindex_search(keyword.as_deref()).await
+}
+
+/// 扩展包检测更新（settings.json 钉定版本 vs npm latest）。
+#[tauri::command]
+pub(crate) async fn extension_check_updates(
+) -> Result<Vec<agent::piindex::ExtensionUpdateStatus>, String> {
+    agent::piindex::extension_check_updates().await
+}
+
+/// 扩展包批量更新（空=全部有更新的；改写钉定版本，pi 启动自装）。
+/// 评审 P2：返回 {updated, failed} 双列报告——partial failure 仍完成可
+/// 完成的项，失败项带原因如实上报（跨端契约字段名冻结 updated/failed）。
+#[tauri::command]
+pub(crate) async fn extension_update(
+    packages: Option<Vec<String>>,
+) -> Result<agent::piindex::BatchUpdateReport, String> {
+    agent::piindex::extension_update(packages).await
+}
+
+/// Pi Index 强制刷新（「重新加载」按钮——清两级缓存重拉写盘）。
+#[tauri::command]
+pub(crate) async fn piindex_refresh() -> Result<Vec<agent::piindex::PiindexEntry>, String> {
+    agent::piindex::piindex_refresh().await
+}
+
+/// 单包/单技能检测更新（已安装页卡片独立检查）。
+#[tauri::command]
+pub(crate) async fn extension_check_update(
+    package: String,
+) -> Result<agent::piindex::ExtensionUpdateStatus, String> {
+    agent::piindex::extension_check_update(&package).await
+}
+
+#[tauri::command]
+pub(crate) async fn skillhub_check_update(
+    slug: String,
+) -> Result<agent::piindex::SkillUpdateStatus, String> {
+    agent::piindex::skillhub_check_update(&slug).await
+}
+
+/// 技能检测更新（SkillHub 台账 vs 市场 latest）。
+#[tauri::command]
+pub(crate) async fn skillhub_check_updates(
+) -> Result<Vec<agent::piindex::SkillUpdateStatus>, String> {
+    agent::piindex::skillhub_check_updates().await
+}
+
+/// 技能批量更新（空=全部有更新的；覆盖安装+台账刷新）。
+/// 评审 P2：与 extension_update 同形状返回 {updated, failed}。
+#[tauri::command]
+pub(crate) async fn skillhub_update(
+    slugs: Option<Vec<String>>,
+) -> Result<agent::piindex::BatchUpdateReport, String> {
+    agent::piindex::skillhub_update(slugs).await
+}
+
 /// v0.9.3 需求12 P1：插件配置面——全量读取（前端与 defaults 合并）。
 #[tauri::command]
-pub(crate) fn plugin_config_get_all() -> Result<HashMap<String, HashMap<String, serde_json::Value>>, String> {
+pub(crate) fn plugin_config_get_all(
+) -> Result<HashMap<String, HashMap<String, serde_json::Value>>, String> {
     Ok(agent::plugin_options::load_all())
 }
 
@@ -403,6 +596,12 @@ pub(crate) fn plugin_config_set(
     values: HashMap<String, serde_json::Value>,
 ) -> Result<(), String> {
     agent::plugin_options::set_values(&plugin_id, values)?;
+    // v0.9.7 需求12：预连接池深配置变更即时生效（补/缩/关）。
+    if let Some(state) = app.try_state::<Mutex<AppState>>() {
+        let _ = with_app_state(&state, |s| {
+            crate::preconnect::on_settings_changed(&s.registry)
+        });
+    }
     use tauri::Emitter;
     let _ = app.emit(
         "plugins-config-changed",
@@ -411,8 +610,140 @@ pub(crate) fn plugin_config_set(
     Ok(())
 }
 
+/// v0.9.7 需求12：预连接焦点声明（前端启动/切标签触发，幂等）——对当前
+/// 焦点标签项目维持 jishu agent 预连接池（深浅/开关跟随插件配置）。
+#[tauri::command]
+pub(crate) fn plugin_preconnect_focus(
+    state: tauri::State<'_, Mutex<AppState>>,
+    project_path: String,
+) -> Result<(), String> {
+    if project_path.trim().is_empty() {
+        return Ok(());
+    }
+    with_app_state(&state, |s| {
+        crate::preconnect::ensure_focus(&s.registry, &project_path);
+    })
+}
+
+/// v0.9.7 需求12 补充（用户裁决）：关闭标签/无焦点项目时显式清空预连接池
+///（幂等——随后的焦点切换会按新标签重建；主路径已由切换链覆盖，此处为
+/// 显式释放语义+空态兜底）。
+#[tauri::command]
+pub(crate) fn plugin_preconnect_clear() -> Result<(), String> {
+    crate::preconnect::shutdown_all("tab-closed");
+    Ok(())
+}
+
 /// manifest.info.id 必须等于 plugin_id——文件名/会话归属/启停配置都以 id
 /// 为 key，改名等于换插件，请卸载后新建）。
+/// 源码读取结果（需求14 M4 R8：前端 fetch 插件文件会被 CSP connect-src 拦
+///——无 asset 源，IPC 读取是唯一通路且顺带做目录越界校验）。
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct PluginReadFile {
+    pub path: String,
+    pub content: String,
+}
+
+/// 读取插件源码文件（需求14 M4 G9 源码视图/编辑数据源）。
+/// 需求14 补齐：保存主题资产文件（背景图等）——base64 解码写入插件目录。
+#[tauri::command]
+pub(crate) fn plugin_save_theme_asset(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    file_name: String,
+    base64: String,
+) -> Result<(), String> {
+    let dir = agent::plugin::composed_plugins_dir().join(&plugin_id);
+    if !dir.is_dir() {
+        return Err(format!("plugin directory not found: {}", dir.display()));
+    }
+    // 安全校验：仅允许常见图片扩展名，拒绝路径分隔。
+    let ext = file_name
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !["jpg", "jpeg", "png", "webp", "gif", "svg"].contains(&ext.as_str()) {
+        return Err(format!(
+            "unsupported asset type: .{ext} (allowed: jpg/png/webp/gif/svg)"
+        ));
+    }
+    if file_name.contains('/') || file_name.contains('\\') || file_name.contains("..") {
+        return Err("invalid file name".to_string());
+    }
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&base64)
+        .map_err(|e| format!("base64 decode: {e}"))?;
+    if bytes.len() > 10 * 1024 * 1024 {
+        return Err("asset too large (max 10MB)".to_string());
+    }
+    crate::util::atomic_write(&dir.join(&file_name), &bytes)
+        .map_err(|e| format!("cannot write {file_name}: {e}"))?;
+    // 需求14 修复：广播让 loader 重扫目录——背景图写入后 _files 清单才会
+    // 包含它，主题 CSS 的 url(@file:) 才能被展开。
+    use tauri::Emitter;
+    let _ = app.emit("plugins-changed", ());
+    Ok(())
+}
+
+/// 需求14 补齐（GUI 主题向导）：写插件目录内的 theme.css——向导产出的
+/// 颜色配置落盘（与 hybrid_plugin_save 配合：先 save 存 TOML，再此写 CSS）。
+#[tauri::command]
+pub(crate) fn plugin_write_theme_css(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    css: String,
+) -> Result<(), String> {
+    let dir = agent::plugin::composed_plugins_dir().join(&plugin_id);
+    if !dir.is_dir() {
+        return Err(format!("plugin directory not found: {}", dir.display()));
+    }
+    crate::util::atomic_write(&dir.join("theme.css"), css.as_bytes())
+        .map_err(|e| format!("cannot write theme.css: {e}"))?;
+    use tauri::Emitter;
+    let _ = app.emit("plugins-changed", ());
+    Ok(())
+}
+
+/// 寻址双落点同 plugin_update：目录形态 plugins/<id>/<file> 优先；单文件
+/// 形态 agents/<id>.toml 仅接受虚拟名 "plugin.toml"。安全边界：file 只允许
+/// 浅层普通文件名（拒绝路径分隔/父目录段/点开头），不越出插件自身目录。
+#[tauri::command]
+pub(crate) fn plugin_read_file(plugin_id: String, file: String) -> Result<PluginReadFile, String> {
+    if file.is_empty()
+        || file.contains('/')
+        || file.contains('\\')
+        || file.contains("..")
+        || file.starts_with('.')
+    {
+        return Err(format!("非法文件名: {file}（仅限插件目录内文件）"));
+    }
+    let read = |path: std::path::PathBuf| -> Result<PluginReadFile, String> {
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        Ok(PluginReadFile {
+            path: path.to_string_lossy().to_string(),
+            content,
+        })
+    };
+    // 目录形态（组合/混合/目录式 A 家族）：plugins/<id>/<file>。
+    let composed = agent::plugin::composed_plugins_dir()
+        .join(&plugin_id)
+        .join(&file);
+    if composed.is_file() {
+        return read(composed);
+    }
+    // 单文件形态（agents/<id>.toml）：仅清单本体，虚拟名 plugin.toml。
+    if file == "plugin.toml" {
+        let single = agent::manifest::manifest_dir().join(format!("{plugin_id}.toml"));
+        if single.is_file() {
+            return read(single);
+        }
+    }
+    Err(format!("文件不存在：{plugin_id}/{file}"))
+}
+
 #[tauri::command]
 pub(crate) fn plugin_update(
     app: tauri::AppHandle,
@@ -451,7 +782,10 @@ pub(crate) fn plugin_update(
     crate::util::atomic_write(&path, content_toml.as_bytes())
         .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     if let Some(decl) = skill_entries {
-        let root = path.parent().expect("plugin.toml has parent").join("skills");
+        let root = path
+            .parent()
+            .expect("plugin.toml has parent")
+            .join("skills");
         for (name, description, body) in decl.entries() {
             let dir_name = name.unwrap_or(&plugin_id);
             let target = root.join(dir_name).join("SKILL.md");
@@ -459,9 +793,8 @@ pub(crate) fn plugin_update(
                 continue; // 表单条目对应目录不存在（新建 skill 走创建流程）
             }
             let md = agent::skill_deploy::render_skill_md(dir_name, description, body);
-            crate::util::atomic_write(&target, md.as_bytes()).map_err(|e| {
-                format!("cannot write {}: {e}", target.display())
-            })?;
+            crate::util::atomic_write(&target, md.as_bytes())
+                .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
         }
     }
     rebuild_registry(&app, &state);
@@ -529,63 +862,6 @@ pub(crate) async fn agent_refresh_health(
         .map_err(|e| e.to_string())?;
     log::info!("[startup] agent_refresh_health: {:?}", __t.elapsed());
     Ok(())
-}
-
-/// Check MCP adapter installation status for a specific agent (routed through adapter contract).
-#[tauri::command]
-pub(crate) fn check_mcp_adapter(
-    state: tauri::State<'_, Mutex<AppState>>,
-    agent_id: String,
-) -> Result<serde_json::Value, String> {
-    let s = state
-        .lock()
-        .map_err(|_| "App state lock poisoned".to_string())?;
-    let agent = s
-        .registry
-        .get(&agent_id)
-        .ok_or_else(|| format!("Agent not found: {}", agent_id))?;
-    agent
-        .as_mcp()
-        .ok_or_else(|| format!("Agent {} does not support MCP", agent_id))?
-        .check_mcp()
-}
-
-/// Install MCP adapter for a specific agent (routed through adapter contract).
-/// The MutexGuard is released before .await to keep the future Send-safe:
-/// clone the Arc'd registry out of the lock, then resolve the adapter again
-/// outside it (v0.8.1 需求1 M1：原先此处硬编码 JishuSelfAgent 静态方法，属
-/// commands 层 agent 具体类型违纪，现经 McpIntegration 角色分发).
-#[tauri::command]
-pub(crate) async fn install_mcp_adapter(
-    state: tauri::State<'_, Mutex<AppState>>,
-    agent_id: String,
-) -> Result<String, String> {
-    let registry = with_app_state(&state, |s| s.registry.clone())?;
-    let agent = registry
-        .get(&agent_id)
-        .ok_or_else(|| format!("Agent not found: {}", agent_id))?;
-    agent
-        .as_mcp()
-        .ok_or_else(|| format!("Agent {} does not support MCP", agent_id))?
-        .install_mcp()
-        .await
-}
-
-/// Update MCP adapter for a specific agent (routed through adapter contract).
-#[tauri::command]
-pub(crate) async fn update_mcp_adapter(
-    state: tauri::State<'_, Mutex<AppState>>,
-    agent_id: String,
-) -> Result<String, String> {
-    let registry = with_app_state(&state, |s| s.registry.clone())?;
-    let agent = registry
-        .get(&agent_id)
-        .ok_or_else(|| format!("Agent not found: {}", agent_id))?;
-    agent
-        .as_mcp()
-        .ok_or_else(|| format!("Agent {} does not support MCP", agent_id))?
-        .update_mcp()
-        .await
 }
 
 /// Check transport-bridge installation status for a specific agent (routed
@@ -778,4 +1054,559 @@ pub(crate) fn set_agent_permission_mode(
             )
         })?
         .set_permission_mode(&mode)
+}
+
+/// 预览目录绝对路径（2b：前端 loadHybridComponent 的 dir 参数——拼 asset URL）。
+#[tauri::command]
+pub(crate) fn hybrid_preview_dir() -> Result<String, String> {
+    Ok(agent::plugin::composed_plugins_dir()
+        .join(".preview")
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// 混合插件 GUI 保存（v0.9.5 需求1（原需求26）3b）：向导产物落盘
+/// plugins/<id>/（plugin.toml + component.js）——TOML 走 save_composed_manifest
+/// 守卫，代码原子写；默认禁用 + `.pending-confirm` 标记（对齐 add-hybrid
+/// 安全哲学：含代码的插件经确认卡启用，预览过也要确认）；广播热重建。
+#[tauri::command]
+pub(crate) fn hybrid_plugin_save(
+    app: tauri::AppHandle,
+    id: String,
+    toml: String,
+    component_js: String,
+) -> Result<(), String> {
+    agent::plugin::save_composed_manifest(&id, &toml)?;
+    let dir = agent::plugin::composed_plugins_dir().join(&id);
+    crate::util::atomic_write(&dir.join("component.js"), component_js.as_bytes())
+        .map_err(|e| format!("cannot write component.js: {e}"))?;
+    // 默认禁用（确认卡安全阀——GUI 亲手创建同样走确认，与 CLI 通道一致）。
+    let _ = agent::plugin::set_plugin_enabled(&id, false);
+    let toml_value: toml::Value = toml.parse().map_err(|e| format!("TOML 解析失败: {e}"))?;
+    // 需求14 M1（02 §7 确认卡增强）：与 CLI finalize 同源计算资产清单与
+    // 语言接管摘要（pending_confirm_extras 共用），两通道确认卡同形。
+    let (assets, takeover) = agent::plugin::pending_confirm_extras(&dir, &toml_value);
+    let pending = serde_json::json!({
+        "id": id,
+        "name": toml_value.get("plugin").and_then(|p| p.get("name")).and_then(|v| v.as_str()).unwrap_or(&id),
+        "mount": toml_value.get("render").and_then(|r| r.get("mount")).and_then(|v| v.as_str()).unwrap_or("unknown"),
+        "codeLines": component_js.lines().count(),
+        "dir": dir.to_string_lossy(),
+        "assets": assets,
+        "takeover": takeover,
+    });
+    crate::util::atomic_write(
+        &dir.join(".pending-confirm"),
+        pending.to_string().as_bytes(),
+    )
+    .map_err(|e| format!("cannot write pending-confirm marker: {e}"))?;
+    use tauri::Emitter;
+    let _ = app.emit("plugins-changed", ());
+    Ok(())
+}
+
+// ── pi 扩展导入（v0.9.5 需求1（原需求26）V4-P7）：扫描/导入/启用/忽略 ──
+
+#[tauri::command]
+pub(crate) fn pi_extension_scan() -> Vec<agent::pi_extension_import::UnregisteredExtension> {
+    agent::pi_extension_import::scan_unregistered_extensions()
+}
+
+/// 摘要展示所需的安全声明常量（前端确认卡一并展示——评审 P1-7）。
+#[tauri::command]
+pub(crate) fn pi_extension_safety_notes() -> serde_json::Value {
+    serde_json::json!({
+        "arbitraryCodeWarning": agent::pi_extension_import::ARBITRARY_CODE_WARNING,
+        "knownBypassSurface": agent::pi_extension_import::KNOWN_BYPASS_SURFACE,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn pi_extension_import(path: String) -> Result<String, String> {
+    agent::pi_extension_import::import_pi_extension(&path)
+}
+
+/// 8d：成套导入（extension.ts + plugin.toml + renderer.toml 三件一次装）。
+#[tauri::command]
+pub(crate) fn pi_extension_import_bundle(
+    path: String,
+) -> Result<agent::pi_extension_import::ExtensionBundleReport, String> {
+    agent::pi_extension_import::import_extension_bundle(&path)
+}
+
+#[tauri::command]
+pub(crate) fn pi_extension_enable(file_name: String) -> Result<(), String> {
+    agent::pi_extension_import::enable_pi_extension(&file_name)
+}
+
+#[tauri::command]
+pub(crate) fn pi_extension_ignore(file_name: String) -> Result<(), String> {
+    agent::pi_extension_import::ignore_pi_extension(&file_name)
+}
+
+// ── v0.9.7 需求3 C2：插件市场三源 IPC ─────────────────────────────────────
+
+/// C2-① 精选（内置市场化）：curated.json 单一真源（19 件 required + 可选件
+/// + scenes）。`scene` 过滤（None=全量）。
+#[tauri::command]
+pub(crate) fn market_list_curated(
+    scene: Option<String>,
+) -> Result<Vec<agent::plugin::market::MarketEntry>, String> {
+    Ok(agent::plugin::market::market_list_curated(scene.as_deref()))
+}
+
+/// C2-① 安装（幂等；pi-package 形态含 npm 包安装）。评审 P1-8：成功后
+/// rebuild_registry 热生效——清单/分发/settings.json packages 即时刷新
+/// （对齐 skillhub_install 既有写法，装完不用重启/手动刷新）。
+#[tauri::command]
+pub(crate) async fn market_install(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
+    plugin_id: String,
+) -> Result<String, String> {
+    let result = agent::plugin::market::market_install(&plugin_id).await?;
+    rebuild_registry(&app, &state);
+    Ok(result)
+}
+
+/// C2-① 卸载（还原未部署态；required 拒绝）。评审 P1-8：成功后
+/// rebuild_registry 热生效（对齐 skillhub_uninstall 的统一卸载链）。
+#[tauri::command]
+pub(crate) async fn market_uninstall(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
+    plugin_id: String,
+) -> Result<String, String> {
+    let result = agent::plugin::market::market_uninstall(&plugin_id).await?;
+    rebuild_registry(&app, &state);
+    Ok(result)
+}
+
+/// C2-② 扩展生态：pi npm 扩展包目录（首批 = 钉版 5 包静态清单；在线
+/// registry 检索二期评估）。
+#[derive(serde::Serialize)]
+pub(crate) struct PiPackageEntry {
+    pub plugin_id: String,
+    pub name: String,
+    pub source: String,
+    pub version: String,
+    pub description: String,
+    pub installed: bool,
+}
+
+#[tauri::command]
+pub(crate) fn pi_package_catalog() -> Result<Vec<PiPackageEntry>, String> {
+    fn describe(pkg: &str) -> &'static str {
+        match pkg {
+            "pi-subagents" => "子代理委派工具的底层包（subagent/bg_wait）",
+            "@juicesharp/rpiv-ask-user-question" => "选项式提问工具包（ask_user_question）",
+            "@juicesharp/rpiv-todo" => "待办清单工具包（todo）",
+            "pi-lens" => "写后诊断工具包（lens_diagnostics/ast_grep 等 13 工具）",
+            "pi-web-access" => "联网搜索抓取工具包（web_search/fetch_content 等）",
+            _ => "pi 扩展包",
+        }
+    }
+    let base = agent::jishu_self::pi_config_dir()
+        .map(|d| std::path::PathBuf::from(d).join("npm").join("node_modules"))
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for (plugin_id, pkg) in agent::plugin::PI_PACKAGE_PLUGIN_MAP {
+        let Some(source) = agent::jishu_self::JishuSelfAgent::pinned_source_for_package(pkg) else {
+            continue;
+        };
+        let version = source.rsplit('@').next().unwrap_or_default().to_string();
+        out.push(PiPackageEntry {
+            plugin_id: plugin_id.to_string(),
+            name: pkg.to_string(),
+            source: source.to_string(),
+            version,
+            description: describe(pkg).to_string(),
+            installed: base.join(pkg).is_dir(),
+        });
+    }
+    Ok(out)
+}
+
+/// C2-③ 技能市场：列表（场景分组/搜索/分页）。
+#[tauri::command]
+pub(crate) async fn skillhub_list(
+    scene: Option<String>,
+    keyword: Option<String>,
+    page: Option<u32>,
+    page_size: Option<u32>,
+) -> Result<agent::skillhub::SkillhubListResult, String> {
+    agent::skillhub::skillhub_list(
+        scene.as_deref(),
+        keyword.as_deref(),
+        page.unwrap_or(1),
+        page_size.unwrap_or(20),
+    )
+    .await
+}
+
+/// C2-③ 技能市场：详情。
+#[tauri::command]
+pub(crate) async fn skillhub_detail(
+    slug: String,
+) -> Result<agent::skillhub::SkillhubEntry, String> {
+    agent::skillhub::skillhub_detail(&slug).await
+}
+
+/// C2-③ 技能市场：安装台账（市场「已安装」态）。
+#[tauri::command]
+pub(crate) fn skillhub_installed() -> Result<std::collections::BTreeMap<String, String>, String> {
+    Ok(agent::skillhub::skillhub_installed())
+}
+
+/// C2-③ 技能市场：安装（下载→校验→注册为 hub 目录形式插件→分发→记台账；
+/// 2026-11-14 用户裁决：安装导入 jishu hub 已安装，走 hub 插件链）。
+#[tauri::command]
+pub(crate) async fn skillhub_install(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
+    slug: String,
+) -> Result<String, String> {
+    let result = agent::skillhub::skillhub_install(&slug).await?;
+    // 插件清单/分发即时刷新（对齐 plugin_create_skill_folder 的安装后处理）。
+    rebuild_registry(&app, &state);
+    Ok(result)
+}
+
+/// C2-③ 技能市场：卸载（hub 插件形态走统一卸载链，另清台账）。
+#[tauri::command]
+pub(crate) fn skillhub_uninstall(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
+    slug: String,
+) -> Result<String, String> {
+    if agent::skillhub::hub_plugin_root(&slug).is_some() {
+        plugin_remove(app, state, slug.clone())?;
+    }
+    agent::skillhub::skillhub_uninstall(&slug)
+}
+
+// ── 需求7 修1a：扩展生态在线库（pi.dev 画廊同源约定 = npm registry
+//    `keywords:pi-package` 检索；安装走 pi install npm:<spec> 通道）──
+
+#[derive(serde::Serialize)]
+pub(crate) struct PiOnlinePackage {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub publisher: String,
+    pub date: String,
+}
+
+/// npm registry 检索 pi-package 关键字包（keyword 为空 = 全量按相关度）。
+#[tauri::command]
+pub(crate) async fn pi_package_search(
+    keyword: Option<String>,
+) -> Result<Vec<PiOnlinePackage>, String> {
+    let text = match keyword.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        Some(kw) => format!("keywords:pi-package {kw}"),
+        None => "keywords:pi-package".to_string(),
+    };
+    let url = format!(
+        "https://registry.npmjs.org/-/v1/search?text={}&size=30",
+        urlencode(&text)
+    );
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .user_agent("jishu-hub/0.9.7")
+        .build()
+        .map_err(|e| e.to_string())?
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("网络不可用: {e}"))?;
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("响应解析失败: {e}"))?;
+    let objects = body
+        .get("objects")
+        .and_then(|v| v.as_array())
+        .ok_or("npm registry 响应结构异常")?;
+    let mut out = Vec::new();
+    for obj in objects {
+        let pkg = match obj.get("package") {
+            Some(p) => p,
+            None => continue,
+        };
+        // 双保险：部分包描述词不全，只在 keywords 含 pi-package 时入选。
+        let keywords = pkg
+            .get("keywords")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|k| k.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !keywords.iter().any(|k| k == "pi-package") {
+            continue;
+        }
+        out.push(PiOnlinePackage {
+            name: pkg
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            version: pkg
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            description: pkg
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .chars()
+                .take(120)
+                .collect(),
+            publisher: pkg
+                .get("publisher")
+                .and_then(|p| p.get("username"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            date: obj
+                .get("date")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .chars()
+                .take(10)
+                .collect(),
+        });
+    }
+    out.sort_by(|a, b| b.date.cmp(&a.date));
+    Ok(out)
+}
+
+fn urlencode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// 已装在线扩展的**实装版本**（v0.9.7 需求3 十七轮⑧：市场件版本号显示
+/// 真源）——读 npm 装载目录 node_modules/<pkg>/package.json 的 version。
+/// settings.json packages 的 `@version` 后缀是安装意图快照：浮动安装
+///（pi install npm:pkg 不带版本）无后缀、更新后不回写——均显示不出
+/// 真实版本；实装目录才是权威。读不到返回空表（前端兜底走源解析）。
+#[tauri::command]
+pub(crate) async fn pi_package_installed_versions(
+) -> Result<std::collections::HashMap<String, String>, String> {
+    // 第三轮评审修复：同步命令在主线程遍历全 node_modules（实测 218 包，
+    // 含传递依赖）逐包读文件+解析 JSON——包多时可感知卡顿。下沉
+    // spawn_blocking（对齐 piindex_search 等重 IO 命令的分层惯例）。
+    tauri::async_runtime::spawn_blocking(|| {
+        let Ok(agent_dir) = agent::jishu_self::paths::agent_dir() else {
+            return Ok(std::collections::HashMap::new());
+        };
+        let modules_dir = agent_dir.join("npm").join("node_modules");
+        let mut out = std::collections::HashMap::new();
+        let Ok(entries) = std::fs::read_dir(&modules_dir) else {
+            return Ok(out);
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // scoped 包（@scope/pkg）在两级子目录——scope 目录本身无清单。
+            let dirs: Vec<std::path::PathBuf> = if name.starts_with('@') {
+                std::fs::read_dir(entry.path())
+                    .map(|sub| sub.flatten().map(|e| e.path()).collect())
+                    .unwrap_or_default()
+            } else {
+                vec![entry.path()]
+            };
+            for dir in dirs {
+                let manifest = dir.join("package.json");
+                let Ok(content) = std::fs::read_to_string(&manifest) else {
+                    continue;
+                };
+                let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) else {
+                    continue;
+                };
+                let (Some(name), Some(version)) = (
+                    pkg.get("name").and_then(|v| v.as_str()),
+                    pkg.get("version").and_then(|v| v.as_str()),
+                ) else {
+                    continue;
+                };
+                if !version.is_empty() {
+                    out.insert(name.to_string(), version.to_string());
+                }
+            }
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("scan node_modules failed: {e}"))?
+}
+
+/// 当前 settings.json packages 数组（在线包「已安装」判定真源）。
+#[tauri::command]
+pub(crate) fn pi_package_installed_sources() -> Result<Vec<String>, String> {
+    let Ok(agent_dir) = agent::jishu_self::paths::agent_dir() else {
+        return Ok(Vec::new());
+    };
+    let content = std::fs::read_to_string(agent_dir.join("settings.json")).unwrap_or_default();
+    let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Ok(Vec::new());
+    };
+    Ok(settings
+        .get("packages")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// 内置 pi 扩展钉版清单（v0.9.7 需求3 已安装统一页）：hub 分发时的版本
+/// 快照——「还原系统原生版本」的锚点（编译期常量随包走，升级即新快照）。
+/// 第三轮评审修复：删 rename_all="camelCase"（§4 跨端序列化一律
+/// snake_case——三字段恰为单词无实际影响，但声明给后续加多词字段埋雷）。
+#[derive(serde::Serialize)]
+pub(crate) struct BuiltinPin {
+    pub source: String,
+    pub package: String,
+    pub version: String,
+}
+
+#[tauri::command]
+pub(crate) fn pi_package_builtin_pins() -> Result<Vec<BuiltinPin>, String> {
+    Ok(agent::jishu_self::PI_EXTENSION_PACKAGES
+        .iter()
+        .map(|(source, _dir)| {
+            // 第三轮评审修复：换 parse_npm_source（rsplit 对 scoped 无版本
+            // 源会解出空包名 + 乱码版本——还原锚点失真）。
+            let (package, version) = agent::jishu_self::parse_npm_source(source);
+            BuiltinPin {
+                source: source.to_string(),
+                package,
+                version,
+            }
+        })
+        .collect())
+}
+
+/// 在线包安装/卸载（npm/git 源直达；不走 curated 插件闸门——装的是 pi
+/// 扩展包本体，非 hub 插件条目）。git 源形如 git:github.com/owner/repo
+/// （piindex 目录 GitHub 直装卡）。
+#[tauri::command]
+pub(crate) async fn pi_package_install_online(source: String) -> Result<String, String> {
+    let source = source.trim().to_string();
+    if !(source.starts_with("npm:") || source.starts_with("git:")) {
+        return Err("仅支持 npm:/git: 前缀源（如 npm:pi-fireworks@0.1.2）".to_string());
+    }
+    agent::jishu_self::JishuSelfAgent::run_pi_package_command("install", &source)
+        .await
+        .map(|_| format!("{source} 已安装"))
+}
+
+/// 在线包卸载源归一（评审追加·「在线扩展补卸载」后端半边）：签名统一接受
+/// `source`（npm:pkg / git:github.com/... 形态，与安装源同源）；兼容既有
+/// 裸包名调用（npm 兜底——历史前端传 {name}）。返回 (归一 source, npm 包名)。
+fn normalize_uninstall_source(source: &str) -> (String, Option<String>) {
+    let trimmed = source.trim();
+    if trimmed.starts_with("npm:") {
+        // 去版本尾段取包名（scoped 包 @org/name 的首 @ 不受 rsplit 影响）。
+        let name = trimmed
+            .strip_prefix("npm:")
+            .and_then(|rest| match rest.rsplit_once('@') {
+                Some((n, v)) if !n.is_empty() && !v.is_empty() => Some(n.to_string()),
+                _ => Some(rest.to_string()),
+            })
+            .filter(|n| !n.is_empty());
+        (trimmed.to_string(), name)
+    } else if trimmed.starts_with("git:") {
+        (trimmed.to_string(), None) // git 源无 npm 包名
+    } else {
+        (format!("npm:{trimmed}"), Some(trimmed.to_string()))
+    }
+}
+
+/// 卸载守卫：pi_package_catalog 内置 5 包（PI_PACKAGE_PLUGIN_MAP 全集）与
+/// curated required（默认安装集）pi-package 件拒绝卸载——默认安装集不可
+/// 拆，误卸会破坏开箱能力（用户裁决「在线扩展补卸载」的边界）。
+fn guard_uninstall_target(pkg: Option<&str>) -> Result<(), String> {
+    let Some(pkg) = pkg else {
+        return Ok(()); // git 源不在内置/required 名单语义内
+    };
+    if agent::plugin::PI_PACKAGE_PLUGIN_MAP
+        .iter()
+        .any(|(_, p)| *p == pkg)
+    {
+        return Err("系统内置/必装扩展不可卸载".to_string());
+    }
+    // curated required 名单件按插件 id 比对（历史调用可能传 id 形态）。
+    if agent::plugin::market::required_pi_package_ids()
+        .iter()
+        .any(|id| *id == pkg)
+    {
+        return Err("系统内置/必装扩展不可卸载".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn pi_package_uninstall_online(source: String) -> Result<String, String> {
+    let (source, pkg) = normalize_uninstall_source(&source);
+    guard_uninstall_target(pkg.as_deref())?;
+    agent::jishu_self::JishuSelfAgent::run_pi_package_command("remove", &source)
+        .await
+        .map(|_| format!("{source} 已卸载"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 评审追加：卸载源归一——npm:/git: 原样透传（npm 带版本取包名），
+    /// 裸包名 npm 兜底（历史前端传 {name}）。
+    #[test]
+    fn normalize_uninstall_source_forms() {
+        let (src, pkg) = normalize_uninstall_source("npm:pi-fireworks@0.1.2");
+        assert_eq!(src, "npm:pi-fireworks@0.1.2");
+        assert_eq!(pkg.as_deref(), Some("pi-fireworks"));
+        let (_, pkg) = normalize_uninstall_source("npm:@scope/pkg@1.0.0");
+        assert_eq!(pkg.as_deref(), Some("@scope/pkg"));
+        let (src, pkg) = normalize_uninstall_source("some-pkg");
+        assert_eq!(src, "npm:some-pkg");
+        assert_eq!(pkg.as_deref(), Some("some-pkg"));
+        // git 源无 npm 包名。
+        let (src, pkg) = normalize_uninstall_source("git:github.com/owner/repo");
+        assert_eq!(src, "git:github.com/owner/repo");
+        assert_eq!(pkg, None);
+    }
+
+    /// 评审追加：卸载守卫——内置 5 包与 curated required 名单件拒绝，
+    /// 普通在线包/git 源放行。
+    #[test]
+    fn guard_uninstall_target_rejects_builtin_and_required() {
+        // 内置 5 包（PI_PACKAGE_PLUGIN_MAP 全集抽两样代表：裸名与 scoped）。
+        for builtin in ["pi-lens", "pi-web-access", "@juicesharp/rpiv-todo"] {
+            let err = guard_uninstall_target(Some(builtin)).unwrap_err();
+            assert!(
+                err.contains("系统内置/必装扩展不可卸载"),
+                "{builtin} → {err}"
+            );
+        }
+        // curated required 名单件按 id 形态（如历史传 id）同样拒绝。
+        assert!(guard_uninstall_target(Some("jishu-subagent")).is_err());
+        // 普通在线包与 git 源放行。
+        assert!(guard_uninstall_target(Some("pi-fireworks")).is_ok());
+        assert!(guard_uninstall_target(Some("npm:any-pkg@2.0")).is_ok());
+        assert!(guard_uninstall_target(None).is_ok());
+    }
 }

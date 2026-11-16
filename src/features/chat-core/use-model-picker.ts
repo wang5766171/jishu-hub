@@ -6,8 +6,12 @@ import { invokeCommand } from "@/hooks/use-invoke";
  *
  * 数据源是聚合 IPC `get_model_picker_options`（models.json 的
  * thinkingLevelMap/reasoning 解析唯一化在后端）——前端不再复刻 Pi 语义，
- * 模型表单与行为页同源消费。选择走既有 set_active，active 模型仍经
- * get_active 读取（读写路径不变，仅候选与档位来源收敛）。
+ * 模型表单与行为页同源消费。
+ *
+ * v0.9.7 需求14：**会话级模型**——`sessionKey`（当前会话真实 id）非空时，
+ * 选择写入会话锁定（`session_model_set`，只影响本会话，不动全局 active）；
+ * 新会话（sessionKey 空/"new"）仍写全局（新会话尚无 id 可锁定，且「新
+ * 会话选模型」语义上就是设接下来的默认）。显示值：会话锁定 > 全局 active。
  */
 
 export interface ModelPickerOption {
@@ -34,27 +38,37 @@ export function useModelPicker(
   agentId: string | null | undefined,
   enabled: boolean,
   onModelChanged?: () => void,
+  sessionKey?: string | null,
 ): UseModelPicker {
   const [options, setOptions] = useState<ModelPickerOption[]>([]);
   const [activeValue, setActiveValue] = useState<string | null>(null);
+  // 会话锁定模型（null=未锁定，跟随全局）。切会话时刷新显示。
+  const [sessionModel, setSessionModel] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!enabled || !agentId) {
       setOptions([]);
       setActiveValue(null);
+      setSessionModel(null);
       return;
     }
     try {
-      const [opts, act] = await Promise.all([
+      const [opts, act, sess] = await Promise.all([
         invokeCommand<ModelPickerOption[]>("get_model_picker_options", { agentId }),
         invokeCommand<{ provider: string; model: string } | null>("get_active", { agentId }),
+        // session_model_get 返回 Rust Option<(String,String)>——序列化为
+        // 元组数组 [provider, model]（非对象；按对象取值曾致 "undefined/undefined"）。
+        sessionKey
+          ? invokeCommand<[string, string] | null>("session_model_get", { sessionId: sessionKey })
+          : Promise.resolve(null),
       ]);
       setOptions(opts);
       setActiveValue(act ? `${act.provider}/${act.model}` : null);
+      setSessionModel(sess ? `${sess[0]}/${sess[1]}` : null);
     } catch (e) {
       console.warn("Model picker refresh failed:", e);
     }
-  }, [enabled, agentId]);
+  }, [enabled, agentId, sessionKey]);
 
   useEffect(() => {
     void refresh();
@@ -65,24 +79,44 @@ export function useModelPicker(
       if (!agentId) return;
       const [provider, ...rest] = value.split("/");
       const model = rest.join("/");
-      setActiveValue(value);
+      // 评审 P2-7 修复：pending- 前缀是发送期临时 id（会话尚未落盘）——
+      // 不写后端会话锁键（session_model_get/set 找不到会话，键成孤儿）。
+      const perSession =
+        !!sessionKey && sessionKey !== "new" && !sessionKey.startsWith("pending-");
+      // 评审 P2-10 修复：乐观更新前先存原值——写入失败回滚（修前失败后
+      // UI 停留在未生效的新模型上）。
+      const prevSession = sessionModel;
+      const prevActive = activeValue;
+      setSessionModel(perSession ? value : null);
+      if (!perSession) setActiveValue(value);
       try {
-        // v0.9.4 需求12：模型切换语义埋点（下次 send 触发签名漂移回收重拉——
-        // 后续 send_message 耗时会显著变长，此标记用于对齐时序）。
-        (await import("@/lib/dev-log")).devLog("ipc", "模型切换", { from: "见 set_active ok", to: model, provider });
-        await invokeCommand("set_active", { agentId, active: { provider, model } });
+        if (perSession) {
+          // 需求14：只锁定当前会话（全局 active 不动——其他会话不受影响；
+          // 本会话进程按启动签名漂移在下次空闲发送时重拉）。
+          (await import("@/lib/dev-log")).devLog("ipc", "模型切换（会话级）", { to: model, provider, session: sessionKey });
+          await invokeCommand("session_model_set", { sessionId: sessionKey, provider, model });
+        } else {
+          // v0.9.4 需求12：模型切换语义埋点（下次 send 触发签名漂移回收重拉——
+          // 后续 send_message 耗时会显著变长，此标记用于对齐时序）。
+          (await import("@/lib/dev-log")).devLog("ipc", "模型切换（全局）", { to: model, provider });
+          await invokeCommand("set_active", { agentId, active: { provider, model } });
+        }
         onModelChanged?.();
       } catch (err) {
-        console.warn("set_active failed:", err);
+        // 评审 P2-10：失败回滚到原值（乐观更新撤回），警告保留供回溯。
+        // 修复轮回归收口：条件式回滚——仅当当前显示值仍是「本次」乐观值
+        // 才回滚（快速连选 A→B 且 A 先失败时，无条件回滚会用 A 的旧值
+        // 盖掉 B 的乐观值，造成 UI 与后端锁值错位）。
+        setSessionModel((cur) => (cur === value ? prevSession : cur));
+        if (!perSession) setActiveValue((cur) => (cur === value ? prevActive : cur));
+        console.warn(perSession ? "session_model_set failed:" : "set_active failed:", err);
       }
     },
-    [agentId, onModelChanged],
+    [agentId, activeValue, onModelChanged, sessionKey, sessionModel],
   );
 
-  const activeOption = options.find((o) => o.value === activeValue);
-  const thinkingLevels = activeOption?.thinking_levels?.length
-    ? activeOption.thinking_levels
-    : DEFAULT_LEVELS;
+  const shownValue = sessionModel ?? activeValue;
+  const activeOption = options.find((o) => o.value === shownValue);
 
   const labelFor = useCallback(
     (value: string) => options.find((o) => o.value === value)?.label ?? value,
@@ -91,8 +125,10 @@ export function useModelPicker(
 
   return {
     options,
-    activeValue,
-    thinkingLevels,
+    activeValue: shownValue,
+    thinkingLevels: activeOption?.thinking_levels?.length
+      ? activeOption.thinking_levels
+      : DEFAULT_LEVELS,
     reasoning: activeOption?.reasoning ?? true,
     labelFor,
     select,

@@ -8,6 +8,7 @@
 //! - **只存用户显式改过的键**（未改键不落盘，前端 default 合并）；
 //! - 文件缺失/损坏 → 空配置（安全方向：一切按代码默认值）；
 //! - 写入原子（tempfile 替换），读改写整文件（单用户桌面场景无并发压力）。
+//!
 //! 值的合法性（min/max 等）由前端按 configSchema 校验后提交；后端只做
 //! JSON 形状透传——配置键的语义属于各插件。
 
@@ -74,7 +75,8 @@ mod tests {
         .unwrap();
         let all = load_all();
         assert_eq!(
-            all.get("session.mermaid-render").and_then(|v| v.get("inlineScalePct")),
+            all.get("session.mermaid-render")
+                .and_then(|v| v.get("inlineScalePct")),
             Some(&serde_json::json!(65))
         );
 
@@ -85,6 +87,5 @@ mod tests {
         // 损坏文件 → 空配置不 panic。
         std::fs::write(config_path(), "{invalid").unwrap();
         assert!(load_all().is_empty());
-
     }
 }

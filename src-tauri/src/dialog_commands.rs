@@ -88,7 +88,7 @@ pub fn export_raw_config_dialog(
     let path = app
         .dialog()
         .file()
-        .add_filter(&ext.to_uppercase(), &[ext])
+        .add_filter(ext.to_uppercase(), &[ext])
         .set_file_name(&default_name)
         .blocking_save_file()
         .ok_or_else(|| USER_CANCELLED.to_string())?;

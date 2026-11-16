@@ -45,7 +45,7 @@ pub(crate) fn list_pi_sessions(encoded_name: &str) -> Result<Vec<crate::session:
         }
     }
 
-    sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active));
     Ok(sessions)
 }
 
@@ -84,7 +84,61 @@ pub(crate) fn delete_pi_session_in_dir(session_dir: &Path, session_id: &str) -> 
     if sidecar.is_file() {
         let _ = fs::remove_file(&sidecar);
     }
+    // v0.9.6 需求6 F3：会话删除联动清理 pending 记录（防孤儿条目）。
+    crate::pending_messages::drop_session(session_id);
     Ok(())
+}
+
+/// v0.9.6 需求4 补充⑤③：会话消息解析缓存（切标签秒回）。
+/// get_session_messages 每次全量解析 JSONL（大会话数百 ms~秒级），前端虽有
+/// session-cache 但仅覆盖本生命周期打开过的会话；跨项目切换/重启后首次
+/// 仍要付全量解析。此处按 (mtime, size) 缓存解析结果——文件未变直接返回
+/// 克隆（克隆成本远低于解析）。容量粗上限，超限整体清空（简单且足够——
+/// 缓存价值集中在「反复切换的少数会话」）。
+struct ParseCacheEntry {
+    mtime: std::time::SystemTime,
+    size: u64,
+    messages: Vec<crate::session::Message>,
+}
+
+fn parse_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, ParseCacheEntry>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, ParseCacheEntry>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 命中缓存（文件 mtime/size 未变）→ 返回克隆；未命中返回 None。
+fn session_parse_cache_get(path: &Path) -> Option<Vec<crate::session::Message>> {
+    let meta = fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok()?;
+    let size = meta.len();
+    let cache = parse_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let entry = cache.get(path)?;
+    if entry.mtime == mtime && entry.size == size {
+        Some(entry.messages.clone())
+    } else {
+        None
+    }
+}
+
+/// 写入缓存（超上限整体清空）。
+fn session_parse_cache_put(path: &Path, messages: Vec<crate::session::Message>) {
+    let Ok(meta) = fs::metadata(path) else { return };
+    let Ok(mtime) = meta.modified() else { return };
+    let size = meta.len();
+    let mut cache = parse_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= 64 && !cache.contains_key(path) {
+        cache.clear();
+    }
+    cache.insert(
+        path.to_path_buf(),
+        ParseCacheEntry {
+            mtime,
+            size,
+            messages,
+        },
+    );
 }
 
 pub(crate) fn load_pi_session_messages(
@@ -108,7 +162,50 @@ pub(crate) fn load_pi_session_messages(
         if path.extension().map(|ext| ext == "jsonl").unwrap_or(false) {
             if let Some(session) = load_pi_session(&path) {
                 if session.id == session_id {
-                    return Ok(session.messages);
+                    // v0.9.6 需求4 补充⑤③：解析缓存命中（mtime/size 未变）——
+                    // 跳过 JSONL 全量重解析，直接用缓存消息（切标签秒回）。
+                    // 注意：缓存的是**纯 JSONL 解析结果**（不含 F3 pending 并入
+                    // 条目——pending 对账每次照跑，避免 ack 后缓存残留）。
+                    let mut messages = match session_parse_cache_get(&path) {
+                        Some(cached) => cached,
+                        None => {
+                            session_parse_cache_put(&path, session.messages.clone());
+                            session.messages
+                        }
+                    };
+                    // v0.9.6 需求6 F3：与 hub 侧 pending 记录对账——已落盘的
+                    // pending 清除（ack 丢失兜底）；未落盘的（pi 受理后回合未
+                    // 启动：压缩预检/钩子挂死、进程被杀）并入消息列表尾部，
+                    // 重启后用户消息不丢。
+                    let persisted_user_texts: Vec<String> = messages
+                        .iter()
+                        .filter(|m| m.role == "user")
+                        .map(|m| {
+                            m.content
+                                .iter()
+                                .filter_map(|b| match b {
+                                    crate::session::ContentBlock::Text { text, .. } => {
+                                        Some(text.clone())
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("")
+                        })
+                        .collect();
+                    for pending in
+                        crate::pending_messages::dedupe_against(session_id, &persisted_user_texts)
+                    {
+                        messages.push(crate::session::Message {
+                            role: "user".to_string(),
+                            content: vec![crate::session::ContentBlock::Text {
+                                text: pending.content,
+                                tool_ids: Vec::new(),
+                            }],
+                            timestamp: Some(pending.sent_at),
+                        });
+                    }
+                    return Ok(messages);
                 }
             }
         }
@@ -343,7 +440,7 @@ fn last_pi_assistant_message_id(content: &str) -> Option<String> {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)
         })
-        .last()
+        .next_back()
 }
 
 fn persist_pi_interaction_blocks_at_path(
@@ -647,19 +744,17 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                     .get("timestamp")
                     .and_then(|v| v.as_str())
                     .and_then(parse_rfc3339_millis);
-                    if let Some(message) = parse_pi_message(value.get("message")?, entry_timestamp) {
-                        if display_name.is_none() && message.role == "user" {
-                            // 剥离 [JISHU-PROMT:] 系统内部契约标记后再取摘要；
-                            // 剥离后为空（纯系统提示词）则跳过，display_name 继续找下一条 user 消息。
-                            // v0.8.1 需求10 → v0.9.0 需求3：剥工具插件注入块（文本标
-                            // 记已废弃）——pi JSONL 记录的是 compose 后的完整 prompt，
-                            // 标题必须呈现用户真实问题（§16.3 契约）。
-                            display_name = first_text(&message)
-                                .map(|t| strip_jishu_promt(&t))
-                                .map(|t| crate::agent::tool_plugin::strip_tool_block(&t))
-                                .filter(|t| !t.trim().is_empty())
-                                .map(smart_summary);
-                        }
+                if let Some(message) = parse_pi_message(value.get("message")?, entry_timestamp) {
+                    if display_name.is_none() && message.role == "user" {
+                        // 统一剥离链（internal_prompts）剥注入块后取摘要；
+                        // 剥离后为空（纯系统提示词）则跳过，display_name 继续
+                        // 找下一条 user 消息——pi JSONL 记录的是 compose 后的
+                        // 完整 prompt，标题必须呈现用户真实问题（§16.3 契约）。
+                        display_name = first_text(&message)
+                            .map(|t| crate::agent::internal_prompts::strip_internal_prompts(&t))
+                            .filter(|t| !t.trim().is_empty())
+                            .map(smart_summary);
+                    }
                     let is_launch = is_task_launch_message(&message);
                     // v0.9.1 需求14 测试期：连续 error 分隔线折叠（重试每试一条），
                     // 与 pi_message_positions 的计数折叠保持同步。
@@ -852,6 +947,9 @@ fn parse_pi_message(
                     .get("isError")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
+                // 需求12：pi 工具结果的结构化 details 透传（如 rpiv-todo 的
+                // TaskDetails.tasks 全量快照）——会话插件待办看板消费。
+                details: value.get("details").cloned().filter(|d| !d.is_null()),
             }],
             timestamp,
         }),
@@ -862,7 +960,10 @@ fn parse_pi_message(
 fn parse_user_content(value: &serde_json::Value) -> Vec<crate::session::ContentBlock> {
     match value {
         serde_json::Value::String(text) if !text.trim().is_empty() => {
-            vec![crate::session::ContentBlock::Text { text: text.clone(), tool_ids: Vec::new() }]
+            vec![crate::session::ContentBlock::Text {
+                text: text.clone(),
+                tool_ids: Vec::new(),
+            }]
         }
         serde_json::Value::Array(items) => items
             .iter()
@@ -956,34 +1057,6 @@ fn first_text(message: &crate::session::Message) -> Option<String> {
     })
 }
 
-/// 剥离 `[JISHU-PROMT:开始]...[JISHU-PROMT:结束]` 配对块标记及其包裹的
-/// 系统内部提示词（Task Orchestrator 执行契约）。
-///
-/// 该标记由 orchestrator daemon 在节点执行时注入到 user 消息前
-///（见 `engine.rs::agent_prompt_with_policy`），仅是给 agent 的内部契约，
-/// 不应出现在会话标题等面向用户的摘要里。纯字符串实现，避免引入 regex 依赖。
-fn strip_jishu_promt(text: &str) -> String {
-    const START: &str = "[JISHU-PROMT:开始]";
-    const END: &str = "[JISHU-PROMT:结束]";
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start_idx) = rest.find(START) {
-        out.push_str(&rest[..start_idx]);
-        let after_start = &rest[start_idx + START.len()..];
-        match after_start.find(END) {
-            Some(end_idx) => {
-                rest = &after_start[end_idx + END.len()..];
-            }
-            None => {
-                // 未配对的开始标记（异常）：丢弃其后内容，跳出循环。
-                break;
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
 fn smart_summary(text: String) -> String {
     let text = text.trim();
     let first = text
@@ -1049,6 +1122,17 @@ pub(crate) fn scan_pi_projects() -> Vec<crate::project::Project> {
         if !Path::new(&project_path).is_dir() {
             continue;
         }
+        // v0.9.6 需求3：过滤非项目 cwd 的目录（子智能体旁路产生）——
+        // pi-subagents 的模型探测 probe 以 os.tmpdir() 为 cwd 起一次性
+        // pi 子进程（profiles.js probeModel），pi 会话目录是 f(cwd) 且
+        // 创建即 mkdir，mint 出的 sessions/--Temp-- 目录会被当作新项目
+        //（用户实测项目列表出现陌生条目）。主链（前台 subagent）的子会话
+        // 本就嵌套在父会话目录内（物理归并），不受此过滤影响；存量目录
+        // 不迁移（磁盘不动，仅列表不显示）。
+        if is_non_project_cwd(Path::new(&project_path)) {
+            log::debug!("scan_pi_projects: skipping non-project cwd directory: {project_path}");
+            continue;
+        }
         if !seen_paths.insert(project_path.clone()) {
             continue;
         }
@@ -1068,6 +1152,16 @@ pub(crate) fn scan_pi_projects() -> Vec<crate::project::Project> {
 
     projects.sort_by(|a, b| b.last_active.cmp(&a.last_active));
     projects
+}
+
+/// v0.9.6 需求3：判定一个 cwd 是否「非项目路径」（扫描时过滤）。
+/// 当前确定的非项目来源：系统临时目录——pi-subagents 模型探测 probe 的
+/// 一次性 pi 子进程 cwd=os.tmpdir()，产生 sessions/--…Temp---- 目录。
+/// 保守白名单式：只过滤 temp 前缀，worktree 等真实工作目录不过滤（用户
+/// 可能在其中主动工作，误伤代价高于收益）。
+fn is_non_project_cwd(cwd: &Path) -> bool {
+    let temp = std::env::temp_dir();
+    cwd.starts_with(&temp)
 }
 
 /// Read the `cwd` field from the first JSONL session header in a directory.
@@ -1210,30 +1304,6 @@ mod tests {
     }
 
     #[test]
-    fn strip_jishu_promt_removes_paired_block() {
-        // 含执行契约块的完整消息：剥离后应保留用户真实指令。
-        let raw = "[JISHU-PROMT:开始]\n\
-Task Orchestrator execution contract:\n\
-- read_files: true\n\
-- write_files: false\n\
-[JISHU-PROMT:结束]\n\n请帮我实现登录页面";
-        assert_eq!(strip_jishu_promt(raw).trim(), "请帮我实现登录页面");
-    }
-
-    #[test]
-    fn strip_jishu_promt_no_block_untouched() {
-        // 无标记的普通文本应原样返回。
-        assert_eq!(strip_jishu_promt("登录 Demo 页面"), "登录 Demo 页面");
-    }
-
-    #[test]
-    fn strip_jishu_promt_pure_block_becomes_empty() {
-        // 纯系统提示词（仅含配对块）剥离后为空。
-        let raw = "[JISHU-PROMT:开始]\ncontract\n[JISHU-PROMT:结束]";
-        assert_eq!(strip_jishu_promt(raw).trim(), "");
-    }
-
-    #[test]
     fn parses_pi_session_header_and_messages() {
         let root =
             std::env::temp_dir().join(format!("jishu-pi-session-test-{}", std::process::id()));
@@ -1282,7 +1352,10 @@ Task Orchestrator execution contract:\n\
         // Error 徽标（此前丢失导致失败工具回放成 Done）。
         assert!(matches!(
             &session.messages[2].content[0],
-            ContentBlock::ToolResult { is_error: false, .. }
+            ContentBlock::ToolResult {
+                is_error: false,
+                ..
+            }
         ));
         assert_eq!(session.messages[3].role, "user");
         assert!(matches!(
@@ -1355,10 +1428,9 @@ Task Orchestrator execution contract:\n\
             })
             .expect("应重建 plan 分隔线消息");
         assert!(
-            plan_divider
-                .content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text.contains("进入流程规划"))),
+            plan_divider.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text, .. } if text.contains("进入流程规划"))
+            ),
             "plan 分隔线消息应携带标记的展示文本"
         );
 
@@ -1645,7 +1717,7 @@ Task Orchestrator execution contract:\n\
     /// produced on a real run. Captures a snapshot at
     /// `tests/fixtures/pi_session_real.jsonl`; the test loads and
     /// parses it the same way the GUI would.
-    #[test]
+    ///
     /// v0.9.1 需求14 测试期：errorMessage-only 失败消息投影为 error 分隔线，
     /// 连续多条（重试各一次）折叠为一条——会话重载后失败原因可见。
     #[test]
@@ -1678,6 +1750,7 @@ Task Orchestrator execution contract:\n\
         ));
     }
 
+    #[test]
     fn parses_real_pi_session_jsonl_fixture() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -1722,5 +1795,22 @@ Task Orchestrator execution contract:\n\
         if let Some(s) = session {
             println!("Messages count: {}", s.messages.len());
         }
+    }
+}
+
+#[cfg(test)]
+mod non_project_cwd_tests {
+    use super::is_non_project_cwd;
+    use std::path::PathBuf;
+
+    /// v0.9.6 需求3：temp 前缀过滤（pi-subagents probe 的 os.tmpdir() cwd）。
+    #[test]
+    fn temp_dir_cwd_is_filtered() {
+        let temp = std::env::temp_dir();
+        assert!(is_non_project_cwd(&temp));
+        assert!(is_non_project_cwd(&temp.join("subagent-probe")));
+        // 真实项目路径不过滤（含恰好含 "Temp" 字样的正常路径）
+        assert!(!is_non_project_cwd(&PathBuf::from("D:/MyCodes/jishu-hub")));
+        assert!(!is_non_project_cwd(&PathBuf::from("D:/work/Temp-projects")));
     }
 }

@@ -55,83 +55,125 @@ function TaskBoardPrimitive({ payload }: RendererComponentProps<SourcePayload>) 
   const task = payload.kind === "task" ? payload.task : null;
   if (!task) {
     return (
-      <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
-        {t("sessionPlugins.flow.noTask", "当前会话未关联任务")}
+      <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
+        <MessagesSquare className="h-6 w-6 text-muted-foreground/30" />
+        <div className="text-xs text-muted-foreground/70">
+          {t("sessionPlugins.flow.noTask", "当前会话未关联任务")}
+        </div>
       </div>
     );
   }
   const runActive = task.runStatus === "running";
+  const runnerMode = task.runnerMode === true;
+  const pct = task.total > 0 ? Math.round((task.completed / task.total) * 100) : 0;
+  const allDone = task.total > 0 && task.completed >= task.total;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-2 px-2 py-1.5 text-xs text-muted-foreground">
-        <span className="truncate font-medium text-foreground">{task.title}</span>
-        <span className="shrink-0 tabular-nums">
+      {/* 头部：标题 + 进度 pill + 画布入口（runner 任务无画布不显示）。 */}
+      <div className="flex items-center gap-2 border-b border-border/40 px-2.5 py-2">
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-foreground">
+          {task.title}
+        </span>
+        <span
+          className={cn(
+            "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium tabular-nums",
+            allDone
+              ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+              : runActive || runnerMode
+                ? "bg-primary/15 text-primary"
+                : "bg-muted text-muted-foreground",
+          )}
+        >
           {t("sessionPlugins.flow.progress", {
             completed: task.completed,
             total: task.total,
             defaultValue: "{{completed}}/{{total}}",
           })}
         </span>
-        <button
-          type="button"
-          onClick={task.onOpenCanvas}
-          className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
-          title={t("sessionPlugins.flow.openCanvas", "画布")}
-        >
-          <Map className="h-3 w-3" />
-          {t("sessionPlugins.flow.openCanvas", "画布")}
-        </button>
+        {!runnerMode && (
+          <button
+            type="button"
+            onClick={task.onOpenCanvas}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            title={t("sessionPlugins.flow.openCanvas", "画布")}
+          >
+            <Map className="h-3 w-3" />
+            {t("sessionPlugins.flow.openCanvas", "画布")}
+          </button>
+        )}
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-1">
-        {/* 主会话入口（常驻，置顶于节点列表）：看板是子会话唯一入口，回/进
-            主会话也必须在此常驻可及。onSelectNode(null) = 取消节点选择，
-            主区回退任务的阶段会话。 */}
-        <button
-          type="button"
-          onClick={() => task.onSelectNode(null)}
-          className={cn(
-            "mb-1 flex w-full items-center gap-2 rounded-md border-l-2 px-2 py-1.5 text-left text-xs transition-colors",
-            task.selectedNodeId
-              ? "border-l-transparent text-foreground/90 hover:bg-accent"
-              : "border-l-primary bg-primary/20 font-medium text-foreground",
-          )}
-          title={t("sessionPlugins.flow.mainSessionHint", "本任务的需求/规划/执行讨论会话")}
-        >
-          <MessagesSquare className="h-3.5 w-3.5 shrink-0 text-primary" />
-          <span className="min-w-0 flex-1 truncate">{t("sessionPlugins.flow.mainSession", "主会话")}</span>
-          {!task.selectedNodeId ? (
-            <span className="shrink-0 text-[10px] text-muted-foreground/60">
-              {t("sessionPlugins.flow.currentPosition", "当前")}
-            </span>
-          ) : null}
-        </button>
+      {/* 进度条：完成度一眼可读（runner 步骤与有图节点同口径）。 */}
+      {task.total > 0 && (
+        <div className="h-1 w-full shrink-0 bg-muted/60">
+          <div
+            className={cn(
+              "h-full transition-[width] duration-500",
+              allDone ? "bg-emerald-500" : "bg-primary",
+            )}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+      {/* runner 待答问题（ask_user 同步）：琥珀条置顶提示。 */}
+      {runnerMode && task.pendingQuestion && (
+        <div className="mx-2 mt-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-4 text-amber-600 dark:text-amber-400">
+          <span className="mr-1 font-medium">{t("sessionPlugins.flow.pendingQuestion", "待回答")}：</span>
+          {task.pendingQuestion}
+        </div>
+      )}
+      <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 py-1.5">
+        {/* 主会话入口（常驻，置顶于节点列表；runner 单对话流任务无子会话
+            隐藏）：看板是子会话唯一入口，回/进主会话也必须在此常驻可及。
+            onSelectNode(null) = 取消节点选择，主区回退任务的阶段会话。 */}
+        {!runnerMode && (
+          <button
+            type="button"
+            onClick={() => task.onSelectNode(null)}
+            className={cn(
+              "mb-1 flex w-full items-center gap-2 rounded-md border-l-2 px-2 py-1.5 text-left text-xs transition-colors",
+              task.selectedNodeId
+                ? "border-l-transparent text-foreground/90 hover:bg-accent"
+                : "border-l-primary bg-primary/15 font-medium text-foreground",
+            )}
+            title={t("sessionPlugins.flow.mainSessionHint", "本任务的需求/规划/执行讨论会话")}
+          >
+            <MessagesSquare className="h-3.5 w-3.5 shrink-0 text-primary" />
+            <span className="min-w-0 flex-1 truncate">{t("sessionPlugins.flow.mainSession", "主会话")}</span>
+            {!task.selectedNodeId ? (
+              <span className="shrink-0 text-[10px] text-muted-foreground/60">
+                {t("sessionPlugins.flow.currentPosition", "当前")}
+              </span>
+            ) : null}
+          </button>
+        )}
         {task.nodes.map((node, index) => {
           const style = TASK_STATUS_STYLE[node.status] ?? TASK_STATUS_STYLE.ready;
           const Icon = style.icon;
-          const clickable = node.status !== "blocked" && node.status !== "ready";
+          // runner 步骤无子会话不可钻入；有图节点 blocked/ready 未执行不可点。
+          const clickable = !runnerMode && node.status !== "blocked" && node.status !== "ready";
           // 当前钻入节点用主色背景 + 左缘竖条高亮（看板是子会话唯一入口，
           // 选中态必须一眼可辨）。
-          const isSelected = task.selectedNodeId === node.nodeId;
-          return (
-            <button
-              key={node.nodeId}
-              type="button"
-              disabled={!clickable}
-              onClick={() => task.onSelectNode(node.nodeId)}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-md border-l-2 px-2 py-1.5 text-left text-xs transition-colors",
-                isSelected
-                  ? "border-l-primary bg-primary/20 font-medium text-foreground"
-                  : cn(
-                      "border-l-transparent",
-                      clickable ? "hover:bg-accent" : "cursor-default opacity-70",
-                    ),
-              )}
-            >
-              <span className={cn(
-                "w-4 shrink-0 text-center text-[10px]",
-                isSelected ? "text-primary" : "text-muted-foreground/60",
-              )}>
+          const isSelected = !runnerMode && task.selectedNodeId === node.nodeId;
+          const rowCls = cn(
+            "flex w-full items-center gap-2 rounded-md border-l-2 px-2 py-1.5 text-left text-xs transition-colors",
+            isSelected
+              ? "border-l-primary bg-primary/15 font-medium text-foreground"
+              : cn(
+                  "border-l-transparent",
+                  clickable ? "hover:bg-accent" : "cursor-default",
+                  runnerMode && node.status === "ready" && "opacity-75",
+                ),
+          );
+          const inner = (
+            <>
+              <span
+                className={cn(
+                  "flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] tabular-nums",
+                  isSelected
+                    ? "bg-primary/15 text-primary"
+                    : "bg-muted/70 text-muted-foreground/70",
+                )}
+              >
                 {index + 1}
               </span>
               <Icon className={cn("h-3.5 w-3.5 shrink-0", style.cls)} />
@@ -141,16 +183,25 @@ function TaskBoardPrimitive({ payload }: RendererComponentProps<SourcePayload>) 
                   {node.waitingFor}
                 </span>
               )}
+            </>
+          );
+          return clickable ? (
+            <button key={node.nodeId} type="button" onClick={() => task.onSelectNode(node.nodeId)} className={rowCls}>
+              {inner}
             </button>
+          ) : (
+            <div key={node.nodeId} className={rowCls}>
+              {inner}
+            </div>
           );
         })}
       </div>
-      {runActive && (
+      {runActive && !runnerMode && (
         <div className="flex items-center gap-1.5 border-t border-border/40 px-2 py-1.5">
           <button
             type="button"
             onClick={task.onCancelRun}
-            className="ml-auto inline-flex items-center gap-1 rounded-md border border-red-500/40 px-2 py-1 text-[11px] text-red-500 hover:bg-red-500/10"
+            className="ml-auto inline-flex items-center gap-1 rounded-md border border-red-500/40 px-2 py-1 text-[11px] text-red-500 transition-colors hover:bg-red-500/10"
           >
             <Ban className="h-3 w-3" />
             {t("sessionPlugins.flow.cancelAll", "取消全部")}
@@ -329,3 +380,68 @@ function NonePrimitive(): null {
   return null;
 }
 rendererRegistry.register({ key: "render.none", component: NonePrimitive, description: "无渲染（纯动作/事件类插件占位）" });
+
+// ── 8c（v0.9.5 需求1，原需求26）：工具返回值渲染原语（tool-result 源配
+// tool-output 挂载）——render.table / render.image。payload 形状：
+// { kind: "tool-result", toolName, output }（matchToolResultRenderer 咨询链）。
+
+function ToolResultTablePrimitive({ payload }: RendererComponentProps<SourcePayload>) {
+  const p = payload as { kind: string; output?: string };
+  let parsed: { columns?: unknown[]; rows?: unknown[][] } | null = null;
+  try {
+    const raw = JSON.parse((p.output ?? "").trim());
+    const obj = Array.isArray(raw) ? raw[0] : raw;
+    if (obj && typeof obj === "object" && Array.isArray((obj as { columns?: unknown }).columns) && Array.isArray((obj as { rows?: unknown }).rows)) {
+      parsed = obj as { columns?: unknown[]; rows?: unknown[][] };
+    }
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) {
+    return <div className="p-2 text-xs text-muted-foreground">非表格 JSON（需含 columns + rows）</div>;
+  }
+  const heads = (parsed.columns ?? []).map(String);
+  return (
+    <div className="max-h-64 overflow-auto rounded-md border border-border/45">
+      <table className="w-full border-collapse text-left font-mono text-[11px]">
+        <thead className="sticky top-0 bg-[var(--tool-card-code-bg)]">
+          <tr>{heads.map((h, i) => <th key={i} className="border-b border-border/50 px-2 py-1 font-medium">{h}</th>)}</tr>
+        </thead>
+        <tbody>
+          {(parsed.rows ?? []).slice(0, 100).map((row, r) => (
+            <tr key={r} className="odd:bg-muted/20">
+              {heads.map((_, c) => (
+                <td key={c} className="border-b border-border/25 px-2 py-1 align-top text-foreground/75">
+                  {row?.[c] === null || row?.[c] === undefined ? "" : typeof row?.[c] === "object" ? JSON.stringify(row[c]) : String(row[c])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ToolResultImagePrimitive({ payload }: RendererComponentProps<SourcePayload>) {
+  const p = payload as { kind: string; output?: string };
+  const raw = (p.output ?? "").trim();
+  const url = raw.startsWith("data:") ? raw : raw.startsWith("<svg") ? `data:image/svg+xml;utf8,${encodeURIComponent(raw)}` : `data:image/png;base64,${raw.replace(/\s+/g, "")}`;
+  return (
+    <div className="flex max-h-64 items-center justify-center overflow-auto rounded-md border border-border/45 bg-white p-2">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={url} alt="工具图片输出" className="max-h-60 max-w-full" />
+    </div>
+  );
+}
+
+rendererRegistry.register({
+  key: "render.table",
+  component: ToolResultTablePrimitive,
+  description: "工具返回值表格（JSON columns+rows；tool-result 源）",
+});
+rendererRegistry.register({
+  key: "render.image",
+  component: ToolResultImagePrimitive,
+  description: "工具返回值图片（data:/base64/SVG；tool-result 源）",
+});

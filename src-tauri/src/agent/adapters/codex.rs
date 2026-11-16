@@ -1,7 +1,4 @@
-use crate::agent::{
-    normalized::{NormalizedEvent, TurnEndReason},
-    AgentCapabilities, AgentHealth, AgentInfo, AgentPlugin, ChatRequest,
-};
+use crate::agent::{AgentCapabilities, AgentHealth, AgentInfo, ChatRequest};
 use serde::Deserialize;
 use std::io::BufRead;
 
@@ -12,81 +9,6 @@ impl CodexAdapter {
         Self
     }
 }
-
-pub fn normalize_stream_event(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    match event.get("type").and_then(|v| v.as_str()) {
-        Some("message_delta") | Some("exec_command_output_delta") => {
-            let delta = event
-                .get("delta")
-                .or_else(|| event.get("text"))
-                .or_else(|| event.get("output"))
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            if delta.is_empty() {
-                raw(event)
-            } else {
-                vec![NormalizedEvent::TextDelta {
-                    delta: delta.to_string(),
-                }]
-            }
-        }
-        Some("message") => normalize_codex_message(event),
-        Some("result") | Some("turn_complete") => normalize_codex_complete(event),
-        _ => raw(event),
-    }
-}
-
-fn normalize_codex_message(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    if let Some(text) = event
-        .get("message")
-        .or_else(|| event.get("content"))
-        .and_then(|v| v.as_str())
-    {
-        return vec![NormalizedEvent::TextDelta {
-            delta: text.to_string(),
-        }];
-    }
-
-    raw(event)
-}
-
-fn normalize_codex_complete(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    let mut normalized = Vec::new();
-    if let Some(session_id) = event
-        .get("session_id")
-        .or_else(|| event.get("sessionId"))
-        .and_then(|v| v.as_str())
-    {
-        normalized.push(NormalizedEvent::SessionResolved {
-            session_id: session_id.to_string(),
-        });
-    }
-
-    if let Some(error) = event.get("error").and_then(|v| v.as_str()) {
-        normalized.push(NormalizedEvent::Error {
-            message: error.to_string(),
-            recoverable: false,
-        });
-        normalized.push(NormalizedEvent::TurnComplete {
-            reason: TurnEndReason::Error,
-            usage: None,
-        });
-    } else {
-        normalized.push(NormalizedEvent::TurnComplete {
-            reason: TurnEndReason::Complete,
-            usage: None,
-        });
-    }
-    normalized
-}
-
-fn raw(event: &serde_json::Value) -> Vec<NormalizedEvent> {
-    vec![NormalizedEvent::Raw {
-        agent: "codex".to_string(),
-        raw: event.clone(),
-    }]
-}
-
 use crate::agent::traits::{
     AgentManifest, ConfigAdapter, EventNormalizer, ProjectAdapter, SessionAdapter, TerminalAdapter,
     TransportAdapter,
@@ -277,9 +199,7 @@ impl ConfigAdapter for CodexAdapter {
     }
 
     /// v0.9.0 需求14：模型库角色接入（model/list 拉取 + config.toml model 键）。
-    fn as_model_store(
-        &self,
-    ) -> Option<&dyn crate::agent::config_roles::ModelStore> {
+    fn as_model_store(&self) -> Option<&dyn crate::agent::config_roles::ModelStore> {
         Some(self)
     }
 
@@ -560,10 +480,11 @@ impl ConfigAdapter for CodexAdapter {
         Some(self)
     }
 
-    fn as_permission_mode_config(&self) -> Option<&dyn crate::agent::config_roles::PermissionModeConfig> {
+    fn as_permission_mode_config(
+        &self,
+    ) -> Option<&dyn crate::agent::config_roles::PermissionModeConfig> {
         Some(self)
     }
-
 }
 
 impl crate::agent::config_roles::RawConfigStore for CodexAdapter {
@@ -597,7 +518,6 @@ impl crate::agent::config_roles::RawConfigStore for CodexAdapter {
         }
         crate::util::atomic_write(&config_path, content.as_bytes()).map_err(|e| e.to_string())
     }
-
 }
 
 impl crate::agent::config_roles::PermissionModeConfig for CodexAdapter {
@@ -634,7 +554,11 @@ impl crate::agent::config_roles::PermissionModeConfig for CodexAdapter {
             // 导致完全访问模式下仍无法写文件——用户实测反馈）。映射：
             // never → danger-full-access / 其余 → workspace-write（仍可
             // 在工作区内工作，越权操作由审批链拦截）。
-            let sandbox = if mode == "never" { "danger-full-access" } else { "workspace-write" };
+            let sandbox = if mode == "never" {
+                "danger-full-access"
+            } else {
+                "workspace-write"
+            };
             table.insert(
                 "sandbox_mode".to_string(),
                 toml::Value::String(sandbox.to_string()),
@@ -644,7 +568,6 @@ impl crate::agent::config_roles::PermissionModeConfig for CodexAdapter {
             toml::to_string_pretty(&toml_val).map_err(|e| format!("Serialization error: {}", e))?;
         crate::agent::config_roles::RawConfigStore::save_raw_config(self, &content)
     }
-
 }
 
 impl SessionAdapter for CodexAdapter {
@@ -713,7 +636,7 @@ impl SessionAdapter for CodexAdapter {
             });
         }
         // 按最后活跃时间降序排列
-        sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active));
         Ok(sessions)
     }
 
@@ -1161,7 +1084,9 @@ fn parse_rollout_messages(path: &std::path::Path) -> Result<Vec<crate::session::
     let reader = std::io::BufReader::new(file);
 
     let mut messages = Vec::new();
-    for line in reader.lines().flatten() {
+    // v0.9.5 clippy 批次：map_while 首个 Err 即止——Lines 出错后可能无限
+    // 产出 Err（flatten/filter_map 形态会死循环）。
+    for line in reader.lines().map_while(Result::ok) {
         let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
@@ -1206,8 +1131,10 @@ fn parse_rollout_messages(path: &std::path::Path) -> Result<Vec<crate::session::
                     }
                 })
                 .collect::<Vec<_>>()
-                .join("
-");
+                .join(
+                    "
+",
+                );
             // 过滤 codex 注入的系统前导块（skills/plugins 等 XML 标签开头）
             if role == "user" && text.trim_start().starts_with('<') {
                 continue;
@@ -1356,6 +1283,8 @@ fn apply_reasoning_effort(
 #[derive(Debug, Clone)]
 pub struct CodexModelInfo {
     pub id: String,
+    /// 上游模型目录字段镜像（排障日志/未来模型页展示用）。
+    #[allow(dead_code)]
     pub display_name: String,
 }
 
@@ -1400,10 +1329,7 @@ fn probe_codex_models() -> Result<Vec<CodexModelInfo>, String> {
     let mut reader = BufReader::new(stdout);
     let mut writer = stdin;
 
-    fn send(
-        writer: &mut std::process::ChildStdin,
-        obj: serde_json::Value,
-    ) -> Result<(), String> {
+    fn send(writer: &mut std::process::ChildStdin, obj: serde_json::Value) -> Result<(), String> {
         let mut line = serde_json::to_string(&obj).map_err(|e| e.to_string())?;
         line.push('\n');
         writer
@@ -1541,8 +1467,7 @@ impl crate::agent::config_roles::ModelStore for CodexAdapter {
             .get("model")
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        Ok(model
-            .map(|m| serde_json::json!({ "provider": "codex", "model": m })))
+        Ok(model.map(|m| serde_json::json!({ "provider": "codex", "model": m })))
     }
 
     fn set_active_model(&self, active: Option<&serde_json::Value>) -> Result<(), String> {
@@ -1591,7 +1516,6 @@ mod model_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::normalized::{NormalizedEvent, TurnEndReason};
 
     #[test]
     fn rollout_stats_derive_cwd_counts_and_mtime() {
@@ -1675,41 +1599,5 @@ mod tests {
         assert!(table.get("model_reasoning_effort").is_none());
         apply_reasoning_effort(&mut table, &serde_json::json!({}));
         assert!(table.get("model_reasoning_effort").is_none());
-    }
-
-    #[test]
-    fn normalizes_codex_message_delta() {
-        let event = serde_json::json!({
-            "type": "message_delta",
-            "delta": "hello"
-        });
-
-        assert_eq!(
-            normalize_stream_event(&event),
-            vec![NormalizedEvent::TextDelta {
-                delta: "hello".to_string()
-            }]
-        );
-    }
-
-    #[test]
-    fn normalizes_codex_turn_complete_with_session() {
-        let event = serde_json::json!({
-            "type": "turn_complete",
-            "session_id": "codex-session"
-        });
-
-        assert_eq!(
-            normalize_stream_event(&event),
-            vec![
-                NormalizedEvent::SessionResolved {
-                    session_id: "codex-session".to_string()
-                },
-                NormalizedEvent::TurnComplete {
-                    reason: TurnEndReason::Complete,
-                    usage: None,
-                },
-            ]
-        );
     }
 }

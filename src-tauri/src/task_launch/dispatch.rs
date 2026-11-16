@@ -58,8 +58,8 @@ pub fn conductor_dispatch_to_node(
             break;
         }
     }
-    let (session_id, _run_id, agent_id) = found
-        .ok_or("该节点尚无已执行的子会话（新节点请经方案修订加入后执行）")?;
+    let (session_id, _run_id, agent_id) =
+        found.ok_or("该节点尚无已执行的子会话（新节点请经方案修订加入后执行）")?;
 
     // 经全局句柄取 ChatState 中的活连接
     let app = crate::pi_rpc_runtime::HUB_APP_HANDLE
@@ -121,6 +121,7 @@ pub fn conductor_dispatch_to_node(
                     project_path,
                     Some(sid),
                     content,
+                    None, // v0.9.5 需求2 B-4：节点模型声明接入后此处传节点声明值
                 )
                 .await
                 {

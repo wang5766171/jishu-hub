@@ -1,0 +1,95 @@
+/**
+ * plugin-invoke —— 通用插件动作调用扩展（v0.9.5 需求1（原需求26）6b，方向四）。
+ *
+ * 机制（方案 B，评审 P0-2 定案）：hub 物化启用的 [[agent-tool]] 声明到
+ * `~/.jishu-hub/agent-tools.json`（hub 权威写、本扩展只读）→ 启动时读清单
+ * 逐项 `pi.registerTool` 动态注册为 agent 工具（agent 在对话中按 description
+ * 判断时机）→ 调用经 `\x00hub_invoke:` 桥直达 Rust 闸门（校验存在 + 向
+ * webview 广播 plugin-tool-invoke——前端动作链执行，UI 类动作异步呈现）。
+ *
+ * pi v0.87.1 硬约束：registerTool 必须带 object parameters schema——声明
+ * 缺省时兜底空 Type.Object({})（清单 parameters 可选）。
+ */
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
+
+interface AgentToolEntry {
+  plugin_id: string;
+  name: string;
+  description: string;
+  parameters?: Record<string, unknown>;
+  /** v0.9.5 需求11（pi 1.1.0）：工具暴露方式——direct（默认）/ deferred
+   *（不进系统提示，模型经 tool_search 按需发现——插件多时的 context 优化）。 */
+  exposure?: "direct" | "deferred";
+}
+
+/** 物化清单路径（hub 权威写——materialize_agent_tools）。三轮评审 C17：
+ * 优先读 hub 注入的 JISHU_HUB_HOME（测试隔离/自定义 hub 目录与后端同源），
+ * 未注入时回落用户主目录默认值。 */
+function agentToolsPath(): string {
+  const hubHome = process.env.JISHU_HUB_HOME;
+  const base = hubHome && hubHome.trim() !== "" ? hubHome : path.join(os.homedir(), ".jishu-hub");
+  return path.join(base, "agent-tools.json");
+}
+
+function loadAgentTools(): AgentToolEntry[] {
+  try {
+    const content = fs.readFileSync(agentToolsPath(), "utf-8");
+    const parsed = JSON.parse(content);
+    return Array.isArray(parsed) ? (parsed as AgentToolEntry[]) : [];
+  } catch {
+    return []; // 文件缺失/损坏——注册面为空（hub 未物化或全部停用）。
+  }
+}
+
+export default function pluginInvokeExtension(pi: ExtensionAPI): void {
+  const tools = loadAgentTools();
+  for (const entry of tools) {
+    pi.registerTool({
+      name: entry.name,
+      label: entry.name,
+      description:
+        entry.description ||
+        `触发 Jishu Hub 插件 ${entry.plugin_id} 的动作。用户明确要求该操作时使用。`,
+      parameters: (entry.parameters as never) ?? Type.Object({}),
+      // 需求11：exposure 透传（pi 1.1.0 registerTool 可选参数；缺省 direct）。
+      ...(entry.exposure === "deferred" ? { exposure: "deferred" as const } : {}),
+      // v0.9.6 补充⑫（去 fork）：execute 改上游 5 参签名（第 5 参 ctx 含
+      // ui）——替代原 fork pi.context 桥，并修复原 `(args)` 单参错位 bug
+      //（wrapper 按 (toolCallId, params, signal, onUpdate, ctx) 直调，原
+      // args 实收 toolCallId 字符串，入参从未真正传到 hub）。
+      execute: async (_toolCallId, args, _signal, _onUpdate, ctx) => {
+        // hub_invoke 桥（与 html-preview 同机制）：select 标题携带
+        // {command, params} JSON——Rust 识别直达后端，响应 value 为
+        // {success, data} JSON 字符串。
+        const payload = JSON.stringify({
+          command: "plugin_invoke",
+          params: { tool: entry.name, args: args ?? {} },
+        });
+        let ok = false;
+        try {
+          const result = await ctx.ui.select(`\x00hub_invoke:${payload}`, ["\x00ok"]);
+          if (result) {
+            const parsed = JSON.parse(result) as { success?: boolean };
+            ok = parsed?.success === true;
+          }
+        } catch {
+          ok = false;
+        }
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: ok
+                ? `已触发插件动作 ${entry.name}（插件 ${entry.plugin_id}）——效果将在 Hub 界面呈现。`
+                : `插件动作 ${entry.name} 触发失败（插件可能已停用或 Hub 未运行）。`,
+            },
+          ],
+        };
+      },
+    });
+  }
+}

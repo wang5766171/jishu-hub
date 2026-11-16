@@ -118,9 +118,16 @@ export const PHASE_LAUNCH_RANK: Record<string, number> = {
   graph: 2,
 };
 
-export function stripTaskLaunchInstructionFromMessages(messages: Message[]): Message[] {
+/**
+ * 回放消息可见性过滤：剔除「不该向用户展示」的 user 消息。
+ * 1. Conductor before_agent_start 注入的方法论消息（skill 全文，display:false
+ *    但 Pi 仍写 JSONL）——以 [JISHU-TASK: 开头；
+ * 2. 文本内容为空的 user 消息（纯系统注入残留）。
+ * v0.9.5 用户裁决：历史格式兼容剥离（[JISHU-PROMT] 配对块 / 旧
+ * <jishu-task-*> 标签）整体移除，不保留兜底。
+ */
+export function filterInvisibleUserMessages(messages: Message[]): Message[] {
   return messages
-    // 过滤 Conductor before_agent_start 注入消息（skill 方法论全文，display:false 但 Pi 仍写 JSONL）
     .filter((message) => {
       if (message.role !== "user") return true;
       const firstText = message.content.find((b) => b.type === "text");
@@ -129,20 +136,6 @@ export function stripTaskLaunchInstructionFromMessages(messages: Message[]): Mes
       if (firstText.text.trimStart().startsWith("[JISHU-TASK:")) return false;
       return true;
     })
-    .map((message) => ({
-      ...message,
-      content: message.content.map((block) => {
-        if (block.type !== "text") return block;
-        // v0.7.0 需求二-问题4：先剥离 [JISHU-PROMT:] 配对块标记的系统内部提示词，
-        // 再剥离旧版 <jishu-task-*> 标签指令。
-        const promtStripped = stripJishuPromt(block.text);
-        return {
-          ...block,
-          text: stripTaskLaunchInstruction(promtStripped),
-        };
-      }),
-    }))
-    // v0.7.0：剥离后内容为空的 user 消息（纯系统提示词）整条过滤掉，不向用户展示。
     .filter((message) => {
       if (message.role !== "user") return true;
       const hasVisibleContent = message.content.some((block) => {
@@ -151,46 +144,4 @@ export function stripTaskLaunchInstructionFromMessages(messages: Message[]): Mes
       });
       return hasVisibleContent;
     });
-}
-
-/**
- * v0.7.0 需求二-问题4：剥离 [JISHU-PROMT:开始]...[JISHU-PROMT:结束] 配对块标记
- * 及其包裹的系统内部提示词。标记外的用户真实指令保留。跨行匹配，非贪婪。
- */
-const JISHU_PROMT_PATTERN = /\[JISHU-PROMT:开始\][\s\S]*?\[JISHU-PROMT:结束\]\s*/g;
-
-export function stripJishuPromt(text: string): string {
-  return text.replace(JISHU_PROMT_PATTERN, "").trim();
-}
-
-export function stripTaskLaunchInstruction(text: string): string {
-  const launch = stripTaggedInstruction(
-    text,
-    "<jishu-task-launch-instruction>",
-    "</jishu-task-launch-instruction>",
-  );
-  const planning = stripTaggedInstruction(
-    launch,
-    "<jishu-task-planning-stage>",
-    "</jishu-task-planning-stage>",
-  );
-  return planning;
-}
-
-function stripTaggedInstruction(text: string, startTag: string, endTag: string): string {
-  const start = text.indexOf(startTag);
-  const end = text.indexOf(endTag);
-  if (start < 0 || end < start) return text;
-  const afterInstruction = text.slice(end + endTag.length);
-  const chineseMarker = "用户消息：";
-  const asciiMarker = "用户消息:";
-  const chineseIndex = afterInstruction.indexOf(chineseMarker);
-  if (chineseIndex >= 0) {
-    return afterInstruction.slice(chineseIndex + chineseMarker.length).trimStart();
-  }
-  const asciiIndex = afterInstruction.indexOf(asciiMarker);
-  if (asciiIndex >= 0) {
-    return afterInstruction.slice(asciiIndex + asciiMarker.length).trimStart();
-  }
-  return afterInstruction.trimStart();
 }

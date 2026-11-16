@@ -73,6 +73,40 @@ pub(crate) async fn install_agent_command(
     Ok(output)
 }
 
+// ── v0.9.7 需求1 T4：agent 运行时状态/初始化 IPC（引导页门控与版本横幅消费）──
+
+/// 状态查询（无副作用）：`{state: ready|init_running|mismatch, recorded, expected}`。
+/// `init-running` 表示启动钩子（或一键更新）正在跑。
+#[tauri::command]
+pub(crate) fn agent_runtime_status() -> Result<serde_json::Value, String> {
+    let mut value = serde_json::to_value(crate::agent_runtime_init::current_state())
+        .map_err(|e| e.to_string())?;
+    if let serde_json::Value::Object(map) = &mut value {
+        map.insert(
+            "expected".to_string(),
+            serde_json::json!(crate::agent::jishu_self::PI_AGENT_VERSION),
+        );
+    }
+    Ok(value)
+}
+
+/// 手动触发/失败重试（幂等；内部 ensure_agent_runtime——启动钩子在跑时返回
+/// init-running 语义而非并发重入）。进度走 `agent-runtime-progress` 事件。
+#[tauri::command]
+pub(crate) async fn agent_runtime_init(app: tauri::AppHandle) -> Result<String, String> {
+    let state = crate::agent_runtime_init::ensure_agent_runtime(&app).await?;
+    match state {
+        crate::agent_runtime_init::AgentRuntimeState::Ready => Ok("ready".to_string()),
+        crate::agent_runtime_init::AgentRuntimeState::InitRunning { .. } => {
+            Ok("init-running".to_string())
+        }
+        crate::agent_runtime_init::AgentRuntimeState::Mismatch { .. } => {
+            // 安装序列刚完成（记录已写入）；下一次 status 查询即 ready。
+            Ok("installed".to_string())
+        }
+    }
+}
+
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     if !dst.exists() {
         std::fs::create_dir_all(dst)?;
@@ -103,14 +137,103 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
     Ok(())
 }
 
+/// v0.9.7 需求8 修复A：修复 zip 链路写坏的 npm workspace 链接（存量自愈）。
+///
+/// 坏形态 = `node_modules/<scope>/<pkg>`（或顶层 `<pkg>`）是一个**普通文件**，
+/// 内容为指向 `packages/<X>` 的相对路径文本——pack-pi 早期 zip 把 workspace
+/// junction 存成 symlink 条目，`extract_zip_to_temp` 不识别 symlink 把「目标
+/// 路径文本」当文件内容写出、`copy_dir_recursive` 原样搬运所致。subagent 的
+/// `dist/core` 散模块 import 这些包即 `Cannot find package`。修复 = 删坏文件，
+/// 从 `packages/<X>` 实体拷贝回该位置。幂等：修过的位置是目录，判定自然不中。
+/// 返回修复的条目数。
+pub(crate) fn heal_workspace_links(agent_dir: &std::path::Path) -> Result<usize, String> {
+    let node_modules = agent_dir.join("node_modules");
+    if !node_modules.is_dir() {
+        return Ok(0);
+    }
+    // 顶层与 @scope/ 两层（npm workspace 链接只出现在这两层；.bin 的
+    // cmd-shim 是真文件，不在 healing 范围）。
+    let mut scan_dirs: Vec<std::path::PathBuf> = vec![node_modules.clone()];
+    for entry in std::fs::read_dir(&node_modules).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let p = entry.path();
+        if p.is_dir() && entry.file_name().to_string_lossy().starts_with('@') {
+            scan_dirs.push(p);
+        }
+    }
+    let mut fixed = 0usize;
+    for dir in scan_dirs {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let link_path = entry.path();
+            let Some(target) = broken_link_target(&link_path, agent_dir) else {
+                continue;
+            };
+            std::fs::remove_file(&link_path)
+                .map_err(|e| format!("remove broken link {}: {e}", link_path.display()))?;
+            copy_dir_recursive(&target, &link_path).map_err(|e| {
+                format!(
+                    "heal {} from {}: {e}",
+                    link_path.display(),
+                    target.display()
+                )
+            })?;
+            fixed += 1;
+            log::info!(
+                "[agent-install] healed workspace link {} ← {}",
+                link_path.display(),
+                target.display()
+            );
+        }
+    }
+    Ok(fixed)
+}
+
+/// 判定「坏链接文件」并解出实体目标目录：内容是 <100 字节、无换行、以 `..`
+/// 开头的相对路径（Windows zip 存反斜杠 / macOS 存正斜杠，统一按 `/` 解析），
+/// 且按该文件所在目录解析后落在 agent_dir 内的现存目录（防穿越——workspace
+/// 链接只指向自家 packages/）。真包不可能是百字节内的纯相对路径文本，四条件
+/// 防误伤。
+fn broken_link_target(
+    link_path: &std::path::Path,
+    agent_dir: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let meta = std::fs::metadata(link_path).ok()?;
+    if !meta.is_file() || meta.len() >= 100 {
+        return None;
+    }
+    let content = std::fs::read_to_string(link_path).ok()?;
+    let content = content.trim();
+    if content.contains('\n') || content.contains('\r') || !content.starts_with("..") {
+        return None;
+    }
+    let base = link_path.parent()?;
+    let target = base.join(content.replace('\\', "/"));
+    let canonical_target = target.canonicalize().ok()?;
+    let canonical_base = agent_dir.canonicalize().ok()?;
+    if !canonical_target.starts_with(&canonical_base) || !canonical_target.is_dir() {
+        return None;
+    }
+    Some(canonical_target)
+}
+
 fn backup_managed_pi_runtime(target: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let backup = target.join(format!(".runtime-backup-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&backup).map_err(|error| error.to_string())?;
     for name in ["packages", "node_modules"] {
         let current = target.join(name);
         if current.exists() {
-            std::fs::rename(&current, backup.join(name))
-                .map_err(|error| format!("Failed to back up {}: {error}", current.display()))?;
+            if let Err(error) = std::fs::rename(&current, backup.join(name)) {
+                // 需求9 #7：逐项 rename 中途失败必须还原——否则前项（如
+                // packages）只存在于隐藏 backup 目录，`~/.jishu-agent` 残缺，
+                // probe 永败且重试恒败（0.9.6→0.9.7 卸载重装「提示未安装」
+                // 候选 B）。restore 兼容部分还原（backup 里有什么还原什么）。
+                let _ = restore_managed_pi_runtime(target, &backup);
+                return Err(format!("Failed to back up {}: {error}", current.display()));
+            }
         }
     }
     Ok(backup)
@@ -135,30 +258,52 @@ fn restore_managed_pi_runtime(
 }
 
 async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, String> {
-    use tauri::Manager;
-    let res_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("Failed to resolve resource directory: {}", e))?;
-    let mut source = res_dir.join("third_party").join("pi-bundle");
-    if !source.exists() {
-        source = res_dir.join("_up_").join("third_party").join("pi-bundle");
+    // v0.9.7 需求1 T3（P0-2 附带修复）：手动安装改走 zip 解压入口，与启动钩子
+    // 共用 extract——原硬编码散目录（res/third_party/pi-bundle）在 resources
+    // 单 zip 化后必然报「bundled pi-bundle not found」。
+    let temp_bundle = crate::agent_runtime_init::extract_bundled_runtime_for_manual_install(&app)?;
+    let output = install_pi_bundle_from(&temp_bundle);
+    let _ = std::fs::remove_dir_all(&temp_bundle);
+    let output = output?;
+    // v0.9.5 需求11（pi 1.1.0）：MCP 接入改为 pi 原生 mcp.json 条目自愈
+    //（幂等；失败不阻断——启动自愈与环境检测页手动安装兜底）。adapter
+    // 扩展已退役，残留清理一并在 ensure 内完成。
+    // 需求5：4 个 pi 扩展包同款确保 + 运行时配置 + packages 对齐。
+    let mut summary =
+        match crate::agent::jishu_self::JishuSelfAgent::ensure_native_mcp_entry().await {
+            Ok(msg) => format!("{output}\n{msg}"),
+            Err(e) => format!("{output}\nMCP native entry ensure skipped: {e}"),
+        };
+    match crate::agent::jishu_self::JishuSelfAgent::ensure_pi_extensions_installed().await {
+        Ok(installed) if !installed.is_empty() => {
+            crate::task_plan::ensure_subagents_runtime_config();
+            crate::agent::plugin::sync_pi_packages_with_plugins();
+            summary = format!("{summary}\npi extensions installed: {:?}", installed);
+        }
+        Ok(_) => {}
+        Err(e) => summary = format!("{summary}\npi extensions install skipped: {e}"),
     }
-    let output = install_pi_bundle_from(&source)?;
-    // v0.9.1 需求11：agent 装好顺手确保 MCP 适配器（幂等；失败不阻断——
-    // 启动自愈与环境检测页手动安装兜底）。
-    Ok(match crate::agent::jishu_self::JishuSelfAgent::ensure_mcp_adapter_installed().await {
-        Ok(true) => format!("{output}\nMCP adapter auto-installed."),
-        Ok(false) => output,
-        Err(e) => format!("{output}\nMCP adapter auto-install skipped: {e}"),
-    })
+    // v0.9.7 需求1：手动安装成功即写版本记录（状态命令立刻 Ready）。
+    if let Some(record) = crate::agent_runtime_init::runtime_record_path() {
+        if let Err(e) = std::fs::write(
+            &record,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "version": crate::agent::jishu_self::PI_AGENT_VERSION
+            }))
+            .unwrap_or_default(),
+        ) {
+            summary = format!("{summary}\nwrite runtime record failed: {e}");
+        }
+    }
+    Ok(summary)
 }
 
-/// 核心：把 pi-bundle 源目录安装到 ~/.jishu-agent（备份+覆盖+回滚）。
-/// v0.7.2 需求 5：GUI（install_internal_jishu_agent）与 CLI（run_install_agent_cli，
-/// 由 NSIS 安装器在 POSTINSTALL 调用）共用此内核，确保安装/更新 hub 时 agent 一致地
-/// 落到用户目录。需求 4 已移除 lite 的 npm 在线回退，pi-bundle 不存在即报错。
-fn install_pi_bundle_from(source: &std::path::Path) -> Result<String, String> {
+/// 核心：把 pi-bundle 源目录（散目录形态——zip 已先行解压到临时目录）安装到
+/// ~/.jishu-agent（备份+覆盖+回滚）。
+/// v0.7.2 需求 5 起 GUI 与 CLI 共用此内核；v0.9.7 需求1 起三方共用（启动钩子
+/// ensure_agent_runtime / 环境检测页手动安装 / --install-agent CLI），保证安装
+/// /更新 hub 时 agent 一致地落到用户目录。
+pub(crate) fn install_pi_bundle_from(source: &std::path::Path) -> Result<String, String> {
     let target = crate::agent::jishu_self::pi_agent_dir().ok_or("Failed to get target dir")?;
     if !source.exists() {
         return Err(format!(
@@ -169,6 +314,8 @@ fn install_pi_bundle_from(source: &std::path::Path) -> Result<String, String> {
     if let Err(e) = std::fs::create_dir_all(&target) {
         return Err(format!("Failed to create target directory: {}", e));
     }
+    // 需求9 #7：backup 自身失败时内部还原（见 backup_managed_pi_runtime），
+    // 此处恢复 `?` 直传——旧残缺点已消除。
     let backup = backup_managed_pi_runtime(std::path::Path::new(&target))?;
     if let Err(e) = copy_dir_recursive(source, std::path::Path::new(&target)) {
         let _ = restore_managed_pi_runtime(std::path::Path::new(&target), &backup);
@@ -224,9 +371,9 @@ fn register_jishu_cli_shim(agent_dir: &std::path::Path) {
     }
 }
 
-/// CLI 模式入口（v0.7.2 需求 5）：`Jishu Hub --install-agent`，由 NSIS 安装器在
-/// POSTINSTALL 阶段调用，把内嵌 pi-bundle 装到 ~/.jishu-agent。用 current_exe 推导
-/// 源路径，安装后返回退出码，不启动 GUI（windows_subsystem=windows 下不弹窗）。
+/// CLI 模式入口（v0.7.2 需求 5）：`Jishu Hub --install-agent`。v0.9.7 需求1 T2 起
+/// NSIS POSTINSTALL 已删除，本入口保留为手动/边缘兜底；源改为 exe 旁的
+/// pi-runtime.zip（与启动钩子同一资源形态），解压→安装→确保→写记录。
 pub fn run_install_agent_cli() -> i32 {
     let exe = match std::env::current_exe() {
         Ok(e) => e,
@@ -236,21 +383,63 @@ pub fn run_install_agent_cli() -> i32 {
         }
     };
     let exe_dir = exe.parent().unwrap_or(std::path::Path::new("."));
-    let mut source = exe_dir.join("third_party").join("pi-bundle");
-    if !source.exists() {
-        source = exe_dir.join("_up_").join("third_party").join("pi-bundle");
-    }
-    match install_pi_bundle_from(&source) {
+    let zip_candidates = [
+        exe_dir.join("third_party").join("pi-runtime.zip"),
+        exe_dir
+            .join("_up_")
+            .join("third_party")
+            .join("pi-runtime.zip"),
+    ];
+    let Some(zip_path) = zip_candidates.into_iter().find(|p| p.exists()) else {
+        eprintln!("[install-agent] FAILED: pi-runtime.zip not found next to exe");
+        return 1;
+    };
+    let temp_bundle = match crate::agent_runtime_init::extract_zip_to_temp(&zip_path) {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("[install-agent] FAILED: {e}");
+            return 1;
+        }
+    };
+    let result = install_pi_bundle_from(&temp_bundle);
+    let _ = std::fs::remove_dir_all(&temp_bundle);
+    match result {
         Ok(_) => {
-            // v0.9.1 需求11：POSTINSTALL 阶段顺手确保 MCP 适配器（幂等；
-            // npm 网络安装失败仅告警、不影响安装器退出码——首启后台自愈
-            // 与环境检测页手动安装兜底）。
+            // v0.9.5 需求11：确保 pi 原生 mcp.json 条目（幂等；失败仅告警——
+            // 首启后台与环境检测页手动安装兜底）。
             match tauri::async_runtime::block_on(
-                crate::agent::jishu_self::JishuSelfAgent::ensure_mcp_adapter_installed(),
+                crate::agent::jishu_self::JishuSelfAgent::ensure_native_mcp_entry(),
             ) {
-                Ok(true) => eprintln!("[install-agent] MCP adapter auto-installed"),
-                Ok(false) => {}
-                Err(e) => eprintln!("[install-agent] MCP adapter auto-install skipped: {e}"),
+                Ok(_) => {}
+                Err(e) => eprintln!("[install-agent] MCP native entry ensure skipped: {e}"),
+            }
+            // v0.9.5 需求5：4 个 pi 扩展包同款确保（失败仅告警）。
+            match tauri::async_runtime::block_on(
+                crate::agent::jishu_self::JishuSelfAgent::ensure_pi_extensions_installed(),
+            ) {
+                Ok(installed) if !installed.is_empty() => {
+                    eprintln!("[install-agent] pi extensions installed: {:?}", installed);
+                    crate::task_plan::ensure_subagents_runtime_config();
+                    crate::agent::plugin::sync_pi_packages_with_plugins();
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("[install-agent] pi extensions install skipped: {e}"),
+            }
+            // v0.9.7 需求1：写版本记录（与 GUI 链路一致）。
+            // 需求8 修复A：写记录前 heal 一次（老 zip 兜底），healed 落盘。
+            if let Some(record) = crate::agent_runtime_init::runtime_record_path() {
+                let healed = record
+                    .parent()
+                    .and_then(|dir| heal_workspace_links(dir).ok())
+                    .is_some();
+                let _ = std::fs::write(
+                    &record,
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "version": crate::agent::jishu_self::PI_AGENT_VERSION,
+                        "healed": healed,
+                    }))
+                    .unwrap_or_default(),
+                );
             }
             0
         }
@@ -263,6 +452,65 @@ pub fn run_install_agent_cli() -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    // 需求8 修复A：坏链接文件（内容=指向 packages/<X> 的相对路径文本）被
+    // heal 成实体目录；反例（长内容/非路径/目标不存在/真目录）不动；幂等。
+    #[test]
+    fn heal_workspace_links_fixes_broken_link_files() {
+        let root =
+            std::env::temp_dir().join(format!("jishu-heal-links-test-{}", uuid::Uuid::new_v4()));
+        let scope = root.join("node_modules/@earendil-works");
+        std::fs::create_dir_all(&scope).unwrap();
+        std::fs::create_dir_all(root.join("packages/ai/dist")).unwrap();
+        std::fs::write(root.join("packages/ai/package.json"), r#"{"name":"pi-ai"}"#).unwrap();
+        std::fs::write(root.join("packages/ai/dist/retry.js"), "export const R=1;").unwrap();
+        // 坏件：Windows zip 形态（反斜杠、无换行）。
+        std::fs::write(scope.join("pi-ai"), "..\\..\\packages\\ai").unwrap();
+        // 坏件：macOS zip 形态（正斜杠）。
+        std::fs::write(scope.join("pi-tui"), "../../packages/ai").unwrap();
+
+        let fixed = heal_workspace_links(&root).unwrap();
+        assert_eq!(fixed, 2);
+        for pkg in ["pi-ai", "pi-tui"] {
+            let p = scope.join(pkg);
+            assert!(
+                p.join("package.json").is_file(),
+                "{pkg} 应已 heal 成实体目录"
+            );
+        }
+        // 幂等：再跑一遍无新修复。
+        assert_eq!(heal_workspace_links(&root).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn heal_workspace_links_leaves_non_targets_alone() {
+        let root =
+            std::env::temp_dir().join(format!("jishu-heal-links-neg-{}", uuid::Uuid::new_v4()));
+        let scope = root.join("node_modules/@scope");
+        std::fs::create_dir_all(&scope).unwrap();
+        // 长内容（真包的形态不可能是这个，但保护性反例）。
+        std::fs::write(scope.join("long"), vec![b'.'; 120]).unwrap();
+        // 相对路径但目标不存在。
+        std::fs::write(scope.join("ghost"), "../../packages/ghost").unwrap();
+        // 非路径文本。
+        std::fs::write(scope.join("text"), "hello world not a path").unwrap();
+        // 尝试穿越出 agent_dir。
+        std::fs::write(scope.join("escape"), "../../../../../windows").unwrap();
+        // 真目录（真包）。
+        std::fs::create_dir_all(scope.join("real-pkg")).unwrap();
+        std::fs::write(scope.join("real-pkg/package.json"), "{}").unwrap();
+
+        assert_eq!(heal_workspace_links(&root).unwrap(), 0);
+        assert!(scope.join("long").is_file());
+        assert!(scope.join("ghost").is_file());
+        assert!(scope.join("text").is_file());
+        assert!(scope.join("escape").is_file());
+        assert!(scope.join("real-pkg/package.json").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn allows_git_winget_update_command() {
         assert!(super::is_allowed_install_command(

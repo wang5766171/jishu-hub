@@ -21,6 +21,8 @@ pub struct AgentStreamChunk {
     pub data: serde_json::Value,
 }
 
+// 流读取器需同时携带 app 句柄、双流、回调与行为开关，参数无法再收窄。
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_stream_reader<R, E, F>(
     app: tauri::AppHandle,
     agent_id: String,
@@ -254,13 +256,13 @@ mod tests {
 
     #[test]
     fn eof_is_complete_when_flag_set_and_output_seen() {
-        assert!(true && true); // eof_is_complete=true, saw_agent_output=true
+        // eof_is_complete=true, saw_agent_output=true
     }
 
     #[test]
     fn eof_without_output_stays_strict() {
-        assert!(!(true && false)); // eof_is_complete=true, saw_agent_output=false
-        assert!(!(false && true)); // eof_is_complete=false, saw_agent_output=true
+        // eof_is_complete=true, saw_agent_output=false
+        // eof_is_complete=false, saw_agent_output=true
     }
 
     #[test]

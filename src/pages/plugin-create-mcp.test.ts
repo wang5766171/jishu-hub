@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  applyPreserved,
   buildManifest,
   mcpNameToId,
   parseManifest,
@@ -11,7 +12,7 @@ import {
   parseMcpServersBatch,
   serverToMcpSection,
   type FormState,
-} from "./plugin-create-dialog";
+} from "./plugin-create-dialog-model";
 
 /** 最小 tool 表单（其余字段取 emptyForm 等价值）。 */
 function toolForm(partial: Partial<FormState>): FormState {
@@ -324,6 +325,57 @@ describe("MCP 表单极简化（需求19 GUI 裁决：ID 自动派生、无图�
       }),
     ) as { info: Record<string, unknown> };
     expect(m.info.id).toBe("");
+  });
+
+  it("十六轮：tool/agent 家族形态显式落值 form=none（无挂载位统一无 UI 呈现）", () => {
+    const tool = buildManifest(toolForm({ pluginType: "mcp", displayName: "M", mcpCommand: "npx" })) as {
+      info: Record<string, unknown>;
+    };
+    expect(tool.info.form).toBe("none");
+    const agent = parseManifest({
+      schema: 1,
+      info: { id: "a", display_name: "A" },
+      transport: { kind: "cli", chat_command: ["a", "{prompt}"] },
+    });
+    const m = buildManifest(agent.form) as { info: Record<string, unknown> };
+    expect(m.info.form).toBe("none");
+  });
+
+  it("P1-5：编辑往返保留 [info] 声明字段（category/form/description 不再静默丢失）", () => {
+    const { form, preserved } = parseManifest({
+      schema: 1,
+      kind: "tool",
+      info: {
+        id: "r3fix-edit-test",
+        display_name: "编辑往返测试件",
+        description: "中文说明",
+        icon: "star",
+        category: "appearance",
+        form: "none",
+      },
+      tool: { description: "回显", usage: "echo {{text}}", example: "回显 hello" },
+    });
+    // 零改动保存（纯编辑往返）：applyPreserved 并回声明字段
+    const out = applyPreserved(buildManifest(form), preserved) as {
+      info: Record<string, unknown>;
+      pi_extension?: unknown;
+    };
+    expect(out.info.category).toBe("appearance");
+    expect(out.info.description).toBe("中文说明");
+    expect(out.info.form).toBe("none");
+    // 无声明字段的旧清单：preserved.info 不产生（form 走 buildManifest
+    // 的 none 落值——十六轮升级口径不受影响）
+    const legacy = parseManifest({
+      schema: 1,
+      info: { id: "a", display_name: "A" },
+      transport: { kind: "cli", chat_command: ["a", "{prompt}"] },
+    });
+    expect((legacy.preserved as Record<string, unknown>).info).toBeUndefined();
+    const legacyOut = applyPreserved(buildManifest(legacy.form), legacy.preserved) as {
+      info: Record<string, unknown>;
+    };
+    expect(legacyOut.info.form).toBe("none");
+    expect("category" in legacyOut.info).toBe(false);
   });
 });
 

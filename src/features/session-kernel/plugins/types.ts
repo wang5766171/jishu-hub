@@ -16,6 +16,16 @@ export type { DockSlot };
 
 export const SESSION_PLUGIN_CONTRACT_VERSION = 1;
 
+/** 契约版本 bump 判据（v0.9.5 需求1（原需求26）1e 明确）：
+ *  - **不 bump**（兼容加法）：新增可选段/可选字段（如 [[agent-tool]]、
+ *    has_pipeline）、既有字段放宽（如 source/render 改可选——旧清单必然
+ *    兼容：缺失即旧行为，校验只拒绝「双臂全无」的空清单）；
+ *  - **必须 bump**：语义变更（既有字段含义变化，如 emit-signal 改变
+ *    action.type 联合的含义）、字段类型变化、删除既有段/字段、配对矩阵
+ *    收紧（原本合法的源×挂载组合变为非法）。
+ *    bump 时同步：描述符 contractVersion、旧版本清单装载时的明确迁移
+ *    错误提示（对齐 PLUGIN_API_VERSION 的迁移纪律）。 */
+
 // ── 数据面类型（可序列化契约，供 subscribe 消费）──
 
 /** 完整消息（含全部块类型；插件按需取用，只读约定）。 */
@@ -44,8 +54,11 @@ export interface PluginBlock {
   output?: string;
   /** tool_result 是否错误。 */
   isError?: boolean;
-  /** interaction 选项。 */
-  options?: Array<{ id: string; label: string }>;
+  /** v0.9.5 需求12：工具结果的结构化 details（如 rpiv-todo 的全量任务快照
+   * TaskDetails.tasks）——待办看板类插件消费；可选，无 details 工具不携带。 */
+  details?: Record<string, unknown>;
+  /** interaction 选项（description 为选项说明次行；v0.9.5 需求5 T6 透传）。 */
+  options?: Array<{ id: string; label: string; description?: string | null }>;
   /** phase_divider 标题（v0.9.3 需求10 B1：插件接管渲染所需的完整块数据）。 */
   title?: string;
   /** interaction 来源（v0.9.4 需求11：插件委托内置卡时的 origin 透传）。 */
@@ -54,6 +67,9 @@ export interface PluginBlock {
   renderSource?: string;
   /** interaction 已选答案。 */
   answer?: string;
+  /** interaction 已选选项 id 列表（多选高亮；v0.9.5 需求5 T6——此前插件
+   * 中转丢字段致多选回放仅剩答案文字行）。 */
+  selectedOptions?: string[];
   /** thinking 内容。 */
   thinking?: string;
 }
@@ -158,6 +174,9 @@ export interface SessionKernelContext {
     sessionId: string,
   ): { title: string; kind: "session" | "task" | "node" | "unknown" } | null;
 
+  // ── hub 级能力（二十三轮）：跨会话/全局异步查询面 ──
+  hub: HubCapabilities;
+
   // ── 订阅（声明制；未订阅不推送）──
   subscribe: {
     /** 完整消息流（含全部块类型）。 */
@@ -175,8 +194,98 @@ export interface SessionKernelContext {
   };
 }
 
+/** ── hub 级能力面（二十三轮用户裁决 2026-11-15：开放跨会话/全局面给
+ * 插件——「梳理底层 pi/hub 有哪些 API 可以提供出来」；不局限于会话列表。
+ * 异步查询命名空间（区别于 ctx 顶层的当前会话快照）。 ===== */
+
+/** 会话摘要（ctx.hub.listSessions）。 */
+export interface HubSessionSummary {
+  id: string;
+  title: string | null;
+  agentId: string | null;
+  projectPath: string | null;
+  startedAt: string | null;
+  lastActive: string | null;
+  messageCount: number;
+  /** usage.db 精确记账 join（无记录为 null）。 */
+  totalCost: number | null;
+  toolCallsTotal: number | null;
+}
+
+/** 会话统计（ctx.hub.sessionStats）。 */
+export interface HubSessionStats {
+  sessionId: string;
+  messageCount: number;
+  /** assistant 应答轮数（工具中间轮不计）。 */
+  turnCount: number;
+  /** 工具调用分布（工具名 → 次数）。 */
+  toolCalls: Record<string, number>;
+  /** usage.db 精确记账（无记录为 null；与 toolCalls 分布口径互补）。 */
+  totalCost: number | null;
+  toolCallsTotal: number | null;
+}
+
+/** 项目摘要（ctx.hub.listProjects）。 */
+export interface HubProjectSummary {
+  name: string;
+  path: string;
+}
+
+/** 智能体摘要（ctx.hub.listAgents）。 */
+export interface HubAgentSummary {
+  id: string;
+  displayName: string;
+  installed: boolean;
+}
+
+/** 模型选项（hub.agent.models）。 */
+export interface HubModelOption {
+  value: string;
+  label: string;
+}
+
+/** pi 智能体定制面（二十四轮用户裁决：「把 pi 智能体的能力逐步明确开放，
+ * 插件可自由为 pi 做定制」）——驱动/引导/中止/模型控制，全部经 hub 既有
+ * 命令通道（send_message/steer_chat/abort_chat/session_model_*）。 */
+export interface HubAgentCapabilities {
+  /** 发消息驱动智能体（不传 sessionId = 新建会话；返回会话 id）。 */
+  sendMessage(opts: { message: string; sessionId?: string; projectPath?: string }): Promise<{ sessionId: string | null }>;
+  /** 中途引导当前回合（注入不起新轮）。 */
+  steer(opts: { sessionId: string; message: string }): Promise<void>;
+  /** 中止指定会话的当前回合。 */
+  abort(sessionId: string): Promise<void>;
+  /** 可选模型清单（内置智能体引擎——二十四轮开放面绑定内置引擎，非跟随会话 agent）。 */
+  models(): Promise<HubModelOption[]>;
+  /** 会话锁定模型（null = 跟随全局）。 */
+  getModel(sessionId: string): Promise<{ provider: string; model: string } | null>;
+  /** 设置/清除会话锁定模型（model 空串 = 清除）。 */
+  setModel(opts: { sessionId: string; provider: string; model: string }): Promise<void>;
+}
+
+/** hub 级能力（插件触达全局数据的受控面——实现经 hub 命令，插件不直连）。 */
+export interface HubCapabilities {
+  /** 会话列表（默认跨全部项目，可指定项目编码名限定单项目）。 */
+  listSessions(opts?: { projectEncodedName?: string }): Promise<HubSessionSummary[]>;
+  /** 会话统计（默认当前会话）。 */
+  sessionStats(sessionId?: string): Promise<HubSessionStats>;
+  /** 项目列表。 */
+  listProjects(): Promise<HubProjectSummary[]>;
+  /** 已装智能体及安装态。 */
+  listAgents(): Promise<HubAgentSummary[]>;
+  /** 用系统默认浏览器打开外部链接（详情页跳转等）。 */
+  openUrl(url: string): void;
+  /** pi 智能体定制面（二十四轮）。 */
+  agent: HubAgentCapabilities;
+}
+
 /** 订阅取消句柄。 */
 export type Unsubscribe = () => void;
+
+/** app-overlay 形态的受限 ctx（第四轮评审修复）：应用浮层挂载在会话树外
+ * （app.tsx AppOverlayHost），无会话数据面/命令面——仅注入 hub 全局面。
+ * 修前该形态 ctx 为 undefined，插件按 API.md 调 ctx.hub 直接 TypeError。
+ * 实现见 plugins/hub-capabilities.ts 的 buildOverlayPluginContext。 */
+export type OverlayPluginContext = Pick<SessionKernelContext, "hub">;
 
 /** 全景面板节点的呈现态摘要（内核侧组装，插件不直接触达 store）。 */
 export interface TaskPanelNode {
@@ -201,6 +310,7 @@ export interface TaskNodeSession {
 export interface TaskPanelContext {
   taskId: string;
   title: string;
+  /** v0.9.7 需求2 去阶段化：恒 "run"（兼容面板插件旧字段，后续版本移除）。 */
   phase: string;
   runStatus: string | null;
   /** 执行进度（终态节点数 / 总数）。 */
@@ -213,6 +323,12 @@ export interface TaskPanelContext {
   /** 当前钻入的子任务会话节点（无选中为 null）——看板高亮用。
    * 可选字段：插件与内核独立演进（版本错位容错），缺失时看板不高亮。 */
   selectedNodeId?: string | null;
+  /** v0.9.7 需求2 收版反馈 F：无图单对话流（runner）任务——nodes 为步骤清单
+   * （stages_json 映射，无子会话不可钻入），看板据此隐藏主会话入口/禁用
+   * 点击并呈现步骤灯。 */
+  runnerMode?: boolean;
+  /** runnerMode 下的待答问题（ask_user 同步；非 runnerMode 恒空）。 */
+  pendingQuestion?: string | null;
   /** 钻入子任务会话；null = 取消选择（主区回退任务阶段会话/主会话）。 */
   onSelectNode(nodeId: string | null): void;
   /** 打开全屏流程画布（高级视图）。 */
@@ -241,6 +357,18 @@ export interface DockPanelMount {
   Component: ComponentType<{ ctx: SessionKernelContext }>;
   /** 首次启用时的默认停靠槽位（此后跟随用户布局记忆）。 */
   defaultSlot: DockSlot;
+  /** v0.9.5 需求13 三轮：胶囊信息缩略渲染（缩小态与能力中心按钮并排）——
+   * 插件自定义缩略格式（如待办 done/total）；缺省 fallback 图标+标题。 */
+  CapsuleComponent?: ComponentType<{ ctx: SessionKernelContext }>;
+  /** v0.9.5 需求12 四轮（通用底座）：自动打开声明——匹配的工具被调用时
+   * 本面板自动展开（底座统一监测，插件零代码；agent 侧无需感知）。声明
+   * 式三字段：tool=工具名；inputContains=输入字段匹配（如 rpiv-todo 的
+   * {action:"create"}——只创建触发，update/list 不打扰）；缺省全调用触发。
+   * 会话首轮消息（历史回放）不触发——仅订阅后的增量调用。 */
+  autoOpenOn?: {
+    tool: string;
+    inputContains?: Record<string, string>;
+  };
 }
 
 /** 侧边栏面板挂载点（v0.9.2 测试期，用户裁决：能力中心支持两种形态）：
@@ -254,13 +382,25 @@ export interface SidebarPanelMount {
   Component: ComponentType<{ ctx: SessionKernelContext }>;
 }
 
+/** 菜单页挂载点（二十二轮用户裁决 2026-11-15：菜单与面板是**同等挂载
+ * 形式**——面板=代码实现的弹窗/停靠呈现；菜单=代码实现的独立页面呈现，
+ * 入口在侧栏「新任务」下方，点击打开整页（非会话页）。内容自由：注册表
+ * 组件或 @file: 自定义代码页面，可消费数据面源。 */
+export interface MenuPageMount {
+  kind: "menu";
+  /** 标题 i18n key 和兜底文案。 */
+  titleKey: string;
+  titleFallback: string;
+  Component: ComponentType<{ ctx: SessionKernelContext }>;
+}
+
 /** 块渲染器挂载点（v0.9.2 底座增强）：按匹配域判别联合（测试期修复23
  * 结构收口）——两种匹配语义（代码块语言匹配 / 核心块类型接管）此前共用
  * 一个形状且字段全可选，组合引擎把 block-type 源适配成 languages=[] +
  * detect 恒真即命中一切代码块；联合后跨域匹配在类型层不可表达。
  * 匹配域只有一条进入路径：code → matchBlockRenderer（语言咨询），
  * block-type → matchBlockTypeRenderer（块类型咨询）。 */
-export interface CodeBlockRendererMount {
+export interface CodeBlockRendererMount extends RendererSourceMeta {
   kind: "block-renderer";
   matching: "code";
   /** 语言匹配（小写，如 ["html"]）——**显式封闭集，无通配**：插件只接管
@@ -272,7 +412,7 @@ export interface CodeBlockRendererMount {
   Component: ComponentType<{ code: string; language: string }>;
 }
 
-export interface BlockTypeRendererMount {
+export interface BlockTypeRendererMount extends RendererSourceMeta {
   kind: "block-renderer";
   matching: "block-type";
   /** 接管的核心块类型（interaction / phase_divider 等）。 */
@@ -282,6 +422,13 @@ export interface BlockTypeRendererMount {
 }
 
 export type BlockRendererMount = CodeBlockRendererMount | BlockTypeRendererMount;
+
+/** 需求14 M1（K5）：块渲染接管可见性——mount 附来源插件（渲染头部
+ *  「由插件 X 渲染」角标；内置组合件同标——「装了什么、谁管这块」统一可见）。 */
+export interface RendererSourceMeta {
+  pluginId?: string;
+  pluginLabel?: string;
+}
 
 /** composer 尾部控制行挂载点（v0.9.3 需求8：上下文占用环迁移）：渲染在
  *  模型选择器/思考档同一行的内联槽位（模型行与无模型行两处互斥位点，
@@ -295,10 +442,13 @@ export type PluginMount =
   | RailWidgetMount
   | DockPanelMount
   | SidebarPanelMount
+  | MenuPageMount
   | BlockRendererMount
   | ComposerTrailingMount
   | EventHookMount
-  | HeaderActionMount;
+  | HeaderActionMount
+  | ToolResultRendererMount
+  | AppOverlayMount;
 
 /** 内核信号（事件钩子挂载点的数据面）。 */
 export type SessionSignal =
@@ -309,7 +459,27 @@ export type SessionSignal =
   | { type: "task-run-failed"; taskId: string; title: string }
   /** 文件预览请求（v0.9.2 测试期）：agent 工具（如 preview_html）经内核
    * 事件管线转发——插件自行决定是否响应（产物中心打开侧栏渲染）。 */
-  | { type: "file-preview-request"; file: string; sessionId?: string };
+  | { type: "file-preview-request"; file: string; sessionId?: string }
+  /** v0.9.5 需求1（原需求26）5b：插件间自定义信号（emit-signal 动作产生；
+   *  命名空间前缀 plugin:<pluginId>:<name> 防跨插件冲突——订阅方在
+   *  [source].signals 里声明带前缀全名；depth 为触发深度（发射端 +1 传播，
+   *  总线层 >3 阻断防循环）；payload 携带业务数据（payload_key 取自渲染
+   *  payload 顶层字段）。 */
+  | { type: `plugin:${string}:${string}`; sessionId?: string; payload?: unknown; depth?: number };
+
+/** 工具返回值渲染挂载（v0.9.5 需求1（原需求26）8b——方向：渲染在
+ *  tool_use 卡的 output 区，替换默认文本/嗅探）：声明 tool_name 精确匹配
+ *  或 tool_pattern 正则；组件 props 形状 {payload:{kind:"tool-result",
+ *  toolName, output}, options, actions}。 */
+export interface ToolResultRendererMount {
+  kind: "tool-result-renderer";
+  /** 精确工具名（优先）。 */
+  toolName?: string;
+  /** 工具名正则（toolName 未声明时生效）。 */
+  toolPattern?: string;
+  component: ComponentType<Record<string, unknown>>;
+  options?: Record<string, unknown>;
+}
 
 /** 事件钩子挂载点：无 UI 的事件消费（通知/音效等）。 */
 export interface EventHookMount {
@@ -334,23 +504,44 @@ export interface SessionPluginDescriptor {
   /** 显示名 i18n key 与兜底（插件页/快捷图标消费）。 */
   displayNameKey: string;
   displayNameFallback: string;
+  /** 需求14 M4（B15）：组合清单 [plugin].icon 声明（icon-picker 注册表键）
+   *  ——能力中心/插件中心图标统一优先来源；内置 TS 件无此字段（id 映射
+   *  兜底，M6 批3 外置时随迁为清单声明）。 */
+  icon?: string;
+  /** 需求14 M2（S3）：主题声明（app-theme 挂载件）——应用级装载器消费
+   * （后端读 css → 内联 <style> + data-jishu-theme；base 归一化非空）。 */
+  theme?: { css: string; base: string; preview?: string[] };
   /** v0.9.3 需求12 P1：配置面声明——详情抽屉自动生成设置表单，组件经
    * usePluginConfig 取值（代码常量抽离为可编辑参数的挂点）。 */
   configSchema?: import("./config-plane").PluginConfigField[];
   /** v0.9.3 需求13 C4：阶段流水线声明（pipeline 型组合插件——编排定义，
    * 运行时驱动随 C4-slice-2 接 conductor）。 */
   pipeline?: import("../capabilities/pipeline/contracts").PipelineDeclaration;
+  /** 需求7 修1d：菜单入口声明（组合清单 [menu] 段——新任务下方入口）。 */
+  menu?: { label: string; prompt: string; icon?: string };
   descriptionKey?: string;
   descriptionFallback?: string;
   /** 描述符契约版本（演进接缝：Stage 2 版本协商基础）。 */
   contractVersion: number;
   /** 来源标记（本期恒 builtin）。 */
   source: "builtin" | "config" | "dynamic";
+  /** v0.9.5 需求1 GUI 改造 批次2：实现维度标记（双维度分类 X 轴）——
+   * 组合式由 engine 装配时计算（combo=流水线与数据面臂并存 > code=含
+   * @file: 代码组件 > config=纯清单）；内置插件不写（消费侧按 source=builtin
+   * 判「内置」）。管理面双徽标/筛选消费（plugins-page）。 */
+  implKind?: "config" | "code" | "combo";
   /** 声明制授权（本期仅数据订阅面，占位对齐 05 §3.3）。 */
   permissions: string[];
   mounts: PluginMount[];
   /** 快捷键（如 "ctrl+f"）：按下组合键切换对应面板显隐。null = 无绑定。 */
   shortcut?: string;
+}
+
+/** 需求14 M5（06-P2）：应用级浮层挂载——页面层外常驻（AppOverlayHost 消费），
+ *  无会话 ctx（全局形态；数据自取）。 */
+export interface AppOverlayMount {
+  kind: "app-overlay";
+  Component: React.ComponentType;
 }
 
 export function dockPanelsOf(plugin: SessionPluginDescriptor): DockPanelMount[] {

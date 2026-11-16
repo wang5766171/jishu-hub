@@ -3,7 +3,7 @@ import { Check, ListChecks, Send } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
-import { validateInteractionSubmission } from "@/lib/conversation-interaction";
+import { decorateInteractionOptions, validateInteractionSubmission } from "@/lib/conversation-interaction";
 import { cn } from "@/lib/utils";
 import type {
   ConversationInteractionRequest,
@@ -39,6 +39,13 @@ export function InteractionComposer({
   const selectedOptionSet = useMemo(
     () => new Set(selectedOptionIds),
     [selectedOptionIds],
+  );
+
+  // v0.9.5 需求5 测试期：rpiv-ask 选项串展示净化（剥序号/统一描述隐藏）——
+  // 提交仍用原始 optionId，协议不变。
+  const displayOptions = useMemo(
+    () => decorateInteractionOptions(request.options),
+    [request.options],
   );
 
   const toggleOption = (optionId: string) => {
@@ -108,7 +115,7 @@ export function InteractionComposer({
       </div>
 
       <div className="grid gap-2.5 sm:grid-cols-2">
-        {request.options.map((option, index) => {
+        {displayOptions.map((option, index) => {
           const selected = selectedOptionSet.has(option.optionId);
           return (
             <button
@@ -127,7 +134,7 @@ export function InteractionComposer({
             >
               <span
                 className={cn(
-                  "mt-0.5 flex h-5 min-w-5 items-center justify-center rounded-md border px-1 text-[10px] font-bold",
+                  "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-bold",
                   selected
                     ? "border-primary bg-primary text-primary-foreground"
                     : "border-border bg-muted/70 text-muted-foreground",
@@ -136,7 +143,16 @@ export function InteractionComposer({
                 {selected ? <Check className="h-3 w-3" /> : String.fromCharCode(65 + index)}
               </span>
               <span className="min-w-0">
-                <span className="block text-sm font-medium">{option.label}</span>
+                <span className="block text-sm font-medium">
+                  {option.label}
+                  {/* 需求9 #6：剥除模型按工具英文指令写入的 "(Recommended)"，
+                      渲染本地化「推荐」徽标（净化层置 recommended 标志）。 */}
+                  {option.recommended && (
+                    <span className="ml-1.5 inline-block rounded border border-primary/40 bg-primary/[0.08] px-1 py-px text-[10px] font-normal text-primary/90 align-middle">
+                      {t("sessions.interactionRecommended", "推荐")}
+                    </span>
+                  )}
+                </span>
                 {option.description ? (
                   <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
                     {option.description}
@@ -146,7 +162,7 @@ export function InteractionComposer({
             </button>
           );
         })}
-        {request.allowCustomText && request.options.length > 0 ? (
+        {request.allowCustomText && displayOptions.length > 0 ? (
           <button
             type="button"
             aria-pressed={customSelected}
@@ -162,13 +178,13 @@ export function InteractionComposer({
           >
             <span
               className={cn(
-                "mt-0.5 flex h-5 min-w-5 items-center justify-center rounded-md border px-1 text-[10px] font-bold",
+                "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-bold",
                 customSelected
                   ? "border-primary bg-primary text-primary-foreground"
                   : "border-border bg-muted/70 text-muted-foreground",
               )}
             >
-              {customSelected ? <Check className="h-3 w-3" /> : String.fromCharCode(65 + request.options.length)}
+              {customSelected ? <Check className="h-3 w-3" /> : String.fromCharCode(65 + displayOptions.length)}
             </span>
             <span className="min-w-0">
               <span className="block text-sm font-medium">
@@ -179,7 +195,7 @@ export function InteractionComposer({
         ) : null}
       </div>
 
-      {request.allowCustomText && (customSelected || request.options.length === 0) ? (
+      {request.allowCustomText && (customSelected || displayOptions.length === 0) ? (
         <textarea
           value={customText}
           onChange={(event) => {

@@ -35,7 +35,11 @@ export interface TurnSummary {
   answer: string;
 }
 
-function isUserToolResultOnlyMessage(msg: Message): boolean {
+/** 工具结果型 user 消息（ACM 惯例 tool_result 以 user 角色落盘/回放）——
+ * 非用户输入的文字消息。「最后一条用户消息」类判定必须排除（否则编辑
+ * 入口挂到工具结果上——收版反馈 2026-11-13：执行过插件的会话编辑按钮
+ * 消失的根因）。 */
+export function isUserToolResultOnlyMessage(msg: Message): boolean {
   if (msg.role !== "user" || msg.content.length === 0) return false;
   return msg.content.every((block) => block.type === "tool_result");
 }

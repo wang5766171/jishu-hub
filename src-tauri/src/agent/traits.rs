@@ -151,10 +151,14 @@ pub trait ConfigAdapter: Send + Sync {
     fn as_mcp(&self) -> Option<&dyn crate::agent::config_roles::McpIntegration> {
         None
     }
-    fn as_transport_bridge(&self) -> Option<&dyn crate::agent::config_roles::TransportBridgeDependency> {
+    fn as_transport_bridge(
+        &self,
+    ) -> Option<&dyn crate::agent::config_roles::TransportBridgeDependency> {
         None
     }
-    fn as_permission_mode_config(&self) -> Option<&dyn crate::agent::config_roles::PermissionModeConfig> {
+    fn as_permission_mode_config(
+        &self,
+    ) -> Option<&dyn crate::agent::config_roles::PermissionModeConfig> {
         None
     }
 }

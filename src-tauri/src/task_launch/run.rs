@@ -1,11 +1,16 @@
 use super::*;
 use crate::orchestrator::{NodeRun, TaskEvent};
 
-/// 启动执行运行请求。
+/// 启动执行运行请求。评审 P1-16（用户裁决补实现）：`revision_id` 为显式
+/// 参数来源（01 设计「从 manifest 间接来源改为显式参数来源」）——调用方从
+/// `orchestrator_validate_proposal` 建图返回值取得（现有通道），不再经
+/// manifest.json 的 linked_revision_id 间接解析，manifest 内容不再参与
+/// 启动前置校验（哈希防篡改闸随之移除：显式 revision 为准）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartRunFromRevisionRequest {
     pub task_id: String,
     pub project_root: String,
+    pub revision_id: String,
     pub idempotency_key: String,
 }
 
@@ -18,7 +23,8 @@ pub struct StartRunFromRevisionResult {
     pub revision_id: String,
 }
 
-/// 从 manifest 中读取 linked_revision_id 并启动 GraphRun。
+/// 按显式 revision_id 启动 GraphRun（评审 P1-16：来源改为请求参数直取
+/// 快照建 Run，manifest 间接来源与前置哈希校验移除）。
 ///
 /// 幂等约束：同一 idempotency_key 不会重复创建 run。
 pub fn orchestrator_start_run_from_revision(
@@ -31,27 +37,9 @@ pub fn orchestrator_start_run_from_revision(
     };
     use crate::util::gen_id;
 
-    // 1. 读取 manifest 获取 linked_revision_id + content_hash
-    let manifest_path = task_workspace_root(&req.project_root)
-        .join(&req.task_id)
-        .join("artifacts")
-        .join("planning")
-        .join("manifest.json");
-    let manifest_raw = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("read manifest failed: {e}"))?;
-    let manifest: serde_json::Value =
-        serde_json::from_str(&manifest_raw).map_err(|e| format!("parse manifest failed: {e}"))?;
+    let revision_id = req.revision_id.clone();
 
-    let revision_id = manifest
-        .get("linked_revision_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "manifest missing linked_revision_id".to_string())?;
-    let expected_hash = manifest
-        .get("content_hash")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    // 2. 幂等检查：已有活跃 run 且 key 相同 → 返回现有 run_id
+    // 1. 幂等检查：已有活跃 run 且 key 相同 → 返回现有 run_id
     let ti_store = open_store(&req.project_root)?;
     let instance = ti_store
         .get(&req.task_id)?
@@ -66,39 +54,24 @@ pub fn orchestrator_start_run_from_revision(
                 status: "already_running".to_string(),
                 run_id: active_run.clone(),
                 graph_id,
-                revision_id: revision_id.to_string(),
+                revision_id,
             });
         }
     }
 
-    // 3. 打开 orchestrator store，校验 revision 存在
+    // 2. 打开 orchestrator store，校验 revision 存在并直取快照建 Run
+    //    （评审 P1-16：显式 revision 为准——manifest 改动/滞后不再阻断启动）。
     let db_path = default_db_path();
     let store =
         TaskStore::open(&db_path).map_err(|e| format!("open orchestrator store failed: {e}"))?;
 
     let revision = store
-        .get_revision(revision_id)
+        .get_revision(&revision_id)
         .map_err(|e| format!("get revision failed: {e}"))?;
-
-    // 校验 manifest 完整性（评审 P1）：重读提案文件，验证其哈希与 manifest.content_hash 一致。
-    // 注意：manifest.content_hash 是提案 JSON 文件的哈希，与 revision.content_hash（图快照哈希）无关。
-    if !expected_hash.is_empty() {
-        if let Some(dir) = manifest_path.parent() {
-            let proposal_path = dir.join("flow-plan-proposal.json");
-            if let Ok(proposal_raw) = std::fs::read_to_string(&proposal_path) {
-                let actual_hash = format!("sha256:{:x}", Sha256::digest(proposal_raw.as_bytes()));
-                if actual_hash != expected_hash {
-                    return Err(format!(
-                        "proposal file tampered: manifest={expected_hash}, actual={actual_hash}"
-                    ));
-                }
-            }
-        }
-    }
 
     let graph_id = revision.graph_id.clone();
 
-    // 4. 创建 GraphRun（status=Running）
+    // 3. 创建 GraphRun（status=Running）
     let run_id = gen_id("run");
     let now = now_ms();
     let snapshot = revision
@@ -119,7 +92,7 @@ pub fn orchestrator_start_run_from_revision(
     let run = GraphRun {
         run_id: run_id.clone(),
         graph_id: graph_id.clone(),
-        active_revision_id: revision_id.to_string(),
+        active_revision_id: revision_id.clone(),
         status: RunStatus::Running,
         run_seq: 1,
         budget_state: BudgetState::default(),
@@ -138,7 +111,7 @@ pub fn orchestrator_start_run_from_revision(
         serde_json::to_value(&payloads::RunStartedPayload {
             run_id: run_id.clone(),
             graph_id: graph_id.clone(),
-            revision_id: revision_id.to_string(),
+            revision_id: revision_id.clone(),
             initial_status: RunStatus::Running,
             budget_state: BudgetState::default(),
         })
@@ -149,13 +122,11 @@ pub fn orchestrator_start_run_from_revision(
         .create_run_with_event(&run, &event)
         .map_err(|e| format!("create run failed: {e}"))?;
 
-    // 5. 更新 TaskInstance
+    // 4. 更新 TaskInstance
     let mut updated = instance;
     updated.active_run_id = Some(run_id.clone());
     updated.last_run_id = Some(run_id.clone());
     updated.run_status = Some(RUN_STATUS_RUNNING.to_string());
-    updated.current_phase = "execution".to_string();
-    updated.status = STATUS_GRAPH_CREATED.to_string();
     updated.last_launch_key = Some(req.idempotency_key);
     updated.updated_at = now;
     ti_store.upsert(&updated)?;
@@ -164,7 +135,7 @@ pub fn orchestrator_start_run_from_revision(
         status: "started".to_string(),
         run_id,
         graph_id,
-        revision_id: revision_id.to_string(),
+        revision_id,
     })
 }
 
@@ -346,8 +317,6 @@ pub fn task_launch_start_run(
     updated.active_run_id = Some(run_id.clone());
     updated.last_run_id = Some(run_id.clone());
     updated.run_status = Some(RUN_STATUS_RUNNING.to_string());
-    updated.current_phase = "execution".to_string();
-    updated.status = STATUS_GRAPH_CREATED.to_string();
     updated.last_launch_key = Some(req.idempotency_key);
     updated.updated_at = now;
     ti_store.upsert(&updated)?;
@@ -385,4 +354,98 @@ pub fn sync_run_status_to_task_instance(
     instance.updated_at = now_ms();
     store.upsert(&instance)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_project(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "jishu-task-run-{label}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 评审 P1-16：StartRunFromRevisionRequest 带 revision_id 的 serde 往返
+    /// （hub_invoke 分发按 snake_case 反序列化扩展侧参数；缺字段必须拒绝
+    /// ——静默缺省会让显式来源退化为空查询）。
+    #[test]
+    fn start_run_request_revision_id_roundtrip() {
+        let req = StartRunFromRevisionRequest {
+            task_id: "task-1".into(),
+            project_root: "D:/p".into(),
+            revision_id: "rev-abc".into(),
+            idempotency_key: "key-1".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["revision_id"], serde_json::json!("rev-abc"));
+        let back: StartRunFromRevisionRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(back.revision_id, "rev-abc");
+
+        let missing = serde_json::json!({
+            "task_id": "t",
+            "project_root": "p",
+            "idempotency_key": "k"
+        });
+        assert!(
+            serde_json::from_value::<StartRunFromRevisionRequest>(missing).is_err(),
+            "缺 revision_id 的旧载荷必须拒绝解析"
+        );
+    }
+
+    /// 评审 P1-16：manifest 哈希前置校验已删——manifest 被改动（含会触发
+    /// 旧「proposal file tampered」的错哈希与过期 linked_revision_id）不再
+    /// 阻断启动；流程直取显式 revision。此处实例建好、显式 revision 不存在
+    /// （gen_id 空间不会撞真实库），应停在 store.get_revision 报错而非任何
+    /// manifest 类错误。副作用说明：该调用会打开真实 orchestrator 库
+    /// （default_db_path），仅读不写（查询失败即返回）。
+    #[test]
+    fn start_run_from_revision_ignores_manifest_tampering() {
+        let project = temp_project("rev-tamper");
+        let project_root = project.to_string_lossy().to_string();
+        let instance = crate::task_launch::mark_task_session(
+            &project_root,
+            None,
+            "s1",
+            "jishu-task-runner",
+            None,
+        )
+        .unwrap();
+
+        // 伪造「被篡改」manifest：错哈希 + 与显式 revision 不同的 id。
+        let manifest_dir = task_workspace_root(&project_root)
+            .join(&instance.task_id)
+            .join("artifacts")
+            .join("planning");
+        std::fs::create_dir_all(&manifest_dir).unwrap();
+        std::fs::write(
+            manifest_dir.join("manifest.json"),
+            r#"{"linked_revision_id":"rev-STALE","content_hash":"sha256:deadbeef"}"#,
+        )
+        .unwrap();
+
+        let err = orchestrator_start_run_from_revision(StartRunFromRevisionRequest {
+            task_id: instance.task_id.clone(),
+            project_root: project_root.clone(),
+            revision_id: "rev-EXPLICIT".into(),
+            idempotency_key: "key-1".into(),
+        })
+        .unwrap_err();
+        assert!(
+            err.contains("get revision failed"),
+            "应停在显式 revision 查询（实际: {err}）"
+        );
+        assert!(
+            !err.contains("manifest"),
+            "manifest 不再参与前置（实际: {err}）"
+        );
+        assert!(!err.contains("tampered"), "哈希防篡改闸已删（实际: {err}）");
+
+        let _ = std::fs::remove_dir_all(&project);
+    }
 }

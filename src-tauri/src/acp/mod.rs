@@ -8,7 +8,6 @@
 
 pub mod server;
 pub mod session;
-pub mod translate;
 
 /// Entry point for the ACP server (stdio JSON-RPC).
 ///

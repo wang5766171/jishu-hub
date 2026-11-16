@@ -12,7 +12,11 @@ use crate::memory_store;
 
 pub fn run(action: MemoryAction, ctx: &ExecutionContext) -> Result<(), CliError> {
     match action {
-        MemoryAction::Set { project, key, value } => {
+        MemoryAction::Set {
+            project,
+            key,
+            value,
+        } => {
             let project = normalize_project(&project)?;
             memory_store::set(&project, &key, &value)
                 .map_err(|e| CliError::Internal(format!("memory set: {e}")))?;

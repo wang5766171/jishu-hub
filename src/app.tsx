@@ -1,10 +1,13 @@
 
 import "@/i18n";
-import { hydrateDevLogForced } from "@/lib/dev-log";
+import { attachRuntimeLogBridge, hydrateDevLogForced } from "@/lib/dev-log";
+import { attachWindowActivityTracking } from "@/features/session-kernel/window-activity";
 import { lazy, Suspense } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
 import { useTranslation } from "react-i18next";
-import { Copy, Minus, Pin, PinOff, Settings, Square, Sun, Palette, Moon, Info, Type, X } from "lucide-react";
+import { Copy, Minus, Pin, PinOff, Settings, Square, Sun, Palette, Moon, Info, X } from "lucide-react";
+import { ProjectTabs } from "@/components/titlebar/project-tabs";
+import { useProjectTabs } from "@/components/titlebar/use-project-tabs";
 import logoSvg from "@/assets/logo.svg";
 import logoLightSvg from "@/assets/logo-light.svg";
 import { Github } from "@/components/icons/github";
@@ -14,8 +17,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { useTheme, type Theme, ThemeProvider } from "@/hooks/use-theme";
-import { useFontSize, type FontLevel } from "@/hooks/use-font-size";
+import { useTheme, isBuiltinTheme, type BuiltinTheme, ThemeProvider } from "@/hooks/use-theme";
+import { usePluginTheme } from "@/features/theme/plugin-theme";
+// 需求14 M5（06-P2）：应用级浮层宿主（插件 app-overlay 挂载，跨页常驻）。
+import { AppOverlayHost } from "@/features/session-kernel/plugins/mounts/app-overlay-host";
 import { AgentProvider, useAgent } from "@/agents";
 import { FileViewerProvider, useFileViewer } from "@/components/file-viewer";
 import {
@@ -26,50 +31,34 @@ import {
 } from "@/features/session-kernel/shell/session-sidebar";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { HybridInstallConfirmation } from "@/components/hybrid-install-confirmation";
+import { AgentRuntimeBanner } from "@/components/agent-runtime-banner";
+// 5d（v0.9.5 需求1）：选中文本右键菜单（发送到插件）。
+import { SelectionContextMenu } from "@/components/selection-context-menu";
+// 7a/7b（v0.9.5 需求1）：pi 扩展发现卡（启动扫描一次 + 安全摘要两栏）。
+import { PiExtensionImportCard } from "@/components/pi-extension-import-card";
+// 5e（v0.9.5 需求1）：Ctrl+K 命令面板（搜索插件快速执行）。
+import { CommandPalette } from "@/components/command-palette";
+// v0.9.5 需求1（原需求26）1c：CLI plugins validate 跨进程校验桥（轮询
+// 标记信箱，复用 hub 侧 TS 校验器——与 GUI 向导同一份实现）。
+import { useCliValidateBridge } from "@/features/session-kernel/capabilities/cli-validate-bridge";
+// 6b（v0.9.5 需求1）：agent-tool 前端执行桥（plugin-invoke 扩展 → hub_invoke → 事件 → 动作）。
+import { usePluginToolInvokeBridge } from "@/features/session-kernel/capabilities/plugin-tool-invoke-bridge";
 import { HybridErrorNotification } from "@/features/session-kernel/capabilities/composition/hybrid-errors";
+// 批次5（v0.9.5 需求1 GUI 改造）：会话区 → 管理页导航事件。
+import { onManageNav, openManagePage } from "@/lib/app-nav";
 import type { Page, Project, ProjectMeta } from "@/types";
 
 const ChatPage = lazy(() => import("@/pages/chat-page").then(m => ({ default: m.ChatPage })));
 const ManagePage = lazy(() => import("@/pages/manage-page").then(m => ({ default: m.ManagePage })));
 
-const themeConfig: Record<Theme, { icon: typeof Sun; labelKey: string }> = {
+const themeConfig: Record<BuiltinTheme, { icon: typeof Sun; labelKey: string }> = {
   light: { icon: Sun, labelKey: "theme.light" },
   colorful: { icon: Palette, labelKey: "theme.colorful" },
   dark: { icon: Moon, labelKey: "theme.dark" },
 };
-const themeOrder: Theme[] = ["light", "colorful", "dark"];
+// themeOrder 已移除（Fix1：不再循环切换）
 const appWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? getCurrentWindow() : null;
 
-const fontLevels: { id: FontLevel; labelKey: string }[] = [
-  { id: "s", labelKey: "fontSize.small" },
-  { id: "m", labelKey: "fontSize.medium" },
-  { id: "l", labelKey: "fontSize.large" },
-  { id: "xl", labelKey: "fontSize.xlarge" },
-];
-
-function FontSizeRow({ label, value, onChange, t }: { label: string; value: FontLevel; onChange: (v: FontLevel) => void; t: (k: string) => string }) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-[11px] text-muted-foreground w-14 shrink-0">{label}</span>
-      <div className="flex gap-1">
-        {fontLevels.map(({ id, labelKey }) => (
-          <button
-            key={id}
-            onClick={() => onChange(id)}
-            className={cn(
-              "px-2 py-0.5 rounded text-[11px] transition-fast",
-              value === id
-                ? "bg-primary text-primary-foreground font-medium"
-                : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-            )}
-          >
-            {t(labelKey)}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 function LoadingOverlay({ label }: { label?: string }) {
   const { theme } = useTheme();
@@ -92,7 +81,18 @@ function LoadingOverlay({ label }: { label?: string }) {
   );
 }
 
-function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; onNavigate: (page: Page) => void; disabled?: boolean }) {
+function TitleBar({
+  currentPage,
+  onNavigate,
+  disabled,
+  tabs,
+}: {
+  currentPage: Page;
+  onNavigate: (page: Page) => void;
+  disabled?: boolean;
+  /** v0.9.6 需求4：标题栏项目标签（中间区渲染；由 AppContent 组装数据）。 */
+  tabs?: React.ReactNode;
+}) {
   const { t } = useTranslation();
   const [pinned, setPinned] = useState(false);
   const [version, setVersion] = useState("");
@@ -101,13 +101,10 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateResult, setUpdateResult] = useState<{ latest_version: string | null; has_update: boolean; release_url: string; error: string | null } | null>(null);
   const [updateReady, setUpdateReady] = useState<{ version: string; path: string } | null>(null);
-  const [fontOpen, setFontOpen] = useState(false);
   const [maximized, setMaximized] = useState(false);
-  const { theme, setTheme } = useTheme();
+  const { theme } = useTheme();
   const logo = theme === "light" ? logoLightSvg : logoSvg;
-  const { fontSizeBase, fontSizeProse, setFontSizeBase, setFontSizeProse } = useFontSize();
   const aboutRef = useRef<HTMLDivElement>(null);
-  const fontRef = useRef<HTMLDivElement>(null);
   const aboutTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
@@ -153,18 +150,15 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   }, []);
 
   useEffect(() => {
-    if (!aboutOpen && !fontOpen) return;
+    if (!aboutOpen) return;
     const handler = (e: MouseEvent) => {
       if (aboutOpen && aboutRef.current && !aboutRef.current.contains(e.target as Node)) {
         setAboutOpen(false);
       }
-      if (fontOpen && fontRef.current && !fontRef.current.contains(e.target as Node)) {
-        setFontOpen(false);
-      }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [aboutOpen, fontOpen]);
+  }, [aboutOpen]);
 
   const handleToggle = async () => {
     try {
@@ -195,8 +189,9 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
   };
 
   const cycleTheme = () => {
-    const idx = themeOrder.indexOf(theme);
-    setTheme(themeOrder[(idx + 1) % themeOrder.length]);
+    // Fix1: 点击直接跳转外观页（替代原循环切换）。
+    onNavigate("manage");
+    setTimeout(() => openManagePage("appearance"), 500);
   };
 
   const scheduleAboutClose = () => {
@@ -224,12 +219,19 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
     }
   };
 
-  const { icon: ThemeIcon, labelKey: themeLabelKey } = themeConfig[theme];
-  const themeLabel = t(themeLabelKey);
+  // 需求14 测试期修复（P3/B5 连带）：Theme 值域已含插件主题 id——标题栏
+  // 主题按钮查表对非内置值兜底（原 Record<Theme> 索引 undefined 解构崩溃：
+  // 切到主题插件即整页报错「Cannot destructure property 'icon'」）。
+  // Fix1: 外观按钮不再显示当前主题名——统一入口跳转外观页。
+  const themeMeta: { icon: typeof Sun; labelKey: string; fallback?: string } =
+    isBuiltinTheme(theme)
+      ? themeConfig[theme]
+      : { icon: Palette, labelKey: "theme.pluginTheme", fallback: "主题插件" };
+  void themeMeta; // 保留类型引用供未来恢复显示
 
   return (
     <div
-      className="flex h-11 items-center border-b border-border/30 pl-3 select-none"
+      className="flex h-11 items-center border-b border-border/30 select-none"
       style={{ background: "var(--color-layer-0)", WebkitAppRegion: "drag" } as React.CSSProperties}
     >
       {updateReady && (
@@ -257,14 +259,17 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
           </div>
         </div>
       )}
+      {/* v0.9.6 需求4 补充①：左区 240px 内含 pl-3（根去 pl）——tab 区精确始于侧栏线 240px——首个
+          项目标签与侧栏分界线对齐；按钮精简为 管理/外观（字体并入外观页——
+          v0.9.5 主题自定义器已含字号滑杆）。 */}
+      {/* 补充⑧修复：左区容器回归 drag（logo 与按钮后空白可拖动窗口），按钮
+          由内层 no-drag 包裹（drag 区上的点击元素必须显式 no-drag）。 */}
       <div
-        className="mr-1 flex h-full w-8 shrink-0 items-center justify-start"
+        className="flex h-full w-[240px] shrink-0 items-center gap-1 pl-3"
         onDoubleClick={toggleMaximizeWindow}
       >
-        <img src={logo} alt="" draggable={false} className="pointer-events-none h-6 w-6 rounded-md shadow-sm" />
-      </div>
-
-      <div className="flex items-center gap-1" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+        <img src={logo} alt="" draggable={false} className="pointer-events-none ml-1 h-6 w-6 shrink-0 rounded-md shadow-sm" />
+        <div className="flex items-center gap-1" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
         <button
           onClick={disabled ? undefined : () => onNavigate(currentPage === "chat" ? "manage" : "chat")}
           className={cn(
@@ -281,46 +286,53 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
         <button
           onClick={cycleTheme}
           className="h-7 px-3 rounded-md flex items-center gap-1.5 text-xs transition-fast text-muted-foreground hover:bg-accent/30 hover:text-foreground"
-          title={themeLabel}
+          title={t("nav.appearanceSettings", "外观设置")}
         >
-          <ThemeIcon className="h-3.5 w-3.5 text-[var(--icon-theme)]" />
-          <span>{themeLabel}</span>
+          <Palette className="h-3.5 w-3.5 text-[var(--icon-theme)]" />
+          {/* 评审 P1-11 修复：直出中文改 t()（英文界面曾仍显中文）。 */}
+          <span>{t("nav.appearance", "外观")}</span>
         </button>
-        <div className="relative" ref={fontRef}>
-          <button
-            onClick={() => setFontOpen(!fontOpen)}
-            className={cn(
-              "h-7 px-3 rounded-md flex items-center gap-1.5 text-xs transition-fast text-muted-foreground hover:bg-accent/30 hover:text-foreground",
-              fontOpen && "bg-accent/30 text-foreground"
-            )}
-            title={t("fontSize.title")}
-          >
-            <Type className="h-3.5 w-3.5 text-[var(--icon-theme)]" />
-            <span>{t("fontSize.title")}</span>
-          </button>
-          {fontOpen && (
-            <div className="absolute left-0 top-full mt-1 w-64 rounded-lg border border-border bg-card shadow-lg z-50 p-3 space-y-2">
-              <FontSizeRow label={t("fontSize.ui")} value={fontSizeBase} onChange={setFontSizeBase} t={t} />
-              <FontSizeRow label={t("fontSize.prose")} value={fontSizeProse} onChange={setFontSizeProse} t={t} />
-            </div>
-          )}
         </div>
-        <div className="relative" ref={aboutRef}>
+      </div>
+      {/* 补充⑧修复：中间容器显式 drag——tab 区（no-drag）按内容收缩后，
+         此处剩余空白是主要拖拽区（此前 tab 区 flex-1 占满致窗口无法拖动）。 */}
+      <div
+        className="flex min-w-8 flex-1 self-stretch items-stretch"
+        style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+        onDoubleClick={toggleMaximizeWindow}
+      >
+        {/* v0.9.6 需求4：项目标签条（类浏览器 tab）——组件内部交互区已设
+            no-drag，其余空白保留窗口拖拽 + 双击最大化。 */}
+        {tabs}
+      </div>
+      {/* 需求2（v0.9.4）：dev 窗口显著标识——开发实例与安装版同图标同标题，
+          易误操作；dev 下右上角常驻徽标 + 窗口标题后缀，生产构建零变化。 */}
+      {import.meta.env.DEV && (
+        <span
+          className="mr-2 flex h-5 shrink-0 items-center self-center rounded bg-amber-500 px-1.5 text-[10px] font-bold tracking-widest text-black shadow-sm"
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          title="DEV 开发模式窗口"
+        >
+          DEV
+        </span>
+      )}
+      <div className="ml-2 flex h-full items-stretch" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+        {/* v0.9.6 需求4 补充①：关于/置顶移到窗口控制旁（左区精简让位 tab）。 */}
+        <div className="relative flex items-center pr-1" ref={aboutRef}>
           <button
             onClick={() => setAboutOpen(!aboutOpen)}
             onMouseLeave={aboutOpen ? scheduleAboutClose : undefined}
             className={cn(
-              "h-7 px-3 rounded-md flex items-center gap-1.5 text-xs transition-fast text-muted-foreground hover:bg-accent/30 hover:text-foreground",
+              "h-7 w-7 rounded-md flex items-center justify-center text-xs transition-fast text-muted-foreground hover:bg-accent/30 hover:text-foreground",
               aboutOpen && "bg-accent/30 text-foreground"
             )}
             title={t("about.title")}
           >
             <Info className="h-3.5 w-3.5 text-[var(--icon-about)]" />
-            <span>{t("about.title")}</span>
           </button>
           {aboutOpen && (
             <div
-              className="absolute left-0 top-full mt-1 w-56 rounded-lg border border-border bg-card shadow-lg z-50 p-4"
+              className="absolute right-0 top-full mt-1 w-56 rounded-lg border border-border bg-card shadow-lg z-50 p-4"
               onMouseEnter={cancelAboutClose}
               onMouseLeave={() => { setAboutHovered(false); setAboutOpen(false); }}
             >
@@ -373,28 +385,13 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
         <button
           onClick={handleToggle}
           className={cn(
-            "h-7 px-3 rounded-md flex items-center gap-1.5 text-xs transition-fast",
+            "h-7 w-7 self-center rounded-md flex items-center justify-center text-xs transition-fast",
             pinned ? "text-primary" : "text-muted-foreground hover:bg-accent/30 hover:text-foreground"
           )}
           title={pinned ? "取消置顶" : "置顶窗口"}
         >
           {pinned ? <PinOff className="h-3.5 w-3.5 text-[var(--icon-pin)]" /> : <Pin className="h-3.5 w-3.5 text-[var(--icon-pin)]" />}
-          <span>{pinned ? t("about.unpin") : t("about.pin")}</span>
         </button>
-      </div>
-      <div className="min-w-8 flex-1 self-stretch" onDoubleClick={toggleMaximizeWindow} />
-      {/* 需求2（v0.9.4）：dev 窗口显著标识——开发实例与安装版同图标同标题，
-          易误操作；dev 下右上角常驻徽标 + 窗口标题后缀，生产构建零变化。 */}
-      {import.meta.env.DEV && (
-        <span
-          className="mr-2 flex h-5 shrink-0 items-center self-center rounded bg-amber-500 px-1.5 text-[10px] font-bold tracking-widest text-black shadow-sm"
-          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          title="DEV 开发模式窗口"
-        >
-          DEV
-        </span>
-      )}
-      <div className="ml-2 flex h-full items-stretch" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
         <button
           type="button"
           onClick={minimizeWindow}
@@ -430,9 +427,21 @@ function TitleBar({ currentPage, onNavigate, disabled }: { currentPage: Page; on
 function AppContent() {
   // v0.7.0 需求一：会话作用域状态。项目/会话/元数据随会话作用域 agent 切换重新拉取。
   const { chatAgentId, setChatAgent, setManageAgent } = useAgent();
+  // 1c（v0.9.5 需求1）：CLI plugins validate 跨进程校验桥。
+  useCliValidateBridge();
+  // 6b：agent-tool 执行桥。
+  usePluginToolInvokeBridge();
   const [currentPage, setCurrentPage] = useState<Page>("chat");
+  // 批次5（v0.9.5 需求1 GUI 改造）：会话区入口（能力中心/挂件右键）→
+  // 管理页导航事件（tab 消费在 manage-page 内）。
+  useEffect(() => onManageNav(() => setCurrentPage("manage")), []);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectSessionsLoading, setProjectSessionsLoading] = useState(false);
+  // 需求9 补充2 续（2026-11-10 用户反馈「一闪而过的加载动画」）：ChatPage
+  // 挂载过之后（含标签切换/进项目）不再全屏 LoadingOverlay——内容直出
+  //（opencode 式）；overlay 仅限首启恢复项目的无内容窗口。
+  const chatMountedOnceRef = useRef(false);
+  if (currentPage === "chat") chatMountedOnceRef.current = true;
   const [initialProjectRestored, setInitialProjectRestored] = useState(false);
   const { data: projects, loading: projectsLoading, refetch: refetchProjects } = useInvoke<Project[]>("scan_projects");
   const { data: sessionNames, loading: namesLoading, refetch: refetchNames } = useInvoke<Record<string, string>>("get_session_names");
@@ -441,13 +450,28 @@ function AppContent() {
 
   // Only show loading overlay on initial load, not on refresh
   const loading = projectsLoading || namesLoading;
-  const blockingLoading = loading || !initialProjectRestored || projectSessionsLoading;
+  // 需求9 补充2 续：ChatPage 挂载过之后 projectSessionsLoading 不再升格为
+  // 全屏 overlay（切标签/进项目内容直出）；仅首启（从未进过 chat）保留。
+  const blockingLoading =
+    loading || !initialProjectRestored || (projectSessionsLoading && !chatMountedOnceRef.current);
 
   // Restore last project on startup
   // v0.9.4 需求12：开发日志强制开关水合（后端 settings.json 权威）。
-useEffect(() => {
-  void hydrateDevLogForced();
-}, []);
+  // v0.9.5 需求2 测试期：同时挂后端运行时日志桥（hub-dev-log → [runtime]）。
+  // v0.9.5 测试期（系统通知修复）：窗口激活跟踪（turn-complete 通知门控
+  // 消费——最小化/失焦时当前会话也通知）。
+  useEffect(() => {
+    void hydrateDevLogForced();
+    const detachActivity = attachWindowActivityTracking();
+    let unlistenRuntime: (() => void) | null = null;
+    void attachRuntimeLogBridge().then((fn) => {
+      unlistenRuntime = fn;
+    });
+    return () => {
+      detachActivity();
+      unlistenRuntime?.();
+    };
+  }, []);
 
 useEffect(() => {
     if (!projects || initialProjectRestored) return;
@@ -469,6 +493,28 @@ useEffect(() => {
       });
     return () => { cancelled = true; };
   }, [projects, initialProjectRestored]);
+
+  // v0.9.7 需求5 E3 + 需求4 E6：启动兜底——无 last_project 可恢复时落默认
+  // 工作空间并写 last_project（Q11：引导完成落点与「进入」等权——之后重启
+  // 直接回默认空间）。幂等守卫防循环。
+  const defaultWorkspaceFallbackRef = useRef(false);
+  useEffect(() => {
+    if (!initialProjectRestored || currentProject) return;
+    if (defaultWorkspaceFallbackRef.current) return;
+    defaultWorkspaceFallbackRef.current = true;
+    let cancelled = false;
+    invokeCommand<Project>("get_default_workspace")
+      .then((defaultWorkspace) => {
+        if (cancelled || !defaultWorkspace) return;
+        setProjectSessionsLoading(true);
+        setCurrentProject(defaultWorkspace);
+        invokeCommand("save_last_project", {
+          encodedName: defaultWorkspace.encoded_name,
+        }).catch(console.error);
+      })
+      .catch(console.error);
+    return () => { cancelled = true; };
+  }, [initialProjectRestored, currentProject]);
 
   // Refresh handler: directly await refetch Promises in the event handler
   const handleRefresh = useCallback(async (): Promise<number> => {
@@ -510,9 +556,28 @@ useEffect(() => {
   // v0.9.3 需求13 C4-slice2c：pipeline 插件「作为任务启动」——切会话页、
   // 会话作用域切 jishu agent（任务引擎），ChatPage 按 key 预填启动命令。
   const [pipelineLaunch, setPipelineLaunch] = useState<{ key: number; pluginId: string; name: string } | null>(null);
+  // 需求9 #8：两个启动 state 消费后即清——chat/manage 互斥渲染致 ChatPage
+  // 重挂、其防重 ref 归零，state 不清则重挂重预填并掀掉当前会话。
+  const handlePipelineLaunchConsumed = useCallback(() => setPipelineLaunch(null), []);
   const handleLaunchPipeline = useCallback((pluginId: string, name: string) => {
     setChatAgent("jishu-self");
     setPipelineLaunch({ key: Date.now(), pluginId, name });
+    setCurrentPage("chat");
+  }, [setChatAgent]);
+
+  // v0.9.7 需求3 C1：描述需求创建插件——跳会话页新会话预填创作指令
+  //（pipelineLaunch 同款 key 防重复模式）；留 sessionStorage 标记，agent
+  // 产出经确认卡启用成功后回跳插件中心聚光（闭环）。
+  const [pluginCreateLaunch, setPluginCreateLaunch] = useState<{ key: number; text: string } | null>(null);
+  const handlePluginCreateLaunchConsumed = useCallback(() => setPluginCreateLaunch(null), []);
+  const handleLaunchPluginDescribe = useCallback((text: string) => {
+    setChatAgent("jishu-self");
+    try {
+      sessionStorage.setItem("jishu-plugin-create-return", "1");
+    } catch {
+      /* 存储不可用则回跳闭环降级为默认展示 */
+    }
+    setPluginCreateLaunch({ key: Date.now(), text });
     setCurrentPage("chat");
   }, [setChatAgent]);
 
@@ -577,6 +642,107 @@ useEffect(() => {
     return () => { cancelled = true; unlistenFn?.(); };
   }, [chatAgentId, projects, setChatAgent]);
 
+  // 需求10（会话通知点击跨标签定位）：desktop-notify-click 现携带会话所属
+  // 项目（Rust 深链处反查 sessions 目录）——所属项目非当前标签时自动切换
+  //（setCurrentProject + 同步导航，floating-restore 同款链）；同项目时不动，
+  // chat-page 内的原监听直接选会话。反查缺失回落原行为（仅切会话）。
+  useEffect(() => {
+    let cancelled = false;
+    let unlistenFn: (() => void) | null = null;
+    listen<{ sessionId?: string | null; projectEncoded?: string | null }>("desktop-notify-click", (event) => {
+      if (cancelled) return;
+      const { sessionId, projectEncoded } = event.payload ?? {};
+      if (!sessionId || !projectEncoded) return;
+      if (projectEncoded === currentProject?.encoded_name) return; // 同标签：chat-page 监听直选
+      const targetProject = projects?.find(p => p.encoded_name === projectEncoded);
+      if (!targetProject) return;
+      setCurrentProject(targetProject);
+      invokeCommand("save_last_project", { encodedName: projectEncoded }).catch(console.error);
+      setCurrentPage("chat");
+      // 需求9 补充2：同步导航（零闪空）——与项目切换同批送达。
+      setNavigateToSession(sessionId);
+      setTimeout(() => setNavigateToSession(null), 500);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    });
+    return () => { cancelled = true; unlistenFn?.(); };
+  }, [projects, currentProject]);
+
+  // v0.9.6 需求4 补充②：固定标签状态（pins/lastSession/状态灯）+ 离开自动固定。
+  const projectTabs = useProjectTabs();
+// 需求9 补充1：离开项目上报 → useProjectTabs 记录（切回标签直达离开会话）。
+  const handleProjectLeaveSession = useCallback(
+    (encoded: string, sessionId: string | null) => projectTabs.noteLeaveSession(encoded, sessionId),
+    [projectTabs.noteLeaveSession],
+  );
+  const prevProjectRef = useRef<Project | null>(null);
+  useEffect(() => {
+    const prev = prevProjectRef.current;
+    if (prev && prev.encoded_name !== currentProject?.encoded_name) {
+      // 项目切换（任意路径：tab 点击/管理页/浮动恢复）——被离开的项目自动固定
+      projectTabs.noteLeave(prev);
+    }
+    prevProjectRef.current = currentProject ?? null;
+  }, [currentProject, projectTabs]);
+
+  // v0.9.7 需求12：预连接焦点跟随——当前标签项目变化（含启动首次恢复）即
+  // 声明焦点；Rust 池幂等（同项目只补缺口，切换杀旧建新，禁用即杀全）。
+  // 补充（关闭标签释放）：无焦点项目（空态）时清空池——不留孤儿进程。
+  useEffect(() => {
+    if (!currentProject?.path) {
+      invokeCommand("plugin_preconnect_clear").catch(() => undefined);
+      return;
+    }
+    invokeCommand("plugin_preconnect_focus", { projectPath: currentProject.path })
+      .catch((e) => { if (import.meta.env.DEV) console.warn("preconnect focus failed:", e); });
+  }, [currentProject?.path]);
+
+  // v0.9.6 需求4：标题栏项目标签切换——复刻 floating-restore 模式
+  //（上方 floating-restore 处理器先例）：直接 setCurrentProject + 定位
+  // 会话，不经管理页中转（ChatPage 不卸载，事件管线持续存活，跨项目流式
+  // 状态不断链）。
+  const handleTabSwitchToProject = useCallback((project: Project, sessionId: string | null, agentId: string | null) => {
+    if (agentId && agentId !== chatAgentId) {
+      setChatAgent(agentId);
+    }
+    setCurrentProject(project);
+    invokeCommand("save_last_project", { encodedName: project.encoded_name }).catch(console.error);
+    setCurrentPage("chat");
+    // 需求9 补充1：优先回「离开该项目时正在看的会话」（内存记录），无记录
+    // 才回落最近活跃会话（调用方传入）——A-1 离开切 B 再回 A 直达 A-1。
+    const effective = projectTabs.leaveSession[project.encoded_name] ?? sessionId;
+    if (effective) {
+      // 需求9 补充2：同步导航（原 100ms 延时）——与 setCurrentProject 同一
+      // 渲染批次送达 ChatPage，[projectId] 清理 effect 与 [navigateToSession]
+      // 选中 effect 同批执行，中间无空白会话帧（内容直出，opencode 式）。
+      setNavigateToSession(effective);
+      setTimeout(() => setNavigateToSession(null), 500);
+    }
+    getCurrentWindow().setFocus().catch((e) => { if (import.meta.env.DEV) console.warn("IPC failed:", e); });
+  }, [chatAgentId, setChatAgent, projectTabs.leaveSession]);
+
+  // v0.9.6 需求4 补充⑦（用户裁决 2026-11-03）：关闭当前标签不再回管理页——
+  // 切到前一个固定标签（pins 序左邻，无左邻取右邻）；唯一标签时关闭无效果。
+  // 关闭同时解除该项目固定（suppressPinOnce 抑制切换触发的离开自动固定）。
+  const handleCloseCurrentTab = useCallback(() => {
+    const cur = currentProject;
+    if (!cur) return;
+    const idx = projectTabs.pins.indexOf(cur.encoded_name);
+    const others = projectTabs.pins.filter(e => e !== cur.encoded_name);
+    if (others.length === 0) return; // 唯一标签：关闭无效
+    const prevEnc = idx > 0 ? projectTabs.pins[idx - 1] : projectTabs.pins[idx + 1];
+    const target = projects?.find(p => p.encoded_name === prevEnc);
+    if (!target) return;
+    projectTabs.suppressPinOnce(cur.encoded_name);
+    projectTabs.unpinProject(cur.encoded_name);
+    // 需求12 补充：关闭标签显式释放被关项目的预连接（幂等——被关项目是
+    // 当前焦点时本就随切换重建，此处保证「关闭=释放」语义直接成立）。
+    invokeCommand("plugin_preconnect_clear").catch(() => undefined);
+    const last = projectTabs.lastSession[prevEnc];
+    handleTabSwitchToProject(target, last?.sessionId ?? null, last?.agentId ?? null);
+  }, [currentProject, projects, projectTabs, handleTabSwitchToProject]);
+
   // Diagnostic: surface the REAL transport dispatch path in the F12 console so
   // the actual command route (ACP vs CLI) is inspectable at runtime — this is
   // the subprocess genuinely spawned, not the probe/declarative surface. No UI;
@@ -617,17 +783,34 @@ useEffect(() => {
     // 工具的相对路径需要当前项目根，只有这里持有 currentProject。
     <FileViewerProvider projectPath={currentProject?.path ?? null}>
       <div className="flex flex-col h-screen bg-background relative">
-        <TitleBar currentPage={currentPage} onNavigate={setCurrentPage} disabled={blockingLoading} />
+        <TitleBar
+          currentPage={currentPage}
+          onNavigate={setCurrentPage}
+          disabled={blockingLoading}
+          tabs={
+            <ProjectTabs
+              currentProject={currentProject}
+              projects={projects}
+              projectMetas={projectMetas}
+              tabs={projectTabs}
+              onSwitchToProject={handleTabSwitchToProject}
+              onCloseCurrentProject={handleCloseCurrentTab}
+            />
+          }
+        />
+        {/* v0.9.7 需求1 T5：pi 版本变更横幅（软提示、无关闭按钮、不拦截会话） */}
+        <AgentRuntimeBanner />
       <ViewerPushRow>
         <Suspense fallback={<LoadingOverlay />}>
           {currentPage === "chat"
-            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} onNavigateAgentModels={handleNavigateAgentModels} pipelineLaunch={pipelineLaunch} />
+            ? <ChatPage currentProject={currentProject} currentProjectMeta={currentProjectMeta} onRefresh={handleRefresh} sessionNames={sessionNames} refetchNames={refetchNames} onSwitchProject={handleSwitchProject} onProjectSessionsLoadingChange={handleProjectSessionsLoadingChange} navigateToSession={navigateToSession} onNavigateAgentModels={handleNavigateAgentModels} pipelineLaunch={pipelineLaunch} onPipelineLaunchConsumed={handlePipelineLaunchConsumed} pluginCreateLaunch={pluginCreateLaunch} onPluginCreateLaunchConsumed={handlePluginCreateLaunchConsumed} onProjectLeaveSession={handleProjectLeaveSession} />
             : <ManagePage
                 onBack={() => setCurrentPage("chat")}
                 onEnterProject={handleEnterProject}
                 navigateToProjects={manageNavKey}
                 navigateToAgentModels={agentModelsNavKey}
                 onLaunchPipeline={handleLaunchPipeline}
+                onLaunchDescribe={handleLaunchPluginDescribe}
                 projects={projects}
                 projectMetas={projectMetas}
                 refetchProjects={refetchProjects}
@@ -643,6 +826,14 @@ useEffect(() => {
             项目切换不卸载；组件内部 createPortal 到 body，轮询
             plugin_confirm_pending，无待确认项时渲染 null。 */}
         <HybridInstallConfirmation />
+      <AppOverlayHost />
+        {/* 5d：选中文本右键菜单（发送到插件） */}
+        <SelectionContextMenu />
+        {/* 7a：pi 扩展发现卡（层一自动检测） */}
+        <PiExtensionImportCard />
+        {/* 5e：Ctrl+K 命令面板 */}
+        <CommandPalette sessionId={null} />
+        {/* 1c：CLI validate 信箱轮询（无 UI 纯逻辑钩子，与确认卡同区域挂载） */}
         <HybridErrorNotification />
       </div>
     </FileViewerProvider>
@@ -718,17 +909,42 @@ function ViewerPushRow({ children }: { children: ReactNode }) {
   );
 }
 
-import { EnvCheckPage } from "@/pages/env-check-page";
+// v0.9.7 需求4：首启三步引导（初始化门控 + 场景卡 + 场景推荐）。
+import { OnboardingWizard } from "@/pages/onboarding-wizard";
 
 function AppContentWrapper() {
-  const [envChecked, setEnvChecked] = useState(!!localStorage.getItem("jishu-hub-env-checked"));
+  // v0.9.7 需求4：首启门控迁移 onboarded（state.json 权威，三步引导）。
+  // null = 查询中；false = 走引导；true = 直接主界面。旧 localStorage 键
+  // 不迁移（全局裁决：首次运行 0.9.7 统一走一遍引导），检测到即删除。
+  const [onboarded, setOnboarded] = useState<boolean | null>(null);
+  // 需求14 M2（S3）：主题插件装载器——App 根部消费（ThemeProvider 内），
+  // 订阅组合清单版本实现主题热更；env-check 首屏阶段同样生效。
+  usePluginTheme();
 
-  if (!envChecked) {
+  useEffect(() => {
+    if (localStorage.getItem("jishu-hub-env-checked")) {
+      localStorage.removeItem("jishu-hub-env-checked");
+    }
+    invokeCommand<boolean>("get_onboarded")
+      .then((done) => setOnboarded(done))
+      .catch(() => setOnboarded(false));
+  }, []);
+
+  if (onboarded === null) {
+    return null;
+  }
+
+  if (!onboarded) {
     return (
       <div className="flex flex-col h-screen w-screen bg-background text-foreground relative">
         <TitleBar currentPage={"chat"} onNavigate={() => {}} disabled={true} />
         <div className="flex-1 overflow-hidden bg-background">
-          <EnvCheckPage onComplete={() => { localStorage.setItem("jishu-hub-env-checked", "1"); setEnvChecked(true); }} />
+          <OnboardingWizard
+            onComplete={() => {
+              invokeCommand("set_onboarded", { value: true }).catch(console.error);
+              setOnboarded(true);
+            }}
+          />
         </div>
       </div>
     );

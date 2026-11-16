@@ -73,9 +73,11 @@ pub async fn generate_and_persist(session_id: &str) -> Option<String> {
             return None;
         }
     };
-    let Ok(preset) =
-        crate::agent::jishu_self::pi_models_config::to_test_preset(&provider_id, provider_cfg, &model)
-    else {
+    let Ok(preset) = crate::agent::jishu_self::pi_models_config::to_test_preset(
+        &provider_id,
+        provider_cfg,
+        &model,
+    ) else {
         eprintln!("[session-title] to_test_preset failed for {provider_id}/{model_id}");
         return None;
     };
@@ -108,7 +110,7 @@ pub async fn generate_and_persist(session_id: &str) -> Option<String> {
 
     let response = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let resp_clone = response.clone();
-    let mut emitter = Box::new(move |event| {
+    let emitter = Box::new(move |event| {
         if let crate::agent::NormalizedEvent::TextDelta { delta } = event {
             if let Ok(mut s) = resp_clone.lock() {
                 s.push_str(&delta);
@@ -135,9 +137,7 @@ pub async fn generate_and_persist(session_id: &str) -> Option<String> {
     };
 
     let _ = turn; // 文本经 emitter 收集
-    let Some(raw) = response.lock().ok().map(|s| s.clone()) else {
-        return None;
-    };
+    let raw = response.lock().ok().map(|s| s.clone())?;
     let Some(title) = sanitize_title(&raw) else {
         eprintln!("[session-title] sanitized title empty, raw={raw:?}");
         return None;
@@ -154,10 +154,7 @@ pub async fn generate_and_persist(session_id: &str) -> Option<String> {
 
 /// sessions 根目录下扫全部项目目录定位 `<session_id>.jsonl`。
 fn find_session_file(session_id: &str) -> Option<PathBuf> {
-    if session_id.is_empty()
-        || session_id.contains(['/', '\\'])
-        || session_id.contains("..")
-    {
+    if session_id.is_empty() || session_id.contains(['/', '\\']) || session_id.contains("..") {
         return None; // 纯 id，防路径逃逸
     }
     let root = crate::agent::jishu_self::pi_session::pi_sessions_root().ok()?;
@@ -192,8 +189,11 @@ fn has_session_info(lines: &[&str]) -> bool {
             .ok()
             .and_then(|v| {
                 (v.get("type")?.as_str()? == "session_info"
-                    && v.get("name").and_then(|n| n.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false))
-                    .then_some(())
+                    && v.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false))
+                .then_some(())
             })
             .is_some()
     })
@@ -216,7 +216,7 @@ fn first_user_text_from_lines(lines: &[&str]) -> Option<String> {
             for block in blocks {
                 if block.get("type").and_then(|t| t.as_str()) == Some("text") {
                     let text = block.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                    let (clean, _ids) = crate::agent::tool_plugin::extract_tool_snapshot(text);
+                    let (clean, _ids) = crate::agent::internal_prompts::extract_tool_snapshot(text);
                     if !clean.trim().is_empty() {
                         return Some(clean.trim().to_string());
                     }
@@ -274,8 +274,7 @@ fn append_session_info(path: &std::path::Path, title: &str) -> std::io::Result<(
     let content = std::fs::read_to_string(path)?;
     let parent_id: Option<String> = content
         .lines()
-        .filter(|l| !l.trim().is_empty())
-        .last()
+        .rfind(|l| !l.trim().is_empty())
         .and_then(|l| {
             serde_json::from_str::<serde_json::Value>(l)
                 .ok()
@@ -343,8 +342,14 @@ mod tests {
 
     #[test]
     fn sanitize_strips_quotes_and_punctuation() {
-        assert_eq!(sanitize_title("「开启v0.9.4版本开发」").as_deref(), Some("开启v0.9.4版本开发"));
-        assert_eq!(sanitize_title("\"Fix login bug\"").as_deref(), Some("Fix login bug"));
+        assert_eq!(
+            sanitize_title("「开启v0.9.4版本开发」").as_deref(),
+            Some("开启v0.9.4版本开发")
+        );
+        assert_eq!(
+            sanitize_title("\"Fix login bug\"").as_deref(),
+            Some("Fix login bug")
+        );
         assert_eq!(sanitize_title("修复标题。").as_deref(), Some("修复标题"));
         assert_eq!(sanitize_title("多行\n输出取首行").as_deref(), Some("多行"));
         assert_eq!(sanitize_title("   ").as_deref(), None);
@@ -361,13 +366,13 @@ mod tests {
     #[test]
     fn session_info_detection_and_first_user() {
         let lines = vec![
-            r#"{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"<jishu-tool-plugins>注入块</jishu-tool-plugins>\n开启v0.9.4版本开发"}]}}"#,
+            r#"{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"<JISHU-TOOL-PLUGINS>注入块</JISHU-TOOL-PLUGINS>\n开启v0.9.4版本开发"}]}}"#,
             r#"{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"收到"}],"provider":"zhipu","model":"glm-5.3"}}"#,
         ];
         assert!(!has_session_info(&lines));
         let user = first_user_text_from_lines(&lines).unwrap();
         assert!(user.contains("开启v0.9.4版本开发"));
-        assert!(!user.contains("jishu-tool-plugins"));
+        assert!(!user.contains("JISHU-TOOL-PLUGINS"));
         assert_eq!(
             last_model_from_lines(&lines),
             Some(("zhipu".to_string(), "glm-5.3".to_string()))
@@ -389,7 +394,10 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let title = rt.block_on(generate_and_persist(&sid));
         println!("[live] generated title = {title:?}");
-        assert!(title.is_some(), "generation chain failed (see warn logs above)");
+        assert!(
+            title.is_some(),
+            "generation chain failed (see warn logs above)"
+        );
     }
 
     #[test]

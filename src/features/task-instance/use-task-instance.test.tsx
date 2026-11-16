@@ -10,25 +10,23 @@ vi.mock("@/hooks/use-invoke", () => ({
   invokeCommand,
 }));
 
-// 可变：控制 task_launch_list_sessions 返回的 current_phase，模拟 conductor 推进后
-// 容器经 onTurnComplete → loadInstances 刷新到的最新实例。
-let currentPhase = "requirements";
+// 可变：控制 task_launch_list_sessions 返回的 runner 步骤清单。
+let stagesJson: string | null = null;
 
 function rawTask(): TaskInstanceRaw {
   return {
     task_id: "task_1",
     project_root: "D:/workspace/demo",
     title: "演示任务",
-    skill_id: "jishu-conductor-default",
+    skill_id: "jishu-task-runner",
     planner_agent_id: "jishu-self",
-    status: "requirements_discussing",
-    current_phase: currentPhase,
-    requirement_session_id: "sess-req",
-    planning_session_id: null,
+    status: "active",
+    task_session_id: "sess-main",
     graph_id: null,
     active_run_id: null,
     last_run_id: null,
     run_status: null,
+    stages_json: stagesJson,
     created_at: 0,
     updated_at: 0,
   };
@@ -38,12 +36,10 @@ function Harness() {
   const task = useTaskInstance({ projectRoot: "D:/workspace/demo" });
   return (
     <div>
-      <div data-testid="active-phase">{task.activePhase}</div>
+      <div data-testid="session">{task.activeSessionId ?? "-"}</div>
+      <div data-testid="steps">{task.runnerCard.steps.map((s) => `${s.title}:${s.status}`).join(",")}</div>
       <button data-testid="open" onClick={() => task.openTask("task_1")}>
         open
-      </button>
-      <button data-testid="to-requirements" onClick={() => task.openPhase("requirements")}>
-        req
       </button>
       <button data-testid="reload" onClick={() => task.loadInstances()}>
         reload
@@ -52,9 +48,9 @@ function Harness() {
   );
 }
 
-describe("useTaskInstance 阶段标签自动跟随", () => {
+describe("useTaskInstance（v0.9.7 去阶段化）", () => {
   beforeEach(() => {
-    currentPhase = "requirements";
+    stagesJson = null;
     invokeCommand.mockReset();
     invokeCommand.mockImplementation(async (cmd: string) => {
       if (cmd === "task_launch_list_sessions") return [rawTask()];
@@ -62,49 +58,42 @@ describe("useTaskInstance 阶段标签自动跟随", () => {
     });
   });
 
-  it("current_phase 前进时自动跟随（requirements → planning）", async () => {
+  it("打开任务后 activeSessionId 指向 task_session_id（单对话流）", async () => {
     render(<Harness />);
-
-    // 打开任务（current_phase=requirements）。
     await act(async () => {
       screen.getByTestId("open").click();
     });
-    await waitFor(() => expect(screen.getByTestId("active-phase")).toHaveTextContent("requirements"));
-
-    // conductor 推进到 planning，turn 结束后容器刷新实例。
-    currentPhase = "planning";
-    await act(async () => {
-      screen.getByTestId("reload").click();
-    });
-
-    // activePhase 应自动跟随到 planning。
-    await waitFor(() => expect(screen.getByTestId("active-phase")).toHaveTextContent("planning"));
+    await waitFor(() => expect(screen.getByTestId("session")).toHaveTextContent("sess-main"));
   });
 
-  it("用户手动回看后，current_phase 前进不覆盖手动导航", async () => {
+  it("runnerCard 随 stages_json 刷新（任务卡步骤灯数据源）", async () => {
+    stagesJson = null;
     render(<Harness />);
-
     await act(async () => {
       screen.getByTestId("open").click();
     });
-    // 推进到 planning → 自动跟随。
-    currentPhase = "planning";
+    await waitFor(() => expect(screen.getByTestId("steps")).toHaveTextContent(""));
+
+    stagesJson = JSON.stringify({
+      steps: [
+        { id: "a", title: "第一步", status: "done" },
+        { id: "b", title: "第二步", status: "running" },
+      ],
+    });
     await act(async () => {
       screen.getByTestId("reload").click();
     });
-    await waitFor(() => expect(screen.getByTestId("active-phase")).toHaveTextContent("planning"));
+    await waitFor(() =>
+      expect(screen.getByTestId("steps")).toHaveTextContent("第一步:done,第二步:running"),
+    );
+  });
 
-    // 用户手动回看到 requirements（只读回看）。
+  it("损坏 stages_json 回落空清单（不抛错）", async () => {
+    stagesJson = "not-json";
+    render(<Harness />);
     await act(async () => {
-      screen.getByTestId("to-requirements").click();
+      screen.getByTestId("open").click();
     });
-    await waitFor(() => expect(screen.getByTestId("active-phase")).toHaveTextContent("requirements"));
-
-    // conductor 继续推进到 execution：用户已手动挪到 requirements，不应被拽走。
-    currentPhase = "execution";
-    await act(async () => {
-      screen.getByTestId("reload").click();
-    });
-    await waitFor(() => expect(screen.getByTestId("active-phase")).toHaveTextContent("requirements"));
+    await waitFor(() => expect(screen.getByTestId("steps")).toHaveTextContent(""));
   });
 });

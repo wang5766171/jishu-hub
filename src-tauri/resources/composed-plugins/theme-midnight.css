@@ -1,0 +1,13 @@
+/* 官方示范主题：午夜蓝——只覆盖公开令牌契约（02 §4.1 子集，逐名）。
+ * 复制本目录改色即得自建主题（skill 模板 7 母本同构）。 */
+[data-jishu-theme="session.theme-midnight"] {
+  --color-background: #0b1220;
+  --color-layer-0: #0f172a;
+  --color-layer-1: #1e293b;
+  --color-layer-2: #273549;
+  --color-layer-3: #33415c;
+  --color-layer-4: #3f5075;
+  --message-user-bg: #1d4ed8;
+  --message-assistant-bg: #111c31;
+  --message-thinking-bg: #0e1728;
+}

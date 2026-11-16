@@ -124,6 +124,11 @@ pub enum NormalizedEvent {
         call_id: String,
         output: serde_json::Value,
         is_error: bool,
+        /// v0.9.5 需求12 测试期二轮（实时链）：pi 工具结果的结构化 details
+        ///（如 rpiv-todo 全量任务快照）——实时事件流透传（此前仅回放链有：
+        /// message_end 被实时归一化忽略，待办面板重启才更新的根因）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
     },
     /// v0.9.4 需求8：工具执行中间进度（pi `tool_execution_update`，bash 类
     /// 长时工具的流式输出快照）。partial_output 为归一化层提取后的纯文本
@@ -537,30 +542,6 @@ pub struct ImageSource {
     pub data_base64: Option<String>,
     pub mime: Option<String>,
 }
-
-#[derive(Debug, Clone, Serialize)]
-pub struct NormalizedMessage {
-    pub role: String,
-    pub content: Vec<ContentBlock>,
-    pub timestamp: Option<i64>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum AgentError {
-    #[error("Agent not found: {0}")]
-    NotFound(String),
-    #[error("Agent not installed: {0}")]
-    NotInstalled(String),
-    #[error("Unsupported operation")]
-    Unsupported,
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
-    #[error("{0}")]
-    Other(String),
-}
-
 #[cfg(test)]
 mod tests_v6 {
     use super::*;
@@ -804,7 +785,9 @@ mod tests_v0_9_4 {
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(
-            json.get("follow_up_texts").and_then(|v| v.as_array()).map(|a| a.len()),
+            json.get("follow_up_texts")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
             Some(1),
             "follow_up_texts 应序列化"
         );
@@ -818,7 +801,10 @@ mod tests_v0_9_4 {
         });
         let decoded: NormalizedEvent = serde_json::from_value(legacy).unwrap();
         match decoded {
-            NormalizedEvent::SteerQueueCleared { texts, follow_up_texts } => {
+            NormalizedEvent::SteerQueueCleared {
+                texts,
+                follow_up_texts,
+            } => {
                 assert_eq!(texts, vec!["旧文本".to_string()]);
                 assert!(follow_up_texts.is_empty(), "缺省字段应为空集");
             }

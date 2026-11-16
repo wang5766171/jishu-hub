@@ -4,7 +4,8 @@ import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { streamStore, useIsSessionStreaming } from "@/hooks/use-stream-store";
 import { Button } from "@/components/ui/button";
-import { Blocks, Check, ChevronDown, KeyRound, MessagesSquare, Paperclip, Plus, Send, Server, Square, Sparkles } from "lucide-react";
+import {
+  Zap, Blocks, Check, ChevronDown, KeyRound, MessagesSquare, Paperclip, Plus, Send, Server, Square, Sparkles } from "lucide-react";
 import { FilePreview } from "./file-preview";
 import { InteractionComposer } from "./interaction-composer";
 import { MessageStaging, type StagedMessage } from "./message-staging";
@@ -41,10 +42,18 @@ interface SessionTool {
  * 用后 reset，避免 lastIndex 残留（有 /g 标志时 test 会推进状态）。 */
 const TOOL_TOKEN_RE = /@\[([^\]]+)\]/g;
 
+/** 工具 token 管线的最小条目（id + display_name 子集；session_tool_list
+ * 返回形态即满足）——评审 P1-15 修复：导出供 chat-page 编辑重发复用同一
+ * 剥离/归一实现（单源），组件内 SessionTool 结构兼容可直接传入。 */
+export interface ToolTokenSource {
+  id: string;
+  display_name: string;
+}
+
 /** 解析消息中的工具 token：剥离文本并把显示名归一为插件 id
  * （35ee638a P0：归一缺失会让后端 set_session_tools 拒绝未知 id）。
  * 未匹配任何插件的 token 原样保留（避免吞字）。 */
-function extractToolTokens(text: string, tools: SessionTool[]): { text: string; toolIds: string[] } {
+export function extractToolTokens(text: string, tools: ToolTokenSource[]): { text: string; toolIds: string[] } {
   const ids: string[] = [];
   const replaced = text.replace(TOOL_TOKEN_RE, (match, name: string) => {
     const tool = tools.find((t) => t.display_name === name);
@@ -152,6 +161,10 @@ interface ChatInputProps {
   workModeOptions?: Array<{ value: string; label: string }>;
   workModeValue?: string;
   onWorkModeChange?: (value: string) => void | Promise<void>;
+  /** 需求2 追加：任务不询问模式（任务模式下显示开关——开启后 agent 不再
+   * 提问，全部按推荐执行）。 */
+  taskNoAsk?: boolean;
+  onTaskNoAskChange?: (enabled: boolean) => void;
   accessModeLabel?: string;
   accessModeTitle?: string;
   accessModeReadOnly?: boolean;
@@ -178,10 +191,12 @@ function isInsideProject(filePath: string, projectPath: string): boolean {
 
 /** v0.9.1 需求3 #1：ChatInput 命令句柄——focus 沿用原 textarea 转发语义；
  * restoreTexts 供 chat-page 在收到 steer_queue_cleared（停止清队）时把被清空
- * 的排队文本追加回草稿，不打字丢失。 */
+ * 的排队文本追加回草稿，不打字丢失。setText（需求9 #8）为替换语义——
+ * 预填场景（创建插件/流水线）用：旧草稿+新预填追加会累积两份。 */
 export interface ChatInputHandle {
   focus: () => void;
   restoreTexts: (texts: string[]) => void;
+  setText: (text: string) => void;
 }
 
 const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput({
@@ -211,6 +226,8 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   workModeOptions = [],
   workModeValue,
   onWorkModeChange,
+  taskNoAsk,
+  onTaskNoAskChange,
   accessModeLabel,
   accessModeTitle,
   accessModeReadOnly = true,
@@ -555,6 +572,23 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           scrollInputCaretIntoView();
         });
       },
+      // 需求9 #8：替换语义回填——预填专用（restoreTexts 追加语义保留给停止
+      // 清队回填），同步草稿持久化避免 localStorage 旧草稿闭环再混入。
+      setText: (text: string) => {
+        const next = text;
+        messageRef.current = next;
+        setMessage(next);
+        onDraftChange?.(next);
+        if (!next) return;
+        requestAnimationFrame(() => {
+          const textarea = textareaRef.current;
+          if (!textarea) return;
+          const pos = next.length;
+          textarea.setSelectionRange(pos, pos);
+          textarea.focus();
+          scrollInputCaretIntoView();
+        });
+      },
     }),
     [onDraftChange, scrollInputCaretIntoView],
   );
@@ -577,7 +611,9 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       restore: (sessionKey: string, messages: StagedMessage[]) => {
         const claimedIds = claimedIdsForSession(sessionKey);
         for (const m of messages) claimedIds.delete(m.id);
-        setStagedMessagesForSession(sessionKey, (prev) => [...prev, ...messages]);
+        // 需求11 #2 逐条发送：放回=保序插回**队首**（领取时的原序在前，
+        // 失败回滚与「发一条放回剩余」都不被打乱；期间新暂存的排其后）。
+        setStagedMessagesForSession(sessionKey, (prev) => [...messages, ...prev]);
       },
     };
   }, [claimedIdsForSession, setStagedMessagesForSession, stagedApiRef]);
@@ -834,6 +870,9 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         }));
         const saved = await invokeCommand<SavedFile[]>("save_session_files", {
           projectPath,
+          // v0.9.7 需求5 E5：默认空间上传按会话分目录（新会话首传为 null，
+          // 后端沿平铺——首条消息带附件先于会话创建）。
+          sessionId: sessionId ?? null,
           files: payload,
         });
         for (const sv of saved) {
@@ -842,7 +881,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       }
       return allFileLines;
     },
-    [projectPath],
+    [projectPath, sessionId],
   );
 
   const composeOutgoing = useCallback(
@@ -925,7 +964,9 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     );
     // v0.9.4 需求12：send 受理确认（spawn 完成 + prompt 已发出）——阶段文案
     // 从②「正在赶来」切③「思考中」（模型首响应慢不再误导为连接中）。
-    streamStore.markPromptAccepted(pendingId);
+    // C20：携带 process_id（连接世代）——新进程重连不凭旧记忆直升③。
+    streamStore.noteProcess(pendingId, chatSession.process_id);
+    streamStore.markPromptAccepted(pendingId, chatSession.process_id);
 
     setActiveSessionId(chatSession.session_id);
     await onSessionResolved?.(pendingId, chatSession.session_id);
@@ -1298,6 +1339,17 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
               onDelete={(id) =>
                 setCurrentStagedMessages((prev) => prev.filter((m) => m.id !== id))
               }
+              onReorder={(fromId, toId) =>
+                setCurrentStagedMessages((prev) => {
+                  const from = prev.findIndex((m) => m.id === fromId);
+                  const to = prev.findIndex((m) => m.id === toId);
+                  if (from < 0 || to < 0 || from === to) return prev;
+                  const next = [...prev];
+                  const [moved] = next.splice(from, 1);
+                  next.splice(to, 0, moved);
+                  return next;
+                })
+              }
               onSend={handleGuideStaged}
               sendLoadingId={guideLoading}
               toolNames={Object.fromEntries(
@@ -1600,6 +1652,29 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     </div>
                   )}
                 </div>
+              )}
+              {workModeValue === "task" && onTaskNoAskChange && (
+                // 评审 P1-11 修复：直出中文改 t()；评审 #17 配合后端作用域
+                // 收窄——文案明确「仅任务会话生效，普通对话不受影响」。
+                <button
+                  type="button"
+                  disabled={disabled || sending || isStreaming}
+                  title={
+                    taskNoAsk
+                      ? t("sessions.taskNoAskOn", "不询问已开启：本任务会话内不再提问，全部按推荐执行（点击关闭）")
+                      : t("sessions.taskNoAskOff", "任务会话内开启不询问：开启后本会话不再提问，全部按推荐执行（普通对话不受影响）")
+                  }
+                  onClick={() => onTaskNoAskChange(!taskNoAsk)}
+                  className={cn(
+                    "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs transition-fast disabled:cursor-not-allowed disabled:opacity-50",
+                    taskNoAsk
+                      ? "border-primary/50 bg-primary/10 text-primary"
+                      : "border-border/50 bg-background/80 text-muted-foreground hover:bg-accent/45 hover:text-foreground",
+                  )}
+                >
+                  <Zap className="h-3.5 w-3.5" />
+                  <span className="whitespace-nowrap">{t("sessions.taskNoAsk", "不询问")}</span>
+                </button>
               )}
               {accessModeLabel && (
                 <div className="relative">

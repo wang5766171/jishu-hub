@@ -90,6 +90,28 @@ async fn check_runtime_latest(id: &str, definition: &RuntimeDefinition) -> Lates
     }
 }
 
+/// npm `view <pkg> version --json` 响应解析（收版反馈 2026-11-13：新版 npm
+/// 返回**数组** JSON——`[\n  "26.13.1"\n]`，旧代码 trim 引号得到整段脏串，
+/// 前端版本比较恒 false=「识别不出新版本」）。数组取末位（多版本字段时
+/// 最新在最后）；字符串剥引号；解析失败回退原文 trim。
+fn parse_npm_version_json(stdout: &str) -> Option<String> {
+    let trimmed = stdout.trim();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        match &value {
+            serde_json::Value::Array(items) => items
+                .iter()
+                .filter_map(|v| v.as_str())
+                .last()
+                .map(str::to_string),
+            serde_json::Value::String(s) => Some(s.clone()),
+            _ => None,
+        }
+    } else {
+        let bare = trimmed.trim_matches('"').trim();
+        (!bare.is_empty()).then(|| bare.to_string())
+    }
+}
+
 async fn check_npm_latest(id: &str, package: &str) -> LatestVersion {
     let mut cmd = shell_command(
         "npm",
@@ -107,11 +129,11 @@ async fn check_npm_latest(id: &str, package: &str) -> LatestVersion {
     match output {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let version = stdout.trim_matches('"').trim().to_string();
-            if !version.is_empty() {
+            let version = parse_npm_version_json(&stdout);
+            if let Some(v) = version.filter(|v| !v.is_empty()) {
                 LatestVersion {
                     id: id.to_string(),
-                    latest_version: Some(version),
+                    latest_version: Some(v),
                     error: None,
                 }
             } else {
@@ -176,16 +198,15 @@ async fn fetch_text_url(url: &str) -> Result<String, String> {
 }
 
 async fn check_python_latest(id: &str) -> LatestVersion {
+    // 主源：endoflife.date（结构化）。收版反馈（2026-11-13 用户实测部分
+    // 网络不可达）→ 备源：GitHub cpython releases（与 git 最新版同源通路，
+    // 可达性已被验证）。任一源取到即返回。
     let url = "https://endoflife.date/api/python.json";
 
     let body = match fetch_text_url(url).await {
         Ok(b) => b,
-        Err(e) => {
-            return LatestVersion {
-                id: id.to_string(),
-                latest_version: None,
-                error: Some(e),
-            };
+        Err(primary_err) => {
+            return check_python_latest_github(id, &primary_err).await;
         }
     };
 
@@ -206,11 +227,35 @@ async fn check_python_latest(id: &str) -> LatestVersion {
             latest_version: Some(v),
             error: None,
         },
-        None => LatestVersion {
-            id: id.to_string(),
-            latest_version: None,
-            error: Some("could not parse version from API response".into()),
-        },
+        None => check_python_latest_github(id, "could not parse version from API response").await,
+    }
+}
+
+/// python 备源：GitHub cpython latest release（tag 形如 v3.15.2）。
+async fn check_python_latest_github(id: &str, primary_err: &str) -> LatestVersion {
+    let url = "https://api.github.com/repos/python/cpython/releases/latest";
+    let fallback = |err: String| LatestVersion {
+        id: id.to_string(),
+        latest_version: None,
+        error: Some(format!("endoflife.date: {primary_err}; github: {err}")),
+    };
+    let body = match fetch_text_url(url).await {
+        Ok(b) => b,
+        Err(e) => return fallback(e),
+    };
+    let tag = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("tag_name")?.as_str().map(String::from));
+    match tag.map(|t| t.trim_start_matches('v').to_string()) {
+        Some(v) if !v.is_empty() && v.chars().next().is_some_and(|c| c.is_ascii_digit()) => {
+            LatestVersion {
+                id: id.to_string(),
+                latest_version: Some(v),
+                error: None,
+            }
+        }
+        Some(other) => fallback(format!("unexpected tag {other}")),
+        None => fallback("could not parse tag".into()),
     }
 }
 
@@ -622,4 +667,33 @@ pub(crate) fn install_update(app: tauri::AppHandle, installer_path: String) -> R
     }
     app.exit(0);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 收版反馈（2026-11-13）：新版 npm 返回数组 JSON——旧解析得脏串致
+    /// 「识别不出新版本」。三形态：数组（取末位）/字符串/裸串。
+    #[test]
+    fn parses_npm_version_json_shapes() {
+        assert_eq!(
+            parse_npm_version_json("[\n  \"26.13.1\"\n]"),
+            Some("26.13.1".to_string())
+        );
+        // 多版本字段（dist-tags 等）——末位为最新。
+        assert_eq!(
+            parse_npm_version_json("[\n  \"24.16.0\",\n  \"26.13.1\"\n]"),
+            Some("26.13.1".to_string())
+        );
+        assert_eq!(
+            parse_npm_version_json("\"26.13.1\""),
+            Some("26.13.1".to_string())
+        );
+        assert_eq!(
+            parse_npm_version_json("26.13.1"),
+            Some("26.13.1".to_string())
+        );
+        assert_eq!(parse_npm_version_json(""), None);
+    }
 }

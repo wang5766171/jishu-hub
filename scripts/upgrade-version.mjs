@@ -33,37 +33,90 @@ const pkgsToUpdate = [
   "packages/ai/package.json",
   "packages/coding-agent/package.json",
   "packages/tui/package.json",
-  "packages/server/package.json",
-  // v0.85.0 起进入 coding-agent 运行时闭包的包（chord/client/protocol/telemetry）。
+  // v0.85.0 起进入 coding-agent 运行时闭包的包（chord/telemetry）；
+  // v1.1.0 起新增 codemode/mcp（运行时闭包）；durable/env 不入闭包不发布，
+  // 但作为 workspace 包同样统一版本号。
+  // （评审十二清理：packages/client、packages/protocol、packages/server
+  // 目录仍在 fork，但上游已移除其 package.json（实测 2026-11-14），原条目
+  // 被 existsSync 静默跳过——死条目删除。）
   "packages/chord/package.json",
-  "packages/client/package.json",
-  "packages/protocol/package.json",
+  "packages/codemode/package.json",
+  "packages/mcp/package.json",
   "packages/telemetry/package.json",
   "packages/evals/package.json",
+  // v1.4.0-14 补：durable/env 同为 workspace 包统一版本号（其内部互相
+  // 引用 pi-codemode/pi-durable 等，遗漏会导致 npm install 去 registry
+  // 解析不存在的 @earendil-works 预发布版而 ETARGET）。
+  "packages/durable/package.json",
+  "packages/env/package.json",
+  // v1.5.0-15 合并补：上游新增 packages/schema（@earendil-works/pi-schema，
+  // 工具参数校验从 TypeBox 迁移），进入 agent/ai 运行时依赖——同上遗漏
+  // 后果（ETARGET）。
+  "packages/schema/package.json",
 ];
+
+// fork packages/ 实际目录与清单一致性告警（console.warn 级，不阻断）：
+// 仅比对「有 package.json 的 workspace 包」——目录存在但清单已被上游移除
+// 的（如 client/protocol/server）本就不可能入 pkgsToUpdate，纳入比对只会
+// 每次狼来了（修复轮回归收口：告警噪音与死条目删除结论自相矛盾）。
+const actualPkgDirs = new Set(
+  fs
+    .readdirSync(PACKAGES_DIR, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && fs.existsSync(path.join(PACKAGES_DIR, d.name, "package.json")))
+    .map((d) => d.name)
+);
+const listedPkgDirs = new Set(
+  pkgsToUpdate
+    .filter((p) => p.startsWith("packages/"))
+    .map((p) => p.split("/")[1])
+);
+for (const name of actualPkgDirs) {
+  if (!listedPkgDirs.has(name)) {
+    console.warn(
+      `⚠️ fork packages/${name} 不在 pkgsToUpdate 清单——若为新增 workspace 包（有 package.json）请补入，避免版本漂移 ETARGET`
+    );
+  }
+}
+for (const name of listedPkgDirs) {
+  if (!actualPkgDirs.has(name)) {
+    console.warn(
+      `⚠️ packages/${name} 在 pkgsToUpdate 清单但 fork 目录已不存在——死条目，请清理 upgrade-version.mjs`
+    );
+  }
+}
 
 for (const pkgPath of pkgsToUpdate) {
   const fullPath = path.join(ROOT_DIR, pkgPath);
   if (fs.existsSync(fullPath)) {
-    const json = JSON.parse(fs.readFileSync(fullPath, "utf-8"));
+    let json;
+    try {
+      json = JSON.parse(fs.readFileSync(fullPath, "utf-8"));
+    } catch (err) {
+      throw new Error(`upgrade-version: 读取/解析 ${pkgPath} 失败——fork 包结构异常`, { cause: err });
+    }
     const oldVersion = json.version;
     json.version = newVersion;
     
     // Also update cross-dependencies within the workspace
+    // （评审十二同步：pi-server/pi-client/pi-protocol 已随上游移除，现存
+    // workspace package.json 零引用（实测 grep 2026-11-14）——死条目删除。）
     const internalDeps = [
       "@earendil-works/pi-agent-core",
       "@earendil-works/pi-ai",
       "@earendil-works/pi-tui",
       "@earendil-works/pi-coding-agent",
-      "@earendil-works/pi-server",
       "@earendil-works/chord",
-      "@earendil-works/pi-client",
-      "@earendil-works/pi-protocol",
       "@earendil-works/pi-telemetry",
+      // v1.4.0-14 补：运行时闭包新增包与 workspace 互引（同上遗漏后果）。
+      "@earendil-works/pi-codemode",
+      "@earendil-works/pi-mcp",
+      "@earendil-works/pi-durable",
+      // v1.5.0-15 合并补：pi-schema（同上）。
+      "@earendil-works/pi-schema",
     ];
     for (const depType of ["dependencies", "devDependencies", "peerDependencies"]) {
       if (json[depType]) {
-        for (const [dep, ver] of Object.entries(json[depType])) {
+        for (const dep of Object.keys(json[depType])) {
           if (internalDeps.includes(dep)) {
             json[depType][dep] = newVersion;
           }
@@ -80,32 +133,19 @@ for (const pkgPath of pkgsToUpdate) {
 console.log(`\n[3] Running npm install to sync the root package-lock.json...`);
 try {
   execSync("npm install", { cwd: ROOT_DIR, stdio: "inherit" });
-} catch (e) {
+} catch {
   console.error("❌ npm install failed");
   process.exit(1);
 }
 
-// 3.5 Regenerate coding-agent npm-shrinkwrap.json
-// `npm install` above only syncs the root package-lock.json. It does NOT touch
-// packages/coding-agent/npm-shrinkwrap.json — that is a separate file regenerated from
-// coding-agent/package.json + the root lock by generate-coding-agent-shrinkwrap.mjs.
-// Without this step the shrinkwrap keeps the OLD version while package.json moves ahead.
-// npm-shrinkwrap overrides package.json at install time, so a stale shrinkwrap makes the
-// published Lite package resolve its internal deps (@earendil-works/pi-*) to the
-// nonexistent previous version (404 / ERR_MODULE_NOT_FOUND). Regenerate it in lockstep.
-console.log(`\n[3.5] Regenerating packages/coding-agent/npm-shrinkwrap.json...`);
-try {
-  execSync("npm run shrinkwrap:coding-agent", { cwd: ROOT_DIR, stdio: "inherit" });
-} catch (e) {
-  console.error("❌ Failed to regenerate coding-agent npm-shrinkwrap.json");
-  process.exit(1);
-}
+// （v1.1.0 起：上游已移除 npm-shrinkwrap.json，coding-agent 只保留 install-lock，
+// 原步骤 3.5 的 shrinkwrap 重生成随之取消。）
 
 // 3.6 Regenerate coding-agent install-lock
 console.log(`\n[3.6] Regenerating packages/coding-agent/install-lock...`);
 try {
   execSync("npm run install-lock:coding-agent", { cwd: ROOT_DIR, stdio: "inherit" });
-} catch (e) {
+} catch {
   console.error("❌ Failed to regenerate coding-agent install-lock");
   process.exit(1);
 }

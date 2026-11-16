@@ -95,7 +95,7 @@ export interface ConversationInteractionSubmission {
 export type ContentBlock =
   | { type: "text"; text: string; frozen?: boolean; tool_ids?: string[] }
   | { type: "tool_use"; id: string; name: string; input: unknown; view?: ToolView }
-  | { type: "tool_result"; tool_use_id: string; content: unknown; is_error?: boolean }
+  | { type: "tool_result"; tool_use_id: string; content: unknown; is_error?: boolean; details?: unknown }
   | { type: "thinking"; thinking: string; frozen?: boolean }
   | {
       type: "interaction";
@@ -235,6 +235,7 @@ export type AgentConfigSection =
 export type ManageTab =
   | "projects"
   | "plugins"
+  | "appearance"
   | "agent-models"
   | "agent-behavior"
   | "agent-templates"
@@ -321,7 +322,7 @@ export type NormalizedEvent =
   | { kind: "message"; content: ContentBlock[] }
   | { kind: "tool_use_start"; call_id: string; tool: string; input: unknown; view?: ToolView }
   | { kind: "tool_use_progress"; call_id: string; partial_output: string }
-  | { kind: "tool_use_result"; call_id: string; output: unknown; is_error: boolean }
+  | { kind: "tool_use_result"; call_id: string; output: unknown; is_error: boolean; details?: unknown }
   | { kind: "thinking"; delta: string }
   | { kind: "approval_request"; request_id: string; approval_kind: string; payload: unknown }
   | {

@@ -376,15 +376,14 @@ pub fn apply_events_to_projection(
     events: &[TaskEvent],
     starting_seq: u64,
 ) -> Result<(), ProjectionError> {
-    let mut expected = starting_seq;
-    for event in events {
+    for (index, event) in events.iter().enumerate() {
+        let expected = starting_seq + index as u64;
         if event.run_seq != expected {
             return Err(ProjectionError::Sequence {
                 expected,
                 actual: event.run_seq,
             });
         }
-        expected += 1;
         proj.run_seq = event.run_seq;
         apply_event_to_projection(proj, event)?;
     }

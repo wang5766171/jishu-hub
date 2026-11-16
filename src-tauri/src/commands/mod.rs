@@ -1,37 +1,23 @@
 pub(crate) mod agent_install;
-pub(crate) mod channel_probe;
 pub(crate) mod agents;
+pub(crate) mod channel_probe;
 pub(crate) mod config;
 pub(crate) mod custom_commands;
 pub(crate) mod env_check;
 pub(crate) mod memory;
 pub(crate) mod models;
+pub(crate) mod native_mcp;
 #[cfg(feature = "orchestrator")]
 pub(crate) mod orchestrator;
 pub(crate) mod plugin_panel;
-pub(crate) mod skill_import;
 pub(crate) mod presets;
 pub(crate) mod projects;
+pub(crate) mod runtime_update;
 pub(crate) mod sessions;
 pub(crate) mod settings;
+pub(crate) mod skill_import;
 pub(crate) mod task;
 pub(crate) mod terminal;
 pub(crate) mod update;
 
-pub(crate) use agent_install::*;
-pub(crate) use agents::*;
-pub(crate) use config::*;
-pub(crate) use custom_commands::*;
-pub(crate) use env_check::*;
-pub(crate) use memory::*;
-pub(crate) use models::*;
-#[cfg(feature = "orchestrator")]
-pub(crate) use orchestrator::*;
-pub(crate) use presets::*;
-pub(crate) use projects::*;
-pub(crate) use sessions::*;
-pub(crate) use settings::*;
-pub(crate) use task::*;
-pub(crate) use terminal::*;
-pub(crate) use update::*;pub mod dev_log;
-
+pub mod dev_log;

@@ -20,6 +20,8 @@ use crate::orchestrator::domain::run::{
 /// arrive, can pause on `Event(ApprovalRequest|InteractionRequest)`, and is
 /// signalled completion by `Finished`. `RuntimeError` preserves the old
 /// "invoke-level Err" path (mapped to a retryable Transient attempt error).
+// 低频构造的内部枚举，装箱改公共形状收益为负（机械清理批次禁改形状）。
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum RuntimeStreamItem {
     /// One normalized transport event (progress/approval/interaction/session/turn-complete/error/...).
@@ -242,6 +244,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                     project_path: request.project_path.clone(),
                     session_id: request.session_id.clone(),
                     message: request.prompt.clone(),
+                    model_override: None,
                 };
                 let acp_command = agent
                     .build_acp_command(&req)
@@ -412,6 +415,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                             session_id: request.session_id,
                             message: request.prompt,
                             timeout_secs: (timeout_ms.saturating_add(999) / 1000).max(1),
+                            model_override: None,
                         },
                         None,
                         Some(cancellation),
@@ -687,6 +691,7 @@ pub fn map_normalized_event(context: &RuntimeEventContext, event: &NormalizedEve
             call_id,
             output,
             is_error,
+            ..
         } => RuntimeFact::Diagnostic {
             context: context.clone(),
             payload: serde_json::json!({

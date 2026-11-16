@@ -1,0 +1,15 @@
+[plugin]
+id = "session.html-render"
+name = "HTML 实时渲染"
+description = "消息中的 HTML（完整文档与卡片片段）按内容高度直接渲染"
+kind = "session-composed"
+icon = "globe"
+
+[source]
+type = "code-block"
+languages = ["html"]
+
+[render]
+component = "render.html"
+mount = "block-renderer"
+fallback = "render.mono-text"

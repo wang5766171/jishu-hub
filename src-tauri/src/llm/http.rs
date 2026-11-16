@@ -37,16 +37,3 @@ pub fn resolve_api_key(preset: &ModelPreset) -> Result<String, LlmError> {
         preset.id
     )))
 }
-
-/// Mask a key for display: show first 4 and last 4 chars, mask the rest.
-pub fn mask_key(key: &str) -> String {
-    if key.len() <= 12 {
-        return "*".repeat(key.len());
-    }
-    format!(
-        "{}{}{}",
-        &key[..4],
-        "*".repeat(key.len() - 8),
-        &key[key.len() - 4..]
-    )
-}

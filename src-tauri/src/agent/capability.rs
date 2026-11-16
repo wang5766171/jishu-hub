@@ -35,6 +35,11 @@ bitflags::bitflags! {
         /// v0.7.4 需求3 M2). Replaces the hardcoded `agentId === "jishu-self"`
         /// gating in the chat page with a capability check.
         const TASK_MODE = 1 << 34;
+        /// New-session first connect may adopt a pre-warmed RPC process from
+        /// the preconnect pool（评审 P2-⑤ 用户裁决：能力化替代 agent id 分支——
+        /// preconnect 池经 registry 查此位决定接管/补池对象，不再硬编码
+        /// agent id）。仅限 RPC transport 可池化暖启的 agent 声明。
+        const PRECONNECTABLE = 1 << 35;
 
         const CONFIG_GLOBAL        = 1 << 40;
         const CONFIG_PROJECT       = 1 << 41;
@@ -55,18 +60,6 @@ bitflags::bitflags! {
         const RPC_BIDIRECTIONAL    = 1 << 60;
     }
 }
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AgentManifest {
-    pub display_name: String,
-    pub icon: String,
-    pub logo_path: Option<String>,
-    pub description: String,
-    pub homepage: Option<String>,
-    pub install_hint: Option<String>,
-    pub config_dir_hint: String,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentHealth {
     pub installed: bool,
@@ -74,12 +67,4 @@ pub struct AgentHealth {
     pub error: Option<String>,
     pub binary_path: Option<String>,
     pub last_checked_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DetailedAgentInfo {
-    pub id: String,
-    pub manifest: AgentManifest,
-    pub capabilities: AgentCapabilities,
-    pub health: AgentHealth,
 }

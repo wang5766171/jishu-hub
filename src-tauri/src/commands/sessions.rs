@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use crate::hub;
 use crate::image;
 use crate::session;
-use crate::{with_app_state, AppState};
+use crate::AppState;
 
 const TEXT_PREVIEW_MAX_BYTES: usize = 512 * 1024;
 
@@ -14,6 +14,125 @@ pub(crate) struct TextFilePreview {
     content: String,
     truncated: bool,
     size: usize,
+}
+
+/// canonicalize 并剥 Windows verbatim 前缀（`\\?\C:\…` → `C:\…`、
+/// `\\?\UNC\…` → `\\…`）——verbatim 形态会被 validate_path 误判 UNC 拒绝。
+/// v0.9.7 需求6 F3：从 hub_invoke plugin_preview_html 抽出共用（原注释
+/// 留痕：Windows canonicalize() 前缀问题系用户实测「UNC paths are not
+/// allowed」教训）。
+pub(crate) fn canonicalize_stripped(path: &std::path::Path) -> String {
+    let s = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
+    s.strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"))
+        .or_else(|| s.strip_prefix(r"\\?\").map(|rest| rest.to_string()))
+        .unwrap_or(s)
+}
+
+/// v0.9.7 需求6 F3：会话内产物引用的点击校验（P1-5：project_root 由前端
+/// 显式传入——不依赖进程表反查，刷新/重启后回放链接依然可校验）。
+/// 前缀限定 ∈ {project_root, project_root/.jishu-hub/tasks}（越界拒绝），
+/// 大小上限（图片 10MB / 文本类 2MB），按扩展名返回面板渲染器类别。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PreviewFileKind {
+    Html,
+    Image,
+    Markdown,
+    Text,
+    Unsupported,
+}
+
+const IMAGE_PREVIEW_MAX_BYTES: u64 = 10 * 1024 * 1024;
+const ARTIFACT_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+fn preview_kind_for_ext(ext: &str) -> PreviewFileKind {
+    match ext {
+        "html" | "htm" => PreviewFileKind::Html,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" | "ico" => PreviewFileKind::Image,
+        "md" => PreviewFileKind::Markdown,
+        // 文本类与既有 text_file_preview 的口径对齐（image.rs mime 表同族）。
+        "txt" | "log" | "json" | "xml" | "yaml" | "yml" | "toml" | "csv" | "ts" | "tsx" | "js"
+        | "mjs" | "py" | "rs" | "go" | "java" | "c" | "h" | "cpp" | "cs" | "sh" => {
+            PreviewFileKind::Text
+        }
+        _ => PreviewFileKind::Unsupported,
+    }
+}
+
+/// v0.9.7 需求14：会话锁定模型读取（None=跟全局 active）。
+#[tauri::command]
+pub(crate) fn session_model_get(session_id: String) -> Result<Option<(String, String)>, String> {
+    Ok(crate::session_models::get_session_model(&session_id))
+}
+
+/// v0.9.7 需求14：会话锁定模型设置（model 空=清除回落全局）。
+#[tauri::command]
+pub(crate) fn session_model_set(
+    session_id: String,
+    provider: String,
+    model: String,
+) -> Result<(), String> {
+    crate::session_models::set_session_model(&session_id, &provider, &model)
+}
+
+#[tauri::command]
+pub(crate) fn validate_preview_file(
+    path: String,
+    project_root: String,
+    session_id: Option<String>,
+) -> Result<PreviewFileKind, String> {
+    let _ = session_id; // 预留：校验语义目前与会话无关（基准=project_root）
+    let file = std::path::PathBuf::from(&path);
+    // 错误串带机器前缀（前端契约：[not_found]/[out_of_scope]/[too_large]/
+    // [unsupported]，前端按前缀优先匹配、回退中文子串；评审十八）。中文正文
+    // 原样保留。
+    if !file.is_file() {
+        return Err(format!("[not_found] 文件不存在: {path}"));
+    }
+    let canonical_file = canonicalize_stripped(&file);
+    // 基准目录：项目根 + 任务产物区（任务卡「打开」的产物在 .jishu-hub/tasks 下）。
+    let root = std::path::PathBuf::from(&project_root);
+    if !root.is_dir() {
+        return Err(format!("项目目录不存在: {project_root}"));
+    }
+    let canonical_root = canonicalize_stripped(&root);
+    let canonical_tasks = canonicalize_stripped(&root.join(".jishu-hub").join("tasks"));
+    let in_bounds = [canonical_root, canonical_tasks].iter().any(|base| {
+        let f = canonical_file.to_lowercase().replace('/', "\\");
+        let b = base.to_lowercase().replace('/', "\\");
+        f == b || f.starts_with(&format!("{b}\\"))
+    });
+    if !in_bounds {
+        return Err(format!("[out_of_scope] 引用超出项目范围，已拦截: {path}"));
+    }
+    let ext = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    let kind = preview_kind_for_ext(&ext);
+    let size = std::fs::metadata(&file).map_err(|e| e.to_string())?.len();
+    let limit = match kind {
+        PreviewFileKind::Image => IMAGE_PREVIEW_MAX_BYTES,
+        PreviewFileKind::Html | PreviewFileKind::Markdown | PreviewFileKind::Text => {
+            ARTIFACT_TEXT_PREVIEW_MAX_BYTES
+        }
+        // 不支持类型：大小不拦、返回 Ok(Unsupported)——面板按类别给
+        // 「新窗口打开」按钮；[unsupported] 前缀留给未来出现的错误路径
+        // （本命令当前对不支持类型不报错）。
+        PreviewFileKind::Unsupported => u64::MAX,
+    };
+    if size > limit {
+        return Err(format!(
+            "[too_large] 文件过大：{size} 字节超过预览上限（{limit} 字节）"
+        ));
+    }
+    Ok(kind)
 }
 
 #[tauri::command]
@@ -50,7 +169,7 @@ pub(crate) async fn get_session_messages(
         if message.role == "user" {
             for block in &mut message.content {
                 if let crate::session::ContentBlock::Text { text, tool_ids } = block {
-                    let (clean, ids) = crate::agent::tool_plugin::extract_tool_snapshot(text);
+                    let (clean, ids) = crate::agent::internal_prompts::extract_tool_snapshot(text);
                     *text = clean;
                     *tool_ids = ids;
                 }
@@ -260,7 +379,9 @@ pub(crate) fn desktop_notify_send(
 
     // 首选 protocol toast：弹窗与通知中心点击统一走系统激活。
     if show_protocol_toast(aumid, &title, &body, &launch, sound.unwrap_or(true)).is_ok() {
-        return Ok(format!("toast(protocol) 已提交（AUMID={aumid}, launch={launch}）"));
+        return Ok(format!(
+            "toast(protocol) 已提交（AUMID={aumid}, launch={launch}）"
+        ));
     }
 
     // 回退：notify-rust 普通通知 + 进程内 Activated（仅弹窗期点击有效，
@@ -278,20 +399,18 @@ pub(crate) fn desktop_notify_send(
     {
         let app = app.clone();
         std::thread::spawn(move || {
-            let _ = handle.wait_for_response(
-                |response: &notify_rust::NotificationResponse| {
-                    if response.is_default_action() {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.unminimize();
-                            let _ = window.set_focus();
-                        }
-                        let _ = app.emit(
-                            "desktop-notify-click",
-                            serde_json::json!({ "sessionId": session_id }),
-                        );
+            let _ = handle.wait_for_response(|response: &notify_rust::NotificationResponse| {
+                if response.is_default_action() {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
                     }
-                },
-            );
+                    let _ = app.emit(
+                        "desktop-notify-click",
+                        serde_json::json!({ "sessionId": session_id }),
+                    );
+                }
+            });
         });
     }
     Ok(format!("toast(fallback) 已提交（AUMID={aumid}）"))
@@ -309,7 +428,13 @@ fn xml_escape(text: &str) -> String {
 /// 经 WinRT 直发 protocol 激活的 toast（`activationType="protocol"`）。
 /// tauri-winrt-notification 封装不暴露 launch 属性，故此处手搓 XML——
 /// 这是「通知中心补点也能激活应用」的唯一路径（进程内事件不覆盖补点）。
-fn show_protocol_toast(aumid: &str, title: &str, body: &str, launch: &str, sound: bool) -> Result<(), String> {
+fn show_protocol_toast(
+    aumid: &str,
+    title: &str,
+    body: &str,
+    launch: &str,
+    sound: bool,
+) -> Result<(), String> {
     use windows::core::HSTRING;
     use windows::Data::Xml::Dom::XmlDocument;
     use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
@@ -340,7 +465,9 @@ fn show_protocol_toast(aumid: &str, title: &str, body: &str, launch: &str, sound
     // 当前应用的包标识，未打包应用必须用 Id 版指定 AUMID）。
     let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(aumid))
         .map_err(|e| format!("CreateToastNotifier failed: {e}"))?;
-    notifier.Show(&toast).map_err(|e| format!("Show failed: {e}"))
+    notifier
+        .Show(&toast)
+        .map_err(|e| format!("Show failed: {e}"))
 }
 
 #[tauri::command]
@@ -379,13 +506,122 @@ pub(crate) fn export_binary_file(path: String, base64_data: String) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    use super::PreviewFileKind;
+
+    /// v0.9.7 需求6 F3：引用校验——项目内按扩展名返回类别；越界（项目外
+    /// /逃逸路径）拒绝；任务产物区放行。
+    /// 第五轮评审 P2-6：项目目录扫描纯函数——剥包裹（路径自身尾部 '-'
+    /// 不误剥）、无包裹目录/文件不收、排序稳定。
+    #[test]
+    fn scan_encoded_project_dirs_filters_and_strips() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["--D--foo---", "--B--bar--", "plain-dir", "--file--"] {
+            let p = root.path().join(name);
+            if name == "--file--" {
+                std::fs::write(&p, b"x").unwrap(); // 文件不收（即便带包裹名）
+            } else {
+                std::fs::create_dir_all(&p).unwrap();
+            }
+        }
+        let list = super::scan_encoded_project_dirs(root.path()).unwrap();
+        assert_eq!(
+            list,
+            vec!["B--bar".to_string(), "D--foo-".to_string()],
+            "只收包裹目录、精确剥包裹、按名排序"
+        );
+    }
+
+    /// 第四轮评审 P2（根目录不存在返空）行为锚定——第五轮评审 P2-6 补用例。
+    #[test]
+    fn scan_encoded_project_dirs_missing_root_returns_empty() {
+        let missing = std::env::temp_dir().join(format!("jishu-no-such-{}", uuid::Uuid::new_v4()));
+        let list = super::scan_encoded_project_dirs(&missing).unwrap();
+        assert!(list.is_empty(), "根目录不存在应返回空列表而非报错");
+    }
+
+    #[test]
+    fn validate_preview_file_bounds_and_kind() {
+        let root = std::env::temp_dir().join(format!("jishu-preview-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::create_dir_all(root.join(".jishu-hub/tasks/t1/artifacts")).unwrap();
+        std::fs::write(root.join("docs/design.html"), "<html></html>").unwrap();
+        std::fs::write(root.join(".jishu-hub/tasks/t1/artifacts/out.md"), "# ok").unwrap();
+        std::fs::write(root.join("docs/shot.png"), b"png").unwrap();
+
+        let html = super::validate_preview_file(
+            root.join("docs/design.html").to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(html, PreviewFileKind::Html));
+
+        let md = super::validate_preview_file(
+            root.join(".jishu-hub/tasks/t1/artifacts/out.md")
+                .to_string_lossy()
+                .into_owned(),
+            root.to_string_lossy().into_owned(),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(md, PreviewFileKind::Markdown));
+
+        let png = super::validate_preview_file(
+            root.join("docs/shot.png").to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(png, PreviewFileKind::Image));
+
+        // 项目外文件：拒绝（评审十八：错误串带机器前缀 + 中文正文保留）。
+        let outside =
+            std::env::temp_dir().join(format!("jishu-preview-out-{}.html", uuid::Uuid::new_v4()));
+        std::fs::write(&outside, "<html></html>").unwrap();
+        let err = super::validate_preview_file(
+            outside.to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.starts_with("[out_of_scope]"), "unexpected: {err}");
+        assert!(err.contains("超出项目范围"), "unexpected: {err}");
+
+        // 不存在的文件：拒绝（[not_found] 前缀）。
+        let err = super::validate_preview_file(
+            root.join("docs/missing.html")
+                .to_string_lossy()
+                .into_owned(),
+            root.to_string_lossy().into_owned(),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.starts_with("[not_found]"), "unexpected: {err}");
+        assert!(err.contains("文件不存在"), "unexpected: {err}");
+
+        // 超大文本文件：拒绝（[too_large] 前缀，中文正文含「文件过大」回退子串）。
+        let big = root.join("docs/big.md");
+        let big_body = vec![b'a'; super::ARTIFACT_TEXT_PREVIEW_MAX_BYTES as usize + 1];
+        std::fs::write(&big, big_body).unwrap();
+        let err = super::validate_preview_file(
+            big.to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.starts_with("[too_large]"), "unexpected: {err}");
+        assert!(err.contains("文件过大"), "unexpected: {err}");
+        let _ = std::fs::remove_file(&big);
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&outside);
+    }
+
     #[test]
     fn exports_binary_file_roundtrip() {
         // v0.9.2 测试期（mermaid PNG 导出）：base64 解码落盘往返。
-        let path = std::env::temp_dir().join(format!(
-            "jishu-hub-export-bin-{}.png",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("jishu-hub-export-bin-{}.png", std::process::id()));
         let payload: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF];
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
@@ -398,7 +634,10 @@ mod tests {
     #[test]
     fn rejects_invalid_base64_export() {
         let err = super::export_binary_file(
-            std::env::temp_dir().join("jishu-hub-export-bin-bad.png").to_string_lossy().into_owned(),
+            std::env::temp_dir()
+                .join("jishu-hub-export-bin-bad.png")
+                .to_string_lossy()
+                .into_owned(),
             "!!not-base64!!".to_string(),
         )
         .unwrap_err();
@@ -559,8 +798,119 @@ mod tests {
 /// 全程 fail-soft——失败静默（标题回落 smart_summary 规则截断），前端
 /// 回合完成后触发一次。
 #[tauri::command]
-pub(crate) async fn session_generate_title(
-    session_id: String,
-) -> Result<Option<String>, String> {
+pub(crate) async fn session_generate_title(session_id: String) -> Result<Option<String>, String> {
     Ok(crate::agent::jishu_self::session_title::generate_and_persist(&session_id).await)
+}
+
+// ── 二十三轮（用户裁决 2026-11-15）：hub 级能力面——插件 ctx.hub 数据源 ──
+
+/// 插件会话摘要（ctx.hub.listSessions 的返回行；跨会话/跨项目只读面）。
+#[derive(serde::Serialize)]
+pub(crate) struct HubPluginSession {
+    pub id: String,
+    pub title: String,
+    pub agent_id: Option<String>,
+    pub project_path: Option<String>,
+    pub started_at: Option<String>,
+    pub last_active: Option<String>,
+    pub message_count: usize,
+    /// usage.db 精确记账 join（无记录时 None——旧会话/未产生用量）。
+    pub total_cost: Option<f64>,
+    pub tool_calls: Option<u64>,
+}
+
+/// 第四轮评审 P2 + 第五轮评审 P2-6：项目目录扫描提为可测纯函数——
+/// 根目录不存在（全新安装零会话）返空列表（只读展示面优雅降级）；其他
+/// 读取错误仍 fail loud；只收带 `--` 包裹的目录，剥包裹走单源
+/// strip_session_dir_wrap（此前与 lib.rs 各持一份裸拷贝——改一处漏一处
+/// 是修复轮被抓 P1 的高危形态）。排序保证列表稳定。
+fn scan_encoded_project_dirs(root: &std::path::Path) -> Result<Vec<String>, String> {
+    let dir = match std::fs::read_dir(root) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut list: Vec<String> = dir
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("--"))
+        .map(|e| crate::strip_session_dir_wrap(&e.file_name().to_string_lossy()))
+        .collect();
+    list.sort();
+    Ok(list)
+}
+
+/// 跨项目（或指定项目）会话列表——插件开放能力（二十三轮）。
+/// 复用 pi 会话解析（list_pi_sessions）；标题合并 ai-title 与用户重命名；
+/// usage.db 按会话 join 花销/工具调用。只读，无写面。
+#[tauri::command]
+pub(crate) async fn hub_plugin_sessions(
+    project_encoded: Option<String>,
+) -> Result<Vec<HubPluginSession>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let names = hub::get_session_names().unwrap_or_default();
+        // 项目集：指定单项目；否则全扫 sessions root 下的项目目录。
+        let encoded_list: Vec<String> = match &project_encoded {
+            Some(one) => vec![one.clone()],
+            None => scan_encoded_project_dirs(
+                &crate::agent::jishu_self::pi_session::pi_sessions_root()?,
+            )?,
+        };
+        let mut out = Vec::new();
+        for encoded in encoded_list {
+            // 第四轮评审 P2：单项目解析失败局部化——目录损坏/半删等只丢
+            // 该项目并留痕，不拖垮整个跨项目列表（§16.1 局部化纪律）。
+            let sessions = match crate::agent::jishu_self::pi_session::list_pi_sessions(&encoded) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::warn!("[hub] 跳过无法解析的项目目录 {encoded}: {e}");
+                    continue;
+                }
+            };
+            for s in sessions {
+                // 第四轮评审 P2：usage join 用 get_optional——无记账记录返回
+                // None（插件可区分「未记账」与「真零」），不再把缺记当零花。
+                // 第五轮评审 P2-5：get_optional 现在上抛真实读错（仅查无此行
+                // 折 None）——列表 join 场景局部化：warn 留痕后按未记账计，
+                // 不拖垮跨项目列表（与单项目跳过同款 §16.1 纪律）。
+                let usage = match crate::usage_store::get_optional(&s.id) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::warn!("[hub] usage 读取失败，按未记账计 session {}: {e}", s.id);
+                        None
+                    }
+                };
+                out.push(HubPluginSession {
+                    title: names
+                        .get(&s.id)
+                        .cloned()
+                        .or_else(|| s.display_name.clone())
+                        .unwrap_or_else(|| s.id.clone()),
+                    id: s.id,
+                    agent_id: s.agent_id.clone(),
+                    project_path: s.project_path.clone(),
+                    started_at: s.started_at.map(|t| t.to_rfc3339()),
+                    last_active: s.last_active.map(|t| t.to_rfc3339()),
+                    message_count: s.messages.len(),
+                    total_cost: usage.as_ref().map(|u| u.total_cost),
+                    tool_calls: usage.as_ref().map(|u| u.tool_calls),
+                });
+            }
+        }
+        // 全局按最近活跃倒序（跨项目口径）。
+        out.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("scan sessions failed: {e}"))?
+}
+
+/// 单会话精确用量（usage.db session_usage；ctx.hub.sessionStats 数据源）。
+/// 第四轮评审 P2：无记录返回 None——修前薄注册 get 的全零口径使「无记账」
+/// 与「真零」不可区分；get 本体语义不变（chat/mcp_server 老调用方零影响）。
+#[tauri::command]
+pub(crate) fn usage_session(
+    session_id: String,
+) -> Result<Option<crate::usage_store::SessionUsageRow>, String> {
+    crate::usage_store::get_optional(&session_id)
 }

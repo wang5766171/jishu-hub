@@ -173,7 +173,7 @@ function MermaidZoomOverlay({
 
   return (
     <div className="fixed inset-0 z-[60]" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/50" />
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
       <div className="absolute inset-4 flex flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl sm:inset-6">
         <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/60 px-2">
           <span className="text-xs font-medium text-foreground">{t("sessionPlugins.mermaidRender.zoomTitle", "图表放大")}</span>

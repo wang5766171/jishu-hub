@@ -54,7 +54,7 @@ where
     // 2. User-installed Node Module (from UI updates)
     if let Some(agent_dir) = crate::agent::jishu_self::pi_agent_dir() {
         if let Some(entry) = coding_agent_entry(Path::new(&agent_dir), &file_exists) {
-            let mut base_args = vec![entry.to_string_lossy().to_string()];
+            let base_args = vec![entry.to_string_lossy().to_string()];
             return Ok(PiRuntimeCommand {
                 program: node_bin,
                 base_args,
@@ -73,7 +73,7 @@ where
 
     if let Some(agent_dir) = Some(internal_pi_dir) {
         if let Some(entry) = coding_agent_entry(&agent_dir, &file_exists) {
-            let mut base_args = vec![entry.to_string_lossy().to_string()];
+            let base_args = vec![entry.to_string_lossy().to_string()];
             return Ok(PiRuntimeCommand {
                 program: node_bin,
                 base_args,
@@ -99,12 +99,9 @@ where
         .join("packages")
         .join("coding-agent")
         .join("dist");
-    for entry in [dist.join("bundle").join("cli.js"), dist.join("cli.js")] {
-        if file_exists(&entry) {
-            return Some(entry);
-        }
-    }
-    None
+    [dist.join("bundle").join("cli.js"), dist.join("cli.js")]
+        .into_iter()
+        .find(|entry| file_exists(entry))
 }
 
 /// 查找内嵌的便携 Node（v0.8.1 需求10：pi-bundle/bin/node.exe）。

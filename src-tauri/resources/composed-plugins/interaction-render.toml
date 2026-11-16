@@ -1,0 +1,14 @@
+[plugin]
+id = "session.interaction-render"
+name = "交互问答卡"
+description = "交互问答块渲染（样式统一内置卡，含选项与已选高亮）"
+kind = "session-composed"
+icon = "message-square"
+
+[source]
+type = "block-type"
+blockTypes = ["interaction"]
+
+[render]
+component = "render.interaction"
+mount = "block-renderer"

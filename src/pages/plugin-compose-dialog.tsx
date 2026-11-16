@@ -5,10 +5,14 @@
  */
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, Plus, Trash2 } from "lucide-react";
+import { Loader2, Plus, Trash2, ArrowLeft, Lightbulb } from "lucide-react";
+// 3a-3/3a-4（v0.9.5 需求1）：功能导向第一步 + 描述推荐。
+import { INTENT_CARDS, intentLabel, recommendIntent, type PluginIntent } from "./plugin-intent-recommend";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UniModal, UniModalHeader } from "@/components/ui/uni-modal";
 import { invokeCommand } from "@/hooks/use-invoke";
+import { composedIdTaken, slugify, tomlStr } from "./plugin-wizard-utils";
 import { rendererRegistry } from "@/features/session-kernel/capabilities/renderers/registry";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 
@@ -45,9 +49,8 @@ function defaultMountOf(source: SourceType): string {
   }
 }
 
-function tomlStr(v: string): string {
-  return `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-}
+// 三轮评审 P1-3：tomlStr/slugify 统一走 plugin-wizard-utils（换行安全转义
+// + Unicode 感知 id，修前纯中文名全部坍缩为 session.custom 互相覆盖）。
 
 export function PluginComposeDialog({
   open,
@@ -59,7 +62,11 @@ export function PluginComposeDialog({
   onCreated: () => void;
 }) {
   const { t } = useTranslation();
-  const { alert: alertDialog } = useConfirmDialog();
+  const { alert: alertDialog, dialogNode: alertDialogNode } = useConfirmDialog();
+  // 3a-3：功能导向两步——先选「你想在会话里看到什么」，推荐积木预填后再微调。
+  const [step, setStep] = useState<"intent" | "detail">("intent");
+  const [intentDesc, setIntentDesc] = useState("");
+  const [chosenIntent, setChosenIntent] = useState<PluginIntent | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [sourceType, setSourceType] = useState<SourceType>("code-block");
@@ -76,10 +83,7 @@ export function PluginComposeDialog({
   const renderer = renderers.find((r) => r.key === component);
   const exportFormatsAvailable = renderer?.capabilities?.exportFormats ?? [];
 
-  const id = useMemo(() => {
-    const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "custom";
-    return `session.${slug}`;
-  }, [name]);
+const id = useMemo(() => `session.${slugify(name, "custom")}`, [name]);
 
   if (!open) return null;
 
@@ -92,6 +96,8 @@ export function PluginComposeDialog({
     lines.push(`name = ${tomlStr(name.trim() || "自定义插件")}`);
     if (description.trim()) lines.push(`description = ${tomlStr(description.trim())}`);
     lines.push('kind = "session-composed"');
+    // v0.9.7 需求3 十六轮裁决：形态 = 九类挂载位——挂载位即形态，直接落值。
+    lines.push(`form = ${tomlStr(mount)}`);
     lines.push("");
     lines.push("[source]");
     lines.push(`type = ${tomlStr(sourceType)}`);
@@ -148,6 +154,14 @@ export function PluginComposeDialog({
       await alertDialog({ title: "代码块源需要至少一个语言标记（如 katex）" });
       return;
     }
+    // 三轮评审 P1-3：id 占用检测——同名插件已存在时阻止静默覆盖。
+    if (await composedIdTaken(id)) {
+      await alertDialog({
+        title: `插件 ${id} 已存在`,
+        description: "同名插件已安装，请换个名称（或先在插件中心删除旧插件）。",
+      });
+      return;
+    }
     setSaving(true);
     try {
       await invokeCommand("composed_plugin_save", { id, toml: buildToml() });
@@ -163,21 +177,118 @@ export function PluginComposeDialog({
     }
   };
 
+  /** 3a-3：定位 → 积木组合预填（推荐可被 detail 步微调覆盖）。 */
+  const applyPreset = (intent: PluginIntent): void => {
+    setChosenIntent(intent);
+    switch (intent) {
+      case "data-panel":
+        setSourceType("messages");
+        setComponent("render.list");
+        break;
+      case "notify":
+        setSourceType("signal");
+        setComponent("render.none");
+        break;
+      case "content-render":
+        setSourceType("code-block");
+        setLanguages("mermaid");
+        setComponent("render.mermaid");
+        break;
+      case "navigation":
+        setSourceType("turns");
+        setComponent("render.list");
+        setTurnsMount("rail-widget");
+        break;
+      default:
+        break;
+    }
+    setStep("detail");
+  };
+
   const label = "mb-1 block text-[11px] font-medium text-muted-foreground";
   const input = "h-7 w-full rounded-md border border-border/70 bg-transparent px-2 text-xs outline-none focus:border-primary/60";
 
+  // 批次1 统一弹窗：外壳收敛 UniModal（z-80/遮罩/Esc），表单与创建链不变。
+  // alert 确认弹窗（useConfirmDialog 契约：dialogNode 须渲染，否则 alert() 永不落定）。
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center p-6" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/50" onClick={() => onOpenChange(false)} />
-      <div className="relative flex max-h-[86vh] w-[min(720px,94vw)] flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
-        <div className="flex shrink-0 items-center justify-between border-b border-border/50 px-5 py-3.5">
-          <div>
-            <div className="text-sm font-semibold">新建组合插件</div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">选内容源与渲染组件，零代码生成插件（TOML 组合清单）</div>
-          </div>
-          <div className="font-mono text-[10px] text-muted-foreground/70">{id}</div>
-        </div>
+    <>
+    <UniModal open onClose={() => onOpenChange(false)} size="lg" label="新建组合插件">
+      <UniModalHeader
+        title="新建组合插件"
+        subtitle="选内容源与渲染组件，零代码生成插件（TOML 组合清单）"
+        trailing={<span className="font-mono text-[10px] text-muted-foreground/70">{id}</span>}
+        onClose={() => onOpenChange(false)}
+      />
         <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-5 py-4">
+          {step === "intent" ? (
+            <div className="space-y-3">
+              <div className="text-xs text-muted-foreground">你想在会话里看到什么？（选定后推荐积木组合，可再微调）</div>
+              <div className="grid grid-cols-2 gap-3">
+                {INTENT_CARDS.map((c) => (
+                  <button
+                    key={c.intent}
+                    type="button"
+                    onClick={() => applyPreset(c.intent)}
+                    className="flex flex-col items-start gap-1 rounded-lg border border-border bg-muted/20 p-4 text-left transition-colors hover:border-primary/50 hover:bg-primary/5"
+                  >
+                    <span className="text-sm font-medium text-foreground">{c.title}</span>
+                    <span className="text-xs leading-relaxed text-muted-foreground">{c.desc}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="rounded-lg border border-dashed border-border p-3">
+                <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                  <Lightbulb className="h-3.5 w-3.5 text-amber-500" />
+                  不确定？描述你想要的功能，我来推荐类型
+                </div>
+                <Input
+                  className="mt-2 h-7 text-xs"
+                  value={intentDesc}
+                  onChange={(e) => setIntentDesc(e.target.value)}
+                  placeholder="如：每轮结束显示花了多少钱"
+                />
+                {(() => {
+                  const rec = recommendIntent(intentDesc);
+                  if (!rec) return null;
+                  const isComposed = rec.intent === "data-panel" || rec.intent === "notify" || rec.intent === "content-render" || rec.intent === "navigation";
+                  return (
+                    <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2">
+                      <div className="min-w-0 text-[11px]">
+                        <span className="font-medium text-foreground">{intentLabel(rec.intent)}</span>
+                        <span className="ml-1.5 text-muted-foreground">{rec.reason}</span>
+                        {!isComposed && (
+                          <span className="ml-1.5 text-amber-600">（该形态请从创建入口选择对应卡片）</span>
+                        )}
+                      </div>
+                      {isComposed && (
+                        <button
+                          type="button"
+                          onClick={() => applyPreset(rec.intent)}
+                          className="shrink-0 rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
+                        >
+                          按此创建
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          ) : (
+            <>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+              <button
+                type="button"
+                onClick={() => setStep("intent")}
+                className="flex items-center gap-1 rounded-md border border-border px-2 py-1 hover:text-foreground"
+              >
+                <ArrowLeft className="h-3 w-3" />
+                返回重选
+              </button>
+              {chosenIntent && <span>功能定位：<span className="text-foreground">{intentLabel(chosenIntent)}</span>（下方为推荐组合，可微调）</span>}
+            </div>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <span className={label}>名称 *</span>
@@ -286,6 +397,8 @@ export function PluginComposeDialog({
             <div className="mb-1 text-[10px] font-medium text-muted-foreground">生成预览（plugin.toml）</div>
             <pre className="max-h-36 overflow-auto font-mono text-[10px] leading-relaxed text-foreground/80">{buildToml()}</pre>
           </div>
+            </>
+          )}
         </div>
         <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border/50 px-5 py-3">
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>{t("common.cancel", "取消")}</Button>
@@ -294,7 +407,8 @@ export function PluginComposeDialog({
             <span className="ml-1">创建插件</span>
           </Button>
         </div>
-      </div>
-    </div>
+    </UniModal>
+    {alertDialogNode}
+    </>
   );
 }

@@ -11,7 +11,8 @@
  *   或跳过，本层不做节流（保持简单）。
  *
  * 类别约定：pipeline（事件管线）/ store（流式态）/ steer（引导协调器）/
- * ipc（会话命令）/ session（切换/滚动）/ approval（审批交互）。
+ * ipc（会话命令）/ session（切换/滚动）/ approval（审批交互）/ runtime（后端
+ * 运行时桥接——Pi RPC 循环状态迁移/watchdog/命令处置）。
  */
 
 export type DevLogCategory =
@@ -22,7 +23,16 @@ export type DevLogCategory =
   | "session"
   | "approval"
   /** v0.9.4 需求12：插件经底座 ctx.devLog 发出的日志（message 约定以 [插件id] 开头）。 */
-  | "plugin";
+  | "plugin"
+  /** v0.9.5 需求2 测试期：后端运行时桥接日志（hub-dev-log 事件——Pi RPC
+   * 循环状态迁移/命令处置/watchdog；见 attachRuntimeLogBridge）。 */
+  | "runtime"
+  /** v0.9.5 需求14：能力发现机制——插件装载/遮蔽/冲突/回退/主题激活/资产
+   * 加载的触发路径（诊断 agent 是否走到某条通路的关键观测点）。 */
+  | "capability"
+  /** v0.9.5 需求13 五轮（用户裁决）：能力中心/悬浮窗/胶囊的交互操作——
+   * 多轮形态调整的定位依据。 */
+  | "panel";
 
 export interface DevLogEntry {
   /** 单调序号（复制与定位用）。 */
@@ -109,6 +119,45 @@ export function subscribeDevLogs(listener: () => void): () => void {
   if (!enabled()) return () => {};
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+// ── 需求15：全局挂载——CDP/自动化测试在生产包直接读取（免开面板）──
+// window.__jishuDevLogs = { get(), version(), enabled() }
+// CDP 用法：Runtime.evaluate("window.__jishuDevLogs.get().filter(e => e.category === 'capability')")
+if (typeof window !== "undefined") {
+  const g = window as unknown as { __jishuDevLogs?: object };
+  g.__jishuDevLogs = {
+    get: () => entries.map((e) => ({ seq: e.seq, ts: e.ts, category: e.category, message: e.message, data: e.data })),
+    version: () => version,
+    enabled: () => enabled(),
+  };
+}
+
+/** v0.9.5 需求2 测试期（会话 01a0d868 复盘）：订阅后端 `hub-dev-log` 事件 →
+ *  [runtime] 类别入环形缓冲。此前 Pi RPC 循环的状态迁移/watchdog/命令处置
+ *  只落终端/日志文件，日志中心无后端视角，「prompt 到达时循环处于什么状态」
+ *  「看门狗是否触发」等关键事实只能靠代码推测。app.tsx 挂载时调用一次；
+ *  非 Tauri 环境（vitest）动态导入失败静默跳过。返回反订阅函数。 */
+export async function attachRuntimeLogBridge(): Promise<() => void> {
+  try {
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<{
+      level: string;
+      message: string;
+      session: string;
+      data?: unknown;
+    }>("hub-dev-log", (event) => {
+      const p = event.payload;
+      if (!p?.message) return;
+      const data =
+        p.data && typeof p.data === "object" && !Array.isArray(p.data)
+          ? (p.data as Record<string, unknown>)
+          : {};
+      devLog("runtime", p.message, { level: p.level, session: p.session, ...data });
+    });
+  } catch {
+    return () => {};
+  }
 }
 
 export function clearDevLogs(): void {

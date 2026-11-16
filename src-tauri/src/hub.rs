@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn hub_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
@@ -20,7 +20,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(
     Ok(serde_json::from_str(&content)?)
 }
 
-fn write_json<T: Serialize>(path: &PathBuf, data: &T) -> Result<(), Box<dyn std::error::Error>> {
+fn write_json<T: Serialize>(path: &Path, data: &T) -> Result<(), Box<dyn std::error::Error>> {
     let json = serde_json::to_string_pretty(data)?;
     crate::util::atomic_write(path, json.as_bytes())?;
     Ok(())
@@ -94,6 +94,11 @@ pub struct AppState {
     /// 跟随 agent 自身默认；PiRpc spawn 完成 get_state 后应用。
     #[serde(default)]
     pub agent_auto_compaction: HashMap<String, bool>,
+    /// v0.9.7 需求4：首启引导完成标志。None/Some(false) = 未完成（走三步
+    /// 引导）；Some(true) = 直接进主界面。首次运行 0.9.7 统一走一遍引导
+    ///（全局裁决：不考虑老版本体验，引擎覆盖重装可接受）。
+    #[serde(default)]
+    pub onboarded: Option<bool>,
 }
 
 fn state_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -158,6 +163,20 @@ pub fn load_state() -> Result<AppState, Box<dyn std::error::Error>> {
         return Ok(AppState::default());
     }
     read_json(&path)
+}
+
+/// v0.9.7 需求4：首启引导完成标志（Some(true) 即已完成）。
+pub fn get_onboarded() -> bool {
+    load_state()
+        .map(|s| s.onboarded == Some(true))
+        .unwrap_or(false)
+}
+
+/// 标记引导完成（幂等）。
+pub fn set_onboarded(value: bool) -> Result<(), String> {
+    let mut state = load_state().map_err(|e| e.to_string())?;
+    state.onboarded = Some(value);
+    save_state(&state).map_err(|e| e.to_string())
 }
 
 pub fn save_state(state: &AppState) -> Result<(), Box<dyn std::error::Error>> {
@@ -332,17 +351,6 @@ pub fn add_manual_project(path: &str) -> Result<(), Box<dyn std::error::Error>> 
     }
     write_json(&path_obj, &data)
 }
-
-pub fn remove_manual_project(path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let path_obj = manual_projects_path()?;
-    if !path_obj.exists() {
-        return Ok(());
-    }
-    let mut data: ManualProjects = read_json(&path_obj)?;
-    data.paths.retain(|p| p != path);
-    write_json(&path_obj, &data)
-}
-
 pub fn load_manual_projects() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let path = manual_projects_path()?;
     if !path.exists() {
@@ -411,29 +419,9 @@ pub struct ProjectMerges {
     #[serde(default)]
     pub merges: HashMap<String, Vec<String>>,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PhysicalMergeUndo {
-    pub primary: String,
-    pub secondaries: Vec<SecondaryMove>,
-    pub timestamp: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SecondaryMove {
-    pub encoded_name: String,
-    pub claude_dir_backup: Option<String>,
-    pub project_claude_dir_backup: Option<String>,
-}
-
 fn project_merges_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(hub_dir()?.join("project_merges.json"))
 }
-
-fn physical_merge_undo_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    Ok(hub_dir()?.join("physical_merge_undo.json"))
-}
-
 pub fn load_project_merges() -> Result<ProjectMerges, Box<dyn std::error::Error>> {
     let path = project_merges_path()?;
     if !path.exists() {
@@ -484,18 +472,6 @@ pub fn get_all_secondaries() -> Result<Vec<String>, Box<dyn std::error::Error>> 
     let merges = load_project_merges()?;
     Ok(merges.merges.values().flatten().cloned().collect())
 }
-
-/// Given a secondary encoded name, find which primary it belongs to
-pub fn resolve_primary(secondary: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let merges = load_project_merges()?;
-    for (primary, secondaries) in &merges.merges {
-        if secondaries.contains(&secondary.to_string()) {
-            return Ok(Some(primary.clone()));
-        }
-    }
-    Ok(None)
-}
-
 // --- Terminal Session Tracking ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

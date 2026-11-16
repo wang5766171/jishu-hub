@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Jishu Hub",
-  "version": "0.9.4",
+  "version": "0.9.7",
   "identifier": "com.jishu-hub.app",
   "build": {
     "frontendDist": "../dist",
@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' asset: https://asset.localhost http://asset.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost http://asset.localhost; font-src 'self' asset: https://asset.localhost; connect-src ipc: http://ipc.localhost https://ipc.localhost; frame-src 'self' http://localhost:* http://127.0.0.1:* https://localhost:* https://127.0.0.1:*",
+      "csp": "default-src 'self'; script-src 'self' asset: https://asset.localhost http://asset.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost http://asset.localhost; font-src 'self' asset: https://asset.localhost; connect-src ipc: http://ipc.localhost https://ipc.localhost https: http:; frame-src 'self' http://localhost:* http://127.0.0.1:* https://localhost:* https://127.0.0.1:*",
       "assetProtocol": {
         "enable": true,
         "scope": [
@@ -47,7 +47,7 @@
       "target/release/jishu-cli"
     ],
     "resources": [
-      "../third_party/pi-bundle/**/*"
+      "../third_party/pi-runtime.zip"
     ],
     "icon": [
       "icons/32x32.png",
@@ -63,7 +63,8 @@
           "English",
           "SimpChinese"
         ],
-        "displayLanguageSelector": false
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico"
       }
     },
     "android": {

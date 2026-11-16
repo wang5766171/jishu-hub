@@ -76,7 +76,10 @@ export function useChatApprovals(deps: {
     // actual transport (design R6 — never assume mid-turn from the event hint).
     let result: InteractionResponseDto | null = null;
     try {
-      result = await invokeCommand<InteractionResponseDto>("respond_chat_interaction", {
+      // v0.9.6 需求8 F4：提交加 10s 超时——Rust 侧 oneshot 不回包时
+      // interactionSubmitting 会永远为 true（按钮永灰无提示）。
+      result = await Promise.race([
+        invokeCommand<InteractionResponseDto>("respond_chat_interaction", {
         sessionId: interaction.sessionId,
         requestId: submission.requestId,
         value,
@@ -93,10 +96,20 @@ export function useChatApprovals(deps: {
           origin: interaction.request.origin ?? null,
         },
         origin: interaction.request.origin,
-      });
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("提交超时（10 秒无响应），请重试")), 10_000)),
+      ]);
     } catch (error) {
       streamStore.rollbackInteractionResponse(checkpoint);
-      restorePending();
+      // v0.9.6 需求8 F1 配合：后端权威校验判「已过期」（陈旧卡——回合已终结/
+      // 进程重拉后残留）→ 不再放回队列（放回会反复挂死队头），直接撤卡。
+      const stale = String(error).includes("已过期");
+      if (!stale) {
+        restorePending();
+      } else {
+        setPendingInteractions((current) => current.filter((item) => !matchesInteraction(item)));
+      }
       throw error;
     }
 

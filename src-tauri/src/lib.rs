@@ -2,6 +2,7 @@ mod acp;
 mod acp_runtime;
 mod agent;
 mod agent_runtime;
+mod agent_runtime_init;
 mod chat;
 #[cfg(test)]
 mod chat_tests;
@@ -10,6 +11,9 @@ mod codex_app_server_runtime;
 mod command;
 mod commands;
 mod config;
+// v0.9.5 需求2 测试期：后端运行时日志 → 前端日志中心桥（hub-dev-log 事件）。
+mod channel_models_store;
+mod dev_log_bridge;
 mod dialog_commands;
 mod history;
 mod hub;
@@ -17,16 +21,21 @@ mod image;
 mod llm;
 mod memory_store;
 mod orchestrator;
+// v0.9.6 需求6 F3：用户消息发送受理即落盘（pending_messages.db）。
 pub mod os_adapter;
+mod pending_messages;
+// v0.9.7 需求12：jishu agent 预连接池（内置插件 session.agent-preconnect）。
 mod pi_rpc_runtime;
+mod preconnect;
 mod process_command;
 mod process_control;
 mod project;
 mod project_config;
 mod session;
+// v0.9.7 需求14：会话级模型表（模型切换只影响当前会话）。
+mod session_models;
 mod task_launch;
 mod task_plan;
-mod channel_models_store;
 mod usage_store;
 mod util;
 
@@ -69,6 +78,56 @@ pub use commands::agent_install::run_install_agent_cli;
 /// 聚焦主窗 + 广播 desktop-notify-click（前端经 ctx.switchSession 定位）；
 /// `jishu-hub://open` → 仅聚焦。运行中实例（single-instance 转发）与冷启动
 ///（deep-link 事件）共用。
+/// 需求10（会话通知点击跨标签定位）：随事件附会话所属项目（sessions 目录
+/// 文件名 `…_<session_id>.jsonl` 的项目目录名 + 解码后的路径）——前端据此
+/// 自动切换到对应标签；反查失败回落仅 sessionId（原行为）。
+fn session_project_of(session_id: &str) -> Option<(String, String)> {
+    let root = crate::agent::jishu_self::pi_session::pi_sessions_root().ok()?;
+    session_project_in_root(&root, session_id)
+}
+
+/// 会话目录名剥首尾 `--` 包裹（`--C--Users-...--` → `C--Users-...`）。
+/// 需求10 收口（2026-11-11 用户实测回归）：pi 会话目录名带首尾包裹 `--`，
+/// 而前端 projects[].encoded_name 是 hub encode（无包裹）——原样返回恒不
+/// 匹配，前端 find 静默失败=点击通知不切标签。
+/// 第五轮评审 P2-6：原本 lib.rs 与 commands/sessions.rs 两处裸拷贝——收敛
+/// 单源。精确双端剥（trim_matches 会连项目路径自身的尾部 '-' 一并误剥，
+/// 如 `--D--foo---` 应得 `D--foo-` 而非 `D--foo`）；无完整包裹原样返回。
+pub(crate) fn strip_session_dir_wrap(dir_name: &str) -> String {
+    dir_name
+        .strip_prefix("--")
+        .and_then(|s| s.strip_suffix("--"))
+        .unwrap_or(dir_name)
+        .to_string()
+}
+
+/// `session_project_of` 的纯函数核心（root 注入，tempdir 单测覆盖）：
+/// 扫 pi sessions 目录下 `--<encoded>--/<ts>_<session_id>.jsonl` 反查会话
+/// 所属项目。返回 (剥过包裹的 encoded, 解码路径)。
+fn session_project_in_root(root: &std::path::Path, session_id: &str) -> Option<(String, String)> {
+    let suffix = format!("_{session_id}.jsonl");
+    for entry in std::fs::read_dir(root).ok()?.flatten() {
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        if !dir_name.starts_with("--") || !entry.path().is_dir() {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(entry.path()) else {
+            continue;
+        };
+        if files
+            .flatten()
+            .any(|f| f.file_name().to_string_lossy().ends_with(&suffix))
+        {
+            // 剥包裹单源（decode 同用剥过包裹的入参：带包裹名 find("--")
+            // 命中位置 0，盘符解析错位）。
+            let encoded = strip_session_dir_wrap(&dir_name);
+            let project_path = crate::project::decode_project_path(&encoded);
+            return Some((encoded, project_path));
+        }
+    }
+    None
+}
+
 fn handle_deep_link(app: &tauri::AppHandle, url: &str) {
     use tauri::{Emitter, Manager};
     if let Some(window) = app.get_webview_window("main") {
@@ -79,10 +138,66 @@ fn handle_deep_link(app: &tauri::AppHandle, url: &str) {
     let session_id = url
         .strip_prefix("jishu-hub://session/")
         .filter(|sid| !sid.is_empty());
+    let (project_encoded, project_path) = session_id
+        .and_then(session_project_of)
+        .map(|(enc, path)| (Some(enc), Some(path)))
+        .unwrap_or((None, None));
     let _ = app.emit(
         "desktop-notify-click",
-        serde_json::json!({ "sessionId": session_id }),
+        serde_json::json!({
+            "sessionId": session_id,
+            "projectEncoded": project_encoded,
+            "projectPath": project_path,
+        }),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 需求10 收口：pi 目录名剥首尾 `--` 包裹（与前端 encoded_name 同形）。
+    #[test]
+    fn session_project_in_root_strips_wrapper_dashes() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("--E--JishuTest--");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("2026-11-11T00-00-00-000Z_abc123.jsonl"), b"{}").unwrap();
+
+        let (encoded, path) = session_project_in_root(root.path(), "abc123").expect("found");
+        assert_eq!(
+            encoded, "E--JishuTest",
+            "encoded must match hub encode (no wrapper dashes)"
+        );
+        assert!(
+            path.starts_with("E:"),
+            "decoded path is a drive path: {path}"
+        );
+
+        // 其他会话 / 空目录不误报。
+        assert!(session_project_in_root(root.path(), "other").is_none());
+    }
+
+    /// 第五轮评审 P2-6：剥包裹纯函数表驱动边界——精确双端剥，路径自身
+    /// 的尾部 '-' 不误剥；无完整包裹原样返回。
+    #[test]
+    fn strip_session_dir_wrap_boundaries() {
+        for (input, expected) in [
+            ("--C--Users-51743--", "C--Users-51743"), // 常规包裹
+            ("--D--foo---", "D--foo-"),               // 路径自身尾部 '-'（trim_matches 会误剥）
+            ("--a--", "a"),                           // 最短完整包裹
+            ("--abc", "--abc"),                       // 只有前缀无后缀——原样返回
+            ("abc--", "abc--"),                       // 只有后缀无前缀——原样返回
+            ("abc", "abc"),                           // 无包裹
+            ("----", ""),                             // 空名包裹
+        ] {
+            assert_eq!(
+                strip_session_dir_wrap(input),
+                expected,
+                "input {input:?} must strip to {expected:?}"
+            );
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -95,13 +210,12 @@ pub fn run() {
     // 起不来、vite 被 teardown 连杀（退出码 -1）。开发期允许与安装版并存
     // （通知点击链路在安装版上验证）。
     #[cfg(not(debug_assertions))]
-    let builder = tauri::Builder::default().plugin(tauri_plugin_single_instance::init(
-        |app, argv, _cwd| {
+    let builder =
+        tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if let Some(url) = argv.iter().find(|a| a.starts_with("jishu-hub://")) {
                 handle_deep_link(app, url);
             }
-        },
-    ));
+        }));
     #[cfg(debug_assertions)]
     let builder = tauri::Builder::default();
 
@@ -123,20 +237,28 @@ pub fn run() {
         .setup(|app| {
             let __setup_t0 = std::time::Instant::now();
             let _ = hub::migrate_v0_5_0();
-            // Phase 1: 自动注册 Conductor 扩展 + skill pack + 删除旧 skill
-            task_plan::ensure_conductor_extension();
+            // Phase 1: 任务执行器扩展（v0.9.7 需求2 取代 conductor——去阶段化）
+            task_plan::ensure_task_runner_extension();
             // v0.9.3 需求13 C1：内置组合式插件清单幂等部署。
             agent::plugin::ensure_builtin_composed_manifests();
             // v0.8.1 需求9/10：内置自适应插件（任务需求/流程规划）随包分发，
             // 首启落 ~/.jishu-hub/agents/（幂等）。
             agent::plugin::ensure_builtin_adaptive_plugins();
+            // v0.9.7 需求5：默认工作空间（~\.jishu-hub\JishuProjects）幂等就绪
+            //（建目录 + manual 注册 + 预置「默认空间」名；hide 尊重语义见
+            // project.rs——已注册则不重复 unhide）。失败不阻断启动（前端
+            // get_default_workspace / E2 兜底换算可自愈）。
+            if let Err(e) = project::ensure_default_workspace() {
+                log::warn!("[startup] default workspace ensure deferred: {e}");
+            }
             // v0.9.1 需求13 测试期：重试默认固化（pi 未配置原生回退 3 次，
             // hub 默认 10 需落盘触达；幂等——已有任何显式值不覆盖）。
             agent::jishu_self::config::ensure_default_retry_settings();
             // v0.9.0 需求2：[pi_extension] 声明插件的 entry 部署/回收（幂等）。
             agent::pi_deploy::ensure_pi_extension_deployments();
-            // 自动部署 request_user_input 扩展（conductor 的 discuss/plan 阶段依赖此工具）
-            task_plan::ensure_request_user_input_extension();
+            // v0.9.5 需求5：自研 request_user_input 扩展下线（能力由 npm 包
+            // rpiv-ask-user-question 的 ask_user_question 承接，确认卡链路不变）。
+            task_plan::retire_request_user_input_extension();
             // v0.9.3 需求22 P1/P2：审批与批次守卫扩展（自 pi 内置迁移，零 fork）。
             task_plan::ensure_jishu_tool_approval_extension();
             task_plan::ensure_jishu_batch_guard_extension();
@@ -144,6 +266,16 @@ pub fn run() {
             task_plan::ensure_session_context_extension();
             // v0.9.2 测试期：部署 html-preview 扩展（preview_html 工具，agent 主动渲染 HTML 预览）
             task_plan::ensure_html_preview_extension();
+            // v0.9.5 需求1 6b：plugin-invoke 扩展部署 + agent-tools 物化
+            //（方向四：agent 按需调用插件动作）。
+            task_plan::ensure_plugin_invoke_extension();
+            // v0.9.5 需求5：自研 dispatch_subagent 扩展下线（能力由 npm 包
+            // pi-subagents 的 subagent 承接，前台流式工具卡不变）+ pi-subagents
+            // 运行时配置（asyncByDefault:false）+ packages 注册与插件启停对齐。
+            task_plan::retire_jishu_subagent_extension();
+            task_plan::ensure_subagents_runtime_config();
+            agent::plugin::sync_pi_packages_with_plugins();
+            agent::plugin::materialize_agent_tools();
             let registry = Arc::new(agent::AgentRegistry::new());
             // v0.9.0 需求1 P2/二期：四家 MCP 配置同步（MCP 解析器 mcp-resolver
             // 系统插件默认启用 → 注入 jishu-hub 聚合条目，禁用 → 回收；
@@ -169,16 +301,29 @@ pub fn run() {
             // v0.9.0 需求20：skill 分发同步（skill-resolver 门控；单目标失败
             // 不影响启动）。
             let _ = agent::skill_deploy::sync_skill_deployments(false);
-            // v0.9.1 需求11：MCP 适配器自动安装自愈——安装器阶段已尝试装，
-            // 此处幂等兜底（离线安装失败后每次启动重试）。后台执行不阻塞
-            // 启动，失败仅告警；环境检测页手动安装保留为最终兜底。
-            tauri::async_runtime::spawn(async {
-                match agent::jishu_self::JishuSelfAgent::ensure_mcp_adapter_installed().await {
-                    Ok(true) => log::info!("[startup] MCP adapter auto-installed"),
-                    Ok(false) => {}
-                    Err(e) => log::warn!("[startup] MCP adapter auto-install deferred: {e}"),
-                }
-            });
+            // v0.9.7 需求1 T3（P0-2 收口）：**初始化触发点唯一化**——启动侧
+            // 无条件 ensure_agent_runtime。旧的两项启动自愈（v0.9.5 需求11
+            // MCP 条目 + 需求5 四个 pi 扩展包）收编进安装序列（Ready 路径
+            // 零动作——「按需初始化」语义；用户侧误删运行时由 pi 版本变更
+            // 或环境检测页手动安装兜底）。进度走 `agent-runtime-progress`
+            // 事件，引导页（需求4）只消费不触发。
+            {
+                let runtime_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    match agent_runtime_init::ensure_agent_runtime(&runtime_app).await {
+                        Ok(agent_runtime_init::AgentRuntimeState::Ready) => {
+                            log::info!(
+                                "[startup] agent runtime ready (record matches {})",
+                                agent::jishu_self::PI_AGENT_VERSION
+                            );
+                        }
+                        Ok(_) => log::info!("[startup] agent runtime installed"),
+                        Err(e) => log::warn!(
+                            "[startup] agent runtime init deferred: {e}（环境检测页手动安装兜底）"
+                        ),
+                    }
+                });
+            }
             // v0.7.0：全局 active agent 已移除（需求一：智能体切换去全局化）。
             // 各模块按自身作用域选择 agent，通过 agent_id 入参显式指定；
             // 会话与智能体在 Session 层绑定。启动时不再加载/设置全局 active。
@@ -235,6 +380,8 @@ pub fn run() {
                                             acp: Some(control),
                                             // 节点会话由编排器自管，签名未知 → 跳过漂移检测。
                                             spawn_signature: String::new(),
+                                            // v0.9.6 需求4：编排器节点会话无项目上下文。
+                                            project_encoded: String::new(),
                                         },
                                     );
                                 }
@@ -254,6 +401,22 @@ pub fn run() {
             // v0.8.1 M0：清扫上次运行残留的孤儿 pending-* 会话工具键
             // （发送中断未迁移的占位条目，防跨草稿会话串扰）。
             agent::tool_plugin::cleanup_stale_pending_sessions();
+            // v0.9.5：内部提示词版本锚点（resources/prompts/ 台账对账——
+            // 历史会话剥离异常时先核对此行与话术版本是否匹配）。三轮评审 C14：
+            // 补全全部五个话术（修前漏 exec-contract，台账与锚点对不上账）。
+            log::info!(
+                "[startup] internal prompts: {} v{}, {} v{}, {} v{}, {} v{}, {} v{}",
+                agent::internal_prompts::PROMPT_MCP_HINT.id,
+                agent::internal_prompts::PROMPT_MCP_HINT.version,
+                agent::internal_prompts::PROMPT_IMAGE_DISPATCH.id,
+                agent::internal_prompts::PROMPT_IMAGE_DISPATCH.version,
+                agent::internal_prompts::PROMPT_TOOL_HEADER.id,
+                agent::internal_prompts::PROMPT_TOOL_HEADER.version,
+                agent::internal_prompts::PROMPT_EXEC_CONTRACT.id,
+                agent::internal_prompts::PROMPT_EXEC_CONTRACT.version,
+                agent::internal_prompts::PROMPT_MCP_SECTION.id,
+                agent::internal_prompts::PROMPT_MCP_SECTION.version,
+            );
             // v0.8.1 M6：装载期预热工具插件安装探测（PATH where/which 与
             // --version）——compose_tool_message 持 AppState 锁渲染说明块时
             // 惰性探测会同步 spawn 子进程并阻塞全部命令，预热后命中缓存。
@@ -288,9 +451,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-        // v0.9.4 需求12：开发日志强制开关（settings.json 持久化）。
-        commands::dev_log::get_dev_log_forced,
-        commands::dev_log::set_dev_log_forced,
+            // v0.9.4 需求12：开发日志强制开关（settings.json 持久化）。
+            commands::dev_log::get_dev_log_forced,
+            commands::dev_log::set_dev_log_forced,
             commands::agents::list_agents,
             commands::projects::scan_projects,
             commands::projects::list_project_files,
@@ -342,7 +505,10 @@ pub fn run() {
             commands::settings::open_url,
             commands::sessions::open_html_external,
             commands::sessions::desktop_notify_send,
+            commands::sessions::validate_preview_file,
             commands::settings::save_last_project,
+            commands::settings::get_onboarded,
+            commands::settings::set_onboarded,
             commands::settings::load_font_sizes,
             commands::settings::save_font_sizes,
             commands::custom_commands::list_custom_commands,
@@ -355,6 +521,8 @@ pub fn run() {
             commands::terminal::focus_session_terminal,
             commands::terminal::cleanup_dead_sessions,
             commands::projects::init_project,
+            commands::projects::get_default_workspace,
+            commands::projects::is_default_workspace,
             commands::terminal::run_in_terminal,
             commands::projects::load_project_settings,
             commands::projects::load_project_settings_local,
@@ -384,10 +552,10 @@ pub fn run() {
             commands::env_check::check_prerequisite,
             commands::agent_install::install_agent_command,
             commands::agent_install::install_command_needs_elevation,
+            commands::agent_install::agent_runtime_status,
+            commands::agent_install::agent_runtime_init,
             commands::env_check::check_environment,
-            commands::agents::check_mcp_adapter,
-            commands::agents::install_mcp_adapter,
-            commands::agents::update_mcp_adapter,
+            commands::runtime_update::runtime_update,
             commands::agents::check_transport_bridge,
             commands::agents::install_transport_bridge,
             commands::agents::agent_official_auth,
@@ -397,6 +565,7 @@ pub fn run() {
             commands::agents::plugin_remove,
             commands::agents::plugin_reload,
             commands::plugin_panel::plugin_panel_run,
+            commands::plugin_panel::mcp_plugin_health,
             commands::skill_import::skill_import_sources,
             commands::skill_import::skill_import_file,
             commands::skill_import::skill_import_folder,
@@ -404,13 +573,57 @@ pub fn run() {
             commands::agents::plugin_create,
             commands::agents::plugin_create_skill_folder,
             commands::agents::plugin_get,
+            commands::agents::plugin_read_file,
+            commands::agents::plugin_write_theme_css,
+            commands::agents::plugin_save_theme_asset,
             commands::agents::plugin_update,
             commands::agents::plugin_config_get_all,
             commands::agents::plugin_config_set,
+            commands::agents::plugin_preconnect_focus,
+            commands::agents::plugin_preconnect_clear,
+            commands::sessions::session_model_get,
+            commands::sessions::session_model_set,
+            chat::edit_last_user_message,
             commands::agents::composed_plugin_manifests,
             commands::agents::composed_plugin_save,
             commands::agents::composed_plugin_delete,
             commands::agents::plugin_confirm_pending,
+            commands::agents::cli_validate_poll,
+            commands::agents::cli_validate_submit,
+            commands::agents::market_list_curated,
+            commands::agents::market_install,
+            commands::agents::market_uninstall,
+            commands::agents::pi_package_catalog,
+            commands::agents::pi_package_search,
+            commands::agents::pi_package_installed_sources,
+            commands::agents::pi_package_installed_versions,
+            commands::sessions::hub_plugin_sessions,
+            commands::sessions::usage_session,
+            commands::agents::pi_package_builtin_pins,
+            commands::agents::pi_package_install_online,
+            commands::agents::pi_package_uninstall_online,
+            commands::agents::skillhub_list,
+            commands::agents::skillhub_detail,
+            commands::agents::skillhub_installed,
+            commands::agents::skillhub_install,
+            commands::agents::skillhub_uninstall,
+            commands::agents::piindex_search,
+            commands::agents::piindex_refresh,
+            commands::agents::extension_check_update,
+            commands::agents::skillhub_check_update,
+            commands::agents::extension_check_updates,
+            commands::agents::extension_update,
+            commands::agents::skillhub_check_updates,
+            commands::agents::skillhub_update,
+            commands::agents::hybrid_preview_write,
+            commands::agents::hybrid_preview_dir,
+            commands::agents::hybrid_plugin_save,
+            commands::agents::pi_extension_scan,
+            commands::agents::pi_extension_safety_notes,
+            commands::agents::pi_extension_import,
+            commands::agents::pi_extension_import_bundle,
+            commands::agents::pi_extension_enable,
+            commands::agents::pi_extension_ignore,
             commands::agents::session_tool_list,
             commands::agents::session_set_tools,
             commands::sessions::persist_agent_turn,
@@ -431,6 +644,8 @@ pub fn run() {
             chat::compact_agent_session,
             chat::fork_agent_session,
             chat::chat_turn_active,
+            // v0.9.6 需求4：全局活跃回合会话清单（标题栏项目标签数据源）。
+            chat::chat_active_sessions,
             chat::get_session_usage,
             chat::get_agent_auto_compaction,
             chat::set_agent_auto_compaction,
@@ -518,20 +733,31 @@ pub fn run() {
             commands::orchestrator::orchestrator_attach_repair,
             commands::task::task_launch_list_sessions,
             commands::task::task_launch_mark_session,
-            commands::task::task_requirement_finalize,
             commands::task::task_launch_start_run,
             commands::task::task_launch_attach_graph,
             commands::task::task_launch_sync_run_status,
             commands::task::task_launch_get_instance,
-            commands::task::task_planning_instruction,
             commands::task::task_launch_create_from_existing_graph,
             commands::task::task_launch_rename_task,
             commands::task::task_launch_delete_task,
-            commands::task::conductor_sync_phase,
-            commands::task::conductor_load_task_state,
+            commands::task::runner_load_task_state,
+            commands::task::runner_update_steps,
+            commands::task::get_task_no_ask,
+            commands::task::set_task_no_ask,
+            commands::native_mcp::native_mcp_list,
+            commands::native_mcp::native_mcp_upsert,
+            commands::native_mcp::native_mcp_remove,
+            commands::native_mcp::native_mcp_toggle,
             commands::models::test_model,
             commands::models::test_llm_connection,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // v0.9.7 需求12：带 RunEvent 回调运行——Exit 时杀光预连接池进程
+        //（池进程无连接循环看护，不清理会残留成孤儿 jishu agent 进程）。
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                preconnect::shutdown_all("app-exit");
+            }
+        });
 }

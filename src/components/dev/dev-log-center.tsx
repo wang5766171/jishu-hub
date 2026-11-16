@@ -24,7 +24,10 @@ const CATEGORY_COLOR: Record<DevLogCategory, string> = {
   ipc: "text-violet-600 dark:text-violet-400",
   session: "text-rose-600 dark:text-rose-400",
   approval: "text-cyan-600 dark:text-cyan-400",
+  capability: "能力发现",
   plugin: "text-fuchsia-600 dark:text-fuchsia-400",
+  runtime: "text-orange-600 dark:text-orange-400",
+  panel: "text-teal-600 dark:text-teal-400",
 };
 const CATEGORIES = Object.keys(CATEGORY_COLOR) as DevLogCategory[];
 

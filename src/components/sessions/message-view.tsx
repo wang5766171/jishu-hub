@@ -1,14 +1,18 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { devLog } from "@/lib/dev-log";
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { Check, Copy, Bot } from "lucide-react";
+import { Check, Copy, Bot, Pencil } from "lucide-react";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
 import { extractCodeText } from "./code-block-text";
+// v0.9.7 需求6 F2：产物引用链接（jishu-artifact://）——Q14：仅助手消息两处接入。
+import { jishuUrlTransform } from "@/lib/markdown-url";
+import { ArtifactLink } from "./artifact-link";
 import { EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
 import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
@@ -19,7 +23,10 @@ import { isInteractionToolName, looksLikeInteractionToolInput } from "@/lib/inte
 import { PhaseDivider } from "./conversation-content";
 // v0.9.2 需求1 P1：行/轮次语义迁移至会话内核统一视图模型（单一权威，
 // 导航轨等轮次消费方读同一份，消除双实现契约对齐负担）。
-import { buildSessionRows, type SessionRowModel } from "@/features/session-kernel/view-model";
+import { buildSessionRows, isUserToolResultOnlyMessage, type SessionRowModel } from "@/features/session-kernel/view-model";
+// v0.9.5 需求4 P2：轮级三段式（已工作折叠 + 正文 + 文件改动概览）。
+import { buildTurnSegments } from "@/features/session-kernel/view-model/build-turn-segments";
+import { TurnGroupView } from "@/features/session-kernel/shell/turn-group-view";
 // v0.9.2 需求1 M4：块渲染器咨询点（HTML/Mermaid 等插件经 Context 接管代码块）。
 import {
   matchBlockRenderer,
@@ -58,6 +65,10 @@ interface MessageViewProps {
    * 默认 undefined 时完全不触发，保护常规会话（需求七）。
    */
   roleResolver?: (msg: Message) => MessageRoleView | null;
+  /** v0.9.7 需求13：编辑最近用户消息——非空时最后一条用户消息显示编辑
+   * 入口（复制旁）；提交回调 (rawText 落盘原文, newText 编辑后文本)，截断
+   * 重发链由页面承担。null/undefined = 不可编辑（新会话/流式占位等）。 */
+  onEditLastUserMessage?: ((rawText: string, newText: string, remainingToolIds?: string[]) => void) | null;
 }
 
 /**
@@ -85,7 +96,7 @@ export interface MessageSearchNavigation {
   nonce: number;
 }
 
-type RenderItem =
+export type RenderItem =
   | { kind: "block"; block: ContentBlock; messageIndex: number; blockIndex: number }
   | { kind: "interaction"; items: InteractionCardItem[]; origin?: string; messageIndex: number; blockIndex: number }
   | { kind: "tool-group"; calls: ToolCall[] };
@@ -179,7 +190,8 @@ const TextBlock = memo(function TextBlock({
       <ReactMarkdown
         remarkPlugins={REMARK_PLUGINS}
         rehypePlugins={REHYPE_PLUGINS}
-        components={{ pre: MarkdownPreWithRenderers }}
+        urlTransform={jishuUrlTransform}
+        components={{ pre: MarkdownPreWithRenderers, a: ArtifactLink }}
       >
         {text}
       </ReactMarkdown>
@@ -202,6 +214,22 @@ function MarkdownPreWithRenderers({ children }: { children?: React.ReactNode }) 
       const renderer = matchBlockRenderer(renderers, language, code);
       if (renderer) {
         const Renderer = renderer.Component;
+        // 需求14 M1（K5）：接管可见性——右上角轻角标（hover 提亮，title 全称），
+        // 「谁接管了这块」一眼可辨（含遮蔽内置的场合）。
+        const source = renderer as { pluginId?: string; pluginLabel?: string };
+        if (source.pluginId) {
+          return (
+            <div className="relative">
+              <span
+                className="pointer-events-none absolute -top-0.5 right-1 z-10 rounded bg-background/70 px-1 text-[9px] leading-4 text-muted-foreground/50"
+                title={`由插件渲染：${source.pluginLabel ?? source.pluginId}（${source.pluginId}）`}
+              >
+                ⚙ {source.pluginLabel ?? source.pluginId}
+              </span>
+              <Renderer code={code} language={language} />
+            </div>
+          );
+        }
         return <Renderer code={code} language={language} />;
       }
     }
@@ -275,6 +303,8 @@ function renderBlock(
     case "thinking":
       return <ThinkingBlock block={block} />;
     case "interaction":
+      // v0.9.5 需求5 T3 排查：单块渲染点
+      devLog("session", "ia-render:block", { prompt: block.prompt.slice(0, 24) });
       return (
         <InteractionBlockWithRenderers items={[interactionBlockToItem(block)]} origin={block.origin} />
       );
@@ -466,43 +496,61 @@ function AssistantBubble({
 }) {
   const { t } = useTranslation();
 
+  // v0.9.5 需求4 P2：三段式重组（工作项折叠 + 正文 + 文件概览）。
+  const segments = buildTurnSegments(items);
+  const renderItems = (list: RenderItem[]) =>
+      list.map((item, idx) => {
+        if (item.kind === "tool-group") {
+          return (
+            <div key={`tg-${idx}`} className="rounded-[8px]">
+              <ToolGroup calls={item.calls} />
+            </div>
+          );
+        }
+
+        if (item.kind === "interaction") {
+          // v0.9.5 需求5 T3 排查：assistant 组渲染点（带间距修复的分支）
+          devLog("session", "ia-render:assistant-group", {
+            items: item.items.length,
+            blockIndex: item.blockIndex,
+          });
+          return (
+            <div
+              key={`interaction-${item.messageIndex}-${item.blockIndex}`}
+              className="overflow-hidden [&:not(:first-child)]:mt-3"
+            >
+              <InteractionBlockWithRenderers items={item.items} origin={item.origin} />
+            </div>
+          );
+        }
+
+        const offsetKey = `${item.messageIndex}-${item.blockIndex}`;
+        return (
+          <div key={`b-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
+            {renderBlock(
+              item.block,
+              renderingQuery,
+              false,
+              searchOffsets.get(offsetKey) ?? 0,
+              currentOcc,
+            )}
+          </div>
+        );
+      });
+
   return (
     <div className="w-full">
       <div className="max-w-full min-w-0 flex flex-col">
         <div className="flex items-center gap-2 mb-0.5 text-[11px]">
           <span className="font-medium text-muted-foreground">{t("sessions.assistant")}</span>
         </div>
-        <div className="min-w-0 max-w-full space-y-2 rounded-xl px-3 py-2 bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)]">
-          {items.map((item, idx) => {
-            if (item.kind === "tool-group") {
-              return (
-                <div key={`tg-${idx}`} className="rounded-[8px]">
-                  <ToolGroup calls={item.calls} />
-                </div>
-              );
-            }
-
-            if (item.kind === "interaction") {
-              return (
-                <div key={`interaction-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
-                  <InteractionBlockWithRenderers items={item.items} origin={item.origin} />
-                </div>
-              );
-            }
-
-            const offsetKey = `${item.messageIndex}-${item.blockIndex}`;
-            return (
-              <div key={`b-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
-                {renderBlock(
-                  item.block,
-                  renderingQuery,
-                  false,
-                  searchOffsets.get(offsetKey) ?? 0,
-                  currentOcc,
-                )}
-              </div>
-            );
-          })}
+        {/* v0.9.5 需求4 P2：三段式——已工作折叠 + 正文 + 文件改动概览。 */}
+        <div className="min-w-0 max-w-full rounded-xl px-3 py-2 bg-[var(--message-assistant-bg)] text-[var(--message-assistant-fg)]">
+          <TurnGroupView
+            segments={segments}
+            renderTextItems={renderItems}
+            renderWorkItems={renderItems}
+          />
         </div>
         <div className="self-start">
           <CopyButton text={copyText} />
@@ -511,6 +559,7 @@ function AssistantBubble({
     </div>
   );
 }
+
 
 function UserBubble({
   msg,
@@ -521,6 +570,7 @@ function UserBubble({
   messageIndex,
   roleView,
   toolNames,
+  onEditSubmit,
 }: {
   msg: Message;
   items: RenderItem[];
@@ -530,15 +580,33 @@ function UserBubble({
   messageIndex: number;
   roleView?: MessageRoleView | null;
   toolNames: Record<string, string>;
+  /** 需求13：非空=本气泡是可编辑的最近用户消息（提交回调收编辑后文本+
+   * 保留的工具调用 id——编辑可删/留工具）。 */
+  onEditSubmit?: ((newText: string, remainingToolIds?: string[]) => void) | null;
 }) {
   const { t } = useTranslation();
+  // 需求13：原位编辑态（zcode 式——气泡内容替换为编辑框，Enter 确认/Esc 取消）。
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  // 需求13 样式反馈（2026-11-11 用户实测「编辑框变窄」）：textarea 固有默认
+  // 宽（~20 字符）会把自适应气泡撑窄——进入编辑时记录气泡原宽，编辑态容器
+  // 钉住原宽（min 260 保短消息可编辑），编辑框透明无边框继承气泡文字样式
+  //（「原样气泡变成可编辑」）。
+  const bubbleRef = useRef<HTMLDivElement | null>(null);
+  const [editWidth, setEditWidth] = useState<number | null>(null);
+  // 收版反馈（2026-11-13 用户裁决「编辑的时候能编辑工具」）：编辑态工具
+  // pill 可删可留——重发只带保留的工具调用。
+  const [draftToolIds, setDraftToolIds] = useState<string[]>([]);
   // v0.9.0 需求3 方案 C：pill 数据源为首文本块的 tool_ids 元数据（回放由
   // 后端 extract_tool_snapshot 从注入块派生）；文本标记解析已废弃。
   const firstTextBlock = msg.content.find((b) => b.type === "text");
   const rawText = firstTextBlock && firstTextBlock.type === "text" ? firstTextBlock.text : "";
-  const displayText = rawText;
+  // 需求2 收版反馈 H：剥内部命令前缀——任务首条经 prepareTaskLaunchMessage
+  // 包装为 `/jishu-task dev <goal>` 落盘，回放气泡显示/复制均应还原用户原话
+  //（内部路由指令不属于用户可见内容）。
+  const displayText = rawText.replace(/^\/jishu-task(?:\s+(?:dev|research))?\s+/, "");
   const toolIds = (firstTextBlock && firstTextBlock.type === "text" ? firstTextBlock.tool_ids : undefined) ?? [];
-  const copyText = extractMessageText(msg);
+  const copyText = extractMessageText(msg).replace(/^\/jishu-task(?:\s+(?:dev|research))?\s+/, "");
 
   // 三角色：roleResolver 解析为 orchestrator（主进程派发）→ 「任务助手」样式。
   const isOrchestrator = roleView?.role === "orchestrator";
@@ -554,6 +622,8 @@ function UserBubble({
           </span>
         </div>
         <div
+          ref={bubbleRef}
+          style={editing && editWidth ? { width: Math.max(editWidth, 260) } : undefined}
           className={cn(
             "min-w-0 max-w-full space-y-1.5 rounded-xl px-3 py-2",
             isOrchestrator
@@ -561,6 +631,51 @@ function UserBubble({
               : "bg-[var(--message-user-bg)] text-[var(--message-user-fg)]",
           )}
         >
+          {editing ? (
+            // 需求13：原位编辑（zcode 式）——textarea 预填原话，Enter 提交
+            //（Shift+Enter 换行）、Esc 取消；按钮同排兜底。
+            <div className="flex flex-col gap-2" onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                if (draft.trim()) { setEditing(false); onEditSubmit?.(draft.trim(), draftToolIds); }
+              } else if (e.key === "Escape") {
+                setEditing(false);
+              }
+            }}>
+              {draftToolIds.length > 0 && (
+                <EmbeddedToolPills
+                  toolIds={draftToolIds}
+                  toolNames={toolNames}
+                  onRemove={(id) => setDraftToolIds((prev) => prev.filter((x) => x !== id))}
+                />
+              )}
+              <textarea
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                rows={Math.min(10, Math.max(2, draft.split("\n").length + 1))}
+                className="w-full resize-none rounded-md bg-transparent px-1 py-0.5 font-[inherit] text-[inherit] leading-normal outline-none focus:ring-1 focus:ring-primary/60"
+              />
+              <div className="flex justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setEditing(false)}
+                  className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted"
+                >
+                  {t("common.cancel", "取消")}
+                </button>
+                <button
+                  type="button"
+                  disabled={!draft.trim()}
+                  onClick={() => { const text = draft.trim(); setEditing(false); if (text) onEditSubmit?.(text, draftToolIds); }}
+                  className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground disabled:opacity-40"
+                >
+                  {t("sessions.editResend", "重发")}
+                </button>
+              </div>
+            </div>
+          ) : (
+          <>
           <InlineImages text={displayText || copyText} />
           {items.map((item, idx) => {
             if (item.kind === "tool-group") {
@@ -568,8 +683,16 @@ function UserBubble({
             }
 
             if (item.kind === "interaction") {
+              // v0.9.5 需求5 T3 排查：user 组渲染点（带间距修复的分支）
+              devLog("session", "ia-render:user-group", {
+                items: item.items.length,
+                blockIndex: item.blockIndex,
+              });
               return (
-                <div key={`interaction-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
+                <div
+                  key={`interaction-${item.messageIndex}-${item.blockIndex}`}
+                  className="overflow-hidden [&:not(:first-child)]:mt-3"
+                >
                   <InteractionBlockWithRenderers items={item.items} origin={item.origin} />
                 </div>
               );
@@ -607,9 +730,29 @@ function UserBubble({
               </div>
             );
           })}
+          </>
+          )}
         </div>
         <div className="self-end">
           <CopyButton text={copyText} />
+          {onEditSubmit && !editing && (
+            // 需求13：编辑最近用户消息（复制旁入口）。
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (bubbleRef.current) setEditWidth(bubbleRef.current.offsetWidth);
+                setDraft(displayText || copyText);
+                setDraftToolIds(toolIds);
+                setEditing(true);
+              }}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 mt-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              title={t("sessions.editLastMessage", "编辑并重发")}
+            >
+              <Pencil className="h-3 w-3" />
+              {t("sessions.edit", "编辑")}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -627,6 +770,7 @@ export const MessageView = memo(function MessageView({
   scrollContainerRef,
   roleResolver,
   expandSignal,
+  onEditLastUserMessage,
 }: MessageViewProps) {
   const { t } = useTranslation();
   // v0.8.1 需求7：用户消息 pill 的 id→中文名映射（按会话加载一次）。
@@ -765,6 +909,20 @@ export const MessageView = memo(function MessageView({
     return () => clearTimeout(timer);
   }, [currentOcc, scrollTrigger, searchState.matchToMessage, searchState.total]);
 
+  // 需求13：最后一条用户消息（尾向前）——唯一可编辑行；rawText 取首 text 块
+  // 原文（落盘原文，含 /jishu-task 包装——页面回调按需重包装）。
+  const lastUserMessageIndex = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role !== "user") continue;
+      // 工具结果型 user（插件/工具调用的回放形态）不是用户输入——排除
+      //（与 buildSessionRows 行划分同口径；不排除时编辑入口会挂到工具
+      // 结果上，真正可编辑的最后一条用户文字消息反而没有按钮）。
+      if (isUserToolResultOnlyMessage(messages[i])) continue;
+      return i;
+    }
+    return -1;
+  }, [messages]);
+
   const renderRow = useCallback((row: RenderRow) => {
     if (row.kind === "assistant") {
       const items = buildRenderItemsForMessages(messages, row.messageIndices, resultMap, errorToolIds);
@@ -782,6 +940,13 @@ export const MessageView = memo(function MessageView({
     const msg = messages[row.messageIndex];
     const items = buildRenderItemsForMessages(messages, [row.messageIndex], resultMap, errorToolIds);
     const roleView = roleResolver ? roleResolver(msg) : null;
+    // 需求13：仅最后一条用户消息挂编辑提交。
+    const editable = onEditLastUserMessage && row.messageIndex === lastUserMessageIndex
+      ? (newText: string, remainingToolIds?: string[]) => {
+          const raw = msg.content.find((b) => b.type === "text");
+          onEditLastUserMessage(raw && raw.type === "text" ? raw.text : "", newText, remainingToolIds);
+        }
+      : null;
     return (
       <UserBubble
         msg={msg}
@@ -792,9 +957,10 @@ export const MessageView = memo(function MessageView({
         messageIndex={row.messageIndex}
         roleView={roleView}
         toolNames={toolNames}
+        onEditSubmit={editable}
       />
     );
-  }, [currentOcc, messages, renderingQuery, resultMap, errorToolIds, searchState.offsets, roleResolver, toolNames]);
+  }, [currentOcc, messages, renderingQuery, resultMap, errorToolIds, searchState.offsets, roleResolver, toolNames, onEditLastUserMessage, lastUserMessageIndex]);
 
   // v0.9.1 需求5：user 行轮次序号（实例内从 0 递增），横杠导航轨按
   // [data-turn-index] 定位跳转。v0.9.2 需求1 P1：序号由统一视图模型携带
@@ -828,7 +994,7 @@ export const MessageView = memo(function MessageView({
 
   return (
     <div className="flex h-full flex-col">
-      <ScrollArea className="flex-1 min-h-0 message-scroll">
+      <ScrollArea className="flex-1 min-h-0 message-scroll" data-message-stream>
         {fullMessageList}
       </ScrollArea>
     </div>

@@ -13,7 +13,10 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionContext,
+  ExtensionFactory,
+} from "@earendil-works/pi-coding-agent";
 
 /** 审批请求标题标记：hub 侧据此区分审批型 confirm 与业务 confirm（两端同源约定）。 */
 export const TOOL_APPROVAL_TITLE_PREFIX = "[jishu-tool-approval]";
@@ -54,10 +57,48 @@ function readApprovalMode(): string {
   }
 }
 
+/** 需求2 追加：任务不询问模式（Pi settings taskNoAsk）——开启时逐次审批
+ * 直接放行（用户裁决：全都按 agent 推荐执行）。每次评估现读现用。
+ * 评审 P2-⑩（用户裁决）：**不询问仅任务会话生效**——非任务会话（普通
+ * 对话/子会话）照常走审批链。 */
+function readTaskNoAsk(): boolean {
+  try {
+    const raw = readFileSync(join(piAgentDir, "settings.json"), "utf-8");
+    const parsed = JSON.parse(raw) as { taskNoAsk?: unknown };
+    return parsed.taskNoAsk === true;
+  } catch {
+    return false;
+  }
+}
+
+/** 评审 P2-⑩：判定当前会话是否任务会话——读会话 appendEntry（runner 扩展
+ * 持久化的共享状态 `jishu-task-runner`，与 runner session_start 恢复同源），
+ * 存在非空 taskId 才认定。读不到/无任务 → false（宁可多审批，不放错通道）。 */
+function isTaskSession(ctx: ExtensionContext): boolean {
+  try {
+    type Entry = {
+      type?: string;
+      customType?: string;
+      data?: { taskId?: string };
+    };
+    const entries = ctx.sessionManager.getEntries() as Entry[];
+    const last = entries
+      .filter(
+        (entry) => entry?.type === "custom" && entry?.customType === "jishu-task-runner",
+      )
+      .pop();
+    return typeof last?.data?.taskId === "string" && last.data.taskId.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 const jishuToolApproval: ExtensionFactory = (pi) => {
-  pi.on("tool_call", async (event) => {
+  pi.on("tool_call", async (event, ctx) => {
     const mode = readApprovalMode();
-    if (mode === "off") {
+    // 评审 P2-⑩：taskNoAsk 只在能确认当前会话为任务会话时跳审批，否则
+    // 照常走审批链（off 仍全局生效）。
+    if (mode === "off" || (readTaskNoAsk() && isTaskSession(ctx))) {
       return undefined;
     }
 
@@ -65,7 +106,9 @@ const jishuToolApproval: ExtensionFactory = (pi) => {
     const title = `${TOOL_APPROVAL_TITLE_PREFIX}${mode}|${event.toolName}`;
     const message = summary || `执行工具 ${event.toolName}`;
 
-    const approved = await pi.context.ui.confirm(title, message, { timeout: 120_000 });
+    // v0.9.6 补充⑫（去 fork）：事件处理器第二参数即上游 ctx（ExtensionContext，
+    // 含 ui）——替代原 fork pi.context 桥，与 conductor/html-preview 形态统一。
+    const approved = await ctx.ui.confirm(title, message, { timeout: 120_000 });
     if (approved) {
       return undefined;
     }

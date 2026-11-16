@@ -1,0 +1,31 @@
+schema = 1
+kind = "tool"
+
+[info]
+id = "pi-lens"
+display_name = "写后诊断"
+
+# v0.9.5 需求5：纯闸门形态——pi-lens（npm 包）注册的 13 个工具：常驻 8
+#（lens_diagnostics/symbol_search/effective_config/project_report/
+# module_report/read_symbol/read_enclosing/pi_lens_activate_tools）+
+# 惰性 5（pi_lens_activate_tools 按需激活后经 setActiveTools 上册——
+# 必须同在白名单否则激活无效）。本清单治理 spawn --tools 白名单归属；
+# 禁用同时经 packages 同步摘除扩展装载（tool_result 事件钩子的编辑后
+# 自动诊断随装载一并下线）。
+[pi_extension]
+target_agent = "jishu-self"
+tools = [
+    "lens_diagnostics",
+    "symbol_search",
+    "effective_config",
+    "project_report",
+    "module_report",
+    "read_symbol",
+    "read_enclosing",
+    "pi_lens_activate_tools",
+    "ast_grep_search",
+    "ast_grep_replace",
+    "ast_grep_outline",
+    "lsp_navigation",
+    "lens_diagnostic_mark",
+]

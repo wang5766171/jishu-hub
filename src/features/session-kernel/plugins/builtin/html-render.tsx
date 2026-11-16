@@ -4,8 +4,6 @@ import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { Code2, ExternalLink, Eye, Maximize2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { SESSION_PLUGIN_CONTRACT_VERSION } from "../types";
-import type { SessionPluginDescriptor } from "../types";
 
 /**
  * HTML 实时渲染插件（v0.9.2 需求1 M4；v0.9.3 测试期四轮增强）。
@@ -15,10 +13,13 @@ import type { SessionPluginDescriptor } from "../types";
  *   脚本（ResizeObserver + load/resize + ESC 转发）经 postMessage 上报
  *   （sandbox 跨源可行），iframe 高度跟随内容。
  * - 放大（v0.9.3 测试期重设计）：HTML 会重排、不是图片——全屏+缩放不适用。
- *   改为**宽版阅读器**：Portal 挂 body，居中加宽卡片（≤1100px），内容
- *   自适应高度、**滚动在阅读器层**（顶部始终可达，等同读文档）；ESC（iframe
- *   聚焦后经 postMessage 转发——原父窗口 keydown 收不到 iframe 内按键，
- *   「点一下后 ESC 失效」的根因）/ 点空白 / 关闭钮退出。
+ *   改为**宽版阅读器**：Portal 挂 body，居中加宽卡片（≤1100px）。高度语义
+ *   （测试期三轮修复后用户裁决终态）：**按内容动态高度**——不超视口时卡片
+ *   垂直居中；超出时封顶视口（min(测量高, 100vh-102px)），iframe 内出滚动
+ *   条、标题栏常驻。起始高即封顶（vh/百分比布局内容的文档高会镜像 iframe
+ *   视口，起始 240 会把这类内容钉死在 240）。ESC（iframe 聚焦后经
+ *   postMessage 转发——原父窗口 keydown 收不到 iframe 内按键，「点一下后
+ *   ESC 失效」的根因）/ 点空白 / 关闭钮退出。
  * - 视图切换：**单按钮**，图标 = 当前视图（眼睛=卡片 / 代码=源码），点击切换。
  * - 「在新窗口打开」：内容落临时文件经系统默认浏览器打开（后端
  *   open_html_external，沙箱外的完整交互能力）。
@@ -66,13 +67,15 @@ export function injectHeightHarness(code: string): string {
 }
 
 /** iframe 消息接入：高度上报驱动 state，ESC 转发回调（onEsc 经 ref 保持最新，
- * 不重挂监听）。 */
-function useIframeMessages(onEsc?: () => void): {
+ * 不重挂监听）。initialHeight 为上报到达前的起始高：内联卡 240（贴内容）；
+ * 放大层传视口封顶高——vh/百分比布局内容的文档高会镜像 iframe 视口，起始
+ * 240 会把这类内容钉死在 240（测量值恒等于视口高），起始即满高则自洽。 */
+function useIframeMessages(onEsc?: () => void, initialHeight = 240): {
   iframeRef: React.RefObject<HTMLIFrameElement | null>;
   height: number;
 } {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [height, setHeight] = useState(240);
+  const [height, setHeight] = useState(initialHeight);
   const escRef = useRef(onEsc);
   useEffect(() => {
     escRef.current = onEsc;
@@ -100,10 +103,16 @@ function useIframeMessages(onEsc?: () => void): {
 }
 
 /** 宽版阅读器（Portal 挂 body——消息行 containment 会劫持 fixed 定位基准）。
- * 关闭三通道：ESC（含 iframe 内转发）/ 点空白区 / 关闭钮。 */
+ * 高度语义（用户裁决终态）：**按内容动态高度**——不超视口 → items-center
+ * 垂直居中；超出 → iframe 封顶视口（min(测量高, 100vh-102px)）、iframe 内
+ * 滚动（标题栏常驻）。起始高即封顶（防 vh 布局内容被 240 钉死）。
+ * 关闭三通道：ESC / 点空白区 / 关闭钮。 */
 function HtmlZoomOverlay({ code, onClose }: { code: string; onClose: () => void }) {
   const { t } = useTranslation();
-  const { iframeRef, height } = useIframeMessages(onClose);
+  const { iframeRef, height } = useIframeMessages(
+    onClose,
+    Math.max(240, window.innerHeight - 102),
+  );
   const srcDoc = useMemo(() => injectHeightHarness(code), [code]);
 
   useEffect(() => {
@@ -122,48 +131,62 @@ function HtmlZoomOverlay({ code, onClose }: { code: string; onClose: () => void 
 
   return createPortal(
     <div className="fixed inset-0 z-[60]" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/50" />
-      {/* 滚动在阅读器层（非 iframe 内）：内容自适应高度、顶部始终可达；
-          空白区点击关闭（命中滚动容器本身才关，卡片冒泡不关）。 */}
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+      {/* 滚动兜底层：卡片高度已被 iframe 封顶不超视口，此层仅作超小窗口等
+          边界兜底；点击空白区关闭（命中滚动容器本身才关，卡片冒泡不关）。 */}
       <div
         className="absolute inset-0 overflow-auto p-4 sm:p-8"
         onClick={(e) => {
           if (e.target === e.currentTarget) onClose();
         }}
       >
-        <div className="mx-auto flex w-[min(1100px,100%)] flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
-          <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/60 px-2">
-            <span className="text-xs font-medium text-foreground">
-              {t("sessionPlugins.htmlRender.zoomTitle", "HTML 放大")}
-            </span>
-            <button
-              type="button"
-              title={t("sessionPlugins.htmlRender.openExternal", "在新窗口打开（系统浏览器）")}
-              onClick={openExternal}
-              className="ml-3 rounded p-1 text-muted-foreground outline-none hover:bg-accent hover:text-foreground"
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-            </button>
-            <span className="ml-auto select-none rounded border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground/70">
-              {t("sessionPlugins.htmlRender.escHint", "ESC 关闭")}
-            </span>
-            <button
-              type="button"
-              title={t("sessionPlugins.htmlRender.close", "关闭")}
-              onClick={onClose}
-              className="ml-1.5 rounded p-1 text-muted-foreground outline-none hover:bg-accent hover:text-foreground"
-            >
-              <X className="h-4 w-4" />
-            </button>
+        {/* 居中层：min-h-full + items-center——内容矮时卡片垂直居中；卡片高度
+            由 iframe 的 min(测量高, 视口封顶) 保证不超视口，故无 flex 居中裁顶
+            问题。点击居中层空白（卡片左右两侧）也可关闭。 */}
+        <div
+          className="mx-auto flex min-h-full w-[min(1100px,100%)] items-center"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) onClose();
+          }}
+        >
+          <div className="flex w-full flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
+            <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/60 px-2">
+              <span className="text-xs font-medium text-foreground">
+                {t("sessionPlugins.htmlRender.zoomTitle", "HTML 放大")}
+              </span>
+              <button
+                type="button"
+                title={t("sessionPlugins.htmlRender.openExternal", "在新窗口打开（系统浏览器）")}
+                onClick={openExternal}
+                className="ml-3 rounded p-1 text-muted-foreground outline-none hover:bg-accent hover:text-foreground"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+              </button>
+              <span className="ml-auto select-none rounded border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground/70">
+                {t("sessionPlugins.htmlRender.escHint", "ESC 关闭")}
+              </span>
+              <button
+                type="button"
+                title={t("sessionPlugins.htmlRender.close", "关闭")}
+                onClick={onClose}
+                className="ml-1.5 rounded p-1 text-muted-foreground outline-none hover:bg-accent hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <iframe
+              ref={iframeRef}
+              title={t("sessionPlugins.htmlRender.zoomTitle", "HTML 放大")}
+              sandbox="allow-scripts allow-forms allow-popups"
+              srcDoc={srcDoc}
+              /* 动态高度+封顶：102px = 标题栏(h-9=36px) + 上下 padding(p-8=64px)
+                 + 卡片上下边框(2px)。内容矮 → iframe=测量高（卡片随内容）；
+                 超出 → 封顶视口高、iframe 内出滚动条。CSS min() 原生响应窗口
+                 缩放，无需 JS resize 监听。 */
+              style={{ height: `min(${height}px, calc(100vh - 102px))` }}
+              className="w-full border-0 bg-white"
+            />
           </div>
-          <iframe
-            ref={iframeRef}
-            title={t("sessionPlugins.htmlRender.zoomTitle", "HTML 放大")}
-            sandbox="allow-scripts allow-forms allow-popups"
-            srcDoc={srcDoc}
-            style={{ height }}
-            className="w-full border-0 bg-white"
-          />
         </div>
       </div>
     </div>,
@@ -171,7 +194,7 @@ function HtmlZoomOverlay({ code, onClose }: { code: string; onClose: () => void 
   );
 }
 
-function HtmlPreviewCard({ code }: { code: string; language: string }) {
+export function HtmlPreviewCard({ code }: { code: string; language?: string }) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<"preview" | "source">("preview");
   const [expanded, setExpanded] = useState(false);
@@ -243,23 +266,3 @@ function HtmlPreviewCard({ code }: { code: string; language: string }) {
     </div>
   );
 }
-
-export const htmlRenderPlugin: SessionPluginDescriptor = {
-  id: "session.html-render",
-  displayNameKey: "sessionPlugins.htmlRender.name",
-  displayNameFallback: "HTML 实时渲染",
-  descriptionKey: "sessionPlugins.htmlRender.description",
-  descriptionFallback: "消息中的 HTML（完整文档与卡片片段）按内容高度直接渲染",
-  contractVersion: SESSION_PLUGIN_CONTRACT_VERSION,
-  source: "builtin",
-  permissions: ["read:blocks"],
-  mounts: [
-    {
-      kind: "block-renderer",
-      matching: "code",
-      languages: ["html"],
-      detect: (_lang, code) => isRenderableHtmlBlock(code),
-      Component: HtmlPreviewCard,
-    },
-  ],
-};

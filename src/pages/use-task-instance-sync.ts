@@ -13,6 +13,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invokeCommand } from "@/hooks/use-invoke";
 import type { TaskLaunchInstanceSummary } from "@/features/task-instance/types";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
+import { setUnread } from "@/features/session-kernel/session-unread";
 
 /** 任务图操作的最小结构面（useTaskGraph 返回值的子集，结构性依赖）。 */
 export interface TaskGraphSyncHandle {
@@ -39,6 +40,8 @@ export interface TaskInstanceSyncDeps {
   discoverConductorTaskRef: RefObject<(sessionId: string) => Promise<unknown>>;
   /** 快照命中当前任务时的身份落地（任务 id/需求文件/status——页面持 state）。 */
   activeTaskResolved?: (record: TaskLaunchInstanceSummary) => void;
+  /** 当前选中会话 ref（任务失败未读写入的「正在查看不产生未读」门控）。 */
+  selectedSessionRef: RefObject<string | null>;
 }
 
 export function useTaskInstanceSync(deps: TaskInstanceSyncDeps) {
@@ -50,10 +53,76 @@ export function useTaskInstanceSync(deps: TaskInstanceSyncDeps) {
     lastInstanceRunIdRef,
     lastRealSessionIdRef,
     discoverConductorTaskRef,
+    selectedSessionRef,
   } = deps;
 
   // 任务会话（需求/规划）与节点子代理会话 id（常规列表过滤用，同节奏刷新）。
   const [taskLaunchSessions, setTaskLaunchSessions] = useState<TaskLaunchInstanceSummary[]>([]);
+  // 收版反馈（2026-11-12 用户实测「任务失败了却显示绿点」）：任务终态失败
+  // 时 pi 回合本身往往正常 Complete（agent 输出失败报告文本）——回合级
+  // turn-complete 未读写的是「done」绿。任务级失败在此接入未读色：状态
+  // failed 且用户没在看着该会话 → 写红（覆盖回合级绿）。幂等：一个任务
+  // 只通知一次失败（持久化——重启后轮询不重写，对齐「消失后不应再出现」）。
+  const NOTIFIED_KEY = "jishu-task-failed-notified";
+  const notifiedFailedTaskIdsRef = useRef<Set<string>>(new Set(
+    (() => {
+      try {
+        return JSON.parse(localStorage.getItem(NOTIFIED_KEY) ?? "[]") as string[];
+      } catch {
+        return [];
+      }
+    })(),
+  ));
+  // 评审 P2-14 修复：台账有界化——剔除「本轮可见且已不处于 failed」的任务
+  // id（任务修复/重跑后不再占台账），防集合只增不减无限膨胀（§9：记录类
+  // 数据长期应落 SQLite，本处为显示层幂等辅助，有界化后量级恒小）。
+  // 修复轮回归收口（评审 P2）：只剔「出现且非 failed」——task_launch_list_sessions
+  // 按当前 projectRoot 查询，若按「缺席即删」清理，切到项目 B 会误清项目 A
+  // 仍 failed 的台账，切回后已读红点复现，违背本文件「消失后不应再出现」
+  // 的成文不变量。
+  const pruneNotified = useCallback((items: TaskLaunchInstanceSummary[]) => {
+    const recovered = new Set(
+      items.filter((i) => i.status !== "failed").map((i) => i.task_id),
+    );
+    if (![...notifiedFailedTaskIdsRef.current].some((id) => recovered.has(id))) return;
+    const kept = [...notifiedFailedTaskIdsRef.current].filter((id) => !recovered.has(id));
+    notifiedFailedTaskIdsRef.current = new Set(kept);
+    try {
+      localStorage.setItem(NOTIFIED_KEY, JSON.stringify(kept));
+    } catch {
+      /* 存储异常静默——通知幂等非关键 */
+    }
+  }, []);
+  const markNotified = (taskId: string) => {
+    notifiedFailedTaskIdsRef.current.add(taskId);
+    try {
+      localStorage.setItem(NOTIFIED_KEY, JSON.stringify([...notifiedFailedTaskIdsRef.current]));
+    } catch {
+      /* 存储异常静默——通知幂等非关键 */
+    }
+  };
+  const notifyTaskFailureUnread = useCallback((items: TaskLaunchInstanceSummary[]) => {
+    pruneNotified(items);
+    for (const item of items) {
+      if (item.status !== "failed") continue;
+      if (notifiedFailedTaskIdsRef.current.has(item.task_id)) continue;
+      const sid = item.task_session_id;
+      if (!sid) {
+        // 无会话关联也标记已通知（避免每次轮询空转判断）。
+        markNotified(item.task_id);
+        continue;
+      }
+      // 「正在查看的会话不产生未读」——用户就在看这个会话=已看到失败：
+      // 不写未读，且**标记已通知**（打开过=已读，切走后轮询不补写——
+      // 收版反馈「消失后不应该再出现」）。
+      if (selectedSessionRef.current === sid) {
+        markNotified(item.task_id);
+        continue;
+      }
+      markNotified(item.task_id);
+      setUnread(sid, "failed");
+    }
+  }, [selectedSessionRef, pruneNotified]);
   const [nodeSessionIds, setNodeSessionIds] = useState<string[]>([]);
   const activeTaskResolvedRef = useRef(deps.activeTaskResolved);
   activeTaskResolvedRef.current = deps.activeTaskResolved;
@@ -76,6 +145,7 @@ export function useTaskInstanceSync(deps: TaskInstanceSyncDeps) {
         ),
       ]);
       setTaskLaunchSessions(items);
+      notifyTaskFailureUnread(items);
       setNodeSessionIds(nodeIds);
 
       // v0.7.0：检测当前任务的 active_run_id 变化（conductor 重试创建新 run）。
@@ -120,7 +190,6 @@ export function useTaskInstanceSync(deps: TaskInstanceSyncDeps) {
       taskId: record.task_id,
       isCurrentTask,
       status: record.status,
-      currentPhase: record.current_phase,
     });
 
     if (isCurrentTask) {
@@ -151,12 +220,12 @@ export function useTaskInstanceSync(deps: TaskInstanceSyncDeps) {
         invokeCommand<TaskLaunchInstanceSummary[]>("task_launch_list_sessions", { projectRoot })
           .then((items) => {
             setTaskLaunchSessions(items);
+            notifyTaskFailureUnread(items);
             // v0.9.2 测试期（执行期方案调整）：活跃任务实例变更（含 conductor_revise_plan
             // 落新 revision）时重载任务图——方案卡/子任务卡/全景即时反映修订。
             const changedInst = items.find((item) => item.task_id === event.payload.task_id);
             if (
-              changedInst?.current_phase === "execution" &&
-              changedInst.graph_id &&
+              changedInst?.graph_id &&
               changedInst.task_id === activeTaskInstanceIdRef.current
             ) {
               taskGraphRef.current.loadGraph(changedInst.graph_id).catch((e) =>

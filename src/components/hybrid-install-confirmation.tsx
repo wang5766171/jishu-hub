@@ -10,9 +10,25 @@
  * 输入源：hub 内部命令 plugin_confirm_pending（读取后端记录的待确认列表）。
  */
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { ShieldAlert, Check, X } from "lucide-react";
-import { createPortal } from "react-dom";
+import { UniModal } from "@/components/ui/uni-modal";
+// 5a（v0.9.5 需求1，原需求26）：安装后自动展示——面板自动展开/挂件高亮/
+// 测试通知，复用既有面板激活性与动作命令链。
+import { requestPanelActivation } from "@/features/session-kernel/shell/panel-activation";
+import { requestInstallSpotlight } from "@/features/session-kernel/shell/install-spotlight";
+// v0.9.7 需求3 C1：会话创建链路的回跳闭环（openManagePage 事件通道）。
+import { openManagePage } from "@/lib/app-nav";
+
+interface PendingAssetInfo {
+  /** 资产文件名（平铺于插件根目录）。 */
+  name: string;
+  /** 字节数。 */
+  size: number;
+  /** sha256 前 8 位（核对指纹）。 */
+  sha8: string;
+}
 
 interface PendingHybridPlugin {
   /** 插件 id（session.xxx）。 */
@@ -25,13 +41,64 @@ interface PendingHybridPlugin {
   codeLines: number;
   /** 插件目录绝对路径。 */
   dir: string;
+  /** 需求14 M1（02 §7 确认卡增强）：资产文件清单（名/字节/指纹）——
+   *  echarts.min.js 这类随插件分发的库对用户可见可核对（旧标记无此字段）。 */
+  assets?: PendingAssetInfo[];
+  /** 能力接管范围摘要（如「将接管 echarts 语言代码块渲染」）。 */
+  takeover?: string | null;
+  /** 需求14 M3（B4/02 §5.2）：桥插件携带的可执行体清单——最高警示级
+   *（启用即随插件启动第三方可执行体）。 */
+  bridges?: string[];
+}
+
+/** 资产体积可读化（B/KB/MB）。 */
+function fmtAssetSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
 }
 
 /** 轮询间隔：安装后 CLI 侧即时广播 plugins-changed 但确认卡需要额外数据，
  *  每 5s 刷新一次（轻量——后端在无待确认项时返回空数组）。 */
 const POLL_INTERVAL_MS = 5000;
 
+/** 5a：启用后自动展示（按 pending.mount 分派）。 */
+function afterEnableShowcase(item: PendingHybridPlugin, t: (k: string, o?: Record<string, unknown>) => string): void {
+  switch (item.mount) {
+    case "dock-panel":
+    case "sidebar-panel":
+      // 面板自动展开：等 plugins-changed → loader 热重建（异步）后面板
+      // 可挂载，延迟后再请求激活（requestPanelActivation 复用 openPanel
+      // 命令链——dock 悬浮展开 / sidebar 侧栏顶开，单选互斥）。
+      window.setTimeout(() => requestPanelActivation(item.id), 900);
+      break;
+    case "rail-widget":
+    case "composer-trailing":
+      // 挂件位置高亮闪烁一次（rail 宿主消费 spotlight；composer 挂件同链）。
+      window.setTimeout(() => requestInstallSpotlight(item.id), 900);
+      break;
+    case "event-hook":
+      // 测试通知：确认通知通道畅通（复用 desktop-notify 动作的后端命令）。
+      window.setTimeout(() => {
+        void invokeCommand("desktop_notify_send", {
+          title: t("hybridConfirm.notifyTitle"),
+          body: t("hybridConfirm.notifyBody"),
+          sessionId: null,
+          sound: null,
+        }).catch(() => undefined);
+      }, 600);
+      break;
+    case "pipeline":
+      // 流水线：确认卡文案已提示「立即试用」路径（插件中心·流水线 tab
+      // 详情页「作为任务启动」）；/jishu-pipeline 命令亦可直达。
+      break;
+    default:
+      break;
+  }
+}
+
 export function HybridInstallConfirmation() {
+  const { t } = useTranslation();
   const [pending, setPending] = useState<PendingHybridPlugin[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -57,33 +124,87 @@ export function HybridInstallConfirmation() {
     try {
       await invokeCommand("plugin_set_enabled", { pluginId: id, enabled });
       setPending(prev => prev.filter(p => p.id !== id));
+      if (enabled) {
+        // v0.9.7 需求3 C1 回跳闭环：会话创建链路发起时留了标记——启用成功
+        // 跳回插件中心（事件通道切 tab，P2-7）+ 新插件聚光，替代默认展示。
+        let createReturn = false;
+        try {
+          createReturn = sessionStorage.getItem("jishu-plugin-create-return") === "1";
+          if (createReturn) sessionStorage.removeItem("jishu-plugin-create-return");
+        } catch {
+          /* sessionStorage 不可用——走默认展示 */
+        }
+        if (createReturn) {
+          openManagePage("plugins");
+          window.dispatchEvent(
+            new CustomEvent("jishu:plugin-spotlight", { detail: { id } }),
+          );
+          return;
+        }
+        // 5a：装好了在哪用？——按挂载形态自动展示（不用去能力中心找）。
+        const item = pending.find(p => p.id === id);
+        if (item) afterEnableShowcase(item, t);
+      }
     } finally {
       setBusyId(null);
     }
-  }, []);
+  }, [pending, t]);
 
   if (pending.length === 0) return null;
 
-  return createPortal(
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 backdrop-blur-sm">
-      {pending.map(p => (
+  // 批次1：统一弹窗外壳（不可关闭——安全阀语义，preventClose 固定）；
+  // 卡片本身为安全警示形态，中和 UniModal 卡底色（透明壳）。
+  return (
+    <UniModal
+      open
+      onClose={() => undefined}
+      preventClose
+      label={t("hybridConfirm.label")}
+      className="w-auto max-w-none border-0 bg-transparent shadow-none"
+    >
+      <div className="flex max-w-[96vw] items-center justify-center gap-4 overflow-x-auto p-2">
+      {pending.map((p) => (
         <div
           key={p.id}
-          className="w-[min(480px,92vw)] rounded-xl border border-amber-500/40 bg-background p-5 shadow-2xl"
+          className={
+            (p.bridges ?? []).length > 0
+              ? "w-[min(480px,92vw)] shrink-0 rounded-xl border border-red-500/60 bg-background p-5 shadow-2xl"
+              : "w-[min(480px,92vw)] shrink-0 rounded-xl border border-amber-500/40 bg-background p-5 shadow-2xl"
+          }
         >
           <div className="flex items-start gap-3">
             <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
             <div className="min-w-0 flex-1">
               <div className="text-sm font-semibold text-foreground">
-                新混合插件安装确认
+                {t("hybridConfirm.title")}
               </div>
               <div className="mt-2 space-y-1 text-xs text-muted-foreground">
                 <div><span className="text-foreground/80">{p.name}</span>（{p.id}）</div>
-                <div>挂载：{p.mount} · 代码 {p.codeLines} 行</div>
+                <div>{t("hybridConfirm.mountLine", { mount: p.mount, lines: p.codeLines })}</div>
+                {p.takeover ? (
+                  <div className="text-amber-600 dark:text-amber-400">{t("hybridConfirm.takeover", { scope: p.takeover })}</div>
+                ) : null}
+                {(p.bridges ?? []).length > 0 ? (
+                  <div className="rounded-md border border-red-500/50 bg-red-500/5 px-2 py-1.5 text-red-600 dark:text-red-400">
+                    {t("hybridConfirm.bridgeWarn", { bridges: (p.bridges ?? []).join("、") })}
+                  </div>
+                ) : null}
+                {(p.assets ?? []).length > 0 ? (
+                  <div className="rounded-md border border-border/40 bg-muted/30 px-2 py-1.5 font-mono text-[10px] leading-relaxed">
+                    {(p.assets ?? []).map((a) => (
+                      <div key={a.name} className="flex justify-between gap-2">
+                        <span className="break-all text-foreground/70">{a.name}</span>
+                        <span className="shrink-0 text-muted-foreground/60">
+                          {fmtAssetSize(a.size)} · {a.sha8}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="font-mono text-[10px] break-all text-muted-foreground/60">{p.dir}</div>
               </div>
               <div className="mt-3 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-                混合插件包含自定义代码，会在会话界面运行。启用前建议检查代码内容。
+                {t("hybridConfirm.notice")}
               </div>
               <div className="mt-4 flex gap-2">
                 <button
@@ -93,7 +214,7 @@ export function HybridInstallConfirmation() {
                   className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
                   <Check className="h-3.5 w-3.5" />
-                  启用
+                  {t("hybridConfirm.enable")}
                 </button>
                 <button
                   type="button"
@@ -102,14 +223,14 @@ export function HybridInstallConfirmation() {
                   className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
                 >
                   <X className="h-3.5 w-3.5" />
-                  暂不启用
+                  {t("hybridConfirm.later")}
                 </button>
               </div>
             </div>
           </div>
         </div>
       ))}
-    </div>,
-    document.body,
+      </div>
+    </UniModal>
   );
 }

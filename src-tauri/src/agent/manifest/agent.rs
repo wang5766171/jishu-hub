@@ -12,12 +12,12 @@
 
 use super::schema::{self, AgentManifestFile, SessionStoreKind, TransportKind};
 use super::store;
+use crate::agent::capability::AgentHealth;
 use crate::agent::traits::*;
 use crate::agent::{
-    AgentCapabilities, AgentInfo, AcpCommandSpec, ChatRequest, NormalizedEvent,
+    AcpCommandSpec, AgentCapabilities, AgentInfo, ChatRequest, NormalizedEvent,
     StreamEventNormalizer, TransportSurface,
 };
-use crate::agent::capability::AgentHealth;
 use crate::session::{Message, Session};
 use serde_json::Value;
 use std::sync::Arc;
@@ -28,17 +28,22 @@ pub struct ManifestAgent {
     /// Box::leak 在每次热重建 new ManifestAgent 时重复泄漏同一份数据，无
     /// 上限；intern 后同内容只分配一次。
     abort_bytes: Option<&'static [u8]>,
+    /// 需求14 M3（02 §5.1）：插件目录（{plugin_dir} 的展开源）——仅目录
+    /// 形态（plugins/<id>/plugin.toml）有值，由装载侧从清单路径派生，
+    /// **不接受清单自报路径**；agents/ 单文件形态 None（引用 {plugin_dir}
+    /// 展开为空串，spawn 失败可见）。
+    plugin_dir: Option<std::path::PathBuf>,
 }
 
 /// abort_bytes intern 池：内容 → 'static 引用（进程生命周期，热重建安全）。
-static ABORT_BYTES_INTERN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<&'static [u8]>>> =
-    std::sync::OnceLock::new();
+static ABORT_BYTES_INTERN: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<&'static [u8]>>,
+> = std::sync::OnceLock::new();
 
 fn intern_bytes(bytes: Vec<u8>) -> &'static [u8] {
-    let pool_cell = ABORT_BYTES_INTERN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
-    let mut pool = pool_cell
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let pool_cell =
+        ABORT_BYTES_INTERN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let mut pool = pool_cell.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = pool.iter().find(|b| **b == bytes.as_slice()) {
         return existing;
     }
@@ -48,27 +53,47 @@ fn intern_bytes(bytes: Vec<u8>) -> &'static [u8] {
 }
 
 impl ManifestAgent {
+    /// 单文件形态构造（tests 直用；生产装载走 new_with_dir 派生 {plugin_dir}）。
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(file: Arc<AgentManifestFile>) -> Self {
+        Self::new_with_dir(file, None)
+    }
+
+    /// 需求14 M3：带插件目录构造（目录形态清单装载侧传入）。
+    pub fn new_with_dir(
+        file: Arc<AgentManifestFile>,
+        plugin_dir: Option<std::path::PathBuf>,
+    ) -> Self {
         let abort_bytes = file
             .transport
             .as_ref()
             .and_then(|t| t.abort_bytes.as_deref())
             .and_then(|hex| schema::parse_abort_bytes(hex).ok())
             .map(intern_bytes);
-        Self { file, abort_bytes }
+        Self {
+            file,
+            abort_bytes,
+            plugin_dir,
+        }
+    }
+
+    /// {plugin_dir} 展开值（无目录 = 空串——错误形态尽早可见于 spawn）。
+    fn plugin_dir_str(&self) -> String {
+        self.plugin_dir
+            .as_deref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
     }
 
     /// 模板替换：{prompt}/{cwd}/{session_id}（argv 直传——值里的任何字符
-    /// 都不参与命令构造，替换结果仅作为单个 argv 段）。
-    fn expand_template(
-        &self,
-        arg: &str,
-        args: &ChatRequest,
-    ) -> String {
+    /// 都不参与命令构造，替换结果仅作为单个 argv 段）+ {plugin_dir}
+    ///（需求14 M3 静态变量：安装期常量——桥脚本随插件分发的引用方式）。
+    fn expand_template(&self, arg: &str, args: &ChatRequest) -> String {
         let session_id = args.session_id.as_deref().unwrap_or("");
         arg.replace("{prompt}", &args.message)
             .replace("{cwd}", &args.project_path)
             .replace("{session_id}", session_id)
+            .replace("{plugin_dir}", &self.plugin_dir_str())
     }
 
     fn transport(&self) -> Option<&schema::TransportSection> {
@@ -142,7 +167,13 @@ impl AgentManifest for ManifestAgent {
             };
         };
         let name = probe.command.as_str();
-        match crate::agent::discovery::probe_binary_sync(name, &[name]) {
+        // 需求14 M3（R6）：显式候选路径优先（私有路径安装的 CLI 探测不到的
+        // 盲区）；未声明时维持 PATH 查找（候选=[命令名] 自身）。
+        let candidates: Vec<&str> = match &probe.paths {
+            Some(paths) if !paths.is_empty() => paths.iter().map(|p| p.as_str()).collect(),
+            _ => vec![name],
+        };
+        match crate::agent::discovery::probe_binary_sync(name, &candidates) {
             Some(path) => {
                 let version = probe.version_args.as_ref().and_then(|args| {
                     probe_version_with_args(&path, args, probe.version_regex.as_deref())
@@ -173,10 +204,7 @@ pub fn probe_version_with_args(
     args: &[String],
     regex: Option<&str>,
 ) -> Option<String> {
-    let output = std::process::Command::new(path)
-        .args(args)
-        .output()
-        .ok()?;
+    let output = std::process::Command::new(path).args(args).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -237,7 +265,9 @@ impl TransportAdapter for ManifestAgent {
     }
 
     fn build_acp_command(&self, _args: &ChatRequest) -> Result<AcpCommandSpec, String> {
-        let transport = self.transport().ok_or("manifest has no [transport] section")?;
+        let transport = self
+            .transport()
+            .ok_or("manifest has no [transport] section")?;
         let argv = transport
             .acp_command
             .clone()
@@ -245,6 +275,13 @@ impl TransportAdapter for ManifestAgent {
         if argv.is_empty() {
             return Err("acp_command must not be empty".to_string());
         }
+        // 需求14 M3（B16）：acp_command 只放行静态变量（{plugin_dir}——
+        // schema 校验已拒动态集），此处展开静态集（桥脚本随插件分发）。
+        let dir = self.plugin_dir_str();
+        let argv: Vec<String> = argv
+            .iter()
+            .map(|seg| seg.replace("{plugin_dir}", &dir))
+            .collect();
         Ok(AcpCommandSpec {
             program: argv[0].clone(),
             args: argv[1..].to_vec(),
@@ -297,7 +334,9 @@ impl ConfigAdapter for ManifestAgent {
             .ok_or("manifest has no [config] section")?;
         let content = match section.format.as_str() {
             "toml" => toml::to_string_pretty(config).map_err(|e| format!("serialize TOML: {e}"))?,
-            _ => serde_json::to_string_pretty(config).map_err(|e| format!("serialize JSON: {e}"))?,
+            _ => {
+                serde_json::to_string_pretty(config).map_err(|e| format!("serialize JSON: {e}"))?
+            }
         };
         crate::agent::config_roles::RawConfigStore::save_raw_config(self, &content)
     }
@@ -318,8 +357,7 @@ impl crate::agent::config_roles::RawConfigStore for ManifestAgent {
             .path
             .as_deref()
             .ok_or("manifest [config] has no path")?;
-        std::fs::read_to_string(schema::expand_tilde(path))
-            .map_err(|e| format!("read config: {e}"))
+        std::fs::read_to_string(schema::expand_tilde(path)).map_err(|e| format!("read config: {e}"))
     }
 
     fn save_raw_config(&self, content: &str) -> Result<(), String> {
@@ -395,7 +433,9 @@ impl SessionAdapter for ManifestAgent {
             SessionStoreKind::Hub => {
                 store::delete_session(&self.file.info.id, encoded_name, session_id)
             }
-            SessionStoreKind::None => Err("Session deletion is not supported by this agent adapter".to_string()),
+            SessionStoreKind::None => {
+                Err("Session deletion is not supported by this agent adapter".to_string())
+            }
         }
     }
 }
@@ -442,6 +482,9 @@ impl TerminalAdapter for ManifestAgent {
             .enumerate()
             .filter(|(idx, _)| !drop_flags.contains(idx))
             .map(|(_, seg)| {
+                // 需求14 M3（04 §2.3-2⑤）：{plugin_dir} 段展开显示实际路径
+                //（终端跳转可用），{prompt} 段已在上面滤除。
+                let seg = seg.replace("{plugin_dir}", &self.plugin_dir_str());
                 // 终端命令是 shell 语义：含空白的段加引号防拆分。
                 if seg.contains(char::is_whitespace) {
                     format!("\"{seg}\"")
@@ -473,13 +516,23 @@ impl ProjectAdapter for ManifestAgent {
     fn init_project(&self, _project_path: &str) -> Result<bool, String> {
         Ok(false)
     }
-    fn load_project_settings(&self, _path: &str) -> Result<crate::project_config::ProjectSettings, String> {
+    fn load_project_settings(
+        &self,
+        _path: &str,
+    ) -> Result<crate::project_config::ProjectSettings, String> {
         Err("Not supported".to_string())
     }
-    fn load_project_settings_local(&self, _path: &str) -> Result<crate::project_config::ProjectSettings, String> {
+    fn load_project_settings_local(
+        &self,
+        _path: &str,
+    ) -> Result<crate::project_config::ProjectSettings, String> {
         Err("Not supported".to_string())
     }
-    fn save_project_settings(&self, _path: &str, _settings: &crate::project_config::ProjectSettings) -> Result<(), String> {
+    fn save_project_settings(
+        &self,
+        _path: &str,
+        _settings: &crate::project_config::ProjectSettings,
+    ) -> Result<(), String> {
         Err("Not supported".to_string())
     }
     fn save_project_settings_local(
@@ -558,6 +611,7 @@ chat_command = ["x", "--prompt", "{prompt}", "--cwd", "{cwd}"]
             project_path: "D:\\proj".to_string(),
             session_id: Some("s1".to_string()),
             message: "hi there; rm -rf /".to_string(),
+            model_override: None,
         };
         // build_chat_command 返回 Command（无法检视 argv）——经 expand_template
         // 间接验证：值里的 shell 元字符只作为单个 argv 段传递。
@@ -604,5 +658,100 @@ store = "none"
         let agent = ManifestAgent::new(file);
         assert!(agent.list_sessions("proj").unwrap().is_empty());
         assert!(agent.get_session_messages("s1", "proj").unwrap().is_empty());
+    }
+}
+
+/// 需求14 M3：{plugin_dir} 展开链（chat/acp/launch）+ probe paths 候选。
+#[cfg(test)]
+mod plugin_dir_tests {
+    use super::*;
+
+    fn bridge_manifest() -> AgentManifestFile {
+        toml::from_str(
+            r#"
+schema = 1
+kind = "agent"
+[info]
+id = "zcode"
+display_name = "zcode"
+[transport]
+kind = "acp"
+acp_command = ["node", "{plugin_dir}/bridge.js", "--stdio"]
+[probe]
+command = "zcode"
+version_args = ["--version"]
+paths = ['D:\tools\zcode\zcode.exe', 'zcode']
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn acp_command_allows_and_expands_plugin_dir() {
+        // 放行：静态变量过 schema 校验（动态集仍拒）。
+        let file = bridge_manifest();
+        file.validate().expect("plugin_dir allowed in acp_command");
+        // 展开：目录形态构造后 argv 指向插件目录内的桥脚本。
+        let agent = ManifestAgent::new_with_dir(
+            std::sync::Arc::new(file),
+            Some(std::path::PathBuf::from("C:/h/plugins/zcode")),
+        );
+        let spec = agent
+            .build_acp_command(&ChatRequest {
+                message: "hi".into(),
+                project_path: "C:/w".into(),
+                session_id: Some("s1".into()),
+                model_override: None,
+            })
+            .expect("acp spec");
+        assert_eq!(spec.program, "node");
+        assert_eq!(spec.args[0], "C:/h/plugins/zcode/bridge.js");
+        // 单文件形态：{plugin_dir} 展开为空（错误形态 spawn 可见）。
+        let bare = ManifestAgent::new(std::sync::Arc::new(bridge_manifest()));
+        let spec = bare
+            .build_acp_command(&ChatRequest {
+                message: "hi".into(),
+                project_path: "C:/w".into(),
+                session_id: None,
+                model_override: None,
+            })
+            .unwrap();
+        assert_eq!(spec.args[0], "/bridge.js");
+    }
+
+    #[test]
+    fn probe_paths_parsed_and_used() {
+        let file = bridge_manifest();
+        let agent = ManifestAgent::new(std::sync::Arc::new(file));
+        let probe = agent.file.probe.as_ref().unwrap();
+        assert_eq!(
+            probe.paths.as_deref(),
+            Some([r"D:\tools\zcode\zcode.exe".to_string(), "zcode".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn launch_command_expands_plugin_dir_not_dropped() {
+        let file: AgentManifestFile = toml::from_str(
+            r#"
+schema = 1
+kind = "agent"
+[info]
+id = "b"
+display_name = "B"
+[transport]
+kind = "cli"
+chat_command = ["node", "{plugin_dir}/bridge.js", "--chat", "{prompt}"]
+"#,
+        )
+        .unwrap();
+        let agent = ManifestAgent::new_with_dir(
+            std::sync::Arc::new(file),
+            Some(std::path::PathBuf::from("C:/h/plugins/b")),
+        );
+        let launch = agent.build_launch_command();
+        assert!(launch.contains("C:/h/plugins/b/bridge.js"), "got: {launch}");
+        assert!(!launch.contains("{prompt}"), "got: {launch}");
+        assert!(!launch.contains("--chat"), "prompt flag 随段滤除: {launch}");
     }
 }

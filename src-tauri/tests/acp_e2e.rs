@@ -2,13 +2,11 @@
 ///
 /// Full e2e testing requires spawning the binary and communicating over stdio.
 /// These tests verify the types compile and basic invariants hold.
-
 /// Verify that the ACP session module types compile and work correctly.
 #[test]
 fn acp_session_lifecycle() {
     // This is a compile-and-unit-level smoke test.
     // The real session logic is tested via the unit tests in acp::session.
-    assert!(true, "ACP types compile successfully");
 }
 
 /// Verify that JSON-RPC framing is well-formed for basic messages.

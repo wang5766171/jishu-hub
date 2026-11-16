@@ -314,8 +314,9 @@ describe("v0.9.4 需求7：steer 停止链路", () => {
       session_id: "s1",
       data: { kind: "steer_queue_cleared", texts: ["B引导"], follow_up_texts: [] },
     });
-    // onAbort 本地乐观提交后设标记（chat-page handleAbort 行为）。
-    deps.abortLocalCommitRef.current.set("s1", Date.now());
+    // onAbort 本地乐观提交后设标记（chat-page handleAbort 行为）——
+    // v0.9.5 需求2：标记值 = 已提交回合的 turnToken（令牌比对，非时刻）。
+    deps.abortLocalCommitRef.current.set("s1", streamStore.getState("s1")!.turnToken);
     emit({
       agent_id: "jishu-self",
       session_id: "s1",

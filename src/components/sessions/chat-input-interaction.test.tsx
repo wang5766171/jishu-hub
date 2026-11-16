@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ConversationInteractionRequest } from "@/types";
-import { ChatInput } from "./chat-input";
+import { ChatInput, extractToolTokens } from "./chat-input";
 
 const invokeCommand = vi.hoisted(() => vi.fn());
 
@@ -209,5 +209,32 @@ describe("ChatInput interaction submission", () => {
       />,
     );
     expect(screen.getByText("guide for A")).toBeInTheDocument();
+  });
+});
+
+// 评审 P1-15：编辑重发与发送链同构——extractToolTokens 导出为单源管线，
+// chat-page 编辑重发复用。此处锁定剥离/归一/保留行为。
+describe("extractToolTokens（P1-15 编辑重发单源管线）", () => {
+  const tools = [
+    { id: "tool-alpha", display_name: "工具甲" },
+    { id: "tool-beta", display_name: "工具乙" },
+  ];
+
+  it("剥离已注册 token、归一为插件 id、去首部空白", () => {
+    const { text, toolIds } = extractToolTokens("@[工具甲] 请处理附件", tools);
+    expect(text).toBe("请处理附件");
+    expect(toolIds).toEqual(["tool-alpha"]);
+  });
+
+  it("多 token 依次归一（顺序保留）", () => {
+    const { text, toolIds } = extractToolTokens("@[工具甲]@[工具乙]", tools);
+    expect(text).toBe("");
+    expect(toolIds).toEqual(["tool-alpha", "tool-beta"]);
+  });
+
+  it("未匹配插件的 token 原样保留（不吞字）", () => {
+    const { text, toolIds } = extractToolTokens("@[不存在的工具] 原样", tools);
+    expect(text).toBe("@[不存在的工具] 原样");
+    expect(toolIds).toEqual([]);
   });
 });

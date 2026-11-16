@@ -5,6 +5,8 @@ use super::execute::{
 use super::lease::heartbeat_loop;
 use super::*;
 
+// 调度入参天然多（存储/运行/节点/仲裁器/既有 node_run 各自独立），机械清理批次不改签名。
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn schedule_node(
     store: Arc<TaskStore>,
     run_id: String,

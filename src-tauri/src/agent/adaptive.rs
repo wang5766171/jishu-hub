@@ -17,7 +17,7 @@
 //! 声明与执行分离，hub 适配层决定怎么做到。
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::manifest::schema::{AgentManifestFile, ToolSection};
 
@@ -40,7 +40,7 @@ pub enum AdaptiveForm {
 /// "这个插件在当前 agent 上走哪条通道"，不需要了解段的并存细节。
 pub fn resolve_form(
     manifest: &AgentManifestFile,
-    plugin_dir: &PathBuf,
+    plugin_dir: &Path,
     target_agent: &str,
 ) -> AdaptiveForm {
     // v0.9.2 需求7：entry 可选（纯闸门形态只声明 tools，无部署物）——
@@ -95,6 +95,9 @@ mod tests {
                 display_name: "Demo".to_string(),
                 icon: String::new(),
                 install_hint: None,
+                category: None,
+                description: None,
+                form: None,
             },
             probe: None,
             transport: None,

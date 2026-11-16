@@ -402,6 +402,11 @@ pub enum AcpAction {
 
 #[derive(Subcommand, Debug)]
 pub enum PluginAction {
+    /// Print the plugin API reference (open capabilities for component code).
+    /// 二十三轮（用户裁决）：说明机制——agent 创建插件前可经 CLI 查全部开放
+    /// 能力（与 jishu-plugin-authoring 技能的 API.md 单源同文）。
+    Api,
+
     /// Install a plugin from a local TOML manifest file (validated on install).
     Add {
         /// Path to the plugin manifest TOML.
@@ -434,6 +439,26 @@ pub enum PluginAction {
         path: String,
     },
 
+    /// Edit an installed plugin in place: targeted field assignment
+    /// (--field section.key=value) or open the manifest location in the
+    /// file manager (--open; apply changes afterwards via update).
+    /// 需求14 M4（R9）：edit 缺口收窄——update 已是覆盖式编辑，此处补
+    /// 定点字段编辑与打开所在位置。
+    Edit {
+        /// Plugin identifier.
+        id: String,
+
+        /// Targeted assignment, repeatable: `--field section.key=value`
+        /// (dotted path, last segment is the key; value parsed as TOML,
+        /// falling back to string). Array items not addressable.
+        #[arg(long = "field")]
+        field: Vec<String>,
+
+        /// Reveal the manifest in the system file manager (no write).
+        #[arg(long = "open", default_value_t = false)]
+        open: bool,
+    },
+
     /// List all plugins (builtin + manifest agents + tool plugins).
     List,
 
@@ -453,6 +478,26 @@ pub enum PluginAction {
     Disable {
         /// Plugin identifier.
         id: String,
+    },
+
+    /// Validate a plugin directory (or a single manifest TOML) without
+    /// installing: basic structural checks locally + full validation via the
+    /// running hub's TS validators (same implementation as the GUI wizard;
+    /// falls back to basic-only with a warning when the hub is not running).
+    /// v0.9.5 需求1（原需求26）1c：命令面净增的唯一新命令。
+    Validate {
+        /// Path to the plugin directory (holding plugin.toml [+ component.js])
+        /// or a single plugin.toml file.
+        path: String,
+    },
+
+    /// Import a pi extension (.ts) into the agent extensions dir (disabled
+    /// by default; enable via the hub GUI card or pi_extension_enable).
+    /// v0.9.5 需求1（原需求26）7c 层三：agent/高级用户路径。
+    #[command(name = "import-extension")]
+    ImportExtension {
+        /// Path to the extension .ts file.
+        path: String,
     },
 }
 

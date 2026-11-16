@@ -27,17 +27,14 @@ pub struct RevisePlanResult {
 
 pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult, String> {
     use crate::orchestrator::{
-        default_db_path, graph_validate, EdgeKind, ExecutablePayload, GraphEdge, GraphNode,
-        GraphRevision, GraphSnapshot, NodeKind, RoleRequirement, TaskService, TaskStore,
+        default_db_path, graph_validate, EdgeKind, GraphEdge, GraphNode, GraphRevision,
+        GraphSnapshot, NodeKind, TaskService, TaskStore,
     };
     use crate::util::gen_id;
 
-    let mut instance = super::proposal::ti_instance(&req.project_root, &req.task_id)?
+    let instance = super::proposal::ti_instance(&req.project_root, &req.task_id)?
         .ok_or("task instance not found")?;
     let graph_id = instance.graph_id.clone().ok_or("task has no graph")?;
-    if instance.current_phase != "execution" {
-        return Err("仅执行阶段任务支持方案修订".to_string());
-    }
 
     // proposal 解析（与 validate 同 schema）
     let proposal_raw = std::fs::read_to_string(&req.proposal_path)
@@ -51,12 +48,20 @@ pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult,
         .get("nodes")
         .and_then(|v| v.as_array())
         .ok_or_else(|| "proposal missing 'nodes' array".to_string())?;
-    let requirement_path = instance.requirement_file.as_ref().map(|rel| {
-        PathBuf::from(&req.project_root)
-            .join(rel)
-            .to_string_lossy()
-            .into_owned()
-    });
+    // v0.9.7 需求2：需求文档按任务目录约定解析（requirement_file 列已退场）。
+    let requirement_path = {
+        let p = PathBuf::from(&req.project_root)
+            .join(".jishu-hub")
+            .join("tasks")
+            .join(&req.task_id)
+            .join("requirements")
+            .join("requirements.md");
+        if p.is_file() {
+            Some(p.to_string_lossy().into_owned())
+        } else {
+            None
+        }
+    };
 
     // 既有图：保留 Goal 节点，可执行集按 proposal 重建（同 id = 更新语义）
     let store = TaskStore::open(&default_db_path())
@@ -161,7 +166,10 @@ pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult,
     // v0.9.2 二次修复：用既有 store 连接查 run 状态（此前 open_store_only 开新连接，
     // get_run 静默失败时整个 carry-over 分支被跳过且无任何日志——draft 更新了但
     // 无新 run，子节点收到旧 revision 的 dispatch prompt）。
-    let reference_run_id = instance.active_run_id.clone().or_else(|| instance.last_run_id.clone());
+    let reference_run_id = instance
+        .active_run_id
+        .clone()
+        .or_else(|| instance.last_run_id.clone());
     let mut run_updated = false;
     if let Some(run_id) = reference_run_id {
         let service = TaskService::open_store_only(
@@ -170,7 +178,11 @@ pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult,
         );
         let run_result = service.get_run(&run_id);
         if let Err(ref e) = run_result {
-            tracing::warn!("[revise] get_run({}) failed: {:?} — carry-over skipped", run_id, e);
+            tracing::warn!(
+                "[revise] get_run({}) failed: {:?} — carry-over skipped",
+                run_id,
+                e
+            );
         }
         if let Ok(run) = run_result {
             if !run.status.is_terminal() && run.active_revision_id != revision_id {
@@ -221,6 +233,7 @@ pub fn conductor_revise_plan(req: RevisePlanRequest) -> Result<RevisePlanResult,
         }
     }
 
+    let mut instance = instance;
     instance.updated_at = now_ms();
     open_store(&req.project_root)?.upsert(&instance)?;
 
@@ -395,7 +408,10 @@ fn rebuild_executable_node(
     );
     let mut metadata = std::collections::HashMap::new();
     if !acceptance.is_empty() {
-        metadata.insert("acceptance".to_string(), serde_json::Value::String(acceptance));
+        metadata.insert(
+            "acceptance".to_string(),
+            serde_json::Value::String(acceptance),
+        );
     }
     Ok(GraphNode {
         node_id,
@@ -431,7 +447,7 @@ fn rebuild_executable_node(
 mod tests {
     use super::*;
 
-    /// 非执行阶段任务拒绝修订（守护：修订通道仅执行期开放）。
+    /// 修订通道对不存在的任务拒绝（守护）。
     #[test]
     fn revise_rejects_non_execution_phase() {
         let project =
@@ -439,12 +455,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&project);
         std::fs::create_dir_all(&project).unwrap();
         let project_root = project.to_string_lossy().to_string();
-        mark_task_stage_session(
+        mark_task_session(
             &project_root,
             None,
             "requirements-session",
-            "jishu-conductor-dev",
-            "requirements",
+            "jishu-task-runner",
             Some("Demo"),
         )
         .unwrap();
@@ -507,13 +522,17 @@ mod tests {
 
     /// 用户质疑场景（2026-09-12 讨论）：同 id 同角色、职责变更（加粒子效果）
     /// + 锁定继承 → 派发 prompt 必须含**新**职责（内容全量重建，不因继承变旧），
+    ///
     /// 且 locked_agent_id 保留。
     #[test]
     fn rebuild_keeps_lock_and_composes_prompt_from_new_responsibility() {
         let base = base_node_with(Some(locked_constraint("developer", "jishu-self")));
         let node = rebuild_executable_node(
             &proposal_node("developer", "开发登录页面，并增加粒子动态效果"),
-            &[proposal_node("developer", "开发登录页面，并增加粒子动态效果")],
+            &[proposal_node(
+                "developer",
+                "开发登录页面，并增加粒子动态效果",
+            )],
             "登录 demo",
             None,
             Some(&base),
@@ -521,7 +540,8 @@ mod tests {
         .unwrap();
         // 谁来做：锁定保留
         assert_eq!(
-            node.agent_assignment_constraint.and_then(|c| c.locked_agent_id),
+            node.agent_assignment_constraint
+                .and_then(|c| c.locked_agent_id),
             Some("jishu-self".into())
         );
         // 做什么：派发 prompt 来自新职责（含新内容，不含旧职责字样）
@@ -529,10 +549,17 @@ mod tests {
             Some(crate::orchestrator::ExecutablePayload::Dispatch { prompt, .. }) => prompt,
             other => panic!("expected dispatch payload, got {other:?}"),
         };
-        assert!(prompt.contains("粒子动态效果"), "prompt 应含新职责: {prompt}");
+        assert!(
+            prompt.contains("粒子动态效果"),
+            "prompt 应含新职责: {prompt}"
+        );
         assert!(!prompt.contains("旧职责"), "prompt 不应含旧职责: {prompt}");
         // 职责字段本体也是新的
-        assert!(node.description.as_deref().unwrap_or("").contains("粒子动态效果"));
+        assert!(node
+            .description
+            .as_deref()
+            .unwrap_or("")
+            .contains("粒子动态效果"));
     }
 
     /// 角色前提校验：同 id 角色变更（developer→tester）→ 锁定按旧角色表达，

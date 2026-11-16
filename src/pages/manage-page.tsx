@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
+import { Palette } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ProjectsPage } from "./projects-page";
 import { ConfigPage } from "./config-page";
 import { CommandsPage } from "./commands-page";
-import { EnvCheckPage } from "./env-check-page";
 import { PluginsPage } from "./plugins-page";
+// 需求14 M2（S3）：外观设置页（主题卡列表）。
+import { AppearancePage } from "./appearance-page";
 import {
   FolderOpen,
   Rocket,
@@ -20,7 +22,10 @@ import {
   DatabaseBackup,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+// 批次5（v0.9.5 需求1 GUI 改造）：会话区 → 管理页导航事件。
 import type { AgentConfigSection, ManageTab, Project, ProjectMeta } from "@/types";
+import { consumePendingManageNav, onManageNav } from "@/lib/app-nav";
+import { OnboardingWizard } from "@/pages/onboarding-wizard";
 
 interface ManagePageProps {
   onBack: () => void;
@@ -30,6 +35,8 @@ interface ManagePageProps {
   navigateToAgentModels?: number;
   /** v0.9.3 需求13 C4-slice2c：pipeline 插件「作为任务启动」（插件详情入口）。 */
   onLaunchPipeline?: (pluginId: string, name: string) => void;
+  /** v0.9.7 需求3 C1：描述需求创建插件（跳会话页预填创作指令）。 */
+  onLaunchDescribe?: (text: string) => void;
   projects: Project[] | null;
   projectMetas: Record<string, ProjectMeta> | null;
   refetchProjects: (silent?: boolean) => Promise<Project[]>;
@@ -53,6 +60,7 @@ const menuGroups: { titleKey: string; titleFallback: string; items: ManageMenuIt
     items: [
       { id: "projects", icon: FolderOpen, labelKey: "manage.menuProjects", fallback: "项目管理" },
       { id: "plugins", icon: Blocks, labelKey: "manage.menuPlugins", fallback: "插件中心" },
+      { id: "appearance", icon: Palette, labelKey: "manage.menuAppearance", fallback: "外观" },
     ],
   },
   {
@@ -71,7 +79,9 @@ const menuGroups: { titleKey: string; titleFallback: string; items: ManageMenuIt
     titleFallback: "系统",
     items: [
       { id: "commands", icon: Rocket, labelKey: "manage.menuCommands", fallback: "快捷命令" },
-      { id: "env", icon: Activity, labelKey: "manage.menuEnv", fallback: "环境检测" },
+      // 需求4 反馈裁决（2026-11-12）：环境检测页退役——入口改为「安装引导」
+      //（重新打开引导页：引擎/环境就绪态查看 + 重装/补装 + 重走流程）。
+      { id: "env", icon: Activity, labelKey: "manage.menuOnboarding", fallback: "安装引导" },
     ],
   },
 ];
@@ -95,10 +105,26 @@ const agentSectionTab: Partial<Record<AgentConfigSection, ManageTab>> = {
   advanced: "agent-advanced",
 };
 
-export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigateToAgentModels, onLaunchPipeline, projects, projectMetas, refetchProjects, refetchProjectMetas }: ManagePageProps) {
+export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigateToAgentModels, onLaunchPipeline, onLaunchDescribe, projects, projectMetas, refetchProjects, refetchProjectMetas }: ManagePageProps) {
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<ManageTab>("projects");
   const prevNavRef = useRef(0);
+
+  // 批次5（v0.9.5 需求1 GUI 改造）：会话区入口导航事件（能力中心「管理
+  // 插件…」/挂件右键「在插件中心设置」）→ 切到目标 tab。
+  // 十九轮修复：chat→manage 条件挂载下事件先于本页挂载——挂载时补消费
+  // 最近一次请求（否则 tab 落默认「项目管理」，能力中心跳转页面不对）。
+  useEffect(() => {
+    const pending = consumePendingManageNav();
+    if (pending?.tab) setActiveTab(pending.tab as ManageTab);
+    return onManageNav((detail) => {
+      if (detail.tab) setActiveTab(detail.tab as ManageTab);
+      // 第四轮评审 P2：在线消费后清掉留存请求——否则下次挂载
+      // consumePendingManageNav() 吃到陈旧请求，用户正常进管理页会意外
+      // 跳到旧 tab（直送成功 ≠ 该请求仍待投递）。
+      consumePendingManageNav();
+    });
+  }, []);
 
   useEffect(() => {
     if (navigateToProjects && navigateToProjects !== prevNavRef.current) {
@@ -208,9 +234,16 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigat
             onNavigateSection={handleNavigateAgentSection}
           />
         )}
-        {activeTab === "plugins" && <PluginsPage onLaunchPipeline={onLaunchPipeline} />}
+        {activeTab === "plugins" && <PluginsPage onLaunchPipeline={onLaunchPipeline} onLaunchDescribe={onLaunchDescribe} />}
+        {activeTab === "appearance" && <AppearancePage />}
         {activeTab === "commands" && <CommandsPage />}
-        {activeTab === "env" && <EnvCheckPage />}
+        {activeTab === "env" && (
+          // 需求4 反馈裁决（2026-11-12 二轮）：主动进入形态——左侧菜单保留，
+          // 引导流程内嵌在管理页内容区；「开始使用」= 返回工作区。
+          <div className="h-full overflow-y-auto px-4 py-2">
+            <OnboardingWizard onComplete={onBack} />
+          </div>
+        )}
       </div>
     </div>
   );

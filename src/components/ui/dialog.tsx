@@ -37,7 +37,10 @@ function DialogOverlay({
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
       className={cn(
-        "fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0",
+        // v0.9.6 需求10：+ backdrop-blur-sm——对齐 UniModal 基准遮罩
+        //（bg-black/50 backdrop-blur-sm）。背景图外观下层级面透明，弹窗与下层
+        // 文字重叠不可读（用户实测：智能体工具创建指引弹窗）；模糊化统一保障。
+        "fixed inset-0 z-50 bg-black/50 backdrop-blur-sm data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0",
         className
       )}
       {...props}

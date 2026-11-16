@@ -10,19 +10,24 @@ import {
   Bot,
   Wrench,
 } from "lucide-react";
+import i18n from "@/i18n";
 import type { ToolKind } from "./types";
 
-const kindConfig: Record<ToolKind, { icon: typeof FileText; label: string; bgVar: string }> = {
-  file_read: { icon: FileText, label: "Read", bgVar: "--tool-bg-file-read" },
-  file_edit: { icon: FilePen, label: "Edit", bgVar: "--tool-bg-file-edit" },
-  file_write: { icon: FilePlus, label: "Write", bgVar: "--tool-bg-file-write" },
-  file_delete: { icon: FileX, label: "Delete", bgVar: "--tool-bg-file-delete" },
-  shell_exec: { icon: Terminal, label: "Bash", bgVar: "--tool-bg-shell" },
-  search: { icon: Search, label: "Search", bgVar: "--tool-bg-search" },
-  web: { icon: Globe, label: "Web", bgVar: "--tool-bg-web" },
-  think: { icon: Brain, label: "Thinking", bgVar: "--tool-bg-think" },
-  subtask: { icon: Bot, label: "Task", bgVar: "--tool-bg-subtask" },
-  other: { icon: Wrench, label: "Tool", bgVar: "--tool-bg-other" },
+// v0.9.5 需求4：工具名汉化（用户裁决——edit/bash/write 等英文换中文；
+// 英文 id 作为次要信息保留在工具卡详情/原始输出层）。
+// 三轮评审 P1-6：标签走 i18n（zh/en 双语，§7 纪律）——非组件语境用 i18n
+// 实例直取（每次调用时解析，语言切换即生效）。
+const kindConfig: Record<ToolKind, { icon: typeof FileText; bgVar: string }> = {
+  file_read: { icon: FileText, bgVar: "--tool-bg-file-read" },
+  file_edit: { icon: FilePen, bgVar: "--tool-bg-file-edit" },
+  file_write: { icon: FilePlus, bgVar: "--tool-bg-file-write" },
+  file_delete: { icon: FileX, bgVar: "--tool-bg-file-delete" },
+  shell_exec: { icon: Terminal, bgVar: "--tool-bg-shell" },
+  search: { icon: Search, bgVar: "--tool-bg-search" },
+  web: { icon: Globe, bgVar: "--tool-bg-web" },
+  think: { icon: Brain, bgVar: "--tool-bg-think" },
+  subtask: { icon: Bot, bgVar: "--tool-bg-subtask" },
+  other: { icon: Wrench, bgVar: "--tool-bg-other" },
 };
 
 export function KindIcon({ kind }: { kind: ToolKind }) {
@@ -39,5 +44,5 @@ export function KindIcon({ kind }: { kind: ToolKind }) {
 }
 
 export function kindLabel(kind: ToolKind): string {
-  return kindConfig[kind]?.label ?? "Tool";
+  return i18n.t(`tools.kind.${kind}`, { defaultValue: "Tool" });
 }

@@ -1,3 +1,4 @@
+import { devLog } from "@/lib/dev-log";
 /** 组合清单装载（需求13 C1）：Rust 扫描 toml → engine 装配 → 注册表合并。
  *  v0.9.3 需求25：@file: 混合插件在此装载代码组件（hybrid-runtime），
  *  指纹随 _files 透传实现热更；崩溃回调自动停用（plugin_set_enabled）。 */
@@ -91,7 +92,9 @@ async function resolveFileComponent(
     await onHybridLoadFailed(id, name, "插件目录元信息缺失（_dir/_files）——请检查目录结构");
     return null;
   }
-  const component = await loadHybridComponent(id, dir, rel, fingerprint);
+  // 需求14 M1：_files 全量传入——api.loadAsset 据此做资产存在性白名单
+  //（含 component.js 自身在内的浅层文件指纹表）。
+  const component = await loadHybridComponent(id, dir, rel, fingerprint, manifest._files);
   if (component instanceof Error) {
     await onHybridLoadFailed(id, name, component.message);
     return null;
@@ -151,12 +154,25 @@ export async function reloadComposed(): Promise<void> {
         }
       } catch (err) {
         console.warn(`[composition] 跳过无效组合清单 ${item.id}:`, err);
+        // 第三轮评审修复（观测缺口）：跳过原因进 devLog capability——
+        // 「插件为什么没装上」在 DevLogCenter 可查（修前只有计数没有归因，
+        // 靠盘上对账才能解释 skipped=1）。
+        devLog("capability", `composed manifest skipped: ${item.id} (${String(err).slice(0, 120)})`, {
+          id: item.id,
+          reason: String(err).slice(0, 300),
+        });
       }
     }
     cache = descriptors;
     loaded = true;
     version += 1;
     bump();
+    // 需求14：能力发现观测——装载结果（数量/混合件数/跳过数），诊断"插件装了
+    // 但没出现"问题的第一步。
+    { const hybridCount = descriptors.filter(d => (d as { implKind?: string }).implKind === "code").length;
+      const skipped = (items?.length ?? 0) - descriptors.length;
+      devLog("capability", `composed manifests loaded: ${descriptors.length} plugins (${hybridCount} hybrid, ${skipped} skipped)`,
+        { total: items?.length ?? 0, loaded: descriptors.length, hybrid: hybridCount, skipped }); }
   } catch (err) {
     console.warn("[composition] composed_plugin_manifests failed:", err);
   }

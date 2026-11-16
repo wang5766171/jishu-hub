@@ -21,7 +21,7 @@
  */
 import { memo, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight, MessageSquare, Pencil, X, Network } from "lucide-react";
+import { ChevronDown, ChevronRight, Pencil, X, Network } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   ContextMenu,
@@ -35,14 +35,14 @@ export interface TaskSessionTreeTask {
   title: string;
   skill_id: string;
   status: string;
-  current_phase: string;
-  requirement_file?: string | null;
-  requirement_session_id?: string | null;
-  planning_session_id?: string | null;
+  task_session_id?: string | null;
   graph_id?: string | null;
   active_run_id?: string | null;
   last_run_id?: string | null;
   run_status?: string | null;
+  /** runner（无图）任务的步骤清单（结构随实例透传；G 二修后行灯不再消费，
+   * 保留字段供看板等消费方）。 */
+  stages_json?: string | null;
 }
 
 export interface TaskSessionTreeProps {
@@ -56,26 +56,27 @@ export interface TaskSessionTreeProps {
   onRenameTask: (task: TaskSessionTreeTask) => void;
   /** 删除（右键菜单） */
   onDeleteTask: (task: TaskSessionTreeTask) => void;
+  /** 需2-G 二修（2026-11-11 用户裁决）：行首状态点=会话回合状态（与普通
+   * 会话一致）——流式中（streaming）蓝呼吸 / 未读完成（done/failed）绿红 /
+   * 空闲占位；任务步骤态不再用作行灯。 */
+  isSessionStreaming?: (sessionId: string) => boolean;
+  sessionUnreadOf?: (sessionId: string) => "done" | "failed" | undefined;
 }
 
 // ── 单个任务行 ──
 
 interface TaskRowProps {
-  /** v0.9.2 需求2 M3-4：运行中任务的悬停取消（由页面承担确认）。 */
+  /** v0.9.2 需求2 M3-4：运行中任务的悬停取消（由页面承担）。 */
   onCancelTask?: (task: TaskSessionTreeTask) => void;
   task: TaskSessionTreeTask;
   isActive: boolean;
   onSelectTask: (task: TaskSessionTreeTask) => void;
   onRenameTask: (task: TaskSessionTreeTask) => void;
   onDeleteTask: (task: TaskSessionTreeTask) => void;
+  isSessionStreaming?: (sessionId: string) => boolean;
+  sessionUnreadOf?: (sessionId: string) => "done" | "failed" | undefined;
 }
 
-const phaseLabel: Record<string, string> = {
-  requirements: "需求",
-  planning: "规划",
-  graph: "流程",
-  execution: "执行",
-};
 
 const TaskRow = memo(function TaskRow({
   task,
@@ -84,9 +85,11 @@ const TaskRow = memo(function TaskRow({
   onRenameTask,
   onDeleteTask,
   onCancelTask,
+  isSessionStreaming,
+  sessionUnreadOf,
 }: TaskRowProps) {
   const { t } = useTranslation();
-  const phase = phaseLabel[task.current_phase] ?? task.current_phase;
+  const phase = task.run_status ?? "";
 
   return (
     <ContextMenu>
@@ -103,34 +106,43 @@ const TaskRow = memo(function TaskRow({
                 : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
             )}
           >
-            <MessageSquare className="h-3 w-3 shrink-0 text-[var(--icon-message)]" />
+            {/* 补充⑪（2026-11-06 用户裁决）：去掉气泡图标——固定占位与常规
+                会话行一致（状态灯更突出、行宽不跳、对齐不变）。
+                需2-G 二修（2026-11-11 用户裁决）：行首状态点=**会话回合状态**
+                （与普通会话完全一致）——流式中蓝呼吸 / 未读完成绿 / 未读失败红
+                / 空闲占位；任务步骤态（stages/run_status 派生）不再用作行灯。 */}
+            {(() => {
+              const sid = task.task_session_id ?? null;
+              const streaming = sid ? (isSessionStreaming?.(sid) ?? false) : false;
+              const unread = sid && !isActive ? sessionUnreadOf?.(sid) : undefined;
+              if (streaming) {
+                return (
+                  <span className="flex h-3.5 w-3 shrink-0 items-center justify-center">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+                  </span>
+                );
+              }
+              if (unread) {
+                return (
+                  // 评审 P1-11 修复：状态点悬停文案直出中文改 t()。
+                  <span
+                    className="flex h-3.5 w-3 shrink-0 items-center justify-center"
+                    title={unread === "failed" ? t("sessions.taskUnreadFailed", "有失败结果未读") : t("sessions.taskUnreadDone", "有完成结果未读")}
+                  >
+                    <span className={cn("h-1.5 w-1.5 rounded-full", unread === "failed" ? "bg-red-500" : "bg-emerald-500")} />
+                  </span>
+                );
+              }
+              return <span className="flex h-3.5 w-3 shrink-0 items-center justify-center" />;
+            })()}
             <span className="min-w-0 flex-1 truncate text-left leading-none pt-[1px]">
               {task.title}
             </span>
-            {/* v0.9.2 需求2 M3-4：任务状态灯——执行中呼吸蓝点/完成绿/失败红/取消灰。 */}
-            {(() => {
-              const running = task.run_status === "running";
-              const dotCls =
-                running
-                  ? "bg-blue-500 animate-pulse"
-                  : task.run_status === "completed"
-                    ? "bg-emerald-500"
-                    : task.run_status === "failed"
-                      ? "bg-red-500"
-                      : task.run_status === "cancelled"
-                        ? "bg-muted-foreground/40"
-                        : "";
-              if (!dotCls) return null;
-              return (
-                <span
-                  className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dotCls)}
-                  title={task.run_status ?? undefined}
-                />
-              );
-            })()}
-            <span className="shrink-0 rounded-full bg-primary/10 px-1 py-0.5 text-[9px] font-medium leading-none text-primary">
-              {phase}
-            </span>
+            {phase && (
+              <span className="shrink-0 rounded-full bg-primary/10 px-1 py-0.5 text-[9px] font-medium leading-none text-primary">
+                {phase}
+              </span>
+            )}
             {task.run_status === "running" && onCancelTask ? (
               <span
                 role="button"
@@ -176,6 +188,8 @@ export function TaskSessionTree({
   onSelectTask,
   onRenameTask,
   onDeleteTask,
+  isSessionStreaming,
+  sessionUnreadOf,
 }: TaskSessionTreeProps) {
   const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
@@ -217,6 +231,8 @@ export function TaskSessionTree({
               onRenameTask={onRenameTask}
               onDeleteTask={onDeleteTask}
               onCancelTask={onCancelTask}
+              isSessionStreaming={isSessionStreaming}
+              sessionUnreadOf={sessionUnreadOf}
             />
           ))}
         </>

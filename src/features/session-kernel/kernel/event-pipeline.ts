@@ -23,6 +23,7 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import type { Message, Session } from "@/types";
 import type { TaskLaunchInstanceSummary } from "@/features/task-instance/types";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
+import { isAppWindowActive } from "../window-activity";
 import { interactionRequestFromEvent } from "@/lib/conversation-interaction";
 import {
   buildInteractionInsertions,
@@ -48,6 +49,7 @@ import { devLog } from "@/lib/dev-log";
 /** v0.9.4 需求6 v2：AI 标题生成前端触发一次守卫（会话 id 维度，进程内）。 */
 const titledOnce = new Set<string>();
 
+
 export interface AgentEventPipelineDeps {
   // —— refs（监听体只读 .current）——
   activeIdRef: MutableRefObject<string | null>;
@@ -72,6 +74,8 @@ export interface AgentEventPipelineDeps {
   supportsSteerRef: MutableRefObject<boolean>;
   taskLaunchOpenRef: MutableRefObject<boolean>;
   taskLaunchPhaseRef: MutableRefObject<TaskLaunchPhase>;
+  /** 需求9 #4 补：任务首条 goal（prepareTaskLaunchMessage 捕获，建实例即写标题）。 */
+  taskLaunchGoalRef: MutableRefObject<string | null>;
   visitedSessions: MutableRefObject<Set<string>>;
   // —— 稳定 setter ——
   setLiveThinkingLevel: Dispatch<SetStateAction<string | null>>;
@@ -269,11 +273,20 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               if (divider) {
                 const base = getCachedSessionMessages(finalKey)
                   ?? getCachedSessionMessages(cid) ?? [];
-                setCachedSessionMessages(finalKey, [...base, {
+                const updated = [...base, {
                   role: "assistant" as const,
                   content: [divider],
                   timestamp: Date.now(),
-                }]);
+                }];
+                setCachedSessionMessages(finalKey, updated);
+                // v0.9.6 需求1 完善修复②：当前查看的会话即时反映完成分隔线
+                //（此前只写缓存不更新视图 state——流 drop 后界面回到旧消息
+                // 列表，用户观感「压缩完成分隔线消失了」；JSONL 回放本就含
+                // divider，重载会话可见，此处补齐当次会话的即时呈现）。
+                const viewed = deps.selectedSessionRef.current;
+                if (viewed === cid || viewed === finalKey) {
+                  deps.setSessionMessages(updated);
+                }
               }
               streamStore.drop(finalKey);
               devLog("pipeline", "压缩结束：终结纯压缩流（divider 已提交缓存）", { session: finalKey });
@@ -310,22 +323,23 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               console.warn("deps.discoverConductorTask failed:", e),
             );
           }
-          // R2: 仅当已关联真任务（activeTaskInstanceId 非空）时才 mark。为空说明
-          // Conductor 建的真任务尚未被 deps.discoverConductorTask 发现，此时 mark 会让后端
-          // mark_task_stage_session 的 unwrap_or_else 生成 uuid 占位任务（title="新任务"、
-          // 无图），导致会话列表出现两条数据。跳过 mark，交由 deps.discoverConductorTask 按
-          // requirement_session_id 关联真任务；会话 id 由 Conductor 扩展 conductor_sync_phase
-          // 权威写入，不依赖此处 mark。
-          if (deps.taskLaunchOpenRef.current && deps.activeTaskInstanceIdRef.current) {
+          // v0.9.7 需求2（R1 生产实测 issue #3 修复）：conductor 退役后任务
+          // 实例的唯一创建者是这里的 mark（后端 mark_task_session
+          // unwrap_or_else 建实例）——守卫放宽为「任务模式发消息」即可，
+          // taskId 为空 = 新建。旧「占位任务双建」顾虑不适用：runner 不建
+          // 任务，mark 是唯一创建者。
+          if (deps.taskLaunchOpenRef.current) {
             const projectRoot = deps.projectPathRef.current;
             if (projectRoot) {
               invokeCommand<TaskLaunchInstanceSummary>("task_launch_mark_session", {
                 projectRoot,
                 taskId: deps.activeTaskInstanceIdRef.current,
                 sessionId: realId,
-                skillId: deps.selectedTaskSkillIdRef.current,
-                phase: deps.taskLaunchPhaseRef.current,
-                title: null,
+                skillId: deps.selectedTaskSkillIdRef.current || "jishu-task-runner",
+                // 需求9 #4 补：建实例即写首条 goal（截断在 Rust 侧）——单步
+                // 小任务 agent 不调 update_steps，步骤上报链不触发，标题会
+                // 停在默认「新任务」。
+                title: deps.taskLaunchGoalRef.current,
               })
                 .then((record) => {
                   deps.applyTaskLaunchInstanceSnapshot(record);
@@ -390,6 +404,24 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           continue;
         }
 
+        // v0.9.6 需求8 F2：回合终结撤卡——turn_complete（完成/中止/错误）意味着
+        // mid-turn 交互（问答/确认卡）在 pi 侧必然已收口或作废；此前不清队列，
+        // 陈旧卡占据队头会让后续新问答提交到已作废的 request_id（pi 静默丢，
+        // 用户观感「提交了没反应」）。FollowUp 交付的卡不受影响——它们的
+        // 设计语义就是回合结束后等用户补答转新消息；hint 省略（undefined）
+        // 按 follow_up 回落（conversation-interaction.ts 映射约定，后端同
+        // 款回落）同样保留（2026-11-07 评审补测试时修正：原 `hint !==
+        // undefined &&` 会把这类卡连带误撤）。
+        if (chunk.data.kind === "turn_complete") {
+          deps.setPendingInteractions(current => {
+            const resolvedKey = streamStore.getState(cid)?.resolvedId ?? cid;
+            const kept = current.filter((item) => {
+              if (item.sessionId !== cid && item.sessionId !== resolvedKey) return true;
+              return item.request.deliveryHint !== "mid_turn";
+            });
+            return kept.length === current.length ? current : kept;
+          });
+        }
         if (chunk.data.kind === "turn_complete") {
           // v0.9.4 需求6 v2：回合完成后触发 AI 标题生成（一次/会话；后端幂等
           // ——已有 session_info 即跳过，用户重命名不覆盖；失败静默回落规则
@@ -406,19 +438,37 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             }
           }
           // v0.9.2 需求1 M4：后台会话回合完成信号（正在查看的会话不打扰）。
-          if (cid !== deps.selectedSessionRef.current) {
-            emitSessionSignal({
-              type: "turn-complete",
-              sessionId: cid,
-              agentId: chunk.agent_id,
-              error: chunk.data.reason === "Error",
-            });
-          }
+          // v0.9.5 测试期修复（用户实测「系统通知没有效果了」）：「正在查看」
+          // 修正为「窗口激活在看」——最小化/失焦时当前会话也通知（v0.9.5 起
+          // subagent 集成主会话工具卡、不再产生后台会话，旧门控下通知实际
+          // 触发面归零）；窗口激活时维持原语义（正在看的会话不打扰）。
+          // 收版反馈（2026-11-12 用户实测「点开清掉的绿点切走又出现」）：
+          // 信号发放移到 spurious-completion guard **之后**——被守卫丢弃的
+          // 空转 turn_complete（Route 2 自动发送后旧进程的 early complete）
+          // 不再写未读（原实现信号在守卫前，迟到空转事件反复重写未读）。
+          const emitTurnCompleteSignal = () => {
+            // 闭包捕获循环变量——TS 控制流收窄在函数体内失效，显式恢复。
+            if (chunk.data.kind !== "turn_complete") return;
+            const turnCompleteBackground = cid !== deps.selectedSessionRef.current;
+            if (turnCompleteBackground || !isAppWindowActive()) {
+              emitSessionSignal({
+                type: "turn-complete",
+                sessionId: cid,
+                agentId: chunk.agent_id,
+                error: chunk.data.reason === "Error",
+              });
+              devLog("session", "turn-complete 通知信号已发", {
+                session: cid,
+                background: turnCompleteBackground,
+                windowActive: isAppWindowActive(),
+              });
+            }
+          };
           // Build final assistant/user messages from the accumulated state.
           const state = streamStore.getState(cid);
           const finalKey = state?.resolvedId ?? cid;
           // v0.8.0 需求10：用量以 Hub SQLite 为权威（Rust turn_end 记账，
-          // 与页面在场无关）；回合结束后拉取最新行刷新前端缓存（圆环数据源）。
+          // 与页面在场无关）；回合结束后拉取最新前端缓存（圆环数据源）。
           void deps.refreshSessionUsage(finalKey);
           // Spurious-completion guard: when a follow-up streaming state was just
           // created at the end of a turn (a manually-guided steer committed as a
@@ -457,8 +507,14 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             && hasNoReplyText
             && !explicitFailure
           ) {
-            continue;
+            // v0.9.6 需求6 F6 兜底定时器已于 2026-11-07 用户裁决拆除（需求9
+            // 哲学「坚决信任 pi」的漏网之鱼）：跳过后若真回复永远不来，
+            // 本会永卡「思考中」——由已修好的停止通道（F1）+ 消息即落盘
+            // （F3）兜底，用户点停止即可；旧实现不认回合，5s 内重发的新
+            // 回合会被误收口（评审 P1），故整体移除。
+            continue; // 空转完成：不发 turn-complete 信号（见上方信号块注释）
           }
+          emitTurnCompleteSignal();
           const isNewSessionStream =
             deps.newSessionStreamIdsRef.current.has(cid)
             || deps.newSessionStreamIdsRef.current.has(finalKey);
@@ -471,7 +527,13 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           if (state?.pendingUserMessage) {
             newMessages.push({
               role: "user",
-              content: [{ type: "text", text: state.pendingUserMessage }],
+              content: [{
+                type: "text",
+                text: state.pendingUserMessage,
+                // 收版反馈（2026-11-13）：本地提交保留工具插件 pill 元数据——
+                // 此前只写 text，流式一结束 pill 即消失（重进会话才恢复）。
+                tool_ids: state.pendingToolIds?.length ? state.pendingToolIds : undefined,
+              }],
               timestamp: Date.now(),
             });
           }
@@ -483,12 +545,21 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // each injection point; we split there and interleave the queued
           // steers so the live order matches the JSONL Pi persists.
           const steerQueueKey = steerCoordinator.isEmpty(finalKey) ? cid : finalKey;
+          // v0.9.5 需求2 测试期修正：防重判定改「回合令牌」比对（与 chat-page
+          // onAbort 同源）：标记值 === 当前流 turnToken 才算同回合已本地提交。
+          // 旧 has(key) 存在跨回合误判：上一回合的终结者丢失时标记残留，新回
+          // 合的 turn_complete(Aborted) 会被错误跳过提交（内容丢失）。令牌不
+          // 等则视为陈旧标记，照常提交。
+          const currentTurnToken = state?.turnToken ?? -1;
+          const localCommittedAbort = (key: string): boolean =>
+            currentTurnToken >= 0
+            && deps.abortLocalCommitRef.current.get(key) === currentTurnToken;
           devLog("pipeline", "turn_complete 处理", {
             session: cid, finalKey, reason: chunk.data.reason,
             steerSplits: (state?.steerSplits ?? []).length,
             steerTexts: (state?.steerTexts ?? []).length,
             queue: steerCoordinator.textsOf(steerQueueKey).length,
-            localCommitted: deps.abortLocalCommitRef.current.has(finalKey) || deps.abortLocalCommitRef.current.has(cid),
+            localCommitted: localCommittedAbort(finalKey) || localCommittedAbort(cid),
           });
           // v0.9.4 需求7 测试期重构补丁：提交源改为流内 steerTexts（注入事实）。
           // pi 的 steering 是「turn 边界转新 turn」形态 + hub 缓冲合并多 turn 的
@@ -497,6 +568,21 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // 未注入的残留（防御路径）。
           const steerTexts = state?.steerTexts ?? [];
           const queuedSteers = steerCoordinator.textsOf(steerQueueKey);
+          // 需求11-2（逐条投递）：回合完成且引导队列仍有未投递条目 → 投下
+          // 一条（此刻 pi 已 Idle，steer 进 pi 队列由其开新回合注入；注入
+          // 回执 steer_injected 照常消占位）。队首之外的条目在本轮发送时
+          // 已被闸门拦下（chat-page onGuideStaged），队列里的就是待投递集。
+          if (
+            chunk.data.reason !== "aborted" &&
+            queuedSteers.length > 0 &&
+            steerTexts.length === 0
+          ) {
+            const next = queuedSteers[0];
+            void invokeCommand("steer_chat", {
+              sessionId: finalKey,
+              message: next,
+            }).catch((e) => console.warn("[steer] next-guide delivery failed:", e));
+          }
           // ── Build interactionInsertions with REAL indices ───────────────────
           // The snapshot `item.index` (content.length at interaction_request time)
           // goes stale once the agent emits more content after the request.
@@ -689,13 +775,15 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // v0.9.4 需求7 测试期重构：本地乐观提交防重——停止时 onAbort 先于
           // 本事件执行（abort_chat 快速返回），已本地提交过 partial/交错内容
           //（abortLocalCommitRef 标记）。此处跳过重复提交，但下方的收口
-          //（steering 重发）、流 drop、标记清理照常——turn_complete 仍是唯一
-          // 回合终结者。
-          const freshLocalCommit = (key: string): boolean => {
-            const at = deps.abortLocalCommitRef.current.get(key);
-            return at !== undefined && Date.now() - at < 5_000;
-          };
-          if (isAbortedTurn && (freshLocalCommit(finalKey) || freshLocalCommit(cid))) {
+          //（steering 重发）、流 drop、标记清理照常——turn_complete 仍是唯一回
+          // 合终结者。
+          // v0.9.5 需求2 测试期修正：防重判定由 has(key) 升级为回合令牌比对
+          //（localCommittedAbort 已提前定义，见上方）——标记值与当前流
+          // turnToken 相等才跳过：① 晚到的 turn_complete(Aborted)（实测 5.5
+          // 分钟后才到——pi 滞留）只收口不再提交；② 上一回合终结者丢失残留的
+          // 陈旧标记不再误杀新回合的提交（令牌不等）。标记在本流收口时清理，
+          // 正常后续回合不受影响。
+          if (isAbortedTurn && (localCommittedAbort(finalKey) || localCommittedAbort(cid))) {
             newMessages.length = 0;
           }
           // Resolve the base messages from the cache (preferring real id).
@@ -895,13 +983,18 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           }
 
           // Route 2 (orthogonal to manual guide): when the turn ends, auto-send
-          // any messages the user staged but did NOT manually guide — merged
-          // into a single new turn. claimAll(finalKey) synchronously marks them
-          // sent for THIS session, so a manual click racing this moment (or a
-          // re-click) is blocked by the shared claimed-id set — each staged
-          // guide is delivered exactly once. Gated on !followUpExpected so it
-          // never competes with a manual steer's follow-up turn (that turn fires
-          // its own turn_complete, which re-evaluates).
+          // any messages the user staged but did NOT manually guide. claimAll
+          // (finalKey) synchronously marks them sent for THIS session, so a
+          // manual click racing this moment (or a re-click) is blocked by the
+          // shared claimed-id set — each staged guide is delivered exactly once.
+          // Gated on !followUpExpected so it never competes with a manual
+          // steer's follow-up turn (that turn fires its own turn_complete,
+          // which re-evaluates).
+          //
+          // 需求11 #2（2026-11-11 用户实测回归）：**逐条发送**——回合完成只发
+          // 队首一条，剩余原序放回待发送区（restore un-claim），下一回合的
+          // turn_complete 再发下一条；多条不再 join("\n") 合并一口气发出。
+          // 顺序即待发送区顺序（含 #3 拖拽调序）。
           //
           // Targets the session whose turn just completed (finalKey), NOT the
           // currently-viewed session. Staging state is partitioned by session
@@ -915,15 +1008,18 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           if (!followUpExpected && deps.stagedApiRef.current) {
             const claimed = deps.stagedApiRef.current.claimAll(finalKey);
             if (claimed.length > 0) {
-              // v0.9.4 需求8 补充：暂存附件标记行随自动发送附加（与手动引导
-              // 同通道——文件落盘 + Read 引用）。
-              const claimedWithFiles = claimed.filter((m) => m.fileLines && m.fileLines.length > 0);
-              let fileBlock = "";
-              if (claimedWithFiles.length > 0) {
-                const lines = claimedWithFiles.flatMap((m) => m.fileLines ?? []);
-                fileBlock = "\n" + "\n" + "<!--JISHU_HUB_IMAGES_BEGIN-->" + "\n" + "[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]" + "\n" + lines.join("\n") + "\n" + "<!--JISHU_HUB_IMAGES_END-->";
+              const first = claimed[0];
+              const rest = claimed.slice(1);
+              if (rest.length > 0) {
+                deps.stagedApiRef.current.restore(finalKey, rest);
               }
-              const merged = claimed.map((m) => m.content).join("\n") + fileBlock;
+              // v0.9.4 需求8 补充：暂存附件标记行随自动发送附加（与手动引导
+              // 同通道——文件落盘 + Read 引用）。逐条化后只带本条自己的附件。
+              let fileBlock = "";
+              if (first.fileLines && first.fileLines.length > 0) {
+                fileBlock = "\n" + "\n" + "<!--JISHU_HUB_IMAGES_BEGIN-->" + "\n" + "[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]" + "\n" + first.fileLines.join("\n") + "\n" + "<!--JISHU_HUB_IMAGES_END-->";
+              }
+              const merged = first.content + fileBlock;
               // Start WITHOUT pendingUserMessage: send_message delivers the
               // message to the backend (JSONL), so the reply's turn_complete
               // must NOT re-commit it (would duplicate). Commit it into the
@@ -958,7 +1054,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
                 } catch (err) {
                   console.error("Auto-send of staged guides failed:", err);
                   streamStore.drop(finalKey);
-                  restore(finalKey, claimed);
+                  restore(finalKey, [first, ...rest]);
                 }
               })();
             }
