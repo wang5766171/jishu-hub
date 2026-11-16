@@ -104,13 +104,24 @@ export function useChatApprovals(deps: {
       streamStore.rollbackInteractionResponse(checkpoint);
       // v0.9.6 需求8 F1 配合：后端权威校验判「已过期」（陈旧卡——回合已终结/
       // 进程重拉后残留）→ 不再放回队列（放回会反复挂死队头），直接撤卡。
-      const stale = String(error).includes("已过期");
-      if (!stale) {
-        restorePending();
-      } else {
+      // v0.9.8 需求1：「会话进程已不在」（闲置回收/崩溃后残留卡）同为永久性
+      // 失败——恢复卡片会让用户反复提交反复失败（重试永不成功）。撤卡且不
+      // rethrow：result 保持 null → delivery 兜底 "follow_up"，答案作为新消息
+      // 经 send_message 重拉会话送达（既有安全网通道，不丢用户输入）。
+      // 其余错误（超时/瞬时）维持恢复可重试。
+      const dropCard = () =>
         setPendingInteractions((current) => current.filter((item) => !matchesInteraction(item)));
+      const message = String(error);
+      if (message.includes("已过期")) {
+        dropCard();
+        throw error;
       }
-      throw error;
+      if (message.includes("No active ACP session")) {
+        dropCard();
+      } else {
+        restorePending();
+        throw error;
+      }
     }
 
     const delivery = result?.delivery ?? "follow_up";
