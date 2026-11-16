@@ -60,6 +60,15 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
     pi.appendEntry("jishu-task-runner", state);
   };
 
+  // ── 工具结果包装（v0.9.8 需求1 测试期修复）──
+  // pi 扩展工具 execute 契约要求返回 AgentToolResult 对象（content blocks）；
+  // 裸字符串经 pi agent-loop `content ?? []` 归一后 content 为空数组——模型
+  // 永远收不到工具结果文本（ask_user 的答案因此从未回流模型，会话 JSONL
+  // 实证 toolResult content:[]，与 plugin-invoke/html-preview 的正确写法对照）。
+  function toolText(text: string) {
+    return { content: [{ type: "text" as const, text }], details: {} };
+  }
+
   // ── 任务隔离（自 conductor 原样保留：跨任务串台是实测过的污染源）──
 
   function taskAnchor(): string {
@@ -343,7 +352,7 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
       // 用户已回应过旧问题 → 新一轮步骤更新时清掉过期提问。
       if (state.pendingQuestion) state.pendingQuestion = undefined;
       await syncRunnerCard(ctx as ExtensionContext);
-      return `步骤已更新（${state.steps.length} 项）`;
+      return toolText(`步骤已更新（${state.steps.length} 项）`);
     },
   });
 
@@ -361,7 +370,7 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
     }),
     execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
       if (!state.taskId) {
-        return "任务尚未建立（缺 task_id）——先用 update_steps 建立步骤清单后重试。";
+        return toolText("任务尚未建立（缺 task_id）——先用 update_steps 建立步骤清单后重试。");
       }
       const step = state.steps.find((s) => s.id === params.node_id);
       if (step && step.status !== "running") {
@@ -381,9 +390,9 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
         20000,
       );
       await syncRunnerCard(ctx as ExtensionContext);
-      if (!result) return "派发请求未达 Hub（桥接超时）——请稍后重试。";
-      if (!result.success) return `派发失败：${result.error ?? "未知错误"}`;
-      return `节点 ${params.title} 已派发后台执行；完成后结果会回流，继续观察其余步骤。`;
+      if (!result) return toolText("派发请求未达 Hub（桥接超时）——请稍后重试。");
+      if (!result.success) return toolText(`派发失败：${result.error ?? "未知错误"}`);
+      return toolText(`节点 ${params.title} 已派发后台执行；完成后结果会回流，继续观察其余步骤。`);
     },
   });
 
@@ -403,7 +412,7 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
       // 不询问模式（需求2 追加）：不弹问答——按 agent 首个推荐项（或其
       // 自行判断）直接放行，工具结果说明已自动决策。
       if (noAskMode) {
-        return `（不询问模式）已按你的推荐执行：${params.options?.[0] ?? "自行判断"}`;
+        return toolText(`（不询问模式）已按你的推荐执行：${params.options?.[0] ?? "自行判断"}`);
       }
       state.pendingQuestion = {
         question: params.question,
@@ -418,7 +427,7 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
       );
       state.pendingQuestion = undefined;
       await syncRunnerCard(ctx as ExtensionContext);
-      return `用户回答：${answer ?? "（未选择）"}`;
+      return toolText(`用户回答：${answer ?? "（未选择）"}`);
     },
   });
 }
