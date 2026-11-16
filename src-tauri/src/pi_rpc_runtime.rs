@@ -638,9 +638,14 @@ async fn pi_rpc_connection_loop(
     // v0.8.0 需求10：经 Steer 命令注入的文本登记——用于区分 pi 回显的
     // message_start(role=user) 是真引导还是普通 prompt 送达。
     let mut steer_texts: Vec<String> = Vec::new();
-    // 当前 pending 的 extension_ui_request id（select/input 等待用户响应时）。
-    // abort 时用它发 cancelled response 释放 pi 的阻塞，否则 pi 卡在等响应、abort 推进不了。
-    let mut pending_interaction_id: Option<String> = None;
+    // 当前 pending 的 extension_ui_request id 集合（select/input 等待用户响应时）。
+    // abort/取消时逐一发 cancelled response 释放 pi 的阻塞，否则 pi 卡在等响应、
+    // abort 推进不了。
+    // v0.9.8 需求1（生产事故修复）：单槽 → 并发集合。模型在一条助手消息里并行
+    // 调用两次 ask_user 时，pi 侧 pendingExtensionRequests（Map）各自挂起等待，
+    // hub 若只记最后一个 id，用户作答先到的卡必被误判「陈旧卡」而拒绝提交。
+    let mut pending_interaction_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     // v0.8.0 需求1 P-2：待回写的审批型 extension_ui（Delegate 弹窗路径）。
     let mut pending_tool_approvals: std::collections::HashMap<String, PiToolApproval> =
         std::collections::HashMap::new();
@@ -744,13 +749,11 @@ async fn pi_rpc_connection_loop(
                                 log::warn!(
                                     "Pi RPC prompt in Prompting state — aborting stale turn and resending"
                                 );
-                                if let Some(id) = pending_interaction_id.take() {
-                                    let _ = send_pi_command(&stdin_arc, &json!({
-                                        "type": "extension_ui_response",
-                                        "id": id,
-                                        "cancelled": true
-                                    })).await;
-                                }
+                                cancel_all_pending_interactions(
+                                    &stdin_arc,
+                                    &mut pending_interaction_ids,
+                                )
+                                .await;
                                 pending_turn_complete = Some(NormalizedEvent::TurnComplete {
                                     reason: TurnEndReason::Aborted,
                                     usage: None,
@@ -880,16 +883,17 @@ async fn pi_rpc_connection_loop(
                         // 若有 pending extension_ui（select/input 阻塞等响应），先发 cancelled
                         // response 释放 pi 的 Promise，否则 pi 卡在 await、abort 推进不了
                         //（pi 的 abort 打断 LLM 生成，但打断不了 in-flight extension_ui 等待）。
-                        if let Some(id) = pending_interaction_id.take() {
-                            let _ = send_pi_command(&stdin_arc, &json!({
-                                "type": "extension_ui_response",
-                                "id": id,
-                                "cancelled": true
-                            })).await;
+                        // v0.9.8 需求1：并发交互逐一释放（pi 侧每个挂起请求独立等待）。
+                        if !pending_interaction_ids.is_empty() {
                             log::info!(
-                                "Pi RPC cancel: sent cancelled extension_ui_response for id={}",
-                                id
+                                "Pi RPC cancel: sending cancelled extension_ui_response for {} pending id(s)",
+                                pending_interaction_ids.len()
                             );
+                            cancel_all_pending_interactions(
+                                &stdin_arc,
+                                &mut pending_interaction_ids,
+                            )
+                            .await;
                         }
                         match &state {
                             LoopState::Prompting => {
@@ -933,19 +937,24 @@ async fn pi_rpc_connection_loop(
                         // Respond to a Pi extension_ui_request (planning-phase
                         // pause-resume). Pi is blocked waiting for this response.
                         //
-                        // v0.9.6 需求8 F1：提交前权威校验——id 既不是当前 pending
-                        // 交互、也不在审批表中的「陈旧卡」（回合已被终结/进程重拉
+                        // v0.9.6 需求8 F1：提交前权威校验——id 既不在 pending
+                        // 交互集、也不在审批表中的「陈旧卡」（回合已被终结/进程重拉
                         // 后残留的前端卡）直接报错，不再写 stdin：pi 对未知 id 的
                         // extension_ui_response 静默丢弃（rpc-mode get 未命中即
                         // return），写出去会让 hub 误报 Ok、卡消失而 agent 永远
                         // 收不到——用户观感「提交了没反应」。报错让前端撤卡并提示。
-                        let is_current = pending_interaction_id.as_deref() == Some(id.as_str());
+                        // v0.9.8 需求1：单槽改并发集（并行 ask_user 各自挂起）；
+                        // 拒绝仅针对本条提交，循环必须继续——此前此处误用
+                        // `return Ok(())`，一次陈旧提交会退出整个连接循环、杀掉
+                        // 活跃会话进程（生产事故：并行问答卡答第一张 → 误判陈旧
+                        // → 会话被杀 → 后续提交全部 No active ACP session）。
+                        let is_current = pending_interaction_ids.contains(id.as_str());
                         let is_approval = pending_tool_approvals.contains_key(&id);
                         if !is_current && !is_approval {
                             log::warn!(
-                                "Pi RPC respond_to_input stale id={} (current={:?}) — rejecting",
+                                "Pi RPC respond_to_input stale id={} (pending={:?}) — rejecting",
                                 id,
-                                pending_interaction_id
+                                pending_interaction_ids
                             );
                             devlog(
                                 "error",
@@ -956,27 +965,26 @@ async fn pi_rpc_connection_loop(
                             let _ = response.send(Err(
                                 "该交互已过期（回合已结束或会话重启），请重新触发提问".to_string(),
                             ));
-                            return Ok(());
+                            false
+                        } else {
+                            let result = send_pi_command(&stdin_arc, &json!({
+                                "type": "extension_ui_response",
+                                "id": id,
+                                "value": value
+                            })).await;
+                            match &result {
+                                Ok(()) => log::debug!("Pi RPC extension_ui_response sent for id={}", id),
+                                Err(error) => log::error!(
+                                    "Pi RPC extension_ui_response write failed for id={}: {error}",
+                                    id
+                                ),
+                            }
+                            // Only the matching response resolves the tracked request.
+                            pending_interaction_ids.remove(&id);
+                            // Report the write-back outcome (R6: authoritative delivery).
+                            let _ = response.send(result);
+                            false
                         }
-                        let result = send_pi_command(&stdin_arc, &json!({
-                            "type": "extension_ui_response",
-                            "id": id,
-                            "value": value
-                        })).await;
-                        match &result {
-                            Ok(()) => log::debug!("Pi RPC extension_ui_response sent for id={}", id),
-                            Err(error) => log::error!(
-                                "Pi RPC extension_ui_response write failed for id={}: {error}",
-                                id
-                            ),
-                        }
-                        // Only the matching response resolves the tracked request.
-                        if pending_interaction_id.as_deref() == Some(id.as_str()) {
-                            pending_interaction_id = None;
-                        }
-                        // Report the write-back outcome (R6: authoritative delivery).
-                        let _ = response.send(result);
-                        false
                     }
                     Some(AcpCommand::ResolvePermission { request_id, approved, response }) => {
                         // v0.8.0 需求1 P-2：审批型 extension_ui 的用户裁决回写
@@ -1543,7 +1551,7 @@ async fn pi_rpc_connection_loop(
                                 // Track only requests that actually wait for a response.
                                 if matches!(event, NormalizedEvent::InteractionRequest { .. }) {
                                     if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
-                                        pending_interaction_id = Some(id.to_string());
+                                        pending_interaction_ids.insert(id.to_string());
                                         // v0.9.6 需求8 F3：交互到达即刷新回合看门狗——
                                         // 用户思考/作答时间本应无界，UI 请求分支在
                                         // 统一刷新点之前 continue，问题挂起 >InTurn 窗
@@ -2025,13 +2033,11 @@ async fn pi_rpc_connection_loop(
                         // 且构建不结束就一直报错。现改为 clear_queue+abort 真取消，
                         // 转 CancelPending 收口（settle 到达回 Idle；15s 不 settle
                         // 杀树兜底）——状态机与 pi 恢复同步，「继续」可正常重发。
-                        if let Some(id) = pending_interaction_id.take() {
-                            let _ = send_pi_command(&stdin_arc, &json!({
-                                "type": "extension_ui_response",
-                                "id": id,
-                                "cancelled": true
-                            })).await;
-                        }
+                        cancel_all_pending_interactions(
+                            &stdin_arc,
+                            &mut pending_interaction_ids,
+                        )
+                        .await;
                         let _ = send_pi_command(&stdin_arc, &json!({
                             "type": "clear_queue"
                         })).await;
@@ -2070,6 +2076,27 @@ async fn pi_rpc_connection_loop(
 // ---------------------------------------------------------------------------
 // Internal: helpers
 // ---------------------------------------------------------------------------
+
+/// v0.9.8 需求1：向 pi 发送 cancelled extension_ui_response，释放全部挂起交互。
+/// 并发 ask_user 场景 pi 侧每个 extension_ui_request 独立挂起等待，只释放一个
+/// 会留死挂起（对应工具永不返回，abort 也打断不了 in-flight 等待）。
+async fn cancel_all_pending_interactions(
+    stdin: &Arc<TokioMutex<ChildStdin>>,
+    pending: &mut std::collections::HashSet<String>,
+) {
+    for id in std::mem::take(pending) {
+        let _ = send_pi_command(
+            stdin,
+            &json!({
+                "type": "extension_ui_response",
+                "id": id,
+                "cancelled": true
+            }),
+        )
+        .await;
+        log::info!("Pi RPC cancel: sent cancelled extension_ui_response for id={id}");
+    }
+}
 
 async fn send_pi_command(
     stdin: &Arc<TokioMutex<ChildStdin>>,
@@ -3122,5 +3149,163 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
                 "事件 {ev} 应解除看门狗（信任 pi）"
             );
         }
+    }
+
+    /// v0.9.8 需求1（生产事故回归，用例 A1/A2）：陈旧交互提交被拒不退出
+    /// 连接循环 + 并行交互各自登记可答。假 pi（node -e）收到 prompt 后发出
+    /// 两个 extension_ui_request；测试先提交陈旧 id（应报错且循环存活——
+    /// 此前该分支误用 return Ok(()) 杀掉整个会话进程），再依次应答两个真实
+    /// id（均应成功——此前单槽只记最后一个 id，先到的卡必被误判陈旧），
+    /// 最后核对假 pi 真正收到了两条 extension_ui_response 回写。
+    #[tokio::test]
+    async fn stale_reject_keeps_loop_alive_and_concurrent_interactions_answerable() {
+        let node_ok = tokio::process::Command::new("node")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !node_ok {
+            eprintln!("node 不可用，跳过假 pi 循环级回归测试");
+            return;
+        }
+
+        let out_path = std::env::temp_dir().join(format!(
+            "fake_pi_out_{}_{}.jsonl",
+            std::process::id(),
+            "stale_reject"
+        ));
+        let _ = std::fs::remove_file(&out_path);
+        let out_str = out_path.to_string_lossy().to_string();
+
+        // 注意：脚本内禁用反斜杠转义（\n 等）——构建环境的 shell 会吃转义，
+        // 写入文件变成真换行破坏 JS 语法；换行统一用 String.fromCharCode(10)。
+        let script = r#"
+const fs = require('fs');
+const NL = String.fromCharCode(10);
+const rl = require('readline').createInterface({ input: process.stdin });
+const send = (obj) => process.stdout.write(JSON.stringify(obj) + NL);
+const out = process.env.FAKE_PI_OUT;
+const log = (s) => fs.appendFileSync(out, s + NL);
+rl.on('line', (line) => {
+  log('RECV ' + line);
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.type === 'get_state') {
+    send({ type: 'response', command: 'get_state', success: true, data: { sessionId: 'fake-session-1', model: { contextWindow: 200000 }, thinkingLevel: 'high', autoCompactionEnabled: true } });
+  } else if (msg.type === 'prompt') {
+    send({ type: 'response', command: 'prompt', success: true, data: { disposition: 'started' } });
+    send({ type: 'agent_start' });
+    send({ type: 'extension_ui_request', id: 'id-1', method: 'select', title: 'Q1', options: ['A', 'B'] });
+    send({ type: 'extension_ui_request', id: 'id-2', method: 'select', title: 'Q2', options: ['C', 'D'] });
+  } else if (msg.type === 'extension_ui_response') {
+    log(JSON.stringify(msg));
+  }
+});
+"#;
+
+        let mut child = tokio::process::Command::new("node")
+            .arg("-e")
+            .arg(script)
+            .env("FAKE_PI_OUT", &out_str)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn fake pi");
+
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_clone = seen.clone();
+        let emit: crate::acp_runtime::AcpEventEmit = std::sync::Arc::new(
+            move |events: &[crate::agent::normalized::NormalizedEvent], _sid: &str| {
+                let mut guard = seen_clone.lock().unwrap();
+                for event in events {
+                    if let crate::agent::normalized::NormalizedEvent::InteractionRequest {
+                        request_id,
+                        ..
+                    } = event
+                    {
+                        guard.push(request_id.clone());
+                    }
+                }
+            },
+        );
+
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let finished_clone = finished.clone();
+        let control = super::spawn_pi_rpc_session_inner(
+            emit,
+            super::noop_dev_log_emitter(),
+            "jishu-self".to_string(),
+            "pending-stale-test".to_string(),
+            child,
+            Some("hello".to_string()),
+            None,
+            None,
+            None,
+            move || finished_clone.store(true, std::sync::atomic::Ordering::SeqCst),
+            |_sid: &str| {},
+        );
+
+        // 等两个交互请求到达（10s 上限）
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if seen.lock().unwrap().len() >= 2 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "假 pi 未发出两个交互请求；OUT={:?}",
+                std::fs::read_to_string(&out_path).unwrap_or_default()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        // 陈旧 id：报错但循环必须存活（BUG-1 回归）
+        let stale = control
+            .respond_to_input("stale-id".to_string(), "x".to_string())
+            .await;
+        assert!(stale.is_err(), "陈旧 id 应被拒绝");
+        assert!(
+            !finished.load(std::sync::atomic::Ordering::SeqCst),
+            "拒绝陈旧提交不得退出连接循环"
+        );
+
+        // 两个真实 id 依次可答（BUG-2 回归：单槽只记最后一个，id-1 应被误判陈旧）
+        control
+            .respond_to_input("id-1".to_string(), "A".to_string())
+            .await
+            .expect("第一张卡应答成功");
+        control
+            .respond_to_input("id-2".to_string(), "C".to_string())
+            .await
+            .expect("第二张卡应答成功");
+
+        // 假 pi 收到两条 extension_ui_response 回写（5s 上限）
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let responses = loop {
+            let content = std::fs::read_to_string(&out_path).unwrap_or_default();
+            let count = content
+                .lines()
+                .filter(|l| l.contains("extension_ui_response"))
+                .count();
+            if count >= 2 {
+                break content;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "假 pi 未收到两条回写：{content}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        assert!(
+            responses.contains("\"id\":\"id-1\"") && responses.contains("\"id\":\"id-2\""),
+            "两条回写应分别命中 id-1/id-2"
+        );
+
+        control.shutdown().await;
+        let _ = std::fs::remove_file(&out_path);
+        crate::pending_messages::drop_session("pending-stale-test");
     }
 }
