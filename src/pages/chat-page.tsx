@@ -891,9 +891,39 @@ export function ChatPage({
     } catch (err) {
       console.error("resend after edit failed:", err);
       streamStore.drop(sid);
+      // v0.9.8 需求2（F1）：重发失败回滚——乐观追加的编辑消息从缓存与状态
+      // 移除（恢复到截断后的 kept），编辑文本回填输入框（停止清队回填同款
+      // 语义），用户可改后手动重发。此前不回滚：编辑文本以正常消息形态
+      // 滞留（生产事故：②「正在赶来」阶段失败后幽灵消息永久残留）。
+      setCachedSessionMessages(sid, kept);
+      setSessionMessages(kept);
+      chatInputRef.current?.restoreTexts([outgoing]);
       await alertDialog({ title: t("sessions.editLastFailed", "编辑失败"), description: String(err) });
     }
   }, [activeId, currentProject?.path, alertDialog, t]);
+
+  // ── 需求2（v0.9.8）：清除「未送达」消息（pending 幽灵）─────────────────
+  // 编辑重发失败/投递挂死后 pending 行永等不到 ack，加载时并入列表尾部且
+  // 无清除通道（永在最新消息之下）。删除走主键 (session_id, sent_at)，本
+  // 地列表同步移除；消息仍可复制——用户可改写后手动重发。
+  const handleDismissUnsent = useCallback(async (msg: Message) => {
+    const sid = selectedSessionRef.current;
+    if (!sid || sid === "new" || msg.timestamp == null) return;
+    try {
+      await invokeCommand("dismiss_pending_message", {
+        sessionId: sid,
+        sentAt: msg.timestamp,
+      });
+    } catch (err) {
+      console.error("dismiss_pending_message failed:", err);
+      return;
+    }
+    const rest = sessionMessagesRef.current.filter(
+      (m) => !(m.unsent && m.timestamp === msg.timestamp),
+    );
+    setCachedSessionMessages(sid, rest);
+    setSessionMessages(rest);
+  }, []);
 
   // ── 斜杠命令面板（A2）：GUI 本地命令注册表，不透传给 agent ──────────────
   const hasSelectedSession = Boolean(selectedSession && selectedSession !== "new");
@@ -2447,6 +2477,7 @@ export function ChatPage({
                           ? handleEditLastUserMessage
                           : null
                       }
+                      onDismissUnsent={handleDismissUnsent}
                     />
                   </div>
                 ) : null}

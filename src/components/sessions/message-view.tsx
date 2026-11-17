@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { Check, Copy, Bot, Pencil } from "lucide-react";
+import { Check, Copy, Bot, Pencil, Trash2 } from "lucide-react";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
 import { extractCodeText } from "./code-block-text";
@@ -69,6 +69,10 @@ interface MessageViewProps {
    * 入口（复制旁）；提交回调 (rawText 落盘原文, newText 编辑后文本)，截断
    * 重发链由页面承担。null/undefined = 不可编辑（新会话/流式占位等）。 */
   onEditLastUserMessage?: ((rawText: string, newText: string, remainingToolIds?: string[]) => void) | null;
+  /** v0.9.8 需求2：清除「未送达」消息（pending 幽灵——编辑重发失败/投递
+   * 挂死后并入渲染的行）。仅 unsent 消息渲染删除入口；页面承担调
+   * dismiss_pending_message 与本地列表移除。 */
+  onDismissUnsent?: ((msg: Message) => void) | null;
 }
 
 /**
@@ -571,6 +575,7 @@ function UserBubble({
   roleView,
   toolNames,
   onEditSubmit,
+  onDismissUnsent,
 }: {
   msg: Message;
   items: RenderItem[];
@@ -583,6 +588,8 @@ function UserBubble({
   /** 需求13：非空=本气泡是可编辑的最近用户消息（提交回调收编辑后文本+
    * 保留的工具调用 id——编辑可删/留工具）。 */
   onEditSubmit?: ((newText: string, remainingToolIds?: string[]) => void) | null;
+  /** v0.9.8 需求2：非空=本气泡是未送达消息（pending 幽灵），显示删除入口。 */
+  onDismissUnsent?: (() => void) | null;
 }) {
   const { t } = useTranslation();
   // 需求13：原位编辑态（zcode 式——气泡内容替换为编辑框，Enter 确认/Esc 取消）。
@@ -620,6 +627,13 @@ function UserBubble({
           <span className={cn("font-medium", isOrchestrator ? "text-primary" : "text-muted-foreground")}>
             {label}
           </span>
+          {onDismissUnsent && (
+            // v0.9.8 需求2：pending 未落盘并入的「未送达」标识——客观描述
+            // 功能状态，不交代过程。
+            <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-px text-[10px] font-medium text-amber-600 dark:text-amber-400">
+              {t("sessions.unsentBadge", "未送达")}
+            </span>
+          )}
         </div>
         <div
           ref={bubbleRef}
@@ -735,6 +749,21 @@ function UserBubble({
         </div>
         <div className="self-end">
           <CopyButton text={copyText} />
+          {onDismissUnsent && (
+            // v0.9.8 需求2：未送达消息的清除入口（复制旁）。
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDismissUnsent();
+              }}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 mt-0.5 text-[11px] text-muted-foreground hover:text-destructive hover:bg-muted transition-colors"
+              title={t("sessions.unsentDismiss", "删除这条未送达消息")}
+            >
+              <Trash2 className="h-3 w-3" />
+              {t("sessions.unsentDelete", "删除")}
+            </button>
+          )}
           {onEditSubmit && !editing && (
             // 需求13：编辑最近用户消息（复制旁入口）。
             <button
@@ -771,6 +800,7 @@ export const MessageView = memo(function MessageView({
   roleResolver,
   expandSignal,
   onEditLastUserMessage,
+  onDismissUnsent,
 }: MessageViewProps) {
   const { t } = useTranslation();
   // v0.8.1 需求7：用户消息 pill 的 id→中文名映射（按会话加载一次）。
@@ -958,9 +988,12 @@ export const MessageView = memo(function MessageView({
         roleView={roleView}
         toolNames={toolNames}
         onEditSubmit={editable}
+        onDismissUnsent={
+          msg.unsent && onDismissUnsent ? () => onDismissUnsent(msg) : null
+        }
       />
     );
-  }, [currentOcc, messages, renderingQuery, resultMap, errorToolIds, searchState.offsets, roleResolver, toolNames, onEditLastUserMessage, lastUserMessageIndex]);
+  }, [currentOcc, messages, renderingQuery, resultMap, errorToolIds, searchState.offsets, roleResolver, toolNames, onEditLastUserMessage, lastUserMessageIndex, onDismissUnsent]);
 
   // v0.9.1 需求5：user 行轮次序号（实例内从 0 递增），横杠导航轨按
   // [data-turn-index] 定位跳转。v0.9.2 需求1 P1：序号由统一视图模型携带

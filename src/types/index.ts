@@ -19,6 +19,8 @@ export interface Message {
   role: string;
   content: ContentBlock[];
   timestamp: number | null;
+  /** v0.9.8 需求2：pending 未落盘并入的「未送达」标记（后端 dedupe 合并置位）。 */
+  unsent?: boolean | null;
 }
 
 export interface ConversationInteractionOption {
