@@ -213,6 +213,7 @@ fn parse_export_messages(raw: &str) -> Result<Vec<crate::session::Message>, Stri
             role: message.info.role,
             content,
             timestamp: message.info.time.and_then(|time| time.created),
+            unsent: None,
         });
     }
 
@@ -354,6 +355,7 @@ fn read_session_messages_from_db(
             role: role.to_string(),
             content,
             timestamp,
+            unsent: None,
         });
     }
     Ok(messages)

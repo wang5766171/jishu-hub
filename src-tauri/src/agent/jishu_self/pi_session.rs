@@ -203,6 +203,7 @@ pub(crate) fn load_pi_session_messages(
                                 tool_ids: Vec::new(),
                             }],
                             timestamp: Some(pending.sent_at),
+                            unsent: Some(true),
                         });
                     }
                     return Ok(messages);
@@ -600,6 +601,7 @@ fn merge_pi_interaction_sidecar(session_path: &Path, messages: &mut Vec<crate::s
             role: "assistant".to_string(),
             content: fallback_blocks,
             timestamp: None,
+            unsent: None,
         });
     }
 }
@@ -775,6 +777,7 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                                 title: "需求讨论".to_string(),
                             }],
                             timestamp: entry_timestamp,
+                            unsent: None,
                         });
                     }
                 }
@@ -808,6 +811,7 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                         role: "assistant".to_string(),
                         content,
                         timestamp: entry_timestamp,
+                        unsent: None,
                     });
                 }
             }
@@ -826,6 +830,7 @@ fn parse_pi_session_jsonl(path: &Path, content: &str) -> Option<crate::session::
                         title: "上下文已压缩".to_string(),
                     }],
                     timestamp: entry_timestamp,
+                    unsent: None,
                 });
             }
             Some("session_info") => {
@@ -906,6 +911,7 @@ fn parse_pi_message(
             role: "user".to_string(),
             content: parse_user_content(value.get("content")?),
             timestamp,
+            unsent: None,
         })
         .filter(|message| !message.content.is_empty()),
         "assistant" => {
@@ -926,12 +932,14 @@ fn parse_pi_message(
                         title: format!("请求失败：{error}"),
                     }],
                     timestamp,
+                    unsent: None,
                 });
             }
             Some(crate::session::Message {
                 role: "assistant".to_string(),
                 content,
                 timestamp,
+                unsent: None,
             })
         }
         "toolResult" => Some(crate::session::Message {
@@ -952,6 +960,7 @@ fn parse_pi_message(
                 details: value.get("details").cloned().filter(|d| !d.is_null()),
             }],
             timestamp,
+            unsent: None,
         }),
         _ => None,
     }

@@ -3205,7 +3205,7 @@ rl.on('line', (line) => {
 });
 "#;
 
-        let mut child = tokio::process::Command::new("node")
+        let child = tokio::process::Command::new("node")
             .arg("-e")
             .arg(script)
             .env("FAKE_PI_OUT", &out_str)

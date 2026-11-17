@@ -175,6 +175,19 @@ pub fn drop_session(session_id: &str) {
     });
 }
 
+/// v0.9.8 需求2：用户主动清除一条未送达消息（编辑重发失败/投递挂死后
+/// pending 行永等不到 ack——并入渲染即「幽灵」，无清除通道则永久滞留）。
+/// 按主键 (session_id, sent_at) 精确删行；命中与否都幂等成功。
+pub fn dismiss(session_id: &str, sent_at: i64) -> Result<(), String> {
+    with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM pending_user_messages WHERE session_id = ?1 AND sent_at = ?2",
+            rusqlite::params![session_id, sent_at],
+        )?;
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +225,25 @@ mod tests {
         assert_eq!(unsent[0].content, "未落盘的消息");
         assert_eq!(load("s2").unwrap().len(), 1);
         drop_session("s2");
+    }
+
+    /// v0.9.8 需求2：按主键精确清除未送达消息（幂等）。
+    #[test]
+    fn dismiss_removes_by_primary_key() {
+        let _g = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        record("s3", "jishu-self", "幽灵消息");
+        let rows = load("s3").unwrap();
+        assert_eq!(rows.len(), 1);
+        let sent_at = rows[0].sent_at;
+        // 命中删除
+        dismiss("s3", sent_at).unwrap();
+        assert_eq!(load("s3").unwrap().len(), 0);
+        // 不存在的主键：幂等成功
+        dismiss("s3", sent_at).unwrap();
+        // 其它会话同刻行不受影响
+        drop_session("s3");
     }
 
     #[test]

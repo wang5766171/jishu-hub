@@ -584,6 +584,7 @@ pub fn run() {
             commands::sessions::session_model_get,
             commands::sessions::session_model_set,
             chat::edit_last_user_message,
+            chat::dismiss_pending_message,
             commands::agents::composed_plugin_manifests,
             commands::agents::composed_plugin_save,
             commands::agents::composed_plugin_delete,

@@ -85,6 +85,10 @@ pub struct Message {
     pub role: String,
     pub content: Vec<ContentBlock>,
     pub timestamp: Option<i64>,
+    /// v0.9.8 需求2：pending 未落盘并入的消息标记（未送达）。None=正常
+    /// 落盘消息（序列化时省略，旧前端忽略未知字段不受影响）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsent: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -335,6 +339,7 @@ pub fn parse_message(line: &str) -> Option<Message> {
         role,
         content: filtered,
         timestamp,
+        unsent: None,
     })
 }
 

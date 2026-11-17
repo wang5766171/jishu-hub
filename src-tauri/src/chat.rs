@@ -1601,6 +1601,14 @@ pub(crate) async fn edit_last_user_message(
     Ok(())
 }
 
+/// v0.9.8 需求2：清除一条「未送达」消息（pending_messages 并入渲染的幽灵
+/// ——编辑重发失败/投递挂死后永等不到 ack 的行）。按 (session_id, sent_at)
+/// 主键精确删除，幂等；前端删除后从本地列表同步移除。
+#[tauri::command]
+pub fn dismiss_pending_message(session_id: String, sent_at: i64) -> Result<(), String> {
+    crate::pending_messages::dismiss(&session_id, sent_at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

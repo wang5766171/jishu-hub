@@ -1149,6 +1149,7 @@ fn parse_rollout_messages(path: &std::path::Path) -> Result<Vec<crate::session::
                     tool_ids: Vec::new(),
                 }],
                 timestamp,
+                unsent: None,
             });
             continue;
         }
@@ -1171,6 +1172,7 @@ fn parse_rollout_messages(path: &std::path::Path) -> Result<Vec<crate::session::
                     tool_ids: Vec::new(),
                 }],
                 timestamp,
+                unsent: None,
             });
         }
     }

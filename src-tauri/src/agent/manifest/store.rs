@@ -205,6 +205,7 @@ mod tests {
                 tool_ids: Vec::new(),
             }],
             timestamp: None,
+            unsent: None,
         }
     }
 
