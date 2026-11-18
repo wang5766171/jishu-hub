@@ -996,7 +996,14 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       const stagedFiles = files;
       setCurrentStagedMessages((prev) => [
         ...prev,
-        { id: stagedId, content: message.trim(), files: stagedFiles },
+        {
+          id: stagedId,
+          content: message.trim(),
+          files: stagedFiles,
+          // v0.9.8 需求3：入队即捕获会话发送上下文（面单写地址）——Route 2
+          // 自动发送消费此值，不再读当前界面项目（双项目并行串台根因）。
+          context: { projectPath: projectPath ?? "", agentId: agentId ?? "" },
+        },
       ]);
       void saveInputFiles(stagedFiles)
         .then((lines) => {

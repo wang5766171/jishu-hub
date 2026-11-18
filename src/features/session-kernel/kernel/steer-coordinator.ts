@@ -19,17 +19,38 @@
  * @invariant queue.length === placeholders 派生长度（占位即 queue 投影）
  */
 
+/**
+ * v0.9.8 需求3（用户裁决）：会话发送上下文——背景发送（turn_complete 自动
+ * 发送/补发）的唯一权威数据，**跟会话走，与界面停留项目无关**。
+ * 入队时刻捕获（用户正看该会话，无歧义）；发送时消费条目自带值。
+ * 此前背景发送现场读「当前界面项目/智能体」（projectPathRef/activeIdRef），
+ * 双项目并行时 A 会话的暂存消息按 B 目录执行、并在 B 下建会话（数据级
+ * 串台）。会话的项目归属是会话自身属性，不应每次发送从 UI 状态推导。
+ */
+export interface SessionSendContext {
+  /** 会话所属项目根路径（决定 pi 进程 cwd 与会话文件归属）。 */
+  projectPath: string;
+  /** 会话绑定的智能体 id。 */
+  agentId: string;
+}
+
 export interface SteerQueueItem {
   /** 引导文本（用户原文，未展开——pi 侧展开差异由 reconcile 兜底吸收）。 */
   text: string;
   /** v0.9.0 需求3 方案 C：用户消息气泡的插件 pill 元数据。 */
   toolIds?: string[];
+  /** v0.9.8 需求3：入队时捕获的会话发送上下文（背景补发按此投递）。 */
+  context: SessionSendContext;
 }
 
 interface SteerSessionState {
   queue: SteerQueueItem[];
-  /** 被 pi clear_queue 作废、等待 Abort 终结重发的文本（保持到达序）。 */
-  pendingResend: string[];
+  /** 被 pi clear_queue 作废、等待 Abort 终结重发的条目（保持到达序）。
+   * v0.9.8 需求3：文本→条目（携带会话发送上下文，Abort 合并重发跟会话走）。 */
+  pendingResend: SteerQueueItem[];
+  /** v0.9.8 需求3：本会话最近一次入队的发送上下文——reconcileCleared
+   * 队列已空时的兜底条目化来源（会话的项目归属恒定，last 即当前）。 */
+  lastContext?: SessionSendContext;
 }
 
 type Listener = () => void;
@@ -61,11 +82,13 @@ export class SteerCoordinator {
     return s;
   }
 
-  /** 登记一条引导（onGuideStaged：steer_chat 发出后调用）。 */
-  stage(key: string, text: string, toolIds?: string[]): void {
-    devLog("steer", "stage", { key, text: text.slice(0, 60), toolIds });
+  /** 登记一条引导（onGuideStaged：steer_chat 发出后调用）。context 为入队
+   * 时刻的会话发送上下文（需求3：跟会话走）。 */
+  stage(key: string, text: string, toolIds: string[] | undefined, context: SessionSendContext): void {
+    devLog("steer", "stage", { key, text: text.slice(0, 60), toolIds, context });
     const s = this.stateOf(key);
-    s.queue.push({ text, toolIds });
+    s.lastContext = context;
+    s.queue.push({ text, toolIds, context });
     this.notify();
   }
 
@@ -132,7 +155,9 @@ export class SteerCoordinator {
       // 队列已空（如 steer 已注入）：事件里的 steering 仍需重发登记。
       if (steering.length > 0) {
         const fresh = this.stateOf(key);
-        fresh.pendingResend.push(...steering);
+        // 需求3：条目化——队列已空无原条目可挂，用 lastContext 兜底。
+        const ctx = fresh.lastContext ?? { projectPath: "", agentId: "" };
+        fresh.pendingResend.push(...steering.map((t) => ({ text: t, context: ctx })));
         this.notify();
       }
       return { steering, followUps: followUpTexts };
@@ -154,7 +179,9 @@ export class SteerCoordinator {
     }
     s.queue = remaining;
     if (texts.length > 0) {
-      s.pendingResend.push(...steering);
+      // 需求3：条目化（lastContext 兜底展开变形场景）。
+      const ctx = s.lastContext ?? { projectPath: "", agentId: "" };
+      s.pendingResend.push(...steering.map((t) => ({ text: t, context: ctx })));
     }
     if (s.queue.length === 0 && s.pendingResend.length === 0) {
       this.sessions.delete(key);
@@ -167,7 +194,7 @@ export class SteerCoordinator {
    * 取走暂存重发（turn_complete(Aborted) 终结收口调用，一次性）。
    * 与队列残留（事件丢失兜底）由调用方合并处理。
    */
-  takeResend(key: string): string[] {
+  takeResend(key: string): SteerQueueItem[] {
     devLog("steer", "takeResend", { key });
     const s = this.sessions.get(key);
     if (!s || s.pendingResend.length === 0) return [];

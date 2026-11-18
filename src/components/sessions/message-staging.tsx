@@ -17,6 +17,7 @@ import { InlineImages } from "@/components/sessions/inline-image";
 
 const STEER_NL = String.fromCharCode(10);
 import { UserTextWithPills } from "./embedded-tools";
+import type { SessionSendContext } from "@/features/session-kernel/kernel/steer-coordinator";
 
 export interface StagedMessage {
   id: string;
@@ -27,6 +28,9 @@ export interface StagedMessage {
   /** v0.9.4 需求8 补充：附件原始引用（上传完成前暂持；上传后以 fileLines
    * 为准）。unknown[] + 调用方收敛类型，避免与 chat-input 的循环依赖。 */
   files?: unknown[];
+  /** v0.9.8 需求3：入队时捕获的会话发送上下文——Route 2 自动发送按此投递
+   * （跟会话走，与界面停留项目无关）。 */
+  context: SessionSendContext;
 }
 
 interface MessageStagingProps {

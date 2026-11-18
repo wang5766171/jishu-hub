@@ -43,7 +43,7 @@ import {
   setCachedSessionMessages,
 } from "./session-cache";
 import { emitSessionSignal } from "../signals";
-import { steerCoordinator } from "./steer-coordinator";
+import { steerCoordinator, type SteerQueueItem } from "./steer-coordinator";
 import { devLog } from "@/lib/dev-log";
 
 /** v0.9.4 需求6 v2：AI 标题生成前端触发一次守卫（会话 id 维度，进程内）。 */
@@ -522,7 +522,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // couldn't be injected is sent as a real new message. Set in the
           // no-tool branch below; the actual streamStore.start + send_message
           // runs after this turn's drop(cid), so the new stream isn't cleared.
-          let guideToSendAfterDrop: string | null = null;
+          let guideToSendAfterDrop: SteerQueueItem | null = null;
           const newMessages: Message[] = [];
           if (state?.pendingUserMessage) {
             newMessages.push({
@@ -567,7 +567,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // 准（store.steerTexts，coordinator 队列同刻消费）；队列此刻只承载
           // 未注入的残留（防御路径）。
           const steerTexts = state?.steerTexts ?? [];
-          const queuedSteers = steerCoordinator.textsOf(steerQueueKey);
+          const queuedSteers = steerCoordinator.queueOf(steerQueueKey);
           // 需求11-2（逐条投递）：回合完成且引导队列仍有未投递条目 → 投下
           // 一条（此刻 pi 已 Idle，steer 进 pi 队列由其开新回合注入；注入
           // 回执 steer_injected 照常消占位）。队首之外的条目在本轮发送时
@@ -580,7 +580,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             const next = queuedSteers[0];
             void invokeCommand("steer_chat", {
               sessionId: finalKey,
-              message: next,
+              message: next.text,
             }).catch((e) => console.warn("[steer] next-guide delivery failed:", e));
           }
           // ── Build interactionInsertions with REAL indices ───────────────────
@@ -634,7 +634,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             consumeSteerFromQueue(midSteerCount);
             dropLivePlaceholders(midSteerCount);
 
-            const leftover = steerCoordinator.textsOf(steerQueueKey);
+            const leftover = steerCoordinator.queueOf(steerQueueKey);
             if (leftover.length > 0) {
               if (isAbortedTurn) {
                 // v0.9.4 需求7 缺陷二兕底：abort 后 pi 队列已被 clear_queue
@@ -645,7 +645,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               } else {
                 newMessages.push({
                   role: "user",
-                  content: [{ type: "text", text: leftover[0] }],
+                  content: [{ type: "text", text: leftover[0].text }],
                   timestamp: Date.now(),
                 });
                 followUpExpected = true;
@@ -690,7 +690,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             // processed as a follow-up turn. Commit it now (appended after the
             // tail) so it lands BEFORE its response, which arrives in the next
             // turn_complete — mirroring the no-tool FIFO behavior below.
-            const leftover = steerCoordinator.textsOf(steerQueueKey);
+            const leftover = steerCoordinator.queueOf(steerQueueKey);
             if (leftover.length > 0) {
               if (isAbortedTurn) {
                 // v0.9.4 需求7 缺陷二兕底：同 interaction 分支——abort 后
@@ -699,7 +699,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               } else {
                 newMessages.push({
                   role: "user",
-                  content: [{ type: "text", text: leftover[0] }],
+                  content: [{ type: "text", text: leftover[0].text }],
                   timestamp: Date.now(),
                 });
                 followUpExpected = true;
@@ -748,7 +748,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
                 // 已被 clear_queue 作废），走真实重发分支。
                 newMessages.push({
                   role: "user",
-                  content: [{ type: "text", text: queuedSteers[0] }],
+                  content: [{ type: "text", text: queuedSteers[0].text }],
                   timestamp: Date.now(),
                 });
                 followUpExpected = true;
@@ -764,10 +764,10 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
                 // streamStore.start + send_message runs AFTER the drop below
                 // (same as Route 2) — otherwise this turn's drop(cid) would
                 // clear the freshly-started stream.
-                const guideText = queuedSteers[0];
+                const guideItem = queuedSteers[0];
                 consumeSteerFromQueue(1);
                 dropLivePlaceholders(1);
-                guideToSendAfterDrop = guideText;
+                guideToSendAfterDrop = guideItem;
               }
             }
           }
@@ -905,8 +905,16 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             ];
             devLog("pipeline", "Abort 收口：重发合并", { resend: resend.length, hasGuide: guideToSendAfterDrop !== null });
             if (resend.length > 0) {
-              const merged = new Set([...(guideToSendAfterDrop !== null ? [guideToSendAfterDrop] : []), ...resend]);
-              guideToSendAfterDrop = [...merged].join("\n\n");
+              // v0.9.8 需求3：resend 条目化后按文本合并去重，上下文取任一
+              // 条目（同会话同项目），保持发送跟会话走。
+              const merged = new Set([
+                ...(guideToSendAfterDrop !== null ? [guideToSendAfterDrop.text] : []),
+                ...resend.map((item) => item.text),
+              ]);
+              guideToSendAfterDrop = {
+                text: [...merged].join("\n\n"),
+                context: (guideToSendAfterDrop ?? resend[0]).context,
+              };
             }
             // Abort 终结清零：pi 队列已作废，残留即僵尸（占位随队列投影消失）。
             steerCoordinator.resetAborted(steerQueueKey);
@@ -943,7 +951,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // marker + fire send_message in an async IIFE so the reply fills the
           // "thinking" state naturally.
           if (guideToSendAfterDrop !== null) {
-            const guideText = guideToSendAfterDrop;
+            const guideItem = guideToSendAfterDrop;
             // Start the reply stream WITHOUT pendingUserMessage: send_message
             // already delivered the guide to the backend (it's in the JSONL),
             // so the reply's turn_complete must NOT re-commit it as a user
@@ -958,7 +966,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               ?? [];
             const guideUpdated = [...guideBase, {
               role: "user" as const,
-              content: [{ type: "text" as const, text: guideText }],
+              content: [{ type: "text" as const, text: guideItem.text }],
               timestamp: Date.now(),
             }];
             setCachedSessionMessages(finalKey, guideUpdated);
@@ -966,14 +974,16 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             if (deps.selectedSessionRef.current === cid || deps.selectedSessionRef.current === finalKey) {
               deps.setSessionMessages(guideUpdated);
             }
-            const guideProjectPath = deps.projectPathRef.current;
+            // v0.9.8 需求3：按暂存条目自带的会话发送上下文投递（跟会话走，
+            // 与界面停留项目无关）——修前读当前界面项目，双项目并行时 A 会话
+            // 的补发消息按 B 目录执行并落 B 项目（数据级串台）。
             void (async () => {
               try {
                 await invokeCommand("send_message", {
-                  agentId: deps.activeIdRef.current ?? "",
-                  projectPath: guideProjectPath,
+                  agentId: guideItem.context.agentId,
+                  projectPath: guideItem.context.projectPath,
                   sessionId: finalKey,
-                  message: guideText,
+                  message: guideItem.text,
                 });
               } catch (err) {
                 console.error("Failed to send queued guide:", err);
@@ -1041,13 +1051,14 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               if (deps.selectedSessionRef.current === cid || deps.selectedSessionRef.current === finalKey) {
                 deps.setSessionMessages(autoUpdated);
               }
-              const projectPath = deps.projectPathRef.current;
+              // v0.9.8 需求3：按暂存条目自带的会话发送上下文投递（入队时
+              // 捕获——面单写地址；跟会话走，与界面停留项目无关）。
               const restore = deps.stagedApiRef.current.restore.bind(deps.stagedApiRef.current);
               void (async () => {
                 try {
                   await invokeCommand("send_message", {
-                    agentId: deps.activeIdRef.current ?? "",
-                    projectPath,
+                    agentId: first.context.agentId,
+                    projectPath: first.context.projectPath,
                     sessionId: finalKey,
                     message: merged,
                   });

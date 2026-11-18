@@ -52,6 +52,9 @@ const emit = (payload: Record<string, unknown> | Record<string, unknown>[]) => {
   listenCallback({ payload: Array.isArray(payload) ? withDefaults : withDefaults[0] });
 };
 
+// v0.9.8 需求3：暂存条目自带的会话发送上下文（模拟入队时捕获的项目 A）。
+const CTX = { projectPath: "D:/proj-A", agentId: "jishu-self" };
+
 function makeDeps() {
   return {
     activeIdRef: { current: "jishu-self" } as MutableRefObject<string | null>,
@@ -109,7 +112,7 @@ describe("v0.9.4 需求7：steer 停止链路", () => {
   });
 
   it("steer_queue_cleared 分组：steering 暂存并延后到 Abort 终结重发，followUp 回填输入框", async () => {
-    steerCoordinator.stage("s1", "引导A"); steerCoordinator.stage("s1", "排队B");
+    steerCoordinator.stage("s1", "引导A", undefined, CTX); steerCoordinator.stage("s1", "排队B", undefined, CTX);
     emit({
       agent_id: "jishu-self",
       session_id: "s1",
@@ -141,7 +144,7 @@ describe("v0.9.4 需求7：steer 停止链路", () => {
   });
 
   it("旧形状事件（无 follow_up_texts）：全部视为 steering（对账语义不变，重发延后）", async () => {
-    steerCoordinator.stage("s1", "旧引导");
+    steerCoordinator.stage("s1", "旧引导", undefined, CTX);
     emit({
       agent_id: "jishu-self",
       session_id: "s1",
@@ -162,7 +165,7 @@ describe("v0.9.4 需求7：steer 停止链路", () => {
   });
 
   it("TurnComplete(Aborted) + 队列残留：走真实重发（thinking 态有 send_message 支撑），非裸等待", async () => {
-    steerCoordinator.stage("s1", "引导C");
+    steerCoordinator.stage("s1", "引导C", undefined, CTX);
     emit({
       agent_id: "jishu-self",
       session_id: "s1",
@@ -185,7 +188,7 @@ describe("v0.9.4 需求7：steer 停止链路", () => {
 
   it("测试期复现（用户实测双条）：引导+停止后占位必清零、消息恰一条", async () => {
     // 场景 A：steer 未注入（pi 队列被清）——steer_queue_cleared 对账+重发
-    steerCoordinator.stage("s1", "引导A");
+    steerCoordinator.stage("s1", "引导A", undefined, CTX);
 
     emit({
       agent_id: "jishu-self",
@@ -207,7 +210,7 @@ describe("v0.9.4 需求7：steer 停止链路", () => {
     // Abort 终结闸门清零，不产生第二条。
     streamStore.drop("s1");
     streamStore.start("s1", "继续");
-    steerCoordinator.stage("s1", "原文");
+    steerCoordinator.stage("s1", "原文", undefined, CTX);
 
     emit({
       agent_id: "jishu-self",
@@ -229,7 +232,7 @@ describe("v0.9.4 需求7：steer 停止链路", () => {
 
 
   it("测试期重构补丁：steer 注入即消费队列 + turn_complete 以 steerTexts 交错提交（多 turn 形态）", async () => {
-    steerCoordinator.stage("s1", "监控方案怎么做");
+    steerCoordinator.stage("s1", "监控方案怎么做", undefined, CTX);
     // A 回复流式
     streamStore.push("s1", { session_id: "s1", event_type: "text_delta", data: { kind: "text_delta", delta: "部署方式如下" } } as never);
     // steer 注入（pi turn 边界转新 turn，message_start user 回显归一化为 SteerInjected）
@@ -263,7 +266,7 @@ describe("v0.9.4 需求7：steer 停止链路", () => {
   it("正常完成不清残队列（多条引导第 2+ 条等 follow-up turn，闸门仅限 Abort）", async () => {
     streamStore.drop("s1");
     streamStore.start("s1", "问");
-    steerCoordinator.stage("s1", "第一条"); steerCoordinator.stage("s1", "第二条");
+    steerCoordinator.stage("s1", "第一条", undefined, CTX); steerCoordinator.stage("s1", "第二条", undefined, CTX);
     emit({
       agent_id: "jishu-self",
       session_id: "s1",
@@ -307,7 +310,7 @@ describe("v0.9.4 需求7：steer 停止链路", () => {
 
 
   it("测试期复现三（用户实测 B 消失）：onAbort 本地提交+标记 → TurnComplete 凭标记跳过重复但收口重发", async () => {
-    steerCoordinator.stage("s1", "B引导");
+    steerCoordinator.stage("s1", "B引导", undefined, CTX);
     // 事件序：steer_queue_cleared（对账+暂存）→ onAbort（本地标记）→ TurnComplete。
     emit({
       agent_id: "jishu-self",
@@ -335,7 +338,7 @@ describe("v0.9.4 需求7：steer 停止链路", () => {
   });
 
   it("TurnComplete(Complete) + 队列残留：维持 follow-up 预创建（正常路径不回归）", async () => {
-    steerCoordinator.stage("s1", "引导D");
+    steerCoordinator.stage("s1", "引导D", undefined, CTX);
     emit({
       agent_id: "jishu-self",
       session_id: "s1",
@@ -348,5 +351,48 @@ describe("v0.9.4 需求7：steer 停止链路", () => {
     // 正常完成不触发 send_message（pi 自己消化 follow-up）
     expect(invokeCommand).not.toHaveBeenCalledWith("send_message", expect.objectContaining({ message: "引导D" }));
     expect(steerCoordinator.isEmpty("s1")).toBe(true);
+  });
+
+  it("需求3：Abort 重发按暂存条目自带上下文投递（跟会话走，非界面项目）", async () => {
+    steerCoordinator.stage("s1", "串台检验", undefined, CTX);
+    emit({
+      agent_id: "jishu-self",
+      session_id: "s1",
+      data: { kind: "steer_queue_cleared", texts: ["串台检验"], follow_up_texts: [] },
+    });
+    emit({
+      agent_id: "jishu-self",
+      session_id: "s1",
+      data: { kind: "turn_complete", reason: "Aborted", usage: null },
+    });
+    await vi.waitFor(() => {
+      // 上下文 = 条目携带的 proj-A，而非 projectPathRef 的 D:/x（界面停留项目）
+      expect(invokeCommand).toHaveBeenCalledWith("send_message", expect.objectContaining({
+        sessionId: "s1",
+        message: "串台检验",
+        projectPath: "D:/proj-A",
+        agentId: "jishu-self",
+      }));
+    });
+  });
+
+  it("需求3：Route 2 暂存自动发送按条目上下文投递（claimAll 面单地址）", async () => {
+    deps.stagedApiRef.current = {
+      claimAll: () => [{ id: "st-1", content: "A项目的暂存消息", context: CTX }],
+      restore: vi.fn(),
+    } as never;
+    emit({
+      agent_id: "jishu-self",
+      session_id: "s1",
+      data: { kind: "turn_complete", reason: "Complete", usage: null },
+    });
+    await vi.waitFor(() => {
+      expect(invokeCommand).toHaveBeenCalledWith("send_message", expect.objectContaining({
+        sessionId: "s1",
+        message: "A项目的暂存消息",
+        projectPath: "D:/proj-A",
+        agentId: "jishu-self",
+      }));
+    });
   });
 });

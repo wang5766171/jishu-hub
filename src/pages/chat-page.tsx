@@ -2975,8 +2975,12 @@ export function ChatPage({
                 // when the turn completes (or sent by Route 2 if it wasn't a
                 // real mid-turn injection).
                 // v0.9.4 需求7 测试期重构：登记入 SteerCoordinator（占位由队列
-                // 派生，双状态同步问题根除）。
-                steerCoordinator.stage(selectedSession, content, toolIds);
+                // 派生，双状态同步问题根除）。v0.9.8 需求3：入队即捕获会话
+                // 发送上下文（用户此刻正看该会话，无歧义）——背景补发跟会话走。
+                steerCoordinator.stage(selectedSession, content, toolIds, {
+                  projectPath: currentProject?.path ?? "",
+                  agentId: activeId ?? "",
+                });
               }}
             />
           </div>
