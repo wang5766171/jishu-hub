@@ -1,6 +1,6 @@
 import i18n from "@/i18n";
 import { render, fireEvent, waitFor, act } from "@testing-library/react";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { PluginMarketPanel } from "./plugin-market";
 

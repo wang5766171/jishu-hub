@@ -89,7 +89,7 @@
     "installFailedUnknown": "未知错误，请查看控制台日志",
     "uacCancelled": "已取消管理员授权，安装未执行。可重新安装并在授权弹窗中选择「是」。",
     "pathAddedHint": "安装成功。检测到 npm 全局命令目录不在 PATH 中，已自动加入用户 PATH：{{dir}}。请新开一个终端窗口后命令行即可识别（已打开的窗口不会自动继承）。",
-    "checking": "正在检测环境...",
+    "checking": "检测中…",
     "enterWorkspace": "进入工作区",
     "selectModule": "查看更多",
     "updateSuccess": "更新成功",
@@ -97,7 +97,6 @@
     "updateVersionMismatch": "更新完成后检测到的版本仍为 {{current}}，目标版本为 {{target}}",
     "checkUpdate": "检查更新",
     "checkingUpdate": "检查中...",
-    "checking": "检测中…",
     "updateLabel": "更新",
     "adapter": "适配器",
     "mcpDesc": "为 Jishu Agent 提供 MCP 服务调用能力（Web 搜索、网页读取等）",
@@ -1876,7 +1875,9 @@
     "perWeek": "/周",
     "updateFailedItems": "以下项更新失败：{{names}}",
     "searchUnified": "搜索…",
-    "clearSearch": "清除搜索"
+    "clearSearch": "清除搜索",
+    "extSlow": "网络不佳，目录加载较慢——可稍后重试",
+    "extLoading": "目录加载中…"
   },
   "onboarding": {
     "initTitle": "正在准备你的智能体",

@@ -324,6 +324,17 @@ pub fn run() {
                     }
                 });
             }
+            // v0.9.8 需求8 A1：piindex 启动后台预拉取——延后 10s 避开启动
+            // 高峰（update 检查同款模式）；每日对齐从「首次打开市场」提前到
+            // 「应用启动」，公司弱网首开市场直接渲染缓存。失败静默（重试一次
+            // 后放弃，下次启动再来），不弹任何 UI。
+            {
+                let prefetch_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    agent::piindex::piindex_prefetch(prefetch_app).await;
+                });
+            }
             // v0.7.0：全局 active agent 已移除（需求一：智能体切换去全局化）。
             // 各模块按自身作用域选择 agent，通过 agent_id 入参显式指定；
             // 会话与智能体在 Session 层绑定。启动时不再加载/设置全局 active。

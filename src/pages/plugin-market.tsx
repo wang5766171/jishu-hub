@@ -17,6 +17,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { listen } from "@tauri-apps/api/event";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Button } from "@/components/ui/button";
@@ -267,6 +268,9 @@ export function PluginMarketPanel({
     bundleId: string;
     statuses: Array<{ ref: string; state: "pending" | "running" | "ok" | "fail"; error?: string }>;
   } | null>(null);
+  // v0.9.8 需求8 A3：扩展目录慢载兜底——piindex 无缓存且拉取中超过 8s 给
+  // 「网络不佳」提示+重试（预拉取就位后仅首装首开会走到这里）。
+  const [extSlow, setExtSlow] = useState(false);
   const [extensions, setExtensions] = useState<PiPackageEntry[]>([]);
   const [onlineKw, setOnlineKw] = useState("");
   // 十四轮 UI 统一：精选页签统一搜索框（本地按名称/说明过滤）。
@@ -451,6 +455,33 @@ export function PluginMarketPanel({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // v0.9.8 需求8 A2：启动预拉取完成通知（piindex-updated）——市场页若开着
+  // 增量刷新列表（后台每日对齐数据面变化时用户无感更新）。
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void listen("piindex-updated", () => {
+      void load();
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [load]);
+
+  // v0.9.8 需求8 A3：扩展目录慢载判定（8s 无数据 → 兜底提示态）。
+  useEffect(() => {
+    if (!(source === "extensions" && loading && piindex === null)) {
+      setExtSlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setExtSlow(true), 8000);
+    return () => window.clearTimeout(timer);
+  }, [source, loading, piindex]);
 
   // 需求3 补充：技能详情（skillhub_detail 拉取，弹窗展示）。
   const [skillDetailOpen, setSkillDetailOpen] = useState(false);
@@ -948,6 +979,27 @@ export function PluginMarketPanel({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* v0.9.8 需求8 A3：扩展目录慢载兜底（无缓存+拉取中：先加载中态，
+          8s 后转「网络不佳」+重试；预拉取就位后仅首装首开可见） */}
+      {source === "extensions" && !error && piindex === null && (
+        <div className="flex flex-col items-center gap-2 py-10 text-xs text-muted-foreground" data-ext-loading="">
+          {extSlow ? (
+            <>
+              <span>{t("market.extSlow", "网络不佳，目录加载较慢——可稍后重试")}</span>
+              <Button size="sm" variant="outline" disabled={loading} onClick={() => void load()}>
+                <RefreshCw className="h-3.5 w-3.5" />
+                <span className="ml-1">{t("market.retry", "重试")}</span>
+              </Button>
+            </>
+          ) : (
+            <span className="flex items-center gap-2">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              {t("market.extLoading", "目录加载中…")}
+            </span>
+          )}
         </div>
       )}
 

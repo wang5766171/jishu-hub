@@ -20,6 +20,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tauri::Emitter;
 
 const LIST_URL: &str = "https://piindex.dev/zh/";
 const LIST_TTL: Duration = Duration::from_secs(10 * 60);
@@ -123,6 +124,72 @@ fn write_disk_cache(entries: &[PiindexEntry]) {
 
 async fn fetch_list() -> Result<Vec<PiindexEntry>, String> {
     fetch_list_inner(false).await
+}
+
+// ── v0.9.8 需求8 A1：启动后台预拉取（每日对齐从「首次打开市场」提前到
+//    「应用启动」——公司弱网首开市场不再空白等待）──────────────────────────
+
+/// 单次预拉取：force 直连网络全量拉取（上游无版本号，「增量」的正确形态是
+/// 全量拉取+差异判定——写盘一次幂等，无差异时 fetchedAt 更新即当日对齐）。
+/// 返回是否有数据变化（决定是否 emit `piindex-updated`）。
+async fn prefetch_once() -> Result<bool, String> {
+    let prev: Vec<serde_json::Value> = disk_cache_snapshot()
+        .map(|(_, entries)| {
+            entries
+                .iter()
+                .map(|e| serde_json::to_value(e).unwrap_or_default())
+                .collect()
+        })
+        .unwrap_or_default();
+    let fresh = fetch_list_inner(true).await?;
+    let next: Vec<serde_json::Value> = fresh
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap_or_default())
+        .collect();
+    Ok(prev != next)
+}
+
+/// 预拉取跳过判定（纯函数可单测）：当日缓存已对齐 → true（零网络）。
+fn prefetch_should_skip() -> bool {
+    disk_cache_snapshot().is_some_and(|(fresh, _)| fresh)
+}
+
+/// 启动后台预拉取（lib.rs setup 延后 ~10s 调用，避开启动高峰）：
+/// 1. 无磁盘缓存（首装）→ 全量拉取写盘；
+/// 2. 有缓存且 fetchedAt 非当日 → 全量拉取对齐（fetch 内写盘含 fetchedAt，
+///    有差异与否都达成「当日对齐」——差异只影响是否通知前端）；
+/// 3. 当日已对齐 → 跳过（零网络）；
+/// 4. 失败静默重试一次（30s 退避），再失败放弃（下次启动再来）——启动预拉取
+///    失败不弹任何 UI。
+/// 数据有变化 → emit `piindex-updated`（市场页若开着增量刷新）。
+pub async fn piindex_prefetch(app: tauri::AppHandle) {
+    if prefetch_should_skip() {
+        log::info!("[piindex] prefetch skip: 当日缓存已对齐");
+        return;
+    }
+    let (changed, first_err) = match prefetch_once().await {
+        Ok(changed) => (changed, None),
+        Err(e) => {
+            log::warn!("[piindex] prefetch 首次失败，30s 后静默重试: {e}");
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            match prefetch_once().await {
+                Ok(changed) => (changed, Some(e)),
+                Err(e2) => {
+                    log::warn!("[piindex] prefetch 重试仍失败，放弃（下次启动再来）: {e2}");
+                    return;
+                }
+            }
+        }
+    };
+    if let Some(e) = first_err {
+        log::info!("[piindex] prefetch 重试成功（首次失败: {e}）");
+    }
+    if changed {
+        log::info!("[piindex] prefetch: 目录数据有更新，emit piindex-updated");
+        let _ = app.emit("piindex-updated", ());
+    } else {
+        log::info!("[piindex] prefetch: 目录数据无变化（fetchedAt 已对齐当日）");
+    }
 }
 
 /// `force=true` 绕过两级缓存直连网络（「重新加载」按钮——只清内存缓存
@@ -885,5 +952,57 @@ mod tests {
         let all_bad = batch_report(vec![("y".to_string(), Err("e".to_string()))]);
         assert!(all_bad.updated.is_empty() && all_bad.failed.len() == 1);
         assert_eq!(batch_report(Vec::new()).updated.len(), 0);
+    }
+
+    /// v0.9.8 需求8 A1：预拉取跳过判定——当日缓存已对齐跳过（零网络），
+    /// 隔日/无缓存触发预拉取。
+    #[test]
+    fn prefetch_skip_decision_by_day() {
+        let _serial = CACHE_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let entry = PiindexEntry {
+            name: "pi-x".to_string(),
+            description: String::new(),
+            npm_package: Some("pi-x".to_string()),
+            github_url: None,
+            install_command: "pi install npm:pi-x".to_string(),
+            category: String::new(),
+            kind_label: String::new(),
+            detail_url: None,
+            stars: None,
+            weekly_downloads: None,
+            download_trend: None,
+            search_text: String::new(),
+        };
+        let path = disk_cache_path();
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        // 当日 fetchedAt → 跳过
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "schema": CACHE_SCHEMA,
+                "fetchedAt": chrono::Local::now().to_rfc3339(),
+                "entries": vec![entry.clone(); MIN_EXPECTED_CARDS],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(prefetch_should_skip(), "当日缓存应跳过预拉取");
+        // 隔日 fetchedAt → 触发
+        let yesterday = chrono::Local::now() - chrono::Duration::days(1);
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "schema": CACHE_SCHEMA,
+                "fetchedAt": yesterday.to_rfc3339(),
+                "entries": vec![entry; MIN_EXPECTED_CARDS],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(!prefetch_should_skip(), "隔日缓存应触发预拉取");
+        let _ = std::fs::remove_file(&path);
     }
 }

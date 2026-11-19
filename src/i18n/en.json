@@ -89,7 +89,7 @@
     "installFailedUnknown": "Unknown error, check the console log",
     "uacCancelled": "Administrator authorization was cancelled; nothing was installed. Retry and choose Yes in the authorization dialog.",
     "pathAddedHint": "Installed successfully. The npm global bin directory was missing from PATH and has been added to your user PATH: {{dir}}. Open a new terminal window for the command to be recognized (already-open windows will not inherit it).",
-    "checking": "Checking environment...",
+    "checking": "Checking…",
     "enterWorkspace": "Enter Workspace",
     "selectModule": "View more",
     "updateSuccess": "Updated",
@@ -97,7 +97,6 @@
     "updateVersionMismatch": "The detected version after updating is still {{current}}; target version: {{target}}",
     "checkUpdate": "Check updates",
     "checkingUpdate": "Checking...",
-    "checking": "Checking…",
     "updateLabel": "Update",
     "adapter": "Adapter",
     "mcpDesc": "Provides Jishu Agent with MCP service capabilities (web search, web reading, etc.)",
@@ -1876,7 +1875,9 @@
     "perWeek": "/wk",
     "updateFailedItems": "Failed to update: {{names}}",
     "searchUnified": "Search…",
-    "clearSearch": "Clear search"
+    "clearSearch": "Clear search",
+    "extSlow": "Slow network — the catalog is taking a while; retry later",
+    "extLoading": "Loading catalog…"
   },
   "onboarding": {
     "initTitle": "Preparing your agent",
