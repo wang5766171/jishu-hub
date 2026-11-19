@@ -106,7 +106,7 @@ Rust 层是微内核形态，四个核心抽象：
 
 ## 6. 渲染意图与审批策略链（两个横切层）
 
-**渲染意图（`agent/tool_view.rs`）**：工具视图分类的**单一权威源**——分类与位置提取一次完成，`view` 随 `ToolUseStart` 事件与持久化 `ContentBlock::ToolUse` 块携带，直播与回放同源渲染，UI 只做「意图→组件」纯映射。新增工具分类只改 Rust；前端 `classifyToolName` 仅为 v1 之前历史数据的回退。
+**渲染意图（`agent/tool_view.rs`）**：工具视图分类的**单一权威源**——分类与位置提取一次完成，`view` 随 `ToolUseStart` 事件与持久化 `ContentBlock::ToolUse` 块携带，直播与回放同源渲染，UI 只做「意图→组件」纯映射。新增工具分类只改 Rust；前端 `classifyToolName` 已于 v0.9.0 需求4 删除（版本级「无旧数据兼容」裁决：旧数据无 view 按 other 渲染），渲染分类唯一权威源在 Rust（含 per-agent 覆写钩子 `agent_tool_overrides`，填表条件=manifest agent 实际出现分类偏差）。
 
 **审批策略链（`agent/policy.rs`）**：所有「这个动作允许吗？」决策统一为可组合 waterfall 链——策略拥有决策就短路 Allow/Deny，否则 Delegate（弹 UI / 无头拒绝）。挂载点：ACP `session/request_permission`、codex `requestApproval`、Pi 审批型 extension confirm 到达时先过链；无头任务链含 `HeadlessDenyPolicy` 自动拒绝；orchestrator 档位门控同链组装。「始终允许」等记忆回写必须与链评估同形状（到达时登记原始上下文，resolve 时取回），记忆跨重启持久化于 `~/.jishu-hub/approval.db`（`agent/policy_store.rs`，OnceMemory 抽象）。会话工具模式（完全访问/变更前审批/智能审批/只读）只是不同链装配，不改决策机制。审批类型（命令执行/文件写入/其他）按动作真实分类，不恒为 Other。
 
@@ -209,7 +209,7 @@ npx vitest run test/<相关文件>.test.ts
 
 - **Harmes 自学习**：作为学习/evaluation/policy 层接入，输入来自任务事实与人工反馈，输出只经 policy/skill/planner hint 影响任务；可追踪、可回滚，禁止隐式修改 adapter 行为。
 - **远程调度会话**：作为 Remote Runtime / Session Broker 层，仍走 adapter contract + NormalizedEvent，GUI 不感知本地/远程差异。
-- **微内核补完**（v0.8.1 已落地：声明式 TOML manifest、进程外 ACP 插件、ConfigAdapter 角色拆分、Once 记忆 SQLite 持久化 + hub 侧会话存储；剩余：渲染意图 v2 与前端 fallback 删除，v0.9.0 观察期评估）：设计全文 `docs/feature/plugin-architecture-design.md`，演进剩余项见 `docs/遗留需求/`。
+- **微内核补完**（v0.8.1 已落地：声明式 TOML manifest、进程外 ACP 插件、ConfigAdapter 角色拆分、Once 记忆 SQLite 持久化 + hub 侧会话存储；渲染意图 v2 与前端 fallback 删除已于 v0.9.0 需求4 完成——遗留归档 2026-11-19 关账）：设计全文 `docs/feature/plugin-architecture-design.md`。
 
 ## 16. 插件体系（v0.8.1）
 
