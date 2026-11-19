@@ -131,6 +131,7 @@ describe("场景套装一键安装（需求5）", () => {
     // 预置 item-b 已安装（plugin_list 含 item-b）
     invokeCommand.mockImplementation((cmd: string, args: Record<string, unknown>) => {
       if (cmd === "plugin_list") return Promise.resolve({ plugins: [{ id: "item-b", enabled: true }] });
+      void args;
       if (cmd === "market_install") return Promise.resolve("installed");
       if (cmd === "market_list_bundles") return Promise.resolve([BUNDLE]);
       if (cmd === "market_list_curated")
