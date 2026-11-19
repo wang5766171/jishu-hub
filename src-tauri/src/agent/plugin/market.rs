@@ -35,12 +35,38 @@ pub struct MarketEntry {
     pub usage_hint: Option<String>,
 }
 
+/// v0.9.8 需求5：场景套装条目——`ref` 引用而非复制（单一真源）：
+/// `curated:<entry-id>`（entries 内 id）或 `skillhub:<slug>`（SkillHub 技能，
+/// 安装时解析，下架则该项标不可用）。`required` 项套装详情锁定勾选。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarketBundleItem {
+    pub r#ref: String,
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// 场景套装（六场景官方套装卡；清单经用户审定《套装清单-待勾选》后固化，
+/// 未审定场景暂不进 bundles 段）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarketBundle {
+    pub id: String,
+    /// 场景 id（与 plugin-scenes.ts 共用；all 不合法）。
+    pub scene: String,
+    pub title: String,
+    pub description: String,
+    pub items: Vec<MarketBundleItem>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CuratedFile {
     #[serde(default)]
     _meta: serde_json::Value,
     entries: Vec<MarketEntry>,
+    #[serde(default)]
+    bundles: Vec<MarketBundle>,
 }
 
 fn curated() -> &'static Vec<MarketEntry> {
@@ -49,11 +75,36 @@ fn curated() -> &'static Vec<MarketEntry> {
         serde_json::from_str::<CuratedFile>(CURATED_JSON)
             .unwrap_or_else(|e| {
                 panic!(
-                "curated.json 结构非法（市场单一真源解析失败，检查 _meta/entries 字段拼写）: {e}"
+                "curated.json 结构非法（市场单一真源解析失败，检查 _meta/entries/bundles 字段拼写）: {e}"
             )
             })
             .entries
     })
+}
+
+fn bundles() -> &'static Vec<MarketBundle> {
+    static BUNDLES: std::sync::OnceLock<Vec<MarketBundle>> = std::sync::OnceLock::new();
+    BUNDLES.get_or_init(|| {
+        serde_json::from_str::<CuratedFile>(CURATED_JSON)
+            .unwrap_or_else(|e| panic!("curated.json 结构非法（bundles 段解析失败）: {e}"))
+            .bundles
+    })
+}
+
+/// v0.9.8 需求5：场景套装清单（curated: 引用已校验存在于 entries——启动期
+/// fail loud 防拼写漂移；skillhub: 引用安装期解析）。
+pub fn market_list_bundles() -> Vec<MarketBundle> {
+    let entries = curated();
+    for b in bundles() {
+        for item in &b.items {
+            if let Some(id) = item.r#ref.strip_prefix("curated:") {
+                if !entries.iter().any(|e| e.id == id) {
+                    panic!("curated.json bundles 段引用不存在的 entry: {}", item.r#ref);
+                }
+            }
+        }
+    }
+    bundles().clone()
 }
 
 /// 按场景过滤（None = 全量；场景 id 与前端 plugin-scenes.ts 共用）。

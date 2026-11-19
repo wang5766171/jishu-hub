@@ -1155,6 +1155,12 @@ pub(crate) fn market_list_curated(
     Ok(agent::plugin::market::market_list_curated(scene.as_deref()))
 }
 
+/// v0.9.8 需求5：场景套装清单（curated: 引用启动期校验；skillhub: 安装期解析）。
+#[tauri::command]
+pub(crate) fn market_list_bundles() -> Result<Vec<agent::plugin::market::MarketBundle>, String> {
+    Ok(agent::plugin::market::market_list_bundles())
+}
+
 /// C2-① 安装（幂等；pi-package 形态含 npm 包安装）。评审 P1-8：成功后
 /// rebuild_registry 热生效——清单/分发/settings.json packages 即时刷新
 /// （对齐 skillhub_install 既有写法，装完不用重启/手动刷新）。

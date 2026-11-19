@@ -596,6 +596,7 @@ pub fn run() {
             commands::agents::cli_validate_poll,
             commands::agents::cli_validate_submit,
             commands::agents::market_list_curated,
+            commands::agents::market_list_bundles,
             commands::agents::market_install,
             commands::agents::market_uninstall,
             commands::agents::pi_package_catalog,

@@ -37,5 +37,15 @@
     { "id": "session.task-board", "kind": "composed", "title": "任务看板", "description": "任务步骤实时状态（含单对话流任务步骤灯）、点击钻入子任务会话、画布与取消流程——会话流步骤呈现的唯一载体，必装", "category": "session", "scenes": [], "required": true },
     { "id": "session.interaction-render", "kind": "composed", "title": "交互问答卡", "description": "把交互问答块渲染成统一样式的卡片，含选项与已选高亮", "category": "render", "scenes": [], "required": false },
     { "id": "session.usage", "kind": "builtin-ts", "title": "用量成本面板", "description": "显示 token、成本、会话排行与趋势", "category": "session", "scenes": [], "required": false }
+  ],
+  "bundles": [
+    { "id": "bundle-programming", "scene": "programming", "title": "编程套装", "description": "需求理清 → 计划拆解 → 写后体检，编程场景推荐组合", "items": [
+      { "ref": "curated:task-requirements", "required": true },
+      { "ref": "curated:task-plan", "required": true },
+      { "ref": "curated:pi-lens", "required": false }
+    ] },
+    { "id": "bundle-video", "scene": "video", "title": "视频制作套装", "description": "从需求讨论到分镜素材生成的视频创作流水线", "items": [
+      { "ref": "curated:session.video-maker", "required": true }
+    ] }
   ]
 }

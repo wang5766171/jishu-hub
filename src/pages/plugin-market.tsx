@@ -39,6 +39,15 @@ interface MarketEntry {
   usage_hint?: string;
 }
 
+/** v0.9.8 需求5：场景套装（curated.json bundles 段，Rust market_list_bundles）。 */
+interface MarketBundle {
+  id: string;
+  scene: string;
+  title: string;
+  description: string;
+  items: Array<{ ref: string; required: boolean }>;
+}
+
 interface PiPackageEntry {
   plugin_id: string;
   name: string;
@@ -247,6 +256,17 @@ export function PluginMarketPanel({
   const [skillPageSize, setSkillPageSize] = useState(20);
 
   const [curated, setCurated] = useState<MarketEntry[]>([]);
+  // v0.9.8 需求5：套装 curated: 引用解析用全量清单 ref（scene 过滤态下也需全量）。
+  const bundleCuratedRef = useRef<MarketEntry[]>([]);
+  // v0.9.8 需求5：场景套装（精选源场景筛选区上方横滑卡）。
+  const [bundles, setBundles] = useState<MarketBundle[]>([]);
+  const [bundleOpen, setBundleOpen] = useState<MarketBundle | null>(null);
+  const [bundleChecked, setBundleChecked] = useState<Set<string>>(new Set());
+  // 串行安装执行器状态：per-item pending/running/ok/fail（单项失败继续下一项）。
+  const [bundleRun, setBundleRun] = useState<{
+    bundleId: string;
+    statuses: Array<{ ref: string; state: "pending" | "running" | "ok" | "fail"; error?: string }>;
+  } | null>(null);
   const [extensions, setExtensions] = useState<PiPackageEntry[]>([]);
   const [onlineKw, setOnlineKw] = useState("");
   // 十四轮 UI 统一：精选页签统一搜索框（本地按名称/说明过滤）。
@@ -361,6 +381,15 @@ export function PluginMarketPanel({
       });
       if (runId !== marketLoadRunId) return;
       setCurated(curatedEntries ?? []);
+      // v0.9.8 需求5：套装清单（内嵌廉价，每次 load 同步刷新；curated: 引用
+      // 的展示名解析用全量 entries——scene 过滤态下也要能解析，故独立拉全量）。
+      const [bundleList, allCurated] = await Promise.all([
+        invokeCommand<MarketBundle[]>("market_list_bundles").catch(() => [] as MarketBundle[]),
+        invokeCommand<MarketEntry[]>("market_list_curated", { scene: null }),
+      ]);
+      if (runId !== marketLoadRunId) return;
+      setBundles(bundleList ?? []);
+      bundleCuratedRef.current = allCurated ?? [];
       if (source !== "skills") {
         await refreshInstalled();
         if (runId !== marketLoadRunId) return;
@@ -543,6 +572,64 @@ export function PluginMarketPanel({
     [busyIds, load],
   );
 
+  // ── v0.9.8 需求5：套装条目解析与串行安装执行器 ──────────────────────────
+  /** curated:/skillhub: 引用 → 展示条目（curated: 未命中 = 清单漂移不可用；
+   * skillhub: 下架在安装期以失败态呈现——单项失败不打断整批）。 */
+  const resolveBundleItem = useCallback(
+    (ref: string): { title: string; kindName: string; installed: boolean; unavailable: boolean } => {
+      if (ref.startsWith("curated:")) {
+        const id = ref.slice("curated:".length);
+        const e = bundleCuratedRef.current.find((c) => c.id === id);
+        if (!e) return { title: ref, kindName: "-", installed: false, unavailable: true };
+        return { title: e.title, kindName: t("market.guideKindPlugin", "插件"), installed: installedIds.has(id), unavailable: false };
+      }
+      if (ref.startsWith("skillhub:")) {
+        const slug = ref.slice("skillhub:".length);
+        return { title: slug, kindName: t("market.guideKindSkill", "技能"), installed: !!skillInstalled[slug], unavailable: false };
+      }
+      return { title: ref, kindName: "-", installed: false, unavailable: true };
+    },
+    [installedIds, skillInstalled, t],
+  );
+
+  /** 串行安装（技能装完再装下一项，规避并发写盘竞争）；单项失败继续，末尾
+   * 汇总（失败项可重试）。套装详情弹层即确认界面——单项不再弹确认卡。 */
+  const runBundleInstall = useCallback(
+    async (bundleId: string, refs: string[]) => {
+      const statuses = refs.map((ref) => ({ ref, state: "pending" as const }));
+      setBundleRun({ bundleId, statuses: [...statuses] });
+      for (let i = 0; i < refs.length; i++) {
+        setBundleRun((prev) =>
+          prev && prev.bundleId === bundleId
+            ? { ...prev, statuses: prev.statuses.map((s, j) => (j === i ? { ...s, state: "running" } : s)) }
+            : prev,
+        );
+        try {
+          const ref = refs[i];
+          if (ref.startsWith("curated:")) {
+            await invokeCommand<string>("market_install", { pluginId: ref.slice("curated:".length) });
+          } else if (ref.startsWith("skillhub:")) {
+            await invokeCommand<string>("skillhub_install", { slug: ref.slice("skillhub:".length) });
+          }
+          setBundleRun((prev) =>
+            prev && prev.bundleId === bundleId
+              ? { ...prev, statuses: prev.statuses.map((s, j) => (j === i ? { ...s, state: "ok" } : s)) }
+              : prev,
+          );
+        } catch (e) {
+          setBundleRun((prev) =>
+            prev && prev.bundleId === bundleId
+              ? { ...prev, statuses: prev.statuses.map((s, j) => (j === i ? { ...s, state: "fail", error: String(e) } : s)) }
+              : prev,
+          );
+        }
+      }
+      onChanged?.();
+      await load();
+    },
+    [load, onChanged],
+  );
+
   const sceneTabs = useMemo(
     () => [{ id: "all", label: t("market.sceneAll", "全部") }, ...PLUGIN_SCENES.map((s) => ({ id: s.id, label: t(s.nameKey) }))],
     [t],
@@ -610,6 +697,38 @@ export function PluginMarketPanel({
           </Button>
         </div>
       </div>
+
+      {/* v0.9.8 需求5：场景套装横滑卡（精选源；当前场景筛选命中时高亮联动） */}
+      {source === "curated" && bundles.length > 0 && (
+        <div className="flex items-stretch gap-2 overflow-x-auto pb-0.5" data-bundle-row="">
+          <span className="shrink-0 self-center text-[10px] text-muted-foreground">
+            {t("market.bundleSection", "场景套装")}
+          </span>
+          {bundles.map((b) => (
+            <button
+              key={b.id}
+              type="button"
+              data-bundle-card={b.scene}
+              onClick={() => {
+                setBundleOpen(b);
+                setBundleChecked(new Set(b.items.filter((i) => i.required).map((i) => i.ref)));
+                setBundleRun(null);
+              }}
+              className={cn(
+                "shrink-0 rounded-lg border px-3 py-1.5 text-left transition-colors",
+                scene === b.scene
+                  ? "border-primary/60 bg-primary/10"
+                  : "border-border/60 hover:border-primary/40",
+              )}
+            >
+              <div className="text-xs font-medium text-foreground">{b.title}</div>
+              <div className="text-[10px] text-muted-foreground">
+                {t("market.bundleItems", { defaultValue: "{{n}} 项", n: b.items.length })} · {b.description}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* 工具行（十四轮 UI 统一，业界通行布局：筛选 chips 在左、搜索框恒
           最右、结构各页签恒定）：场景筛选（精选/技能）或分类筛选（扩展）；
@@ -1301,6 +1420,121 @@ export function PluginMarketPanel({
       {/* 技能安装确认弹窗（useConfirmDialog 契约：须渲染 dialogNode，否则
           confirm() 永不落定——点击安装无反应的根因）。 */}
       {confirmDialogNode}
+
+      {/* v0.9.8 需求5：套装详情弹层（勾选微调 + 串行安装 + 汇总/重试） */}
+      <Dialog
+        open={bundleOpen !== null}
+        onOpenChange={(o) => {
+          if (!o && (!bundleRun || bundleRun.statuses.every((s) => s.state !== "running"))) {
+            setBundleOpen(null);
+            setBundleRun(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-md" data-bundle-dialog="">
+          <DialogHeader>
+            <DialogTitle>{bundleOpen?.title}</DialogTitle>
+          </DialogHeader>
+          <p className="-mt-1 text-xs text-muted-foreground">{bundleOpen?.description}</p>
+          <div className="flex max-h-72 flex-col gap-1.5 overflow-y-auto">
+            {bundleOpen?.items.map((item) => {
+              const info = resolveBundleItem(item.ref);
+              const runState = bundleRun?.statuses.find((s) => s.ref === item.ref)?.state;
+              const checked = bundleChecked.has(item.ref);
+              return (
+                <label
+                  key={item.ref}
+                  className={cn(
+                    "flex items-center gap-2 rounded-lg border px-2.5 py-2",
+                    info.unavailable ? "border-border/40 opacity-55" : "border-border/60",
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 accent-[var(--primary)]"
+                    checked={item.required || checked}
+                    disabled={item.required || info.unavailable || runState === "running" || info.installed}
+                    onChange={(e) =>
+                      setBundleChecked((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(item.ref);
+                        else next.delete(item.ref);
+                        return next;
+                      })
+                    }
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs text-foreground">{info.title}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {info.kindName}
+                      {item.required ? ` · ${t("market.bundleRequired", "必备")}` : ""}
+                      {info.installed ? ` · ${t("market.installed", "已安装")}` : ""}
+                      {info.unavailable ? ` · ${t("market.bundleUnavailable", "不可用")}` : ""}
+                    </span>
+                  </span>
+                  {runState === "running" && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />}
+                  {runState === "ok" && <Check className="h-3.5 w-3.5 shrink-0 text-[var(--icon-success)]" />}
+                  {runState === "fail" && <X className="h-3.5 w-3.5 shrink-0 text-destructive" />}
+                </label>
+              );
+            })}
+          </div>
+          {bundleRun && bundleRun.statuses.every((s) => s.state !== "pending" && s.state !== "running") ? (
+            (() => {
+              const okCount = bundleRun.statuses.filter((s) => s.state === "ok").length;
+              const failed = bundleRun.statuses.filter((s) => s.state === "fail");
+              return (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    {t("market.bundleDone", {
+                      defaultValue: "安装完成：成功 {{ok}} 项、失败 {{fail}} 项",
+                      ok: okCount,
+                      fail: failed.length,
+                    })}
+                  </span>
+                  {failed.length > 0 && (
+                    <Button
+                      size="sm"
+                      className="h-6 px-2 text-[10px]"
+                      onClick={() => {
+                        if (bundleOpen) void runBundleInstall(bundleOpen.id, failed.map((s) => s.ref));
+                      }}
+                    >
+                      {t("market.bundleRetryFailed", "重试失败项")}
+                    </Button>
+                  )}
+                </div>
+              );
+            })()
+          ) : (
+            <div className="flex justify-end">
+              <Button
+                size="sm"
+                disabled={(() => {
+                  if (bundleRun?.statuses.some((s) => s.state === "running")) return true;
+                  if (!bundleOpen) return true;
+                  const refs = bundleOpen.items
+                    .filter((i) => i.required || bundleChecked.has(i.ref))
+                    .filter((i) => !resolveBundleItem(i.ref).installed && !resolveBundleItem(i.ref).unavailable);
+                  return refs.length === 0;
+                })()}
+                onClick={() => {
+                  if (!bundleOpen) return;
+                  const refs = bundleOpen.items
+                    .filter((i) => (i.required || bundleChecked.has(i.ref)))
+                    .filter((i) => !resolveBundleItem(i.ref).installed && !resolveBundleItem(i.ref).unavailable)
+                    .map((i) => i.ref);
+                  if (refs.length > 0) void runBundleInstall(bundleOpen.id, refs);
+                }}
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span className="ml-1">{t("market.bundleInstall", "安装选中项")}</span>
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
 
       {/* v0.9.8 需求4：装后引导卡（三源统一，fixed toast 非阻断） */}
       {guideCard && (
