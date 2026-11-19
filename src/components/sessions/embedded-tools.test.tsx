@@ -23,6 +23,25 @@ describe("UserTextWithPills（M7 → v0.9.0 需求3：元数据契约）", () =>
     expect(screen.getByText("列出我的仓库")).toBeTruthy();
   });
 
+  it("U2a（v0.9.8 需求9-② 方案 B）：pill 渲染在正文之后，不再前置", () => {
+    const { container } = render(
+      <UserTextWithPills
+        text="正文在前"
+        toolIds={["gh-cli"]}
+        toolNames={{ "gh-cli": "GitHub" }}
+      />,
+    );
+    const host = container.querySelector("span.whitespace-pre-wrap");
+    expect(host).toBeTruthy();
+    if (!host) return;
+    // DOM 序列断言：正文文本节点先于 pill（原「pill 恒前置」误导用户实测 #3）
+    const children = [...host.childNodes];
+    const textIdx = children.findIndex((n) => n.textContent === "正文在前");
+    const pillIdx = children.findIndex((n) => (n.textContent || "").includes("GitHub"));
+    expect(textIdx).toBeGreaterThanOrEqual(0);
+    expect(pillIdx).toBeGreaterThan(textIdx);
+  });
+
   it("toolIds 为空时只渲染正文", () => {
     render(<UserTextWithPills text="普通消息" toolIds={[]} toolNames={{}} />);
     expect(screen.getByText("普通消息")).toBeTruthy();

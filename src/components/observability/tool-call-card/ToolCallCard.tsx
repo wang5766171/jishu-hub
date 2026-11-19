@@ -181,7 +181,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
         {duration && (
           <span className="text-[0.82em] text-muted-foreground shrink-0">{duration}</span>
         )}
-        <StatusBadge status={call.status} />
+        <StatusBadge status={call.status} retried={call.retriedSuccess} />
         {expanded ? (
           <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
         ) : (

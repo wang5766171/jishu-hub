@@ -401,9 +401,14 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
     const latest = latestVersions.get(id);
     const hasUpdate = ok && !!version && !!latest && isVersionNewer(version, latest);
     const updateCmd = runtime?.update_command ?? undefined;
+    // v0.9.8 需求9-④：检测 IPC 未返回前的中间态——此前 env=null 时 ok 恒
+    // false，未检测先显「未安装」（用户实测 #7「不具备」观感），先显检测中。
+    const checking = env === null;
     return (
       <div key={id} className="flex items-center gap-3 rounded-lg border border-border/60 px-3 py-2.5">
-        {ok ? (
+        {checking ? (
+          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary/70" />
+        ) : ok ? (
           <Check className="h-4 w-4 shrink-0 text-[var(--icon-success)]" />
         ) : (
           <X className={cn("h-4 w-4 shrink-0", optional ? "text-muted-foreground/50" : "text-destructive")} />
@@ -417,7 +422,9 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
               </span>
             )}
           </div>
-          {ok ? (
+          {checking ? (
+            <div className="text-sm text-muted-foreground">{t("env.checking", "检测中…")}</div>
+          ) : ok ? (
             <div className="text-sm text-muted-foreground">
               {version ? `v${version}` : t("env.normal", "已就绪")}
               {hasUpdate && (
@@ -435,7 +442,7 @@ function EnvPrepStep({ onReady }: { onReady: () => void }) {
             </div>
           )}
         </div>
-        {!ok && (
+        {!checking && !ok && (
           <Button
             variant="outline"
             size="sm"

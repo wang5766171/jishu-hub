@@ -12,7 +12,15 @@ const statusConfig: Record<ToolStatus, { icon: typeof Clock; color: string; labe
   aborted: { icon: Ban, color: "var(--tool-aborted)", labelKey: "sessions.toolStatusAborted" },
 };
 
-export const StatusBadge = memo(function StatusBadge({ status }: { status: ToolStatus }) {
+export const StatusBadge = memo(function StatusBadge({
+  status,
+  retried,
+}: {
+  status: ToolStatus;
+  /** v0.9.8 需求9-①：曾失败、经重试成功的调用——success 徽标旁加「已重试」
+   * 小标记（错误输出保留在卡内展开区，历史不删——审计价值）。 */
+  retried?: boolean;
+}) {
   const { t } = useTranslation();
   const config = statusConfig[status];
   const Icon = config.icon;
@@ -22,6 +30,11 @@ export const StatusBadge = memo(function StatusBadge({ status }: { status: ToolS
         className={cn("w-[1em] h-[1em]", config.animate ? "animate-spin" : "")}
       />
       {t(config.labelKey, config.labelKey.split(".").pop() ?? "")}
+      {retried && (
+        <span className="ml-0.5 rounded-full bg-muted px-1 py-px font-medium text-muted-foreground">
+          {t("sessions.toolStatusRetried", "已重试")}
+        </span>
+      )}
     </span>
   );
 });

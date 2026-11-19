@@ -21,6 +21,10 @@ export interface ToolCall {
   input: Record<string, unknown>;
   output?: string;
   error?: string;
+  /** v0.9.8 需求9-①：曾失败、经重试成功的调用（直播=AutoRetryStatus 翻转，
+   * 回放=同消息内同名工具存在后置成功结果的启发式）——状态归 success +
+   * 徽标加「已重试」，错误输出保留可展开。 */
+  retriedSuccess?: boolean;
   startedAt?: number;
   endedAt?: number;
   /** v0.9.4 需求8：运行中最新输出快照（长时 bash 类工具的流式中间输出，

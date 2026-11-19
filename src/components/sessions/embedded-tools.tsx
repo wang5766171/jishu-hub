@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { Blocks, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 /** 会话工具条目（后端 session_tool_list，与 chat-input 的 SessionTool 同构）。 */
 interface SessionTool {
@@ -56,18 +57,22 @@ export function EmbeddedToolPills({
   toolIds,
   toolNames,
   onRemove,
+  trailing,
 }: {
   toolIds: string[];
   toolNames: Record<string, string>;
   /** 收版反馈（2026-11-13 用户裁决）：编辑态工具可删——传入后每个 pill 带
    * 移除按钮（删除本次重发不再携带该工具调用；不传=静态展示）。 */
   onRemove?: (id: string) => void;
+  /** v0.9.8 需求9-②：pill 位于正文之后时置 true——外距换向前（mr→ml），
+   * 与前置排版的间距镜像。 */
+  trailing?: boolean;
 }) {
   // 评审 P1-11 修复：移除钮 title 直出中文改 t()（hook 须在提前 return 之前）。
   const { t } = useTranslation();
   if (toolIds.length === 0) return null;
   return (
-    <span className="mr-1 inline-flex flex-wrap items-center gap-1 align-baseline">
+    <span className={cn("inline-flex flex-wrap items-center gap-1 align-baseline", trailing ? "ml-1" : "mr-1")}>
       {toolIds.map((id) => (
         <span
           key={id}
@@ -110,7 +115,11 @@ export function EmbeddedToolPill({ name }: { name: string }) {
 
 /** 用户消息正文展示统一组件（M5 → v0.9.0 需求3 元数据化）：tool_ids 快照
  * → pill + 正文同一内联流。pill 数据一律来自 toolIds 元数据参数，组件本身
- * 零文本解析（展示面单源纪律 §16.3）。 */
+ * 零文本解析（展示面单源纪律 §16.3）。
+ * v0.9.8 需求9-②：pill 渲染在正文**之后**（方案 B 统一末尾）——注入本来就
+ * 是后缀追加（compose_tool_message 单源），原「pill 恒前置」误导用户以为
+ * 工具挂在了消息开头（用户实测 #3「插件永远在最前面」）。真实插入位置的
+ * 元数据方案（A）留待用户验收 B 后裁决。 */
 export function UserTextWithPills({
   text,
   toolIds,
@@ -122,8 +131,8 @@ export function UserTextWithPills({
 }) {
   return (
     <span className="whitespace-pre-wrap break-all">
-      <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
       {text}
+      <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} trailing />
     </span>
   );
 }

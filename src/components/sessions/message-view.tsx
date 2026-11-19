@@ -370,6 +370,28 @@ function buildRenderItemsForMessages(
     messages[messageIndex].content.some((block) => block.type === "interaction"),
   );
 
+  // v0.9.8 需求9-① 回放侧：同名后置成功启发式——失败调用之后存在同名工具的
+  // 成功结果（pi auto_retry 重做 / 模型自行重试成功），该失败卡按「已重试
+  // 成功」呈现（status success + 已重试徽标，错误输出保留可展开——用户裁决
+  // 「重试成功后算作成功」，历史不删）。直播侧同语义翻转见 use-stream-store
+  // auto_retry_status 分支；两机制对齐「最终结果呈现」。
+  const orderedCalls: Array<{ id: string; name: string; isError: boolean }> = [];
+  for (const messageIndex of messageIndices) {
+    for (const block of messages[messageIndex].content) {
+      if (block.type === "tool_use") {
+        orderedCalls.push({ id: block.id, name: block.name, isError: errorToolIds.has(block.id) });
+      }
+    }
+  }
+  const retriedToolIds = new Set<string>();
+  orderedCalls.forEach((call, i) => {
+    if (!call.isError) return;
+    const hasLaterSuccess = orderedCalls
+      .slice(i + 1)
+      .some((c) => c.name === call.name && !c.isError && resultMap.has(c.id));
+    if (hasLaterSuccess) retriedToolIds.add(call.id);
+  });
+
   const flushTools = () => {
     if (pendingTools.length === 0) return;
     items.push({ kind: "tool-group", calls: pendingTools });
@@ -420,14 +442,17 @@ function buildRenderItemsForMessages(
         }
 
         const id = block.id || `${block.name}-${messageIndex}-${blockIndex}`;
+        const retried = retriedToolIds.has(id);
         pendingTools.push({
           id,
           toolName: block.name,
           kind: resolveToolKind(block.name, block.view),
           view: block.view,
           // 回放状态与直播对齐：tool_result 带 is_error 的失败调用显示
-          // Error 徽标（此前硬编码 success，把真实失败掩成 Done）。
-          status: errorToolIds.has(block.id) ? "error" : "success",
+          // Error 徽标（此前硬编码 success，把真实失败掩成 Done）；
+          // 存在后置同名成功结果的按「已重试成功」呈现（需求9-①）。
+          status: retried ? "success" : errorToolIds.has(block.id) ? "error" : "success",
+          retriedSuccess: retried || undefined,
           input: typeof block.input === "object" && block.input !== null
             ? (block.input as Record<string, unknown>)
             : {},
@@ -716,12 +741,12 @@ function UserBubble({
             // v0.8.1 需求7（28f37e8e 形态）：首文本块与插件 pill 同一个内联
             // 容器——pill 与正文同行流式排列；文本用 displayText（标记已剥，
             // 不再显示 [JISHU-TOOLS:...] 原文）。
+            // v0.9.8 需求9-②（方案 B 统一末尾）：pill 渲染在正文之后——注入
+            // 本就是后缀追加，原「pill 恒前置」误导（用户实测 #3）；与
+            // UserTextWithPills（暂存/steer 路径）同序，展示面单源。
             if (item.block.type === "text" && item.block === firstTextBlock) {
               return (
                 <div key={`b-${item.blockIndex}`} className="overflow-hidden">
-                  {toolIds.length > 0 && (
-                    <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
-                  )}
                   <TextBlock
                     text={displayText}
                     query={renderingQuery}
@@ -729,6 +754,9 @@ function UserBubble({
                     matchOffset={searchOffsets.get(offsetKey) ?? 0}
                     currentMatch={currentOcc}
                   />
+                  {toolIds.length > 0 && (
+                    <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} trailing />
+                  )}
                 </div>
               );
             }

@@ -268,3 +268,42 @@ describe("streamStore turnToken（停止幂等的回合令牌）", () => {
     streamStore.drop(pendingId);
   });
 });
+
+describe("v0.9.8 需求9-①：auto_retry 成功结束翻转失败卡（重试成功算作成功）", () => {
+  const SID = "session-retry-flip";
+  const retryEnd = (success: boolean, final_error?: string) =>
+    chunk({
+      kind: "auto_retry_status",
+      active: false,
+      attempt: 2,
+      max_attempts: 5,
+      delay_ms: 0,
+      error_message: "",
+      success,
+      ...(final_error ? { final_error } : {}),
+    });
+
+  it("U1a: 成功结束——本轮 error 态工具标 retriedSuccess（渲染层归 success+已重试徽标）", () => {
+    streamStore.drop(SID);
+    streamStore.start(SID, "run");
+    streamStore.push(SID, chunk({ kind: "tool_use_start", call_id: "call-f1", tool: "bash", input: { command: "a" } }));
+    streamStore.push(SID, chunk({ kind: "tool_use_result", call_id: "call-f1", output: "boom", is_error: true }));
+    streamStore.push(SID, retryEnd(true));
+
+    const tools = streamStore.getState(SID)!.tools;
+    expect(tools[0].isError).toBe(true);
+    expect(tools[0].retriedSuccess).toBe(true);
+  });
+
+  it("重试耗尽（success=false）不翻转——真失败保持红框", () => {
+    streamStore.drop(SID);
+    streamStore.start(SID, "run");
+    streamStore.push(SID, chunk({ kind: "tool_use_start", call_id: "call-f2", tool: "bash", input: { command: "b" } }));
+    streamStore.push(SID, chunk({ kind: "tool_use_result", call_id: "call-f2", output: "boom", is_error: true }));
+    streamStore.push(SID, retryEnd(false, "exhausted"));
+
+    const tools = streamStore.getState(SID)!.tools;
+    expect(tools[0].isError).toBe(true);
+    expect(tools[0].retriedSuccess).toBeUndefined();
+  });
+});

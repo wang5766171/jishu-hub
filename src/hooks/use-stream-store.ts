@@ -18,6 +18,11 @@ export interface StreamToolUse {
   /** v0.9.4 需求8：最新中间输出快照（tool_execution_update，运行中展开
    * 可见——与「卡死」明确区分；完成后由 output 接替）。 */
   partialOutput?: string;
+  /** v0.9.8 需求9-①：曾失败、经 pi auto_retry 成功的调用——重试成功结束时
+   * 由 store 翻转（本轮已失败卡整体翻转：auto_retry 重做整个模型调用，失败
+   * 尝试的卡全部被重试取代；渲染层 status 归 success + 「已重试」徽标，
+   * 错误输出保留可展开）。 */
+  retriedSuccess?: boolean;
 }
 
 export interface StepInfo {
@@ -352,6 +357,15 @@ class StreamStore {
         autoRetry = null;
         if (!data.success && data.final_error) {
           retryFailed = { attempt: data.attempt, finalError: data.final_error };
+        }
+        if (data.success) {
+          // v0.9.8 需求9-①：重试成功——本轮已失败卡翻转「已重试成功」视觉
+          // 态（用户裁决「重试成功后算作成功」）：AutoRetryStatus 无 tool_call
+          // 关联字段，auto_retry 重做的是整个模型调用，失败尝试的卡整体被
+          // 取代——翻转全部当前 error 态工具（错误输出保留在卡内，历史不删）。
+          tools = tools.map((tool) =>
+            tool.isError && !tool.retriedSuccess ? { ...tool, retriedSuccess: true } : tool,
+          );
         }
       }
     } else if (data.kind === "tool_use_start") {

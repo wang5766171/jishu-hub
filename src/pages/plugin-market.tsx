@@ -12,7 +12,7 @@
  * 页」抽出后，已装/批量更新状态机（extUpdates/skillUpdates/
  * checkingUpdates/updateBusy/batchUpdates/extInstalled/extVersions 等）
  * 已全部迁往 plugins-page.tsx——本组件仅剩市场三源装载（onlineInstalled/
- * skillInstalled/piindex/busyId）与 load/onChanged 回调。文件规模与拆分
+ * skillInstalled/piindex/busyIds）与 load/onChanged 回调。文件规模与拆分
  * 处置仍随 chat-page 拆分方向后续评估。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -250,7 +250,10 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  // v0.9.8 需求9-③：单值互斥 → per-item busy 集合。此前一个技能安装中时
+  // 另一项点击被静默丢弃（if (busyId) return）——技能安装与市场安装无资源
+  // 冲突，允许并行；同一项重复点击仍幂等拒绝（busyIds.has 同项守卫）。
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
 
   // 评审 P1-13 修复①：搜索关键词 300ms 防抖（局部 state + 定时器，卸载清理
   // 由 effect 返回）——不再每击键立即触发 load 发 IPC。
@@ -398,13 +401,13 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
 
   const act = useCallback(
     async (id: string, action: "install" | "uninstall", confirm?: () => Promise<boolean>) => {
-      if (busyId) return;
+      if (busyIds.has(id)) return;
       if (confirm) {
         const ok = await confirm();
         if (!ok) return;
       }
       setActionError(null);
-      setBusyId(id);
+      setBusyIds((prev) => new Set(prev).add(id));
       try {
         const command = action === "install" ? "market_install" : "market_uninstall";
         await invokeCommand<string>(command, { pluginId: id });
@@ -413,10 +416,14 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
       } catch (e) {
         setActionError(String(e));
       } finally {
-        setBusyId(null);
+        setBusyIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
       }
     },
-    [busyId, load, onChanged],
+    [busyIds, load, onChanged],
   );
 
   const installSkill = useCallback(
@@ -433,36 +440,44 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
         confirmText: t("market.install", "安装"),
       });
       if (!ok) return;
-      if (busyId) return;
+      if (busyIds.has(entry.slug)) return;
       setActionError(null);
-      setBusyId(entry.slug);
+      setBusyIds((prev) => new Set(prev).add(entry.slug));
       try {
         await invokeCommand<string>("skillhub_install", { slug: entry.slug });
         await load();
       } catch (e) {
         setActionError(String(e));
       } finally {
-        setBusyId(null);
+        setBusyIds((prev) => {
+          const next = new Set(prev);
+          next.delete(entry.slug);
+          return next;
+        });
       }
     },
-    [busyId, confirmDialog, load, t],
+    [busyIds, confirmDialog, load, t],
   );
 
   const uninstallSkill = useCallback(
     async (slug: string) => {
-      if (busyId) return;
+      if (busyIds.has(slug)) return;
       setActionError(null);
-      setBusyId(slug);
+      setBusyIds((prev) => new Set(prev).add(slug));
       try {
         await invokeCommand<string>("skillhub_uninstall", { slug });
         await load();
       } catch (e) {
         setActionError(String(e));
       } finally {
-        setBusyId(null);
+        setBusyIds((prev) => {
+          const next = new Set(prev);
+          next.delete(slug);
+          return next;
+        });
       }
     },
-    [busyId, load],
+    [busyIds, load],
   );
 
   const sceneTabs = useMemo(
@@ -658,22 +673,22 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6 text-destructive hover:text-destructive"
-                        disabled={busyId === entry.id}
+                        disabled={busyIds.has(entry.id)}
                         aria-label={t("market.uninstall", "卸载")}
                         title={t("market.uninstall", "卸载")}
                         onClick={() => void act(entry.id, "uninstall")}
                       >
-                        {busyId === entry.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                        {busyIds.has(entry.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
                       </Button>
                     </>
                   ) : (
                     <Button
                       size="sm"
                       className="h-6 px-2 text-[10px]"
-                      disabled={busyId === entry.id}
+                      disabled={busyIds.has(entry.id)}
                       onClick={() => void act(entry.id, "install")}
                     >
-                      {busyId === entry.id ? (
+                      {busyIds.has(entry.id) ? (
                         <Loader2 className="h-3 w-3 animate-spin" />
                       ) : (
                         <Download className="h-3 w-3" />
@@ -728,22 +743,22 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6 text-destructive hover:text-destructive"
-                        disabled={busyId === pkg.plugin_id}
+                        disabled={busyIds.has(pkg.plugin_id)}
                         aria-label={t("market.uninstall", "卸载")}
                         title={t("market.uninstall", "卸载")}
                         onClick={() => void act(pkg.plugin_id, "uninstall")}
                       >
-                        {busyId === pkg.plugin_id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                        {busyIds.has(pkg.plugin_id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
                       </Button>
                     </>
                   ) : (
                     <Button
                       size="sm"
                       className="h-6 px-2 text-[10px]"
-                      disabled={busyId === pkg.plugin_id}
+                      disabled={busyIds.has(pkg.plugin_id)}
                       onClick={() => void act(pkg.plugin_id, "install")}
                     >
-                      {busyId === pkg.plugin_id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                      {busyIds.has(pkg.plugin_id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
                       <span className="ml-0.5">{t("market.install", "安装")}</span>
                     </Button>
                   )}
@@ -832,13 +847,13 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                                 variant="ghost"
                                 size="icon"
                                 className="h-6 w-6 text-destructive hover:text-destructive"
-                                disabled={busyId === source}
+                                disabled={busyIds.has(source)}
                                 aria-label={t("market.uninstall", "卸载")}
                                 title={t("market.uninstall", "卸载")}
                                 onClick={() =>
                                   void (async () => {
                                     setActionError(null);
-                                    setBusyId(source);
+                                    setBusyIds((prev) => new Set(prev).add(source));
                                     try {
                                       await invokeCommand<string>("pi_package_uninstall_online", { source });
                                       await load();
@@ -847,12 +862,12 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                                     } catch (e) {
                                       setActionError(String(e));
                                     } finally {
-                                      setBusyId(null);
+                                      setBusyIds((prev) => { const next = new Set(prev); next.delete(source); return next; });
                                     }
                                   })()
                                 }
                               >
-                                {busyId === source ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                                {busyIds.has(source) ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
                               </Button>
                             )}
                           </>
@@ -861,11 +876,11 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                           <Button
                             size="sm"
                             className="h-6 px-2 text-[10px]"
-                            disabled={busyId === source}
+                            disabled={busyIds.has(source)}
                             onClick={() =>
                               void (async () => {
                                 setActionError(null);
-                                setBusyId(source);
+                                setBusyIds((prev) => new Set(prev).add(source));
                                 try {
                                   // 安装走 pi 包管理器（npm/git 装载 + settings.json
                                   // 注册一步完成，装完 hub 提示启用）。
@@ -875,12 +890,12 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                                 } catch (e) {
                                   setActionError(String(e));
                                 } finally {
-                                  setBusyId(null);
+                                  setBusyIds((prev) => { const next = new Set(prev); next.delete(source); return next; });
                                 }
                               })()
                             }
                           >
-                            {busyId === source ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                            {busyIds.has(source) ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
                             <span className="ml-0.5">{t("market.install", "安装")}</span>
                           </Button>
                         )}
@@ -939,20 +954,20 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                           variant="ghost"
                           size="icon"
                           className="h-6 w-6 text-destructive hover:text-destructive"
-                          disabled={busyId === pkg.name}
+                          disabled={busyIds.has(pkg.name)}
                           aria-label={t("market.uninstall", "卸载")}
                           title={t("market.uninstall", "卸载")}
                           onClick={() =>
                             void (async () => {
                               setActionError(null);
-                              setBusyId(pkg.name);
+                              setBusyIds((prev) => new Set(prev).add(pkg.name));
                               try {
                                 await invokeCommand<string>("pi_package_uninstall_online", { source: "npm:" + pkg.name });
                                 await load();
                               } catch (e) {
                                 setActionError(String(e));
                               } finally {
-                                setBusyId(null);
+                                setBusyIds((prev) => { const next = new Set(prev); next.delete(pkg.name); return next; });
                               }
                             })()
                           }
@@ -964,11 +979,11 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                       <Button
                         size="sm"
                         className="h-6 px-2 text-[10px]"
-                        disabled={busyId === pkg.name}
+                        disabled={busyIds.has(pkg.name)}
                         onClick={() =>
                           void (async () => {
                             setActionError(null);
-                            setBusyId(pkg.name);
+                            setBusyIds((prev) => new Set(prev).add(pkg.name));
                             try {
                               await invokeCommand<string>("pi_package_install_online", {
                                 source: "npm:" + pkg.name + "@" + pkg.version,
@@ -977,12 +992,12 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                             } catch (e) {
                               setActionError(String(e));
                             } finally {
-                              setBusyId(null);
+                              setBusyIds((prev) => { const next = new Set(prev); next.delete(pkg.name); return next; });
                             }
                           })()
                         }
                       >
-                        {busyId === pkg.name ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                        {busyIds.has(pkg.name) ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
                         <span className="ml-0.5">{t("market.install", "安装")}</span>
                       </Button>
                     )}
@@ -1056,22 +1071,22 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                           variant="ghost"
                           size="icon"
                           className="h-6 w-6 text-destructive hover:text-destructive"
-                          disabled={busyId === skill.slug}
+                          disabled={busyIds.has(skill.slug)}
                           aria-label={t("market.uninstall", "卸载")}
                           title={t("market.uninstall", "卸载")}
                           onClick={() => void uninstallSkill(skill.slug)}
                         >
-                          {busyId === skill.slug ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                          {busyIds.has(skill.slug) ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
                         </Button>
                       </>
                     ) : (
                       <Button
                         size="sm"
                         className="h-6 px-2 text-[10px]"
-                        disabled={busyId === skill.slug}
+                        disabled={busyIds.has(skill.slug)}
                         onClick={() => void installSkill(skill)}
                       >
-                        {busyId === skill.slug ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                        {busyIds.has(skill.slug) ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
                         <span className="ml-0.5">{t("market.install", "安装")}</span>
                       </Button>
                     )}

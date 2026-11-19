@@ -147,7 +147,9 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     toolName: tool.name,
     kind: resolveToolKind(tool.name, tool.view),
     view: tool.view,
-    status: tool.isError ? "error" : isComplete || tool.output !== undefined ? "success" : "running",
+    status: tool.isError && !tool.retriedSuccess ? "error" : isComplete || tool.output !== undefined ? "success" : "running",
+    // v0.9.8 需求9-①：重试成功翻转的失败卡——success 态 + 「已重试」徽标。
+    retriedSuccess: tool.retriedSuccess,
     input: (typeof tool.input === "object" && tool.input !== null) ? (tool.input as Record<string, unknown>) : {},
     output: tool.output === undefined ? undefined : (
       typeof tool.output === "string" ? tool.output : JSON.stringify(tool.output, null, 2)
