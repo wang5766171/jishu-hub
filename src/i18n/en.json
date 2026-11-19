@@ -262,6 +262,8 @@
     "interactionNoAnswer": "(No answer)",
     "addContext": "Add context",
     "attachFile": "Attachment",
+    "menuGroupInput": "Input Materials",
+    "menuGroupAbility": "Capabilities",
     "mcpSection": "MCP services",
     "skillSection": "Skill",
     "pluginsComingSoon": "Plugins",

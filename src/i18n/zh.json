@@ -262,6 +262,8 @@
     "interactionNoAnswer": "（未回答）",
     "addContext": "添加上下文",
     "attachFile": "附件",
+    "menuGroupInput": "输入素材",
+    "menuGroupAbility": "能力挂载",
     "mcpSection": "MCP 服务",
     "skillSection": "Skill",
     "pluginsComingSoon": "插件",

@@ -38,6 +38,13 @@ interface SessionTool {
   category?: string;
 }
 
+/** v0.9.8 需求7：+ 菜单历史残留件过滤——task-requirements/task-plan 是
+ * v0.9.7 去阶段化后保留的编程场景推荐件（自适应插件），「阶段入口」语义
+ * 已死，不再作为 + 菜单独立入口。能力保留：后端仍下发（task-artifact
+ * 系列工具的会话内价值不受影响），已挂载 pill 与 session_set_tools 通道
+ * 照常。按插件 id 过滤（显示名随 i18n 变化，不可作判定键）。 */
+const LEGACY_STAGE_PLUGIN_IDS = new Set(["task-requirements", "task-plan"]);
+
 /** 内联工具 token：`@[显示名]`（v0.8.1 需求7）。全局正则——用前 reset /
  * 用后 reset，避免 lastIndex 残留（有 /g 标志时 test 会推进状态）。 */
 const TOOL_TOKEN_RE = /@\[([^\]]+)\]/g;
@@ -1511,6 +1518,11 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
               </Button>
               {toolMenuOpen && (
                 <div className="absolute bottom-[calc(100%+0.45rem)] left-0 z-[80] w-44 rounded-xl border border-border bg-popover p-1.5 shadow-xl">
+                  {/* v0.9.8 需求7：+ 菜单按「输入素材 / 能力挂载」两类归组
+                      （信息架构分层，历史平铺混合菜单收敛为两级）。 */}
+                  <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/70">
+                    {t("sessions.menuGroupInput", "输入素材")}
+                  </div>
                   <button
                     type="button"
                     onClick={() => {
@@ -1530,8 +1542,15 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     // 提示小节；未选中经解析器通道仍在线可用（动态性）。
                     // v0.9.1 需求8：不可注入项（MCP/SKILL 解析器等 pi 扩展形态）
                     // 此前渲染成置灰，用户裁决直接不显示——分组时即过滤。
+                    // v0.9.8 需求7：CLI 平铺段追加过滤 LEGACY_STAGE_PLUGIN_IDS
+                    //（去阶段化历史残留件，入口收敛——能力保留，仅不展示）。
                     const injectable = (t: SessionTool) => t.injectable !== false;
-                    const cliTools = sessionTools.filter((t) => (!t.category || t.category === "cli") && injectable(t));
+                    const cliTools = sessionTools.filter(
+                      (t) =>
+                        (!t.category || t.category === "cli") &&
+                        injectable(t) &&
+                        !LEGACY_STAGE_PLUGIN_IDS.has(t.id),
+                    );
                     const mcpTools = sessionTools.filter((t) => t.category === "mcp" && injectable(t));
                     const skillTools = sessionTools.filter((t) => t.category === "skill" && injectable(t));
                     const hasSelectableTools =
@@ -1562,14 +1581,10 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     return (
                     hasSelectableTools && (
                     <div className="my-1 border-t border-border/60 pt-1">
-                      {cliTools.length > 0 && (
-                        <>
-                          <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/70">
-                            {t("sessions.pluginsSection", "插件")}
-                          </div>
-                          {cliTools.map((tool) => renderToolButton(tool, Blocks, "text-[var(--icon-config)]"))}
-                        </>
-                      )}
+                      <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/70">
+                        {t("sessions.menuGroupAbility", "能力挂载")}
+                      </div>
+                      {cliTools.length > 0 && cliTools.map((tool) => renderToolButton(tool, Blocks, "text-[var(--icon-config)]"))}
                       {mcpTools.length > 0 && (
                         <>
                           <button
