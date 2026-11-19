@@ -2684,6 +2684,7 @@ export function ChatPage({
               sessionId={selectedSession === "new" ? null : selectedSession}
               projectPath={currentProject?.path ?? null}
               agentId={activeId}
+              showSceneSuggest={showStartComposer}
               stagedApiRef={stagedApiRef}
               onMessageSent={handleMessageSent}
               onSessionResolved={handleSessionResolved}

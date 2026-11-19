@@ -264,6 +264,8 @@
     "attachFile": "Attachment",
     "menuGroupInput": "Input Materials",
     "menuGroupAbility": "Capabilities",
+    "sceneSuggestTitle": "Suggested tools for {{scene}}",
+    "sceneSuggestDismiss": "Don't show again",
     "mcpSection": "MCP services",
     "skillSection": "Skill",
     "pluginsComingSoon": "Plugins",

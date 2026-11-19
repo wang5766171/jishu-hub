@@ -264,6 +264,8 @@
     "attachFile": "附件",
     "menuGroupInput": "输入素材",
     "menuGroupAbility": "能力挂载",
+    "sceneSuggestTitle": "{{scene}}场景建议挂载",
+    "sceneSuggestDismiss": "不再提示",
     "mcpSection": "MCP 服务",
     "skillSection": "Skill",
     "pluginsComingSoon": "插件",

@@ -75,6 +75,28 @@ pub(crate) fn set_onboarded(value: bool) -> Result<(), String> {
     hub::set_onboarded(value)
 }
 
+// v0.9.8 需求6：引导场景清单与场景建议条关闭标志（state.json 权威；
+// 建议条数据源 = curated scenes[] ∩ 已装载工具，见 chat-input 消费点）。
+#[tauri::command]
+pub(crate) fn get_onboarding_scenes() -> Result<Option<Vec<String>>, String> {
+    Ok(hub::get_onboarding_scenes())
+}
+
+#[tauri::command]
+pub(crate) fn set_onboarding_scenes(scenes: Vec<String>) -> Result<(), String> {
+    hub::set_onboarding_scenes(scenes)
+}
+
+#[tauri::command]
+pub(crate) fn get_scene_suggest_dismissed() -> Result<bool, String> {
+    Ok(hub::get_scene_suggest_dismissed())
+}
+
+#[tauri::command]
+pub(crate) fn set_scene_suggest_dismissed(value: bool) -> Result<(), String> {
+    hub::set_scene_suggest_dismissed(value)
+}
+
 #[tauri::command]
 pub(crate) fn load_font_sizes() -> Result<(Option<String>, Option<String>), String> {
     hub::load_font_sizes().map_err(|e| e.to_string())

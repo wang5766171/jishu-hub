@@ -99,6 +99,14 @@ pub struct AppState {
     ///（全局裁决：不考虑老版本体验，引擎覆盖重装可接受）。
     #[serde(default)]
     pub onboarded: Option<bool>,
+    /// v0.9.8 需求6：首启引导选择的场景清单（plugin-scenes id，可多选）。
+    /// None/空 = 未选（自定义跳过）——会话输入框场景建议条不提示。
+    #[serde(default)]
+    pub onboarding_scenes: Option<Vec<String>>,
+    /// v0.9.8 需求6：场景建议条关闭标志（用户点 × 后 Some(true)，跨重启
+    /// 持久；引导重选场景时重置）。None/Some(false) = 未关闭。
+    #[serde(default)]
+    pub scene_suggest_dismissed: Option<bool>,
 }
 
 fn state_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -176,6 +184,39 @@ pub fn get_onboarded() -> bool {
 pub fn set_onboarded(value: bool) -> Result<(), String> {
     let mut state = load_state().map_err(|e| e.to_string())?;
     state.onboarded = Some(value);
+    save_state(&state).map_err(|e| e.to_string())
+}
+
+/// v0.9.8 需求6：引导选择的场景清单（None/空 = 未选，自定义跳过）。
+pub fn get_onboarding_scenes() -> Option<Vec<String>> {
+    load_state()
+        .ok()
+        .and_then(|s| s.onboarding_scenes)
+        .filter(|v| !v.is_empty())
+}
+
+/// 持久化场景清单（空清单归一为 None——与「未选」同形，避免空态歧义）。
+pub fn set_onboarding_scenes(scenes: Vec<String>) -> Result<(), String> {
+    let mut state = load_state().map_err(|e| e.to_string())?;
+    state.onboarding_scenes = if scenes.is_empty() {
+        None
+    } else {
+        Some(scenes)
+    };
+    save_state(&state).map_err(|e| e.to_string())
+}
+
+/// v0.9.8 需求6：场景建议条是否已被用户关闭。
+pub fn get_scene_suggest_dismissed() -> bool {
+    load_state()
+        .map(|s| s.scene_suggest_dismissed == Some(true))
+        .unwrap_or(false)
+}
+
+/// 场景建议条关闭标志持久化（引导重选场景时前端重置为 false）。
+pub fn set_scene_suggest_dismissed(value: bool) -> Result<(), String> {
+    let mut state = load_state().map_err(|e| e.to_string())?;
+    state.scene_suggest_dismissed = Some(value);
     save_state(&state).map_err(|e| e.to_string())
 }
 

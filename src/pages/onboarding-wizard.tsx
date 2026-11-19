@@ -122,6 +122,8 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
               // 收版反馈：改选「自定义」进入时清空场景记录——否则推荐页
               // 仍按上一轮选的场景拉取（返回重选不重置）。
               selectedScenesHolder = [];
+              // v0.9.8 需求6：自定义跳过 = 无场景，同步落 settings（建议条不提示）。
+              invokeCommand("set_onboarding_scenes", { scenes: [] }).catch(() => {});
               setStep(3);
             }}
           />
@@ -568,6 +570,10 @@ function SceneStep({ onNext, onSkip }: { onNext: (scenes?: string[]) => void; on
 
   const proceed = () => {
     selectedScenesHolder = [...selected];
+    // v0.9.8 需求6：场景选择落 settings（会话输入框场景建议条的数据源）；
+    // 重选场景时重置建议条关闭标志（设计既定：重新选场景即重新唤起建议）。
+    invokeCommand("set_onboarding_scenes", { scenes: [...selected] }).catch(() => {});
+    invokeCommand("set_scene_suggest_dismissed", { value: false }).catch(() => {});
     onNext();
   };
 

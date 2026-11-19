@@ -5,13 +5,14 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { streamStore, useIsSessionStreaming } from "@/hooks/use-stream-store";
 import { Button } from "@/components/ui/button";
 import {
-  Zap, Blocks, Check, ChevronDown, KeyRound, MessagesSquare, Paperclip, Plus, Send, Server, Square, Sparkles } from "lucide-react";
+  Zap, Blocks, Check, ChevronDown, KeyRound, MessagesSquare, Paperclip, Plus, Send, Server, Square, Sparkles, X } from "lucide-react";
 import { FilePreview } from "./file-preview";
 import { InteractionComposer } from "./interaction-composer";
 import { MessageStaging, type StagedMessage } from "./message-staging";
 import { open } from "@tauri-apps/plugin-dialog";
 import { formatInteractionReply } from "@/lib/conversation-interaction";
 import { getInputHistory, pushInputHistory } from "@/lib/input-history";
+import { devLog } from "@/lib/dev-log";
 import { fuzzyRank } from "@/lib/fuzzy-match";
 import { useProjectFiles } from "@/lib/project-files";
 import { Command, FileText } from "lucide-react";
@@ -188,6 +189,9 @@ interface ChatInputProps {
   /** When provided, the parent can auto-send staged guides at turn_complete
    *  (Route 2) and share the claimed-id dedup. */
   stagedApiRef?: React.MutableRefObject<StagedGuideApi | null>;
+  /** v0.9.8 需求6：空会话（新对话起始态）时展示场景联动建议条——按引导
+   *  选择的场景推荐「已装未挂」工具，点击注入 pill。仅默认工作空间生效。 */
+  showSceneSuggest?: boolean;
 }
 
 function isInsideProject(filePath: string, projectPath: string): boolean {
@@ -210,6 +214,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   sessionId,
   projectPath,
   agentId,
+  showSceneSuggest = false,
   disabled = false,
   isSessionStreaming: isSessionStreamingProp = false,
   allowFiles = true,
@@ -457,6 +462,77 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       cancelled = true;
     };
   }, [stagingSessionKey]);
+
+  // ── v0.9.8 需求6：会话输入框场景联动建议 ──────────────────────────────
+  // 空会话（新对话起始态）时按引导选择的场景给出「建议挂载」提示条。建议源 =
+  // curated entries（scenes[] 含所选场景）∩ 已装载可注入工具（sessionTools
+  // 按 id 匹配 + injectable）——点击即注入 pill、发送即生效；未装件的市场
+  // 发现归市场页（需求4/5 引导卡/套装），此处只荐「装了没挂」。仅默认工作
+  // 空间生效（项目空间无场景属性，本版从简）；× 关闭落 settings 持久化，
+  // 引导重选场景时重置。
+  const [sceneSuggest, setSceneSuggest] = useState<{
+    sceneId: string;
+    items: Array<{ id: string; title: string }>;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!showSceneSuggest || !projectPath) {
+      setSceneSuggest(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const [scenes, dismissed, isDefault] = await Promise.all([
+          invokeCommand<string[] | null>("get_onboarding_scenes"),
+          invokeCommand<boolean>("get_scene_suggest_dismissed"),
+          invokeCommand<boolean>("is_default_workspace", { path: projectPath }),
+        ]);
+        if (cancelled || dismissed || !isDefault || !scenes?.length) {
+          if (!cancelled)
+            devLog("capability", `scene-suggest skip: dismissed=${dismissed} default=${isDefault} scenes=${scenes?.length ?? 0}`);
+          setSceneSuggest(null);
+          return;
+        }
+        const curated = await invokeCommand<
+          Array<{ id: string; title: string; scenes: string[] }>
+        >("market_list_curated", { scene: null });
+        if (cancelled || !Array.isArray(curated)) {
+          setSceneSuggest(null);
+          return;
+        }
+        // 多场景取第一个（主场景）——并集推荐会失焦，违背「该挂什么」语义。
+        // 注意不按 enabled 过滤：那是「本会话是否已挂载」选中态（未挂=
+        // false），恰是建议对象；装载存在性由 sessionTools 清单本身保证。
+        const sceneId = scenes[0];
+        devLog(
+          "capability",
+          `scene-suggest inputs: tools=${sessionTools.length} curated=${curated.length}`,
+        );
+        const items = curated
+          .filter((c) => Array.isArray(c.scenes) && c.scenes.includes(sceneId))
+          .filter((c) =>
+            sessionTools.some((t) => t.id === c.id && t.injectable !== false),
+          )
+          .slice(0, 3)
+          .map((c) => ({ id: c.id, title: c.title }));
+        setSceneSuggest(items.length > 0 ? { sceneId, items } : null);
+        if (!cancelled)
+          devLog("capability", `scene-suggest ${items.length > 0 ? "hit" : "empty"}: scene=${sceneId} items=${items.map((i) => i.id).join(",")}`);
+      } catch {
+        if (!cancelled) setSceneSuggest(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // sessionTools 后到（会话工具清单异步装载）——装载完成后重算建议交集。
+  }, [showSceneSuggest, projectPath, sessionTools]);
+
+  const handleDismissSceneSuggest = useCallback(() => {
+    setSceneSuggest(null);
+    invokeCommand("set_scene_suggest_dismissed", { value: true }).catch(() => {});
+  }, []);
 
   /** 在光标处插入 `@[显示名] ` token（+ 菜单点击入口）。 */
   const insertToolToken = useCallback((displayName: string) => {
@@ -1325,6 +1401,38 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
 
   return (
     <div ref={inputRootRef} className={cn("mx-auto w-full max-w-[var(--message-content-max-width)] px-4 pb-4 pt-2", containerClassName)}>
+      {/* v0.9.8 需求6：场景联动建议条（空会话 + 默认空间 + 未关闭时） */}
+      {sceneSuggest && sceneSuggest.items.length > 0 && (
+        <div
+          data-scene-suggest={sceneSuggest.sceneId}
+          className="mb-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-border/60 bg-muted/25 px-3 py-2 text-xs text-muted-foreground"
+        >
+          <Sparkles className="h-3.5 w-3.5 shrink-0 text-[var(--icon-theme)]" />
+          <span>
+            {t("sessions.sceneSuggestTitle", {
+              scene: t(`scenes.${sceneSuggest.sceneId}`, { defaultValue: sceneSuggest.sceneId }),
+            })}
+          </span>
+          {sceneSuggest.items.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => insertToolToken(item.title)}
+              className="rounded-full border border-border/60 bg-background/70 px-2.5 py-0.5 text-foreground/85 transition-fast hover:border-primary/50 hover:text-foreground"
+            >
+              {item.title}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={handleDismissSceneSuggest}
+            title={t("sessions.sceneSuggestDismiss")}
+            className="ml-auto rounded-md p-0.5 text-muted-foreground/70 transition-fast hover:bg-accent/60 hover:text-foreground"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
       <div
         className={cn(
           "relative flex flex-col overflow-visible rounded-2xl border border-input bg-card shadow-sm focus-within:ring-1 focus-within:ring-ring focus-within:border-ring transition-shadow",
