@@ -879,6 +879,20 @@ fn template_default_tools(extra: &[&'static str]) -> Vec<&'static str> {
     tools
 }
 
+/// v0.9.8 需求10-③ P1 修复：把 plugin-invoke 物化的 [[agent-tool]] 工具名
+/// 并入 spawn 白名单基集。pi 的 `--tools` 是硬白名单——不进名单的扩展
+/// 工具 agent 不可见（v0.9.7 需求2 issue #4 同型坑：当时修了 task-runner
+/// 三工具但漏了本通道，[[agent-tool]] 物化通道自 v0.9.5 引入起在任何 pi
+/// 版本下都不可见，v0.9.8 装入首个声明件后现形）。去重合并，纯函数可单测。
+fn merge_agent_tool_names(mut base: Vec<String>) -> Vec<String> {
+    for entry in crate::agent::plugin::load_agent_tools() {
+        if !base.iter().any(|n| n == &entry.name) {
+            base.push(entry.name);
+        }
+    }
+    base
+}
+
 /// v0.9.1 需求13：settings 未配置 defaultTools 时向 spawn 参数追加
 /// `--tools <全集>`（Windows 含 powershell）。纯函数可单测。
 fn ensure_default_tools_arg(
@@ -1200,6 +1214,11 @@ impl TransportAdapter for JishuSelfAgent {
         // 对此后新 spawn 的进程生效（Pi 每条消息一个进程）。
         // v0.9.2 需求7：扩展工具按启用插件聚合（热插拔）。
         let pi_extension_tools = crate::agent::plugin::enabled_pi_extension_tools();
+        // v0.9.8 需求10-③ P1：plugin-invoke 物化的 [[agent-tool]] 并入默认/
+        // 已配置两分支的白名单（只读档不并入——工具语义是触发插件动作，
+        // 属变更面，只读会话不放行）。ensure_default_tools_arg 的 ext 参数
+        // 同时喂 unset/已配置两路径，一处接线全覆盖。
+        let whitelist_with_agent_tools = merge_agent_tool_names(pi_extension_tools.clone());
         if let Some("readonly") = crate::hub::load_agent_tool_mode("jishu-self").as_deref() {
             // 只读模式保留交互与任务提交类扩展工具（问答纯交互；
             // lock/commit 为工作流操作，任务流须可用）。
@@ -1221,7 +1240,11 @@ impl TransportAdapter for JishuSelfAgent {
         // defaultTools 时 spawn 显式传全集（Windows 含 powershell），消除
         // pi 回退仅四件的歧义（存量未配置用户无需改配置即生效）；已配置
         // 任何清单按配置生效。
-        ensure_default_tools_arg(&mut args, &config::load_jishu_config(), &pi_extension_tools);
+        ensure_default_tools_arg(
+            &mut args,
+            &config::load_jishu_config(),
+            &whitelist_with_agent_tools,
+        );
         // Resume an existing Pi session when a real (non-transient) session id
         // is provided. Without this, Pi creates a fresh session on every process
         // spawn, losing all conversation history (the root cause of "agent
@@ -1377,5 +1400,46 @@ impl TerminalAdapter for JishuSelfAgent {
                 command: "jishu-cli doctor".into(),
             },
         ]
+    }
+}
+
+#[cfg(test)]
+mod agent_tool_whitelist_tests {
+    use super::merge_agent_tool_names;
+
+    /// v0.9.8 需求10-③ P1 回归锚点：[[agent-tool]] 物化名并入 spawn 白名单
+    /// （pi --tools 硬白名单不进名单则 agent 不可见——修复前该通道全断）。
+    /// 去重合并 + 空物化不添噪声。
+    #[test]
+    fn merge_agent_tool_names_dedupes_and_appends() {
+        let merged = merge_agent_tool_names(vec!["read".to_string(), "bash".to_string()]);
+        // 当前物化清单为空（测试环境无 [[agent-tool]] 件）——空清单原样返回
+        assert!(merged.iter().all(|n| n == "read" || n == "bash"));
+        // 物化清单非空时并入（读真实 agent-tools.json——测试隔离下由
+        // JISHU_HUB_HOME 指向临时目录；此处验证合并行为本身：注入临时清单）
+        let dir = std::env::temp_dir().join("jishu-test-agent-tools-merge");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("agent-tools.json"),
+            r#"[{"plugin_id":"p1","name":"probe_a","description":"d"},{"plugin_id":"p2","name":"read","description":"d"}]"#,
+        )
+        .unwrap();
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("JISHU_HUB_HOME", &dir);
+        let merged = merge_agent_tool_names(vec!["read".to_string()]);
+        std::env::remove_var("JISHU_HUB_HOME");
+        let _ = std::fs::remove_dir_all(&dir);
+        // probe_a 新并入；read 已在基集不重复
+        assert!(
+            merged.iter().any(|n| n == "probe_a"),
+            "agent-tool 未进白名单"
+        );
+        assert_eq!(
+            merged.iter().filter(|n| *n == "read").count(),
+            1,
+            "重复并入"
+        );
     }
 }
