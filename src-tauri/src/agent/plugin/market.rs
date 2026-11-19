@@ -29,6 +29,10 @@ pub struct MarketEntry {
     #[serde(default)]
     pub scenes: Vec<String>,
     pub required: bool,
+    /// v0.9.8 需求4：装后引导卡「首次使用」示例 prompt（可选，逐条补充；
+    /// 技能源无此字段——前端以描述首句兜底）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_hint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

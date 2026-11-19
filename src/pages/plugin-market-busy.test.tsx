@@ -65,8 +65,10 @@ describe("插件市场并发安装（需求9-③）", () => {
     const findInstallBtn = (title: string) => {
       // 取「最深」匹配容器（祖先容器也含标题文本——首个命中是列表级祖先，
       // 会错拿别卡的按钮）
+      // v0.9.8 需求4：装后引导卡含同名标题+按钮且 DOM 序更靠后——排除
       const candidates = [...document.querySelectorAll("div")]
-        .filter((d) => d.textContent?.includes(title) && d.querySelector("button") !== null);
+        .filter((d) => d.textContent?.includes(title) && d.querySelector("button") !== null
+          && !d.closest("[data-install-guide]"));
       const card = candidates[candidates.length - 1];
       const btn = [...(card?.querySelectorAll("button") ?? [])].find((b) =>
         b.textContent?.includes("安装"),

@@ -24,12 +24,12 @@
     { "id": "session.html-render", "kind": "composed", "title": "HTML 实时渲染", "description": "消息中的 HTML（完整文档与卡片片段）按内容高度直接渲染", "category": "render", "scenes": [], "required": true },
     { "id": "session.image-dispatch", "kind": "composed", "title": "图片识图路由", "description": "主模型不支持识图时，把图片委派给识图工具或子代理；都失败会如实告知", "category": "tool", "scenes": [], "required": true },
 
-    { "id": "task-requirements", "kind": "agent", "title": "需求讨论", "description": "复杂/模糊需求先聊清楚，产出结构化需求文档（对话内能力，编程场景推荐）", "category": "foundation", "scenes": ["programming"], "required": false },
-    { "id": "task-plan", "kind": "agent", "title": "流程规划", "description": "多步骤任务先拆成有依赖的执行计划（对话内能力，编程场景推荐）", "category": "foundation", "scenes": ["programming"], "required": false },
+    { "id": "task-requirements", "kind": "agent", "title": "需求讨论", "description": "复杂/模糊需求先聊清楚，产出结构化需求文档（对话内能力，编程场景推荐）", "category": "foundation", "scenes": ["programming"], "required": false, "usage_hint": "帮我先把这份模糊想法聊成结构化需求文档" },
+    { "id": "task-plan", "kind": "agent", "title": "流程规划", "description": "多步骤任务先拆成有依赖的执行计划（对话内能力，编程场景推荐）", "category": "foundation", "scenes": ["programming"], "required": false, "usage_hint": "把这件事拆成有依赖关系的执行计划再动手" },
     { "id": "pi-lens", "kind": "pi-package", "title": "写后诊断", "description": "写完代码自动体检（语法/类型/引用问题）、按符号找代码（编程场景推荐）", "category": "foundation", "scenes": ["programming"], "required": false },
 
     { "id": "session.theme-midnight", "kind": "composed-theme", "title": "午夜蓝主题", "description": "官方示范主题（深蓝夜色配色），可禁用、可复制派生", "category": "theme", "scenes": [], "required": false },
-    { "id": "session.video-maker", "kind": "composed", "title": "视频生成助手", "description": "视频创作流水线样例（需求讨论 → 分镜 → 素材 → 生成）", "category": "sample", "scenes": ["video"], "required": false },
+    { "id": "session.video-maker", "kind": "composed", "title": "视频生成助手", "description": "视频创作流水线样例（需求讨论 → 分镜 → 素材 → 生成）", "category": "sample", "scenes": ["video"], "required": false, "usage_hint": "帮我从分镜脚本开始做一支短视频" },
     { "id": "session.outline", "kind": "composed", "title": "会话大纲", "description": "面板列出每轮问答大纲，点击跳转", "category": "session", "scenes": [], "required": false },
     { "id": "session.navigation", "kind": "composed", "title": "会话导航列", "description": "左缘快速跳转到每轮提问位置", "category": "session", "scenes": [], "required": false },
     { "id": "session.tool-stats", "kind": "composed", "title": "工具统计", "description": "统计本会话工具调用总数、失败数与分布", "category": "session", "scenes": [], "required": false },

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { cn } from "@/lib/utils";
 import { Palette } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -148,6 +148,12 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigat
     onBack();
   };
 
+  /** v0.9.8 需求4：市场装后引导卡「需要配置」一键到配置位——与
+   * navigateToAgentModels 键控导航同款落点（模型设置子页）。 */
+  const handleNavigateMarketConfig = useCallback(() => {
+    setActiveTab("agent-models");
+  }, []);
+
   const tr = (key: string, fallback: string) => (t(key) === key ? fallback : t(key));
   const agentSection = agentTabSection[activeTab];
 
@@ -234,7 +240,13 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigat
             onNavigateSection={handleNavigateAgentSection}
           />
         )}
-        {activeTab === "plugins" && <PluginsPage onLaunchPipeline={onLaunchPipeline} onLaunchDescribe={onLaunchDescribe} />}
+        {activeTab === "plugins" && (
+          <PluginsPage
+            onLaunchPipeline={onLaunchPipeline}
+            onLaunchDescribe={onLaunchDescribe}
+            onNavigateConfig={handleNavigateMarketConfig}
+          />
+        )}
         {activeTab === "appearance" && <AppearancePage />}
         {activeTab === "commands" && <CommandsPage />}
         {activeTab === "env" && (

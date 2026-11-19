@@ -386,11 +386,15 @@ const PLUGIN_CATEGORIES: Array<{ key: PluginCategory; labelKey: string; fallback
 export function PluginsPage({
   onLaunchPipeline,
   onLaunchDescribe,
+  onNavigateConfig,
 }: {
   onLaunchPipeline?: (pluginId: string, name: string) => void;
   /** v0.9.7 需求3 C1：描述需求 → 跳会话页预填创作指令（app 层经
    * pluginCreateLaunch state 承接，pipelineLaunch 同款模式）。 */
   onLaunchDescribe?: (text: string) => void;
+  /** v0.9.8 需求4：市场装后引导卡「需要配置」一键到配置位（Manage 层
+   * navigateToAgentModels 通道复用）。 */
+  onNavigateConfig?: () => void;
 } = {}) {
   const { t } = useTranslation();
   const { alert: alertDialog, confirm: confirmDialog, dialogNode } = useConfirmDialog();
@@ -1468,7 +1472,13 @@ export function PluginsPage({
         </button>
       </div>
 
-      {view === "market" && <PluginMarketPanel onChanged={refresh} />}
+      {view === "market" && (
+        <PluginMarketPanel
+          onChanged={refresh}
+          onLaunchDescribe={onLaunchDescribe}
+          onNavigateConfig={onNavigateConfig}
+        />
+      )}
 
       {view === "installed" && (<>
       {result && result.manifest_errors.length > 0 && (

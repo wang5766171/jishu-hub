@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { PLUGIN_SCENES } from "@/lib/plugin-scenes";
 import { ArrowDownToLine, Bot, Check, Download, ExternalLink, Info, Loader2, Package, RefreshCw, Search, X, ShieldCheck, Sparkles, Star, Trash2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { InstallGuideCard, type InstallGuideInfo } from "@/components/market/install-guide-card";
 
 interface MarketEntry {
   id: string;
@@ -34,6 +35,8 @@ interface MarketEntry {
   category: string;
   scenes: string[];
   required: boolean;
+  /** v0.9.8 需求4：装后引导卡示例 prompt（curated 可选，serde skip None）。 */
+  usage_hint?: string;
 }
 
 interface PiPackageEntry {
@@ -219,7 +222,18 @@ function MarketPager({
   );
 }
 
-export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
+export function PluginMarketPanel({
+  onChanged,
+  onLaunchDescribe,
+  onNavigateConfig,
+}: {
+  onChanged?: () => void;
+  /** v0.9.8 需求4：GUI 适配入口——跳会话预填创作指令（App 层
+   * pluginCreateLaunch 创建联动链复用，v0.9.7 需求3 资产）。 */
+  onLaunchDescribe?: (text: string) => void;
+  /** v0.9.8 需求4：装后引导卡「需要配置」一键到配置位（App 层跳管理页）。 */
+  onNavigateConfig?: () => void;
+}) {
   const { t } = useTranslation();
   const { confirm: confirmDialog, dialogNode: confirmDialogNode } = useConfirmDialog();
   const [source, setSource] = useState<MarketSource>("curated");
@@ -254,6 +268,34 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
   // 另一项点击被静默丢弃（if (busyId) return）——技能安装与市场安装无资源
   // 冲突，允许并行；同一项重复点击仍幂等拒绝（busyIds.has 同项守卫）。
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+
+  // ── v0.9.8 需求4：安装完成引导卡（三源统一形态）─────────────────────────
+  // 「装完即散」改为引导卡：装了什么/是否需要配置/首次怎么用/GUI 适配入口
+  //（pi 扩展类）。非阻断 toast，× 手动关。
+  const [guideCard, setGuideCard] = useState<InstallGuideInfo | null>(null);
+  const mapGuideKind = useCallback((kind: string): InstallGuideInfo["kind"] => {
+    if (kind === "pi-package") return "extension";
+    if (kind === "composed" || kind === "composed-theme") return "composed";
+    return "plugin";
+  }, []);
+  /** 技能类示例：描述首句改造为建议 prompt（设计既定从简形态）。 */
+  const firstSentence = useCallback((text: string) => {
+    const m = text.split(/[。．!？！?\n]/)[0]?.trim();
+    return m && m.length > 1 ? m : text.slice(0, 40);
+  }, []);
+  /** GUI 适配预填文案：携带挂载位九类浓缩清单（agent 无通道读打包资源，
+   * 契约浓缩版内联；权威源 resources/hub-page-capabilities.md）。 */
+  const buildGuiAdaptText = useCallback((info: InstallGuideInfo) => {
+    const pkg = info.packageName ? `（包：${info.packageName}）` : "";
+    return [
+      `我刚安装了扩展「${info.title}」${pkg}，说明：${info.description}`,
+      "请为它开发一个 jishu hub 适配插件，要求：",
+      "1. 先读 jishu-plugin-authoring 技能（插件创作指南），了解插件形态与 plugin.toml 清单写法；",
+      "2. hub 页面能力（挂载位九类，选与该扩展能力最匹配的 1-2 类）：dock-panel 停靠面板 / sidebar 侧栏 / rail 会话栏挂件 / composer 输入框尾挂件 / block-renderer 消息内块渲染器（按代码块语言或内容类型命中）/ stream-card 流内卡 / titlebar-action 标题栏动作 / settings-page 设置页 / panel 独立面板；",
+      "3. 探查该扩展的公开 API 与数据形态（可用 pi-lens 等工具），生成能将其能力呈现到会话界面的适配插件；",
+      "4. 产出走确认卡流程，我确认后启用。",
+    ].join("\n");
+  }, []);
 
   // 评审 P1-13 修复①：搜索关键词 300ms 防抖（局部 state + 定时器，卸载清理
   // 由 effect 返回）——不再每击键立即触发 load 发 IPC。
@@ -411,6 +453,18 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
       try {
         const command = action === "install" ? "market_install" : "market_uninstall";
         await invokeCommand<string>(command, { pluginId: id });
+        if (action === "install") {
+          // v0.9.8 需求4：装后引导卡（精选源）——curated 条目即卡数据源。
+          const entry = curated.find((c) => c.id === id);
+          if (entry) {
+            setGuideCard({
+              title: entry.title,
+              kind: mapGuideKind(entry.kind),
+              description: entry.description,
+              usageHint: entry.usage_hint,
+            });
+          }
+        }
         onChanged?.();
         await load();
       } catch (e) {
@@ -423,7 +477,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
         });
       }
     },
-    [busyIds, load, onChanged],
+    [busyIds, curated, load, mapGuideKind, onChanged],
   );
 
   const installSkill = useCallback(
@@ -445,6 +499,15 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
       setBusyIds((prev) => new Set(prev).add(entry.slug));
       try {
         await invokeCommand<string>("skillhub_install", { slug: entry.slug });
+        // v0.9.8 需求4：装后引导卡（技能源）——描述首句为建议 prompt；
+        // requires_api_key 给一键到配置位。
+        setGuideCard({
+          title: entry.name,
+          kind: "skill",
+          description: entry.description,
+          requiresApiKey: entry.requires_api_key,
+          usageHint: entry.description ? firstSentence(entry.description) : undefined,
+        });
         await load();
       } catch (e) {
         setActionError(String(e));
@@ -456,7 +519,7 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
         });
       }
     },
-    [busyIds, confirmDialog, load, t],
+    [busyIds, confirmDialog, firstSentence, load, t],
   );
 
   const uninstallSkill = useCallback(
@@ -885,6 +948,15 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                                   // 安装走 pi 包管理器（npm/git 装载 + settings.json
                                   // 注册一步完成，装完 hub 提示启用）。
                                   await invokeCommand<string>("pi_package_install_online", { source });
+                                  // v0.9.8 需求4：装后引导卡（扩展源）——GUI 适配入口。
+                                  const dispName = source.replace(/^npm:/, "").replace(/^git:.*\//, "");
+                                  setGuideCard({
+                                    title: dispName,
+                                    kind: "extension",
+                                    description: t("market.guideExtensionDesc", "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件"),
+                                    packageName: source,
+                                    guiAdaptable: true,
+                                  });
                                   await load();
                                   onChanged?.();
                                 } catch (e) {
@@ -987,6 +1059,14 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
                             try {
                               await invokeCommand<string>("pi_package_install_online", {
                                 source: "npm:" + pkg.name + "@" + pkg.version,
+                              });
+                              // v0.9.8 需求4：装后引导卡（扩展检索源）——GUI 适配入口。
+                              setGuideCard({
+                                title: pkg.name,
+                                kind: "extension",
+                                description: pkg.description || t("market.guideExtensionDesc", "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件"),
+                                packageName: "npm:" + pkg.name + "@" + pkg.version,
+                                guiAdaptable: true,
                               });
                               await load();
                             } catch (e) {
@@ -1221,6 +1301,20 @@ export function PluginMarketPanel({ onChanged }: { onChanged?: () => void }) {
       {/* 技能安装确认弹窗（useConfirmDialog 契约：须渲染 dialogNode，否则
           confirm() 永不落定——点击安装无反应的根因）。 */}
       {confirmDialogNode}
+
+      {/* v0.9.8 需求4：装后引导卡（三源统一，fixed toast 非阻断） */}
+      {guideCard && (
+        <InstallGuideCard
+          info={guideCard}
+          onNavigateConfig={onNavigateConfig}
+          onGuiAdapt={
+            onLaunchDescribe && guideCard.guiAdaptable
+              ? () => onLaunchDescribe(buildGuiAdaptText(guideCard))
+              : undefined
+          }
+          onClose={() => setGuideCard(null)}
+        />
+      )}
     </div>
   );
 }
