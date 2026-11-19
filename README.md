@@ -19,13 +19,11 @@ Mirror: [Gitee](https://gitee.com/wangzwa/jishu-hub)
 
 AI coding agents are evolving rapidly — Claude Code, OpenAI Codex, Open Code, and more are emerging as powerful CLI tools. But managing them is fragmented: scattered terminals, buried session logs, hand-edited configs.
 
-**Jishu Hub (机枢)** is a multi-agent collaboration platform that unifies these CLI-based AI agents in one desktop interface. Like precision gears in a machine — each agent is a "机枢" (a pivotal mechanism) — running stably and intelligently on the platform.
+**Jishu Hub (机枢)** is a multi-agent collaboration platform built on three pillars:
 
-> **Zero overhead · Zero risk · Zero bloat**
->
-> - **Native CLI passthrough** — connects directly to existing agent CLIs, no proxies, no wrappers, zero extra resource consumption
-> - **Instant launch, tiny footprint** — built on Tauri v2 + Rust, installer under 30 MB, cold start in under a second
-> - **Your data stays yours** — session history lives alongside each project in its own directory; Hub metadata stored locally in `~/.jishu-hub/`; nothing is ever uploaded
+> - **One unified surface for many agents** — Claude Code, OpenAI Codex, Open Code, and the built-in Jishu Self agent chat, switch, and run in parallel in one desktop interface; multi-task across projects without context interference
+> - **Local-first** — your data stays yours: session history lives alongside each project, Hub metadata in local `~/.jishu-hub/`, nothing is ever uploaded; native CLI passthrough with zero proxies, and a Tauri v2 + Rust build that stays small and starts instantly
+> - **Craftable plugins** — a three-source plugin market (curated / Pi extension ecosystem / skill market) with one-click scene bundles and post-install guidance; the interface itself is reshaped by plugins (mounts, block renderers, themes) — you can even have an AI agent write an adapter plugin for you
 
 ## Quick Start
 
@@ -71,6 +69,19 @@ Projects are automatically discovered and organized. Instantly locate past conve
 Ditch manual JSON edits. Use the visual form-based editor to manage models, environment variables, and agent presets — with built-in templates for popular providers and automatic backup & restore.
 
 ## Features
+
+### Plugin Market & Scene Guidance (v0.9.7+)
+- Three-source plugin market: curated picks / Pi extension ecosystem (Pi Index) / skill market (SkillHub)
+- One-click scene bundles: pick a scene (coding, office, video, …), fine-tune the checklist, install in one go
+- Post-install guide card: what you installed, whether config is needed, how to use it first — plus one-click GUI adaptation to generate a UI plugin for an extension
+- Empty-session scene suggestions: recommended tools per scene, injected with one click
+- Cross-process plugin state sync: change state via CLI, sync in the GUI with one click
+
+### Task Mode & Artifacts Center (v0.9.6+)
+- Multi-step task orchestration: task graph, task & result cards, parallel processing
+- Artifacts sidebar: session outputs at a glance, type-routed preview, direct artifact references
+- Edit & resend: rewrite a past message and resend; unsent messages dismissible
+- Agent pre-connect pool: answers from the first keystroke, no cold-start wait
 
 ### Multi-Agent Platform
 - Plugin-based agent registration and one-click switching
@@ -120,6 +131,15 @@ Ditch manual JSON edits. Use the visual form-based editor to manage models, envi
 - Three themes: Light / Colorful / Dark (dark by default)
 - Independent font size control for UI and chat content (4 presets)
 - Bilingual support (Chinese & English), auto-detects system language
+
+## Roadmap
+
+See [ROADMAP.md](./ROADMAP.md) for direction and cadence (Now / Next / Later).
+
+## Join the Beta
+
+- After trying it out, share feedback via [Gitee Issues](https://gitee.com/wangzwa/jishu-hub/issues) / [GitHub Issues](https://github.com/wang5766171/jishu-hub/issues) — feature ideas, UX problems, and compatibility reports are all welcome
+- Check the pinned "Feature Roadmap" and "Feedback" issues for ongoing discussions
 
 ## Contributing
 
