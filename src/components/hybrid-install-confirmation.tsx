@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
-import { ShieldAlert, Check, X } from "lucide-react";
+import { ShieldAlert, Check, RefreshCw, X } from "lucide-react";
 import { UniModal } from "@/components/ui/uni-modal";
 // 5a（v0.9.5 需求1，原需求26）：安装后自动展示——面板自动展开/挂件高亮/
 // 测试通知，复用既有面板激活性与动作命令链。
@@ -230,6 +230,105 @@ export function HybridInstallConfirmation() {
           </div>
         </div>
       ))}
+      </div>
+    </UniModal>
+  );
+}
+
+// ── v0.9.8 需求10-①：CLI 启停变更确认卡（D3 用户裁决）──────────────────────
+// CLI（jishu-cli plugins enable/disable）改启停后落 `.cli-plugin-changed` 标记
+// （跨进程信箱，.pending-confirm 同款模式）；本卡轮询消费，用户点「同步」走
+// plugin_reload（读新 plugins.json 热重建 + plugins-changed 广播），「暂不」
+// 仅关卡（不阻塞 CLI，状态留待下次手动重载）。与安装确认卡互不影响。
+
+interface CliPluginChange {
+  id: string;
+  action: "enable" | "disable" | string;
+  at?: string;
+}
+
+export function CliPluginChangeCard() {
+  const { t } = useTranslation();
+  const [changes, setChanges] = useState<CliPluginChange[]>([]);
+  const [syncing, setSyncing] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const result = await invokeCommand<{ changes?: CliPluginChange[] } | null>(
+        "cli_plugin_changed_poll",
+      );
+      if (result?.changes?.length) {
+        setChanges((prev) => [...prev, ...result.changes!]);
+      }
+    } catch {
+      // 命令不存在（老后端）或后端错误——静默
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  const sync = useCallback(async () => {
+    setSyncing(true);
+    try {
+      await invokeCommand("plugin_reload");
+      setChanges([]);
+    } finally {
+      setSyncing(false);
+    }
+  }, []);
+
+  if (changes.length === 0) return null;
+
+  return (
+    <UniModal
+      open
+      onClose={() => setChanges([])}
+      label={t("cliChange.label")}
+      className="w-auto max-w-md"
+    >
+      <div className="flex flex-col gap-3 p-5" data-cli-change-card="">
+        <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <RefreshCw className="h-4 w-4 text-primary" />
+          {t("cliChange.title", "命令行修改了插件状态")}
+        </div>
+        <div className="flex max-h-40 flex-col gap-1 overflow-y-auto text-xs text-muted-foreground">
+          {changes.map((c, i) => (
+            <div key={`${c.id}-${c.at ?? i}`} className="flex items-center gap-2">
+              <span className="font-mono text-foreground/85">{c.id}</span>
+              <span>
+                {c.action === "enable"
+                  ? t("cliChange.enabled", "已启用")
+                  : t("cliChange.disabled", "已停用")}
+              </span>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {t("cliChange.hint", "同步后插件中心立即应用最新状态。")}
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            disabled={syncing}
+            onClick={() => setChanges([])}
+            className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
+          >
+            {t("cliChange.later", "暂不同步")}
+          </button>
+          <button
+            type="button"
+            disabled={syncing}
+            onClick={() => void sync()}
+            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {syncing ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+            {t("cliChange.sync", "同步")}
+          </button>
+        </div>
       </div>
     </UniModal>
   );

@@ -1937,5 +1937,14 @@
   },
   "menuPage": {
     "close": "关闭"
+  },
+  "cliChange": {
+    "label": "插件状态同步",
+    "title": "命令行修改了插件状态",
+    "enabled": "已启用",
+    "disabled": "已停用",
+    "hint": "同步后插件中心立即应用最新状态。",
+    "later": "暂不同步",
+    "sync": "同步"
   }
 }

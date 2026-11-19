@@ -418,6 +418,19 @@ pub(crate) fn plugin_confirm_pending() -> Vec<agent::plugin::PendingHybridPlugin
     agent::plugin::pending_confirm_list()
 }
 
+/// v0.9.8 需求10-①：CLI 启停变更跨进程信箱消费（D3 用户裁决）——读
+/// `.cli-plugin-changed` 标记（CLI set_enabled 落盘）并**删除**（一次性
+/// 消费语义）。返回 None = 无变更（轮询轻量）。GUI 确认卡展示变更清单，
+/// 点「同步」走 plugin_reload（读新 plugins.json 热重建 + emit
+/// plugins-changed），「暂不」仅关卡片（状态留待下次手动重载）。
+#[tauri::command]
+pub(crate) fn cli_plugin_changed_poll() -> Option<serde_json::Value> {
+    let marker = agent::manifest::hub_home().join(".cli-plugin-changed");
+    let content = std::fs::read_to_string(&marker).ok()?;
+    let _ = std::fs::remove_file(&marker);
+    serde_json::from_str::<serde_json::Value>(&content).ok()
+}
+
 /// CLI plugins validate 的跨进程信箱（v0.9.5 需求1（原需求26）1c）：读请求
 /// 标记（CLI 写入的 .cli-validate-req-<nonce>.json——manifest JSON + componentJs
 /// 源码自包含，前端零任意路径访问）。返回 None 表示无待处理请求。

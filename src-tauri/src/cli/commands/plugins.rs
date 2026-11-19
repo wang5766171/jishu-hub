@@ -907,15 +907,40 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
 fn set_enabled(id: &str, enabled: bool, ctx: &ExecutionContext) -> Result<(), CliError> {
     agent::plugin::set_plugin_enabled(id, enabled)
         .map_err(|e| CliError::InvalidArg(format!("cannot update plugins.json: {e}")))?;
+    // v0.9.8 需求10-①：跨进程信箱（.pending-confirm 同款模式，D3 用户裁决）
+    // ——CLI 改启停发不了 plugins-changed 广播，落 `.cli-plugin-changed` 标记
+    // 由 GUI 确认卡轮询感知；GUI 点「同步」时 plugin_reload 落档刷新并消费
+    // 标记。多条改动累积（读改写数组），GUI 一次轮询全量取走。
+    record_cli_plugin_change(id, if enabled { "enable" } else { "disable" });
     if ctx.json {
         println!("{}", serde_json::json!({"id": id, "enabled": enabled}));
     } else {
         println!(
-            "Plugin {id} {}d (restart the GUI or reload its plugin page to apply).",
+            "Plugin {id} {}d (the GUI will offer to sync on its next check).",
             if enabled { "enable" } else { "disable" }
         );
     }
     Ok(())
+}
+
+/// CLI 启停变更标记（累积数组；GUI `cli_plugin_changed_poll` 消费后删除）。
+fn record_cli_plugin_change(id: &str, action: &str) {
+    use std::io::Write as _;
+    let marker = agent::manifest::hub_home().join(".cli-plugin-changed");
+    let mut changes: Vec<serde_json::Value> = std::fs::read_to_string(&marker)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("changes").and_then(|c| c.as_array()).cloned())
+        .unwrap_or_default();
+    changes.push(serde_json::json!({
+        "id": id,
+        "action": action,
+        "at": chrono::Utc::now().to_rfc3339(),
+    }));
+    let payload = serde_json::json!({ "changes": changes });
+    if let Ok(mut f) = std::fs::File::create(&marker) {
+        let _ = writeln!(f, "{payload}");
+    }
 }
 
 /// 导入 pi 扩展（7c 层三）：安全摘要输出 + 复制到 extensions/（默认不启用

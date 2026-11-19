@@ -1937,5 +1937,14 @@
   },
   "menuPage": {
     "close": "Close"
+  },
+  "cliChange": {
+    "label": "Plugin state sync",
+    "title": "CLI changed plugin states",
+    "enabled": "enabled",
+    "disabled": "disabled",
+    "hint": "Sync to apply the latest states in the plugin center.",
+    "later": "Not now",
+    "sync": "Sync"
   }
 }

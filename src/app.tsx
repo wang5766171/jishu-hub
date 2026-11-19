@@ -30,7 +30,7 @@ import {
   useSessionSidebar,
 } from "@/features/session-kernel/shell/session-sidebar";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { HybridInstallConfirmation } from "@/components/hybrid-install-confirmation";
+import { CliPluginChangeCard, HybridInstallConfirmation } from "@/components/hybrid-install-confirmation";
 import { AgentRuntimeBanner } from "@/components/agent-runtime-banner";
 // 5d（v0.9.5 需求1）：选中文本右键菜单（发送到插件）。
 import { SelectionContextMenu } from "@/components/selection-context-menu";
@@ -826,6 +826,10 @@ useEffect(() => {
             项目切换不卸载；组件内部 createPortal 到 body，轮询
             plugin_confirm_pending，无待确认项时渲染 null。 */}
         <HybridInstallConfirmation />
+        {/* v0.9.8 需求10-①：CLI 启停变更确认卡（跨进程信箱轮询，D3 裁决）——
+            CLI 改启停落 .cli-plugin-changed 标记，本卡消费并经 plugin_reload
+            同步落档；无变更渲染 null。 */}
+        <CliPluginChangeCard />
       <AppOverlayHost />
         {/* 5d：选中文本右键菜单（发送到插件） */}
         <SelectionContextMenu />

@@ -604,6 +604,7 @@ pub fn run() {
             commands::agents::composed_plugin_save,
             commands::agents::composed_plugin_delete,
             commands::agents::plugin_confirm_pending,
+            commands::agents::cli_plugin_changed_poll,
             commands::agents::cli_validate_poll,
             commands::agents::cli_validate_submit,
             commands::agents::market_list_curated,
