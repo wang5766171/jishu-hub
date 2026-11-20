@@ -1530,7 +1530,24 @@ pub(crate) async fn pi_package_install_online(source: String) -> Result<String, 
     }
     agent::jishu_self::JishuSelfAgent::run_pi_package_command("install", &source)
         .await
-        .map(|_| format!("{source} 已安装"))
+        .map_err(|e| format!("安装失败：{e}"))?;
+    // v0.9.8 需求15-F2：装后引擎自检——部分扩展的依赖提升会毒化共享运行
+    // 池，引擎每次启动即崩（首跑实例：装完即全部会话不可用）。自检失败
+    // 自动卸载回滚，杜绝「装完即砖」；回滚失败如实告知手动出口。
+    if let Err(why) = agent::jishu_self::JishuSelfAgent::verify_engine_boot().await {
+        let rollback_note = match agent::jishu_self::JishuSelfAgent::run_pi_package_command(
+            "remove", &source,
+        )
+        .await
+        {
+            Ok(_) => "已自动卸载".to_string(),
+            Err(_) => "自动卸载未成功，请到插件市场手动卸载".to_string(),
+        };
+        return Err(format!(
+            "「{source}」与当前运行环境不兼容（{why}），{rollback_note}。可换版本重试或反馈给插件作者。"
+        ));
+    }
+    Ok(format!("{source} 已安装"))
 }
 
 /// 在线包卸载源归一（评审追加·「在线扩展补卸载」后端半边）：签名统一接受

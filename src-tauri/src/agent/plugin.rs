@@ -357,6 +357,25 @@ fn known_plugin_ids() -> HashSet<String> {
     ids
 }
 
+/// v0.9.8 需求15-F5：插件显示名解析（守卫提示人话化——此前直出内部 id
+/// 如 session.mermaid-render，用户在卡片上看到的是中文名）。优先级：
+/// 内置会话能力清单兜底名 → 市场精选目录标题 → 退回 id 本身。
+fn plugin_display_name(id: &str) -> String {
+    if let Some((_, name)) = builtin_session_plugin_specs()
+        .iter()
+        .find(|(pid, _)| *pid == id)
+    {
+        return (*name).to_string();
+    }
+    if let Some(entry) = market::market_list_curated(None)
+        .into_iter()
+        .find(|e| e.id == id)
+    {
+        return entry.title;
+    }
+    id.to_string()
+}
+
 /// 内置会话能力插件清单（v0.9.2 需求1）。
 ///
 /// 前端实现（`src/features/session-kernel/plugins`）按 id 对齐；此处登记
@@ -491,12 +510,14 @@ pub fn session_plugin_descriptors(disabled: &HashSet<String>) -> Vec<PluginDescr
 pub fn set_plugin_enabled(id: &str, enabled: bool) -> Result<PluginConfig, String> {
     if CORE_PLUGIN_IDS.contains(&id) {
         return Err(format!(
-            "Plugin {id} is the core engine and cannot be disabled"
+            "插件「{}」是核心引擎，不可禁用",
+            plugin_display_name(id)
         ));
     }
     if !enabled && market::is_required_plugin(id) {
         return Err(format!(
-            "Plugin {id} 为系统内置（默认安装集），不可禁用——可在插件市场查看"
+            "插件「{}」为系统内置（默认安装集），不可禁用——可在插件市场查看",
+            plugin_display_name(id)
         ));
     }
     let known = known_plugin_ids();
@@ -1505,6 +1526,33 @@ mod tests {
         assert!(!config.disabled.contains(&"claude-code".to_string()));
         // 落盘可读回
         assert_eq!(load_plugin_config().disabled.len(), 0);
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// 需求15-F5：守卫提示人话化——显示名解析（内置清单兜底名 → 市场目录
+    /// 标题 → id 退回），禁用守卫错误不再直出内部 id。
+    #[test]
+    fn plugin_display_name_resolution_and_guard_message() {
+        let _guard = env_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        // 内置会话能力件 → 中文兜底名（specs 清单）
+        assert_eq!(
+            plugin_display_name("session.mermaid-render"),
+            "Mermaid 图表渲染"
+        );
+        // 未知 id → 原样退回（不猜测）
+        assert_eq!(plugin_display_name("no-such-plugin"), "no-such-plugin");
+        // mermaid-render 为 curated required（默认安装集）——禁用被守卫拦下，
+        // 文案含显示名、不含「Plugin <id>」前缀形态（required 守卫先于
+        // known ids 检查，tempdir 环境可直接走通）。
+        let err = set_plugin_enabled("session.mermaid-render", false)
+            .expect_err("required 件禁用应被守卫拒绝");
+        assert!(err.contains("Mermaid 图表渲染"), "文案应含显示名: {err}");
+        assert!(
+            !err.contains("Plugin session.mermaid-render"),
+            "不应直出 id 前缀: {err}"
+        );
         std::env::remove_var("JISHU_HUB_HOME");
     }
 

@@ -253,12 +253,14 @@ fn spawn_pi_rpc_session_inner(
                 } else {
                     &stderr_content
                 };
-                // 三轮评审 P1-4 补漏：此 Err 经 NormalizedEvent::Error 直达界面，
-                // 分隔行不得暴露内部引擎代号（Pi）。
                 format!("{}\n--- 智能体引擎 stderr ---\n{}", err, tail.trim())
             } else {
                 err.clone()
             };
+            // 日志侧保留 stderr 富化（log::warn/devlog 取证用）；界面消息
+            // 只发中文主文案——v0.9.8 需求15-F1：stderr 原文含英文术语/
+            // 本机路径/CLI 参数建议（jishu -ne），直出界面违反「说人话」
+            // （体验首跑 P1-1）。
             log::warn!("Pi RPC connection loop exited with error: {}", enriched_err);
             devlog(
                 "error",
@@ -271,7 +273,7 @@ fn spawn_pi_rpc_session_inner(
                     session_id: pending_session_id.clone(),
                 },
                 NormalizedEvent::Error {
-                    message: enriched_err,
+                    message: err.clone(),
                     recoverable: false,
                 },
                 NormalizedEvent::TurnComplete {

@@ -230,6 +230,120 @@ impl JishuSelfAgent {
         }
     }
 
+    /// v0.9.8 需求15-F2：在线扩展安装后的引擎启动自检探针。
+    ///
+    /// 背景：`pi install` 退出 0 = 装包+注册成功，但包的依赖会提升进共享
+    /// 池（`~/.jishu-agent/agent/npm/node_modules`），与扩展装载器产生
+    /// duplicate runtime modules 冲突——引擎**每次 spawn 即崩**（体验首跑
+    /// J11~J13 三连崩实例：rpiv-web-tools 装后全部会话不可用，手动删包
+    /// 才恢复）。hub 侧此前只看退出码，无装后验证无回滚。
+    ///
+    /// 探针语义：以与真实会话同构的 `pi --mode rpc` 起一个最小实例并发
+    /// `{"type":"get_state"}`——扩展装载完成引擎才会应答（与
+    /// pi_rpc_runtime 连接循环握手同判定：`type=response &
+    /// command=get_state`）；进程早退（stdout 关闭）= 装载期崩溃；限时
+    /// 无应答 = 装载挂死。两条失败路径均判定「该安装毒化运行时」，由
+    /// 调用方回滚卸载。
+    pub(crate) async fn verify_engine_boot() -> Result<(), String> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        /// 自检限时：正常冷启动（含扩展装载）秒级完成；预连接池同类 spawn
+        /// 为先例。60s 覆盖慢机冷启，仍远小于真实握手预算 150s。
+        const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+        let runtime =
+            pi_runtime::resolve_pi_runtime().map_err(|e| format!("自检无法启动引擎（{e}）"))?;
+        let mut args = runtime.base_args;
+        args.push("--mode".to_string());
+        args.push("rpc".to_string());
+
+        let mut cmd =
+            crate::os_adapter::shell::shell_command(&runtime.program.to_string_lossy(), args);
+        // cwd 与真实会话同构（默认工作区）；不存在则退 temp（扩展装载读
+        // 全局 agent 目录，cwd 只影响项目信任语义）。
+        let cwd = crate::project::default_workspace_root();
+        cmd.current_dir(if cwd.exists() {
+            cwd
+        } else {
+            std::env::temp_dir()
+        });
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        // 探针绝不常驻：任何路径漏杀时随 Child drop 兜底终止。
+        cmd.kill_on_drop(true);
+        #[cfg(target_os = "windows")]
+        crate::process_command::tokio_no_window(&mut cmd);
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("自检无法启动引擎（{e}）"))?;
+        // stderr 排水：装载期警告写满管道缓冲会阻塞子进程（Windows 4KB
+        // 起步），只排水不采集（崩溃取证走 pi_rpc_runtime 的富化日志）。
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut stderr = stderr;
+                let mut sink = [0u8; 1024];
+                loop {
+                    match stderr.read(&mut sink).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+            });
+        }
+
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "自检无法接管引擎输入".to_string())?;
+        stdin
+            .write_all(b"{\"type\":\"get_state\"}\n")
+            .await
+            .map_err(|e| format!("自检发送失败（进程可能已退出）：{e}"))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|e| format!("自检发送失败：{e}"))?;
+        drop(stdin);
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "自检无法接管引擎输出".to_string())?;
+        let mut reader = BufReader::new(stdout).lines();
+        let deadline = tokio::time::Instant::now() + PROBE_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err("引擎限时内未完成启动（扩展装载超时）".to_string());
+            }
+            match tokio::time::timeout(remaining, reader.next_line()).await {
+                Ok(Ok(Some(line))) => {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    // 启动诊断行（非 JSON）跳过——同连接循环握手语义。
+                    let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else {
+                        continue;
+                    };
+                    let is_state_response = msg.get("type").and_then(|v| v.as_str())
+                        == Some("response")
+                        && msg.get("command").and_then(|v| v.as_str()) == Some("get_state");
+                    if is_state_response {
+                        return Ok(());
+                    }
+                }
+                // stdout 关闭 = 进程已退出（装载期崩溃的典型形态）。
+                Ok(Ok(None)) => return Err("引擎启动即退出（扩展装载失败）".to_string()),
+                Ok(Err(e)) => return Err(format!("自检读取失败：{e}")),
+                Err(_) => continue, // 步进到期，回环重算剩余预算
+            }
+        }
+    }
+
     /// v0.9.5 需求5：4 个 pi 扩展包逐个幂等安装（缺哪个装哪个；单包失败
     /// 记 warn 继续下一个，Err 汇总失败清单——启动自愈下轮重试，不阻断
     /// hub 启动）。探测与 mcp 同口径（node_modules 目录名含 scoped 包的
