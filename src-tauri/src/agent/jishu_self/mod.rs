@@ -4,6 +4,7 @@ pub mod model_picker;
 pub(crate) mod paths;
 pub(crate) mod pi_model;
 pub(crate) mod pi_models_config;
+pub(crate) mod pi_registry;
 pub(crate) mod pi_runtime;
 pub(crate) mod pi_session;
 mod probe;
@@ -245,19 +246,19 @@ impl JishuSelfAgent {
     /// 无应答 = 装载挂死。两条失败路径均判定「该安装毒化运行时」，由
     /// 调用方回滚卸载。
     ///
-    /// 返回值（深挖轮 R2 升级）：`Ok(Some(tools))` = 引擎健康但检出
-    /// 「工具与已装扩展重叠」警告（tools 为重叠工具名清单，随安装结果
-    /// 提示用户「能力重叠、按装载顺序生效其一」）；`Ok(None)` = 干净；
-    /// `Err(_)` = 自检失败（调用方回滚）。
-    pub(crate) async fn verify_engine_boot() -> Result<Option<Vec<String>>, String> {
+    /// 返回值（方案 A 终版）：`Ok(())` = 引擎健康；`Err(ProbeFailure)`
+    /// = 自检失败——stderr 尾部随行带回，调用方据此区分「工具名冲突」
+    ///（转通用冲突确认流，见 pi_registry：说明重叠→用户选择继续安装
+    /// 则停用对手/取消则不装）与其他装载故障（回滚+报错）。
+    pub(crate) async fn verify_engine_boot() -> Result<(), ProbeFailure> {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
         /// 自检限时：正常冷启动（含扩展装载）秒级完成；预连接池同类 spawn
         /// 为先例。60s 覆盖慢机冷启，仍远小于真实握手预算 150s。
         const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-        let runtime =
-            pi_runtime::resolve_pi_runtime().map_err(|e| format!("自检无法启动引擎（{e}）"))?;
+        let runtime = pi_runtime::resolve_pi_runtime()
+            .map_err(|e| ProbeFailure::new(format!("自检无法启动引擎（{e}）")))?;
         let mut args = runtime.base_args;
         args.push("--mode".to_string());
         args.push("rpc".to_string());
@@ -282,12 +283,12 @@ impl JishuSelfAgent {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("自检无法启动引擎（{e}）"))?;
+            .map_err(|e| ProbeFailure::new(format!("自检无法启动引擎（{e}）")))?;
         // stderr 排水兼采集（R2）：装载期警告写满管道缓冲会阻塞子进程
         // （Windows 4KB 起步），持续排水；同时保留尾部 4KB 供握手成功后
         // 提取「工具重叠」警告（full 取证仍走 pi_rpc_runtime 富化日志）。
-        let stderr_tail: std::sync::Arc<std::sync::Mutex<Vec<u8>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stderr_tail: std::sync::Arc<std::sync::Mutex<String>> =
+            std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         if let Some(stderr) = child.stderr.take() {
             let tail = stderr_tail.clone();
             tokio::spawn(async move {
@@ -299,7 +300,7 @@ impl JishuSelfAgent {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             let mut buf = tail.lock().unwrap_or_else(|e| e.into_inner());
-                            buf.extend_from_slice(&sink[..n]);
+                            buf.push_str(&String::from_utf8_lossy(&sink[..n]));
                             let len = buf.len();
                             if len > 4096 {
                                 buf.drain(..len - 4096);
@@ -313,27 +314,33 @@ impl JishuSelfAgent {
         let mut stdin = child
             .stdin
             .take()
-            .ok_or_else(|| "自检无法接管引擎输入".to_string())?;
+            .ok_or_else(|| ProbeFailure::new("自检无法接管引擎输入".to_string()))?;
         stdin
             .write_all(b"{\"type\":\"get_state\"}\n")
             .await
-            .map_err(|e| format!("自检发送失败（进程可能已退出）：{e}"))?;
+            .map_err(|e| ProbeFailure::new(format!("自检发送失败（进程可能已退出）：{e}")))?;
         stdin
             .flush()
             .await
-            .map_err(|e| format!("自检发送失败：{e}"))?;
+            .map_err(|e| ProbeFailure::new(format!("自检发送失败：{e}")))?;
         drop(stdin);
 
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| "自检无法接管引擎输出".to_string())?;
+            .ok_or_else(|| ProbeFailure::new("自检无法接管引擎输出".to_string()))?;
         let mut reader = BufReader::new(stdout).lines();
         let deadline = tokio::time::Instant::now() + PROBE_TIMEOUT;
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                return Err("引擎限时内未完成启动（扩展装载超时）".to_string());
+                return Err(ProbeFailure::with_stderr(
+                    "引擎限时内未完成启动（扩展装载超时）",
+                    stderr_tail
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone(),
+                ));
             }
             match tokio::time::timeout(remaining, reader.next_line()).await {
                 Ok(Ok(Some(line))) => {
@@ -349,22 +356,23 @@ impl JishuSelfAgent {
                         == Some("response")
                         && msg.get("command").and_then(|v| v.as_str()) == Some("get_state");
                     if is_state_response {
-                        // 握手成功——从 stderr 尾部提取「工具重叠」警告。
-                        let tail = stderr_tail
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .clone();
-                        let overlaps = extract_overlap_tool_names(&String::from_utf8_lossy(&tail));
-                        return Ok(if overlaps.is_empty() {
-                            None
-                        } else {
-                            Some(overlaps)
-                        });
+                        return Ok(());
                     }
                 }
                 // stdout 关闭 = 进程已退出（装载期崩溃的典型形态）。
-                Ok(Ok(None)) => return Err("引擎启动即退出（扩展装载失败）".to_string()),
-                Ok(Err(e)) => return Err(format!("自检读取失败：{e}")),
+                Ok(Ok(None)) => {
+                    // stdout 关闭 = 进程退出——带回 stderr 尾部供冲突识别
+                    //（方案 A：工具撞名转确认流而非直接回滚报错）。
+                    let tail = stderr_tail
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    return Err(ProbeFailure::with_stderr(
+                        "引擎启动即退出（扩展装载失败）",
+                        tail,
+                    ));
+                }
+                Ok(Err(e)) => return Err(ProbeFailure::new(format!("自检读取失败：{e}"))),
                 Err(_) => continue, // 步进到期，回环重算剩余预算
             }
         }
@@ -513,7 +521,7 @@ use crate::agent::traits::{
     TransportAdapter,
 };
 // JISHU_AGENT_VERSION_START (auto-updated by upgrade-version.mjs)
-pub const PI_AGENT_VERSION: &str = "1.5.0-16";
+pub const PI_AGENT_VERSION: &str = "1.5.0-15";
 // JISHU_AGENT_VERSION_END
 
 impl AgentManifest for JishuSelfAgent {
@@ -1149,24 +1157,87 @@ pub(crate) const PI_EXTENSION_PACKAGES: &[(&str, &str)] = &[
     ("npm:pi-web-access@0.32.0", "pi-web-access"),
 ];
 
-/// 需求15 深挖轮 R2：从探针 stderr 尾部提取「工具与已装扩展重叠」警告的
-/// 工具名清单（pi 装载器诊断行形如 `Tool "web_search" conflicts with
-/// <路径>`；fork R1 降级后此行以 warning 输出、引擎继续跑）。去重保序。
-fn extract_overlap_tool_names(stderr_tail: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+/// 需求15 方案 A：探针失败结构——reason 为用户文案；stderr_tail 供调用方
+/// 区分「工具名冲突」（转确认流）与其他装载故障（回滚+报错）。
+pub(crate) struct ProbeFailure {
+    pub reason: String,
+    pub stderr_tail: String,
+}
+
+impl ProbeFailure {
+    fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            stderr_tail: String::new(),
+        }
+    }
+    fn with_stderr(reason: impl Into<String>, stderr_tail: String) -> Self {
+        Self {
+            reason: reason.into(),
+            stderr_tail,
+        }
+    }
+}
+
+/// 需求15 方案 A：单个工具冲突对手（诊断行 `Tool "x" conflicts with
+/// <对手路径>` 的结构化产物；对手路径 → npm 包目录名）。
+#[derive(Debug)]
+pub(crate) struct ConflictOpponent {
+    pub tool: String,
+    /// 对手 npm 包目录名（如 `pi-web-access` / `@juicesharp/rpiv-todo`）。
+    pub opponent_pkg: String,
+}
+
+/// 需求15 方案 A（通用冲突治理）：从探针 stderr 尾部解析全部「工具名
+/// 冲突」对手——`Tool "web_search" conflicts with C:\...\node_modules\
+/// pi-web-access\dist\index.js` → (web_search, pi-web-access)。同工具同
+/// 对手去重；多工具/多对手全量保留（确认卡完整列出）。纯函数可单测。
+pub(crate) fn extract_conflict_opponents(stderr_tail: &str) -> Vec<ConflictOpponent> {
+    let mut out: Vec<ConflictOpponent> = Vec::new();
     for line in stderr_tail.lines() {
         let Some(idx) = line.find("conflicts with") else {
             continue;
         };
+        // 工具名：冲突词之前的最后一个 "…" 引用段（诊断行前缀
+        // `Failed to load extension "<自身路径>": Tool "<名>"`）。
         let head = &line[..idx];
-        // 工具名取行内最后一个 Tool "…" 引用段（诊断行前缀为
-        // `Failed to load extension "<路径>": Tool "<名>"`）。
-        if let Some(q) = head.rfind('"') {
-            if let Some(start) = head[..q].rfind('"') {
-                let name = &head[start + 1..q];
-                if !name.is_empty() && !out.iter().any(|n| n == name) {
-                    out.push(name.to_string());
+        let tool = (|| {
+            let q = head.rfind('"')?;
+            let start = head[..q].rfind('"')?;
+            let name = &head[start + 1..q];
+            (!name.is_empty()).then(|| name.to_string())
+        })();
+        // 对手包名：冲突词之后的路径里最后一个 node_modules 段后的
+        // 包目录名（scoped 包取 @scope\name 两段）。
+        let tail = &line[idx + "conflicts with".len()..];
+        let pkg = (|| {
+            let nm = tail.rfind("node_modules")?;
+            let rest = &tail[nm + "node_modules".len()..];
+            let rest = rest.trim_start_matches(['\\', '/']);
+            let mut end = rest.find(['\\', '/']).unwrap_or(rest.len());
+            let first = &rest[..end];
+            if first.starts_with('@') {
+                // scoped：拼第二段
+                if let Some(sep) = rest[end..].find(['\\', '/']) {
+                    let second_end = end
+                        + sep
+                        + 1
+                        + rest[end + sep + 1..]
+                            .find(['\\', '/'])
+                            .unwrap_or(rest.len() - end - sep - 1);
+                    end = second_end;
                 }
+            }
+            let name = &rest[..end];
+            // 路径分隔符归一（win 反斜杠 → npm 包名斜杠）。
+            (!name.is_empty()).then(|| name.replace('\\', "/"))
+        })();
+        if let (Some(tool), Some(pkg)) = (tool, pkg) {
+            if !out.iter().any(|c| c.tool == tool && c.opponent_pkg == pkg) {
+                out.push(ConflictOpponent {
+                    tool,
+                    opponent_pkg: pkg,
+                });
             }
         }
     }
@@ -1569,24 +1640,34 @@ impl TerminalAdapter for JishuSelfAgent {
 
 #[cfg(test)]
 mod agent_tool_whitelist_tests {
-    use super::{extract_overlap_tool_names, merge_agent_tool_names};
+    use super::{extract_conflict_opponents, merge_agent_tool_names};
 
-    /// 需求15 深挖轮 R2：重叠工具名提取——诊断行解析/去重/非冲突行忽略。
+    /// 需求15 方案 A：冲突对手提取——工具名/对手包名/去重/scoped 拼接。
     #[test]
-    fn extract_overlap_tool_names_from_diagnostics() {
+    fn extract_conflict_opponents_from_diagnostics() {
         let stderr = concat!(
             "Warning: Extension package \"x\": Host-provided packages must be in peerDependencies.\n",
-            "Failed to load extension \"C:\\a\\rpiv-web-tools\\index.ts\": Tool \"web_search\" conflicts with C:\\b\\pi-web-access\\dist\\index.js\n",
-            "Failed to load extension \"C:\\a\\rpiv-web-tools\\index.ts\": Tool \"fetch_content\" conflicts with C:\\b\\pi-web-access\\dist\\index.js\n",
-            "Failed to load extension \"C:\\a\\rpiv-web-tools\\index.ts\": Tool \"web_search\" conflicts with C:\\b\\pi-web-access\\dist\\index.js\n",
+            "Failed to load extension \"C:\\a\\rpiv-web-tools\\index.ts\": Tool \"web_search\" conflicts with C:\\u\\agent\\npm\\node_modules\\pi-web-access\\dist\\index.js\n",
+            "Failed to load extension \"C:\\a\\rpiv-web-tools\\index.ts\": Tool \"fetch_content\" conflicts with C:\\u\\agent\\npm\\node_modules\\pi-web-access\\dist\\index.js\n",
+            "Failed to load extension \"C:\\a\\rpiv-web-tools\\index.ts\": Tool \"web_search\" conflicts with C:\\u\\agent\\npm\\node_modules\\pi-web-access\\dist\\index.js\n",
         );
-        let tools = extract_overlap_tool_names(stderr);
-        assert_eq!(
-            tools,
-            vec!["web_search".to_string(), "fetch_content".to_string()]
-        );
+        let conflicts = extract_conflict_opponents(stderr);
+        // 多工具全量、同工具同对手去重
+        assert_eq!(conflicts.len(), 2, "{conflicts:?}");
+        assert_eq!(conflicts[0].tool, "web_search");
+        assert_eq!(conflicts[0].opponent_pkg, "pi-web-access");
+        assert_eq!(conflicts[1].tool, "fetch_content");
         // 无冲突行 → 空。
-        assert!(extract_overlap_tool_names("all good\nno conflict").is_empty());
+        assert!(extract_conflict_opponents("all good\nno conflict").is_empty());
+        // scoped 对手包名两段拼接
+        let scoped = concat!(
+            "Error: Failed to load extension \"C:\\a\\x.ts\": ",
+            "Tool \"todo_write\" conflicts with ",
+            "C:\\agent\\npm\\node_modules\\@juicesharp\\rpiv-todo\\index.ts\n"
+        );
+        let c = &extract_conflict_opponents(scoped)[0];
+        assert_eq!(c.tool, "todo_write");
+        assert_eq!(c.opponent_pkg, "@juicesharp/rpiv-todo");
     }
 
     /// v0.9.8 需求10-③ P1 回归锚点：[[agent-tool]] 物化名并入 spawn 白名单

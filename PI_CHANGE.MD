@@ -119,19 +119,11 @@
 
 # 第二部分：改动记录
 
-## 2026-11-20 | 扩展装载诊断降级（release_v1.5.0-15 → 自研尾号顺延 1.5.0-16）——jishu-hub v0.9.8 需求15 深挖轮 R1
+## 2026-11-20 | R1「装载诊断降级」实施后经用户裁决回退——pi 保持原版（1.5.0-15）——jishu-hub v0.9.8 需求15 方案 A
 
-**版本**：Pi 版本不变（1.5.0）、自研尾号顺延 `-16`（版本规则 §1.3：自研迭代 +1）。分支仍为 `release_v1.5.0-15`（同分支追加提交 `d12988f142`，分支名含旧尾号系历史命名——下次上游升级时按规则换新名）。monorepo 统一版本惯例：root + 12 个子包 package.json + 2 个 lock 全套 15→16。
+**裁决链**：深挖轮 R1 曾把 main.ts 扩展装载诊断降为 warning（pi 1.5.0-16，fork 提交后未推送）；用户质询「pi 是成熟开源系统，原生装扩展不可能有灾难性问题」——复核确认**工具名冲突时 exit(1) 是 pi 有意的 fail-loud 设计**（原生用户自己管包、报错直达终端、可自行卸载解决），R1 把上游故意设计当缺陷修属方向错误。**fork 已 reset 回 `e0bb9db08`（上游原版，版本回 1.5.0-15，R1 提交废弃未推送）**；bundle 重建、pi-runtime.zip 重打（254,609,424 B 与原版一致）、hub `PI_AGENT_VERSION` 回 15、用户目录恢复原版——pi 侧零改动。
 
-**动机**（v0.9.8 需求15 深挖轮，用户裁决「从根因上解决而不是跳过」）：体验首跑事故链真根因=市场扩展与内置包**工具名撞车**（rpiv-web-tools 的 web_search vs 内置 pi-web-access）——resource-loader 设计语义是「keep all loaded + diagnostics + load order 定优先级」（可恢复），但 main.ts 把扩展装载 errors 计入 hasRuntimeErrors 直接 `process.exit(1)`，任何单个第三方扩展都能让引擎每次启动即崩（首跑 J11~J13 三连崩；干净环境双变量实验证明同包在无内置包共存的 pi 原生环境不崩——差异在 hub 钉装的内置包占了常见工具名）。上游 master 同款未修（已核对 earendil-works/pi master 的 main.ts），**可推上游 PR**。
-
-**改动**：`packages/coding-agent/src/main.ts` createRuntime 的 extensions errors 诊断 `type: "error"` → `"warning"`（1 处 + 注释）；`EXTENSION_LOAD_FAILURE_HINT` 分支随之自然失活（保留便于上游合并）。
-
-**验证**：撞名态（rpiv+pi-web-access 共存）对照——旧构建 exit=1 无应答；新构建 exit=0 + get_state success=true（1.9s 应答），冲突仅以 Warning 行输出。hub 侧集成（dev 市场）：装 rpiv 4s 成功、不回滚、装后对话正常、卸载干净（docs/v0.9.8/需求15/tests/ R3 截图组）。
-
-**配套**：pi-runtime.zip 已重打（254,610,828 B，含 v16 bundle）；hub `PI_AGENT_VERSION` 同步 `1.5.0-16`（agent_runtime_init 启动自愈将自动把用户目录 bundle 升到 v16）。
-
-**坑**：①husky pre-commit 全仓 tsc 触发既有类型债（`allowEmptySignature`，与本次改动无关，同上笔 merge 备注）→ `--no-verify` 提交；②monorepo lock 锁旧版本 + npm registry 无 `1.5.0-15` 公开版（workspace 失配转 registry 即 ETARGET）→ 全套版本替换后 `pack-pi.mjs` 需在**重编 bundle 之后**重跑（bundle 内 VERSION 编译期烙印，顺序：改版本 → npm run build → pack-pi）。
+**方案 A（同日实施，全部 hub 侧）**：拥抱原生 fail-loud，hub 负责「用户永远停在健康态」——通用冲突治理（用户裁决：对**所有**扩展一致，含用户 A vs 用户 B 互撞；内置只能停用不可删除、卡上显示替代提示，自建可停可删；继续安装则停用对手，取消则不装；替代者卸载时被停用者自动恢复）。实现：探针失败带 stderr 尾部 → 解析 `Tool "x" conflicts with` 对手清单 → 回滚安装+返回结构化冲突 → 前端确认卡 → 「停用并安装」重装+停用对手（仅移 pi settings 注册不删文件，台账 `pi-extension-overrides.json`）→ 终验探针（失败全回滚）。停用=移注册（ensure 只按文件版本判定不看注册，天然不破坏）；恢复=注册加回（零网络）。GUI 四路径复测全过（取消/停用并装/停用态卡/卸载自动恢复内置），截图 R4 组。
 
 ## 2026-11-08 | 合并上游 v1.5.0（release_v1.5.0-15）——jishu-hub v0.9.7
 

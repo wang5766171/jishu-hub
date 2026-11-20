@@ -109,6 +109,25 @@ interface PiindexEntry {
   search_text: string;
 }
 
+/** 需求15 方案 A：在线安装结果（serde tag=status）——冲突时弹确认卡。 */
+interface InstallOnlineOutcome {
+  status: "installed" | "conflict";
+  conflicts?: Array<{
+    tool: string;
+    opponent_source: string;
+    opponent_display: string;
+    opponent_builtin: boolean;
+  }>;
+}
+
+/** 需求15 方案 A：停用台账条目（pi_extension_overrides_list）。 */
+interface PiOverrideEntryView {
+  source: string;
+  builtin: boolean;
+  display: string;
+  replaced_by: string;
+}
+
 /** 已装源串与 piindex 条目匹配（npm 源按包名前缀；git 源归一 https
  * 前缀后比对安装命令尾段）——已装卡说明/查看来源的元数据来源。 */
 function installedSourceMatchesPiindex(src: string, entry: PiindexEntry): boolean {
@@ -277,6 +296,9 @@ export function PluginMarketPanel({
   const [curatedKw, setCuratedKw] = useState("");
   const [online, setOnline] = useState<PiOnlinePackage[] | null>(null);
   const [onlineInstalled, setOnlineInstalled] = useState<string[]>([]);
+  // 需求15 方案 A：冲突停用台账（卡上呈现「已停用（被 XX 替代）」——
+  // 内置不可删除只显示替代提示；用户停用件可删除）。
+  const [piOverrides, setPiOverrides] = useState<PiOverrideEntryView[]>([]);
   // 需求3 补充：piindex 检索结果（在线库主源；npm 检索为兜底）；更新检查。
   const [piindex, setPiindex] = useState<PiindexEntry[] | null>(null);
   // 需求3 四轮：分类过滤 / 重新加载。
@@ -407,6 +429,11 @@ export function PluginMarketPanel({
         const sources = await invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]);
         if (runId !== marketLoadRunId) return;
         setOnlineInstalled(sources ?? []);
+        // 需求15 方案 A：冲突停用台账随已装源同槽装载（安装/卸载后 load()
+        // 刷新即同步）。
+        const overrides = await invokeCommand<PiOverrideEntryView[]>("pi_extension_overrides_list").catch(() => []);
+        if (runId !== marketLoadRunId) return;
+        setPiOverrides(overrides ?? []);
         try {
           const results = await invokeCommand<PiindexEntry[]>("piindex_search", {
             keyword: debouncedOnlineKw.trim() || null,
@@ -1036,6 +1063,17 @@ export function PluginMarketPanel({
                   const builtin = installed && extensions.some(
                     (pkg) => installedSourceMatchesPiindex(pkg.source, entry),
                   );
+                  // 需求15 方案 A：冲突停用态——本卡未注册但台账有（被某个
+                  // 已装扩展顶掉）→ 显示「已停用（被 XX 替代）」；内置项不可
+                  // 删除（只读提示），用户项可删除（复用卸载链，含台账清理）。
+                  const pkgDirOf = (src: string) => {
+                    const rest = src.replace(/^npm:/, "");
+                    const at = rest.lastIndexOf("@");
+                    return at > 0 ? rest.slice(0, at) : rest;
+                  };
+                  const overrideEntry = !installed && entry.npm_package
+                    ? piOverrides.find((o) => pkgDirOf(o.source) === entry.npm_package)
+                    : undefined;
                   return (
                     <div key={entry.name + (entry.github_url ?? "")} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
                       <div className="flex items-center gap-2">
@@ -1071,6 +1109,22 @@ export function PluginMarketPanel({
                           <Info className="h-3 w-3" />
                         </Button>
 
+                        {/* 需求15 方案 A：冲突停用态呈现（内置/用户一致——说明被谁
+                            替代；卸载替代者时自动恢复，此处只读）。 */}
+                        {overrideEntry && (
+                          <span
+                            className="max-w-32 truncate text-[10px] text-amber-600/90"
+                            title={t("market.overrideHint", {
+                              defaultValue: "已停用：被 {{name}} 替代（卸载该扩展时自动恢复）",
+                              name: pkgDirOf(overrideEntry.replaced_by),
+                            })}
+                          >
+                            {t("market.overrideBadge", {
+                              defaultValue: "已停用·被 {{name}} 替代",
+                              name: pkgDirOf(overrideEntry.replaced_by),
+                            })}
+                          </span>
+                        )}
                         {source && installed && (
                           <>
                             <span className="text-muted-foreground">{t("market.installed")}</span>
@@ -1118,22 +1172,59 @@ export function PluginMarketPanel({
                                 try {
                                   // 安装走 pi 包管理器（npm/git 装载 + settings.json
                                   // 注册一步完成，装完 hub 提示启用）。
-                                  const result = await invokeCommand<string>("pi_package_install_online", { source });
-                                  // v0.9.8 需求4：装后引导卡（扩展源）——GUI 适配入口。
-                                  // 深挖轮 R2：安装结果串可能带「注意：」能力重叠
-                                  /// 提示段（工具与内置包撞名，共存生效其一）——并入引导卡。
-                                  const [baseMsg, overlapNote] = result.split("\n");
+                                  const result = await invokeCommand<InstallOnlineOutcome>("pi_package_install_online", { source });
                                   const dispName = source.replace(/^npm:/, "").replace(/^git:.*\//, "");
-                                  setGuideCard({
-                                    title: dispName,
-                                    kind: "extension",
-                                    description:
-                                      t("market.guideExtensionDesc", "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件") +
-                                      (overlapNote ? `\n${overlapNote}` : ""),
-                                    packageName: source,
-                                    guiAdaptable: true,
-                                  });
-                                  void baseMsg;
+                                  // 需求15 方案 A：工具名冲突（pi 原生拒绝启动，
+                                  // hub 已回滚保健康态）→ 确认卡说明「与已装
+                                  // 能力重叠」，用户选择继续（停用对手并安装）
+                                  // 或取消（保持未装）。
+                                  if (result.status === "conflict" && result.conflicts) {
+                                    const overlap = result.conflicts
+                                      .map((c) => t("market.conflictItem", {
+                                        defaultValue: "「{{opponent}}」（工具 {{tool}}）",
+                                        opponent: c.opponent_display,
+                                        tool: c.tool,
+                                      }))
+                                      .join("、");
+                                    const go = await confirmDialog({
+                                      title: t("market.conflictTitle", { defaultValue: "能力重叠：{{name}}", name: dispName }),
+                                      description: t("market.conflictDesc", {
+                                        defaultValue:
+                                          "该扩展与已装能力重叠：{{items}}。\n继续安装将停用上述扩展（内置项稍后卸载本扩展时自动恢复）；取消则不安装。",
+                                        items: overlap,
+                                      }),
+                                      confirmText: t("market.conflictConfirm", "停用并安装"),
+                                    });
+                                    if (!go) {
+                                      await load();
+                                      return;
+                                    }
+                                    const confirmed = await invokeCommand<{ disabled: Array<{ opponent_display: string }>; }>(
+                                      "pi_package_install_confirmed",
+                                      { source },
+                                    );
+                                    const stopped = confirmed.disabled
+                                      .map((d) => d.opponent_display)
+                                      .join("、");
+                                    setGuideCard({
+                                      title: dispName,
+                                      kind: "extension",
+                                      description:
+                                        t("market.guideExtensionDesc", "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件") +
+                                        (stopped ? `\n${t("market.conflictStopped", { defaultValue: "已停用：{{items}}（卸载本扩展时自动恢复）", items: stopped })}` : ""),
+                                      packageName: source,
+                                      guiAdaptable: true,
+                                    });
+                                  } else {
+                                    // v0.9.8 需求4：装后引导卡（扩展源）——GUI 适配入口。
+                                    setGuideCard({
+                                      title: dispName,
+                                      kind: "extension",
+                                      description: t("market.guideExtensionDesc", "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件"),
+                                      packageName: source,
+                                      guiAdaptable: true,
+                                    });
+                                  }
                                   await load();
                                   onChanged?.();
                                 } catch (e) {

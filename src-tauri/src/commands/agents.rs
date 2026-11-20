@@ -1530,8 +1530,58 @@ pub(crate) fn pi_package_builtin_pins() -> Result<Vec<BuiltinPin>, String> {
 /// 在线包安装/卸载（npm/git 源直达；不走 curated 插件闸门——装的是 pi
 /// 扩展包本体，非 hub 插件条目）。git 源形如 git:github.com/owner/repo
 /// （piindex 目录 GitHub 直装卡）。
+/// 需求15 方案 A：单条冲突信息（确认卡呈现）。
+#[derive(serde::Serialize)]
+pub(crate) struct PiConflictInfo {
+    /// 冲突工具名（如 web_search）。
+    pub tool: String,
+    /// 对手完整注册串（如 npm:pi-web-access@0.32.0；停用/恢复按此寻址）。
+    pub opponent_source: String,
+    /// 对手展示名（内置→中文名；用户装→包名）。
+    pub opponent_display: String,
+    /// 对手是否内置包（内置只能停用不可删除；卡上显示替代提示）。
+    pub opponent_builtin: bool,
+}
+
+/// 需求15 方案 A：在线安装结果（结构化——前端据 status 分流：冲突弹
+/// 确认卡，用户「停用并安装」后调 pi_package_install_confirmed）。
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum PiInstallOutcome {
+    /// 安装成功且引擎健康。
+    Installed,
+    /// 工具名冲突——已自动卸载回滚，等用户决断（取消=保持未装；继续=
+    /// confirmed 命令重装并停用对手）。
+    Conflict { conflicts: Vec<PiConflictInfo> },
+}
+
+/// 从探针失败 stderr 组装冲突信息（对手注册串经 pi settings 反查；
+/// 展示名：内置→固定映射，用户装→包目录名）。
+fn conflict_infos_from_stderr(stderr_tail: &str) -> Vec<PiConflictInfo> {
+    agent::jishu_self::extract_conflict_opponents(stderr_tail)
+        .into_iter()
+        .map(|c| {
+            let builtin =
+                agent::jishu_self::pi_registry::builtin_pi_display_name(&c.opponent_pkg).is_some();
+            let opponent_source =
+                agent::jishu_self::pi_registry::registered_source_of(&c.opponent_pkg)
+                    .unwrap_or_else(|| format!("npm:{}", c.opponent_pkg));
+            let opponent_display =
+                agent::jishu_self::pi_registry::builtin_pi_display_name(&c.opponent_pkg)
+                    .unwrap_or(&c.opponent_pkg)
+                    .to_string();
+            PiConflictInfo {
+                tool: c.tool,
+                opponent_source,
+                opponent_display,
+                opponent_builtin: builtin,
+            }
+        })
+        .collect()
+}
+
 #[tauri::command]
-pub(crate) async fn pi_package_install_online(source: String) -> Result<String, String> {
+pub(crate) async fn pi_package_install_online(source: String) -> Result<PiInstallOutcome, String> {
     let source = source.trim().to_string();
     if !(source.starts_with("npm:") || source.starts_with("git:")) {
         return Err("仅支持 npm:/git: 前缀源（如 npm:pi-fireworks@0.1.2）".to_string());
@@ -1539,31 +1589,104 @@ pub(crate) async fn pi_package_install_online(source: String) -> Result<String, 
     agent::jishu_self::JishuSelfAgent::run_pi_package_command("install", &source)
         .await
         .map_err(|e| format!("安装失败：{e}"))?;
-    // v0.9.8 需求15-F2：装后引擎自检——市场扩展与内置包工具名撞车等装载
-    // 问题时引擎每次启动即崩（首跑实例：装完即全部会话不可用）。自检失败
-    // 自动卸载回滚，杜绝「装完即砖」；回滚失败如实告知手动出口。
+    // 需求15 方案 A：装后引擎自检（拥抱 pi 原生 fail-loud——工具名冲突
+    // 时 pi 拒绝启动）。hub 责任是让用户永远停在健康态：
+    // - 冲突 → 自动卸载回滚 + 返回结构化冲突清单（前端确认卡：说明
+    //   「与已装能力重叠」→ 继续安装=停用对手 / 取消=不装）；
+    // - 其他装载故障 → 回滚 + 人话错误。
     match agent::jishu_self::JishuSelfAgent::verify_engine_boot().await {
-        Err(why) => {
-            let rollback_note =
-                match agent::jishu_self::JishuSelfAgent::run_pi_package_command("remove", &source)
-                    .await
-                {
-                    Ok(_) => "已自动卸载".to_string(),
-                    Err(_) => "自动卸载未成功，请到插件市场手动卸载".to_string(),
-                };
-            return Err(format!(
-                "「{source}」与当前运行环境不兼容（{why}），{rollback_note}。可换版本重试或反馈给插件作者。"
-            ));
+        Ok(()) => Ok(PiInstallOutcome::Installed),
+        Err(failure) => {
+            let conflicts = conflict_infos_from_stderr(&failure.stderr_tail);
+            let rollback =
+                agent::jishu_self::JishuSelfAgent::run_pi_package_command("remove", &source).await;
+            if !conflicts.is_empty() {
+                return Ok(PiInstallOutcome::Conflict { conflicts });
+            }
+            let rollback_note = match rollback {
+                Ok(_) => "已自动卸载".to_string(),
+                Err(_) => "自动卸载未成功，请到插件市场手动卸载".to_string(),
+            };
+            Err(format!(
+                "「{source}」与当前运行环境不兼容（{}），{rollback_note}。可换版本重试或反馈给插件作者。",
+                failure.reason
+            ))
         }
-        // 深挖轮 R2：引擎健康但检出工具重叠（fork R1 后共存不崩）——安装
-        // 成功，返回串带提示段（前端并入装后引导卡：能力重叠、按装载顺
-        // 序生效其一）。
-        Ok(Some(overlaps)) => Ok(format!(
-            "{source} 已安装\n注意：其部分能力（{}）与已内置功能重叠，将按装载顺序生效其一",
-            overlaps.join("、")
-        )),
-        Ok(None) => Ok(format!("{source} 已安装")),
     }
+}
+
+/// 需求15 方案 A：冲突确认后的「停用并安装」。流程（服务端自证，不信任
+/// 前端传参）：重装 → 探针（必失败）→ 重解析冲突 → 停用全部对手（仅移
+/// pi 注册不删文件 + 台账）→ 再探针 → 仍失败则全回滚（卸新装+恢复对手
+/// 注册与台账）。成功返回被停用清单（前端提示「已停用 XX」）。
+#[derive(serde::Serialize)]
+pub(crate) struct PiInstallConfirmed {
+    pub disabled: Vec<PiConflictInfo>,
+}
+
+#[tauri::command]
+pub(crate) async fn pi_package_install_confirmed(
+    source: String,
+) -> Result<PiInstallConfirmed, String> {
+    let source = source.trim().to_string();
+    agent::jishu_self::JishuSelfAgent::run_pi_package_command("install", &source)
+        .await
+        .map_err(|e| format!("安装失败：{e}"))?;
+    let failure = match agent::jishu_self::JishuSelfAgent::verify_engine_boot().await {
+        Ok(()) => {
+            // 对手已被用户先行处置（如手动卸载）——无冲突直接成功。
+            return Ok(PiInstallConfirmed {
+                disabled: Vec::new(),
+            });
+        }
+        Err(f) => f,
+    };
+    let conflicts = conflict_infos_from_stderr(&failure.stderr_tail);
+    if conflicts.is_empty() {
+        agent::jishu_self::JishuSelfAgent::run_pi_package_command("remove", &source)
+            .await
+            .ok();
+        return Err(format!(
+            "「{source}」安装后自检失败（{}），已回滚。可反馈给插件作者。",
+            failure.reason
+        ));
+    }
+    // 停用全部对手（移注册不删文件）。
+    for c in &conflicts {
+        if let Err(e) = agent::jishu_self::pi_registry::disable_extension(
+            &c.opponent_source,
+            &c.opponent_display,
+            &source,
+        ) {
+            log::warn!("[pi-registry] 停用 {} 失败: {e}", c.opponent_source);
+        }
+    }
+    // 终验：引擎应健康（冲突对手已下线）。
+    if let Err(f2) = agent::jishu_self::JishuSelfAgent::verify_engine_boot().await {
+        // 全回滚：恢复对手注册/台账，卸载新装——任何落盘状态必须健康。
+        for c in &conflicts {
+            let pkg = agent::jishu_self::pi_registry::package_dir_of(&c.opponent_source)
+                .unwrap_or_else(|| c.opponent_source.clone());
+            let _ = agent::jishu_self::pi_registry::enable_extension(&pkg);
+        }
+        agent::jishu_self::JishuSelfAgent::run_pi_package_command("remove", &source)
+            .await
+            .ok();
+        return Err(format!(
+            "「{source}」停用冲突项后自检仍未通过（{}），已全部回滚。",
+            f2.reason
+        ));
+    }
+    Ok(PiInstallConfirmed {
+        disabled: conflicts,
+    })
+}
+
+/// 需求15 方案 A：停用台账查询（市场卡呈现「已停用（被 XX 替代）」）。
+#[tauri::command]
+pub(crate) fn pi_extension_overrides_list() -> Vec<agent::jishu_self::pi_registry::PiOverrideEntry>
+{
+    agent::jishu_self::pi_registry::load_overrides()
 }
 
 /// 在线包卸载源归一（评审追加·「在线扩展补卸载」后端半边）：签名统一接受
@@ -1615,9 +1738,37 @@ fn guard_uninstall_target(pkg: Option<&str>) -> Result<(), String> {
 pub(crate) async fn pi_package_uninstall_online(source: String) -> Result<String, String> {
     let (source, pkg) = normalize_uninstall_source(&source);
     guard_uninstall_target(pkg.as_deref())?;
-    agent::jishu_self::JishuSelfAgent::run_pi_package_command("remove", &source)
-        .await
-        .map(|_| format!("{source} 已卸载"))
+    agent::jishu_self::JishuSelfAgent::run_pi_package_command("remove", &source).await?;
+    // 需求15 方案 A 恢复链：
+    // ①被停用者自身删除 → 清台账条目；
+    // ②替代者卸载 → 自动恢复被它顶掉的扩展（注册加回，零网络——文件
+    //   未删）。恢复后探针验证引擎健康；不健康（理论不该发生）则回退
+    //   恢复并如实记日志，不阻塞卸载结果。
+    if let Some(pkg_dir) = pkg.as_deref() {
+        agent::jishu_self::pi_registry::forget_disabled(pkg_dir)?;
+    }
+    let restored = agent::jishu_self::pi_registry::restore_replaced_by(&source);
+    let mut note = format!("{source} 已卸载");
+    if !restored.is_empty() {
+        if agent::jishu_self::JishuSelfAgent::verify_engine_boot()
+            .await
+            .is_ok()
+        {
+            let names: Vec<&str> = restored.iter().map(|e| e.display.as_str()).collect();
+            note.push_str(&format!("；已恢复 {}", names.join("、")));
+        } else {
+            // 恢复后引擎不健康——回退恢复（注册再移回+台账补记）保健康态。
+            for e in &restored {
+                if let Some(dir) = agent::jishu_self::pi_registry::package_dir_of(&e.source) {
+                    let _ = agent::jishu_self::pi_registry::disable_extension(
+                        &e.source, &e.display, &source,
+                    );
+                    log::warn!("[pi-registry] 恢复 {} 后自检未通过，已回退停用", dir);
+                }
+            }
+        }
+    }
+    Ok(note)
 }
 
 #[cfg(test)]
