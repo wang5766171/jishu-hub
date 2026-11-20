@@ -795,6 +795,7 @@ useEffect(() => {
               tabs={projectTabs}
               onSwitchToProject={handleTabSwitchToProject}
               onCloseCurrentProject={handleCloseCurrentTab}
+              inactive={currentPage === "manage"}
             />
           }
         />

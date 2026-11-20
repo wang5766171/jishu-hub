@@ -355,6 +355,29 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
     return entries;
   }, [enabled, layout, t, behaviors, inTaskSession]);
 
+  // v0.9.8 需求15-F3：dock 面板避让——左/右缘停靠面板是覆盖式（absolute
+  // 贴边全高），长消息行会钻到面板底下（首跑 P2：任务看板盖住消息尾）。
+  // 把当前 dock 占用宽度写到父容器 CSS 变量，消息滚动容器据此收缩
+  // padding（chat-page 消费）；收起/卸载归零恢复。
+  const dockRightOpen = panels.some((p) => !p.hidden && p.slot === "right");
+  const dockLeftOpen = panels.some((p) => !p.hidden && p.slot === "left");
+  useEffect(() => {
+    const host = layerRef.current?.parentElement;
+    if (!host) return;
+    host.style.setProperty(
+      "--jishu-panel-dock-right",
+      dockRightOpen ? `${EDGE_PANEL_WIDTH}px` : "0px",
+    );
+    host.style.setProperty(
+      "--jishu-panel-dock-left",
+      dockLeftOpen ? `${EDGE_PANEL_WIDTH}px` : "0px",
+    );
+    return () => {
+      host.style.setProperty("--jishu-panel-dock-right", "0px");
+      host.style.setProperty("--jishu-panel-dock-left", "0px");
+    };
+  }, [dockRightOpen, dockLeftOpen]);
+
   // ── 侧边栏形态插件（v0.9.2 测试期：能力中心统一调度悬浮/侧栏两形态）──
   const sidebarEntries = useMemo(() => {
     const entries: Array<{ id: string; title: string }> = [];

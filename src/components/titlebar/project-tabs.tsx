@@ -29,6 +29,9 @@ export interface ProjectTabsProps {
   onSwitchToProject: (project: Project, sessionId: string | null, agentId: string | null) => void;
   /** 关闭当前项目标签（回管理页，复用既有切换流程）。 */
   onCloseCurrentProject: () => void;
+  /** v0.9.8 需求15-F4：管理页占用内容区时当前项目标签降级弱化样式——
+   * 白底高亮只属于「正在查看该项目」态（首跑 P2：高亮与内容不一致）。 */
+  inactive?: boolean;
 }
 
 const LIGHT_CLASS: Record<TabLight, string> = {
@@ -44,6 +47,7 @@ export function ProjectTabs({
   tabs,
   onSwitchToProject,
   onCloseCurrentProject,
+  inactive = false,
 }: ProjectTabsProps) {
   const { t } = useTranslation();
   const dragEnc = useRef<string | null>(null);
@@ -95,7 +99,10 @@ export function ProjectTabs({
             key={enc}
             className={cn(
               "group relative flex h-9 max-w-56 min-w-0 shrink items-center gap-1.5 rounded-t-md border border-b-0 px-3",
-              "bg-[var(--color-layer-1)] text-foreground",
+              inactive
+                ? // 需求15-F4：管理页占用时去白底（高亮≠正在查看）
+                  "border-transparent text-muted-foreground"
+                : "bg-[var(--color-layer-1)] text-foreground",
             )}
             title={project!.path}
           >

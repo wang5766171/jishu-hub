@@ -2445,7 +2445,13 @@ export function ChatPage({
                 <SessionArtifactContext.Provider
                   value={{ projectPath: currentProject?.path ?? null, sessionId: selectedSession }}
                 >
-                <div ref={messageAreaRef} className="h-full overflow-y-auto">
+                {/* v0.9.8 需求15-F3：dock 面板避让——面板层（SessionPanelLayer）
+                    把左/右缘停靠占用宽度写在父容器 CSS 变量上，消息列据此收缩，
+                    长消息不再钻到面板底下；无 dock 面板时变量为 0 零影响。 */}
+                <div
+                  ref={messageAreaRef}
+                  className="h-full overflow-y-auto pl-[var(--jishu-panel-dock-left,0px)] pr-[var(--jishu-panel-dock-right,0px)]"
+                >
                 {taskSelectedNodeNotStarted ? (
                   // 选中的步骤还没执行过——直接说明，而不是把上一段会话继续摆在这里。
                   <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 py-8 text-center text-[12px] text-muted-foreground">

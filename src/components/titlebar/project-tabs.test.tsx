@@ -61,6 +61,24 @@ describe("v0.9.6 需求4（含补充②）：ProjectTabs", () => {
     expect(screen.queryByText("other-work")).toBeNull();
   });
 
+  /** 需求15-F4：管理页占用内容区时当前项目标签去白底（白底高亮只属于
+   *  「正在查看该项目」态），回工作区（inactive=false）恢复。 */
+  it("inactive（管理页）：当前项目标签无白底激活样式；默认态有", () => {
+    const { unmount } = render(
+      <ProjectTabs projectMetas={null} currentProject={PROJECT_A} projects={[PROJECT_A]} tabs={makeTabs()} onSwitchToProject={vi.fn()} onCloseCurrentProject={vi.fn()} inactive />,
+    );
+    const tabInactive = screen.getByText("jishu-hub").closest("div");
+    expect(tabInactive?.className).not.toContain("bg-[var(--color-layer-1)]");
+    expect(tabInactive?.className).toContain("text-muted-foreground");
+    unmount();
+
+    render(
+      <ProjectTabs projectMetas={null} currentProject={PROJECT_A} projects={[PROJECT_A]} tabs={makeTabs()} onSwitchToProject={vi.fn()} onCloseCurrentProject={vi.fn()} />,
+    );
+    const tabActive = screen.getByText("jishu-hub").closest("div");
+    expect(tabActive?.className).toContain("bg-[var(--color-layer-1)]");
+  });
+
   it("固定标签：渲染项目名；点击带最近会话+agentId 回调并清灯", () => {
     const onSwitch = vi.fn();
     const tabs = makeTabs({
