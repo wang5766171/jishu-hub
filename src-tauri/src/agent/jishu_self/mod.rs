@@ -378,6 +378,208 @@ impl JishuSelfAgent {
         }
     }
 
+    /// 需求15 方案 A v2（注册前预检，用户裁决：「装的时候判断扩展的工具
+    /// 是否已经存在，而不是判断报错」）：npm 源专用。
+    ///
+    /// 流程（真实环境零注册写入——settings 全程不动）：
+    /// 1. npm 装文件到共享池（`--prefix <agentDir>/npm`，与 pi install 同
+    ///    参数语义；不写 settings 注册）；
+    /// 2. `pi --mode rpc --no-session -e <池内入口>` 装载试运行——装载
+    ///    全部已注册扩展 + 新包文件（-e 绝对路径），工具名冲突在装载期
+    ///    即现形（pi 装载器权威判定）；
+    /// 3. 分类：应答 = 无冲突；冲突行 = 涉新包的对手清单；其他失败 =
+    ///    回滚文件 + Err。
+    ///
+    /// 返回：`Ok(None)` = 无冲突（文件已就位，调用方直接 `pi install`
+    /// 幂等补注册）；`Ok(Some(pairs))` = 冲突（**文件保留**——确认后
+    /// 复用；取消路径由调用方 `npm uninstall` 清理）；`Err` = 预检自身
+    /// 失败（文件已回滚）。
+    pub(crate) async fn precheck_extension(
+        pkg: &str,
+    ) -> Result<Option<Vec<ConflictPair>>, String> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        const PRECHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+        let Some(agent_dir) = pi_config_dir() else {
+            return Err("无法定位 pi 运行数据目录".to_string());
+        };
+        let npm_root = std::path::Path::new(&agent_dir).join("npm");
+
+        // 1) npm 装文件（不碰 settings）。参数对齐 pi installNpm（--prefix
+        //    installRoot --legacy-peer-deps --no-audit --no-fund）；npm 程序
+        //    裸调走 PATH——与 pi 自身解析同条件（pi 可装的环境此处亦可）。
+        let mut npm = crate::os_adapter::shell::shell_command(
+            "npm",
+            vec![
+                "install".to_string(),
+                pkg.to_string(),
+                "--prefix".to_string(),
+                npm_root.to_string_lossy().to_string(),
+                "--legacy-peer-deps".to_string(),
+                "--no-audit".to_string(),
+                "--no-fund".to_string(),
+            ],
+        );
+        #[cfg(target_os = "windows")]
+        crate::process_command::tokio_no_window(&mut npm);
+        let npm_out = npm
+            .output()
+            .await
+            .map_err(|e| format!("npm 不可用（{e}）——与插件安装同环境要求"))?;
+        if !npm_out.status.success() {
+            return Err(format!(
+                "安装失败：{}",
+                String::from_utf8_lossy(&npm_out.stderr).trim()
+            ));
+        }
+
+        // 2) 探测包入口（package.json main → 常见形态回退）。
+        let pkg_dir = npm_root.join("node_modules").join(pkg);
+        let main_entry = std::fs::read_to_string(pkg_dir.join("package.json"))
+            .ok()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+            .and_then(|v| v.get("main").and_then(|m| m.as_str()).map(str::to_string));
+        let mut candidates: Vec<String> = Vec::new();
+        if let Some(m) = &main_entry {
+            candidates.push(m.clone());
+        }
+        for c in ["index.ts", "index.js", "dist/index.js", "dist/index.mjs"] {
+            candidates.push(c.to_string());
+        }
+        let entry = candidates
+            .iter()
+            .map(|c| pkg_dir.join(c))
+            .find(|p| p.is_file())
+            .ok_or_else(|| "包已下载但找不到扩展入口文件".to_string())?;
+
+        // 3) 装载试运行（-e 绝对路径；--no-session 零写盘）。
+        let runtime = pi_runtime::resolve_pi_runtime()
+            .map_err(|e| format!("预检无法启动引擎（{e}）"))?;
+        let mut args = runtime.base_args;
+        args.push("--mode".to_string());
+        args.push("rpc".to_string());
+        args.push("--no-session".to_string());
+        args.push("-e".to_string());
+        args.push(entry.to_string_lossy().to_string());
+        let mut cmd =
+            crate::os_adapter::shell::shell_command(&runtime.program.to_string_lossy(), args);
+        let cwd = crate::project::default_workspace_root();
+        cmd.current_dir(if cwd.exists() { cwd } else { std::env::temp_dir() });
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.kill_on_drop(true);
+        #[cfg(target_os = "windows")]
+        crate::process_command::tokio_no_window(&mut cmd);
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("预检无法启动引擎（{e}）"))?;
+        let stderr_tail: std::sync::Arc<std::sync::Mutex<String>> =
+            std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        if let Some(stderr) = child.stderr.take() {
+            let tail = stderr_tail.clone();
+            tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut stderr = stderr;
+                let mut sink = [0u8; 1024];
+                loop {
+                    match stderr.read(&mut sink).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let mut buf = tail.lock().unwrap_or_else(|e| e.into_inner());
+                            buf.push_str(&String::from_utf8_lossy(&sink[..n]));
+                            let len = buf.len();
+                            if len > 4096 {
+                                buf.drain(..len - 4096);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(b"{\"type\":\"get_state\"}\n")
+                .await
+                .map_err(|e| format!("预检发送失败：{e}"))?;
+            stdin.flush().await.map_err(|e| format!("预检发送失败：{e}"))?;
+        }
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "预检无法接管引擎输出".to_string())?;
+        let mut reader = BufReader::new(stdout).lines();
+        let deadline = tokio::time::Instant::now() + PRECHECK_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                Self::rollback_npm_files(pkg).await;
+                return Err("预检超时（扩展装载未在限时内完成）".to_string());
+            }
+            match tokio::time::timeout(remaining, reader.next_line()).await {
+                Ok(Ok(Some(line))) => {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else {
+                        continue;
+                    };
+                    let answered = msg.get("type").and_then(|v| v.as_str()) == Some("response")
+                        && msg.get("command").and_then(|v| v.as_str()) == Some("get_state");
+                    if answered {
+                        // 装载全量通过（含新包）——无冲突。
+                        return Ok(None);
+                    }
+                }
+                // 进程退出：冲突（装载失败）或其他致命错——读 stderr 分类。
+                Ok(Ok(None)) | Ok(Err(_)) => {
+                    let tail = stderr_tail
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    let pairs = extract_conflict_pairs(&tail);
+                    let involved: Vec<ConflictPair> = pairs
+                        .into_iter()
+                        .filter(|p| p.self_pkg == pkg || p.opponent_pkg == pkg)
+                        .collect();
+                    if !involved.is_empty() {
+                        // 冲突：文件保留（确认流复用；取消方清理）。
+                        return Ok(Some(involved));
+                    }
+                    Self::rollback_npm_files(pkg).await;
+                    return Err("预检失败：扩展无法装载（与工具名冲突无关）".to_string());
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+
+    /// 预检回滚：从共享池卸载刚装的包文件（npm uninstall --prefix）。
+    pub(crate) async fn rollback_npm_files(pkg: &str) {
+        let Some(agent_dir) = pi_config_dir() else {
+            return;
+        };
+        let mut npm = crate::os_adapter::shell::shell_command(
+            "npm",
+            vec![
+                "uninstall".to_string(),
+                pkg.to_string(),
+                "--prefix".to_string(),
+                std::path::Path::new(&agent_dir)
+                    .join("npm")
+                    .to_string_lossy()
+                    .to_string(),
+            ],
+        );
+        #[cfg(target_os = "windows")]
+        crate::process_command::tokio_no_window(&mut npm);
+        if let Err(e) = npm.output().await {
+            log::warn!("[precheck] 回滚卸载 {pkg} 失败: {e}");
+        }
+    }
+
     /// v0.9.5 需求5：4 个 pi 扩展包逐个幂等安装（缺哪个装哪个；单包失败
     /// 记 warn 继续下一个，Err 汇总失败清单——启动自愈下轮重试，不阻断
     /// hub 启动）。探测与 mcp 同口径（node_modules 目录名含 scoped 包的
@@ -1179,64 +1381,75 @@ impl ProbeFailure {
     }
 }
 
-/// 需求15 方案 A：单个工具冲突对手（诊断行 `Tool "x" conflicts with
-/// <对手路径>` 的结构化产物；对手路径 → npm 包目录名）。
+/// 需求15 方案 A v2：一条工具冲突（诊断行 `Failed to load extension
+/// "<A 路径>": Tool "x" conflicts with <B 路径>` 的结构化产物）。
+/// 注意 A/B 方向不定（装载顺序决定谁先占名）——调用方按「哪方是预检
+/// 目标包」分辨对手。
 #[derive(Debug)]
-pub(crate) struct ConflictOpponent {
+pub(crate) struct ConflictPair {
     pub tool: String,
-    /// 对手 npm 包目录名（如 `pi-web-access` / `@juicesharp/rpiv-todo`）。
+    /// 「装载失败方」包目录名（诊断行第一个引号路径）。
+    pub self_pkg: String,
+    /// 冲突对手包目录名（conflicts with 之后的路径）。
     pub opponent_pkg: String,
 }
 
-/// 需求15 方案 A（通用冲突治理）：从探针 stderr 尾部解析全部「工具名
-/// 冲突」对手——`Tool "web_search" conflicts with C:\...\node_modules\
-/// pi-web-access\dist\index.js` → (web_search, pi-web-access)。同工具同
-/// 对手去重；多工具/多对手全量保留（确认卡完整列出）。纯函数可单测。
-pub(crate) fn extract_conflict_opponents(stderr_tail: &str) -> Vec<ConflictOpponent> {
-    let mut out: Vec<ConflictOpponent> = Vec::new();
+/// 路径文本 → node_modules 段后的包目录名（scoped 取 @scope/name 两段；
+/// 分隔符归一为斜杠）。纯函数。
+pub(crate) fn pkg_dir_from_path(path_text: &str) -> Option<String> {
+    let nm = path_text.rfind("node_modules")?;
+    let rest = path_text[nm + "node_modules".len()..]
+        .trim_start_matches(['\\', '/']);
+    let mut end = rest.find(['\\', '/']).unwrap_or(rest.len());
+    if rest[..end].starts_with('@') {
+        if let Some(sep) = rest[end..].find(['\\', '/']) {
+            let second_rel = end + sep + 1;
+            let second_end = second_rel
+                + rest[second_rel..]
+                    .find(['\\', '/'])
+                    .unwrap_or(rest.len() - second_rel);
+            end = second_end;
+        }
+    }
+    let name = &rest[..end];
+    (!name.is_empty()).then(|| name.replace('\\', "/"))
+}
+
+/// 需求15 方案 A v2（通用冲突治理）：从预检 stderr 解析全部「工具名
+/// 冲突」对（双向：self/opponent 均为包目录名）。同工具同对去重。
+/// 纯函数可单测。
+pub(crate) fn extract_conflict_pairs(stderr_tail: &str) -> Vec<ConflictPair> {
+    let mut out: Vec<ConflictPair> = Vec::new();
     for line in stderr_tail.lines() {
         let Some(idx) = line.find("conflicts with") else {
             continue;
         };
-        // 工具名：冲突词之前的最后一个 "…" 引用段（诊断行前缀
-        // `Failed to load extension "<自身路径>": Tool "<名>"`）。
         let head = &line[..idx];
+        // 工具名：head 最后一个引号对。
         let tool = (|| {
             let q = head.rfind('"')?;
             let start = head[..q].rfind('"')?;
             let name = &head[start + 1..q];
             (!name.is_empty()).then(|| name.to_string())
         })();
-        // 对手包名：冲突词之后的路径里最后一个 node_modules 段后的
-        // 包目录名（scoped 包取 @scope\name 两段）。
-        let tail = &line[idx + "conflicts with".len()..];
-        let pkg = (|| {
-            let nm = tail.rfind("node_modules")?;
-            let rest = &tail[nm + "node_modules".len()..];
-            let rest = rest.trim_start_matches(['\\', '/']);
-            let mut end = rest.find(['\\', '/']).unwrap_or(rest.len());
-            let first = &rest[..end];
-            if first.starts_with('@') {
-                // scoped：拼第二段
-                if let Some(sep) = rest[end..].find(['\\', '/']) {
-                    let second_end = end
-                        + sep
-                        + 1
-                        + rest[end + sep + 1..]
-                            .find(['\\', '/'])
-                            .unwrap_or(rest.len() - end - sep - 1);
-                    end = second_end;
-                }
-            }
-            let name = &rest[..end];
-            // 路径分隔符归一（win 反斜杠 → npm 包名斜杠）。
-            (!name.is_empty()).then(|| name.replace('\\', "/"))
+        // 失败方：head 第一个引号对（自身路径）。
+        let self_pkg = (|| {
+            let start = head.find('"')?;
+            let q = head[start + 1..].find('"')? + start + 1;
+            pkg_dir_from_path(&head[start + 1..q])
         })();
-        if let (Some(tool), Some(pkg)) = (tool, pkg) {
-            if !out.iter().any(|c| c.tool == tool && c.opponent_pkg == pkg) {
-                out.push(ConflictOpponent {
+        // 对手：冲突词之后路径。
+        let tail = &line[idx + "conflicts with".len()..];
+        let opponent_pkg = pkg_dir_from_path(tail);
+        if let (Some(tool), Some(self_pkg), Some(opponent_pkg)) = (tool, self_pkg, opponent_pkg) {
+            if !out
+                .iter()
+                .any(|c| c.tool == tool && c.self_pkg == self_pkg && c.opponent_pkg == opponent_pkg)
+            {
+                out.push(ConflictPair {
                     tool,
-                    opponent_pkg: pkg,
+                    self_pkg,
+                    opponent_pkg,
                 });
             }
         }
@@ -1640,34 +1853,39 @@ impl TerminalAdapter for JishuSelfAgent {
 
 #[cfg(test)]
 mod agent_tool_whitelist_tests {
-    use super::{extract_conflict_opponents, merge_agent_tool_names};
+    use super::{extract_conflict_pairs, merge_agent_tool_names, pkg_dir_from_path};
 
-    /// 需求15 方案 A：冲突对手提取——工具名/对手包名/去重/scoped 拼接。
+    /// 需求15 方案 A v2：冲突对提取——双向（self/opponent）+路径→包名。
     #[test]
-    fn extract_conflict_opponents_from_diagnostics() {
+    fn extract_conflict_pairs_from_diagnostics() {
         let stderr = concat!(
             "Warning: Extension package \"x\": Host-provided packages must be in peerDependencies.\n",
-            "Failed to load extension \"C:\\a\\rpiv-web-tools\\index.ts\": Tool \"web_search\" conflicts with C:\\u\\agent\\npm\\node_modules\\pi-web-access\\dist\\index.js\n",
-            "Failed to load extension \"C:\\a\\rpiv-web-tools\\index.ts\": Tool \"fetch_content\" conflicts with C:\\u\\agent\\npm\\node_modules\\pi-web-access\\dist\\index.js\n",
-            "Failed to load extension \"C:\\a\\rpiv-web-tools\\index.ts\": Tool \"web_search\" conflicts with C:\\u\\agent\\npm\\node_modules\\pi-web-access\\dist\\index.js\n",
+            "Failed to load extension \"C:\\u\\agent\\npm\\node_modules\\@juicesharp\\rpiv-web-tools\\index.ts\": Tool \"web_search\" conflicts with C:\\u\\agent\\npm\\node_modules\\pi-web-access\\dist\\index.js\n",
+            "Failed to load extension \"C:\\u\\agent\\npm\\node_modules\\@juicesharp\\rpiv-web-tools\\index.ts\": Tool \"fetch_content\" conflicts with C:\\u\\agent\\npm\\node_modules\\pi-web-access\\dist\\index.js\n",
+            "Failed to load extension \"C:\\u\\agent\\npm\\node_modules\\@juicesharp\\rpiv-web-tools\\index.ts\": Tool \"web_search\" conflicts with C:\\u\\agent\\npm\\node_modules\\pi-web-access\\dist\\index.js\n",
         );
-        let conflicts = extract_conflict_opponents(stderr);
-        // 多工具全量、同工具同对手去重
+        // rpiv（失败方）与 pi-web-access（对手）双向；多工具全量；去重。
+        let conflicts = extract_conflict_pairs(stderr);
         assert_eq!(conflicts.len(), 2, "{conflicts:?}");
         assert_eq!(conflicts[0].tool, "web_search");
+        assert_eq!(conflicts[0].self_pkg, "@juicesharp/rpiv-web-tools");
         assert_eq!(conflicts[0].opponent_pkg, "pi-web-access");
         assert_eq!(conflicts[1].tool, "fetch_content");
-        // 无冲突行 → 空。
-        assert!(extract_conflict_opponents("all good\nno conflict").is_empty());
-        // scoped 对手包名两段拼接
-        let scoped = concat!(
-            "Error: Failed to load extension \"C:\\a\\x.ts\": ",
-            "Tool \"todo_write\" conflicts with ",
-            "C:\\agent\\npm\\node_modules\\@juicesharp\\rpiv-todo\\index.ts\n"
+        // 反向行（先注册方被报冲突）：self/opponent 仍各自正确。
+        let reversed = concat!(
+            "Error: Failed to load extension \"C:\\u\\agent\\npm\\node_modules\\pi-web-access\\dist\\index.js\": ",
+            "Tool \"web_search\" conflicts with ",
+            "C:\\u\\agent\\npm\\node_modules\\@juicesharp\\rpiv-web-tools\\index.ts\n"
         );
-        let c = &extract_conflict_opponents(scoped)[0];
-        assert_eq!(c.tool, "todo_write");
-        assert_eq!(c.opponent_pkg, "@juicesharp/rpiv-todo");
+        let r = &extract_conflict_pairs(reversed)[0];
+        assert_eq!(r.self_pkg, "pi-web-access");
+        assert_eq!(r.opponent_pkg, "@juicesharp/rpiv-web-tools");
+        // scoped 拼接 + 无冲突 → 空。
+        assert_eq!(
+            pkg_dir_from_path("C:\\x\\node_modules\\@scope\\pkg\\dist\\i.js").as_deref(),
+            Some("@scope/pkg")
+        );
+        assert!(extract_conflict_pairs("all good").is_empty());
     }
 
     /// v0.9.8 需求10-③ P1 回归锚点：[[agent-tool]] 物化名并入 spawn 白名单
