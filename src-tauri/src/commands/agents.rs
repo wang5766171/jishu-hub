@@ -207,6 +207,11 @@ pub(crate) fn plugin_remove(
         std::fs::remove_file(source).map_err(|e| format!("Cannot remove {source_path}: {e}"))?;
     }
     agent::plugin::forget_plugin_disabled(&plugin_id); // 清 disabled 引用（T16 同款）
+                                                       // 04-R3：卸载后刷新 agent-tool 物化清单——load_agent_tools 读物化文件
+                                                       //（非即时扫描），不刷新会残留幽灵工具名（spawn 白名单脏 + 直呼报
+                                                       // unknown，直到下次启停/重启）。三卸载链（本处/market_uninstall/CLI
+                                                       // remove）同收口。
+    agent::plugin::materialize_agent_tools();
     rebuild_registry(&app, &state);
     log::info!("[plugin] removed {} ({})", plugin_id, source_path);
     Ok(())
@@ -1197,6 +1202,9 @@ pub(crate) async fn market_uninstall(
     plugin_id: String,
 ) -> Result<String, String> {
     let result = agent::plugin::market::market_uninstall(&plugin_id).await?;
+    // 04-R3：同 plugin_remove——卸载后刷新 agent-tool 物化清单（防幽灵
+    // 工具残留，三卸载链同收口）。
+    agent::plugin::materialize_agent_tools();
     rebuild_registry(&app, &state);
     Ok(result)
 }
@@ -1531,23 +1539,31 @@ pub(crate) async fn pi_package_install_online(source: String) -> Result<String, 
     agent::jishu_self::JishuSelfAgent::run_pi_package_command("install", &source)
         .await
         .map_err(|e| format!("安装失败：{e}"))?;
-    // v0.9.8 需求15-F2：装后引擎自检——部分扩展的依赖提升会毒化共享运行
-    // 池，引擎每次启动即崩（首跑实例：装完即全部会话不可用）。自检失败
+    // v0.9.8 需求15-F2：装后引擎自检——市场扩展与内置包工具名撞车等装载
+    // 问题时引擎每次启动即崩（首跑实例：装完即全部会话不可用）。自检失败
     // 自动卸载回滚，杜绝「装完即砖」；回滚失败如实告知手动出口。
-    if let Err(why) = agent::jishu_self::JishuSelfAgent::verify_engine_boot().await {
-        let rollback_note = match agent::jishu_self::JishuSelfAgent::run_pi_package_command(
-            "remove", &source,
-        )
-        .await
-        {
-            Ok(_) => "已自动卸载".to_string(),
-            Err(_) => "自动卸载未成功，请到插件市场手动卸载".to_string(),
-        };
-        return Err(format!(
-            "「{source}」与当前运行环境不兼容（{why}），{rollback_note}。可换版本重试或反馈给插件作者。"
-        ));
+    match agent::jishu_self::JishuSelfAgent::verify_engine_boot().await {
+        Err(why) => {
+            let rollback_note =
+                match agent::jishu_self::JishuSelfAgent::run_pi_package_command("remove", &source)
+                    .await
+                {
+                    Ok(_) => "已自动卸载".to_string(),
+                    Err(_) => "自动卸载未成功，请到插件市场手动卸载".to_string(),
+                };
+            return Err(format!(
+                "「{source}」与当前运行环境不兼容（{why}），{rollback_note}。可换版本重试或反馈给插件作者。"
+            ));
+        }
+        // 深挖轮 R2：引擎健康但检出工具重叠（fork R1 后共存不崩）——安装
+        // 成功，返回串带提示段（前端并入装后引导卡：能力重叠、按装载顺
+        // 序生效其一）。
+        Ok(Some(overlaps)) => Ok(format!(
+            "{source} 已安装\n注意：其部分能力（{}）与已内置功能重叠，将按装载顺序生效其一",
+            overlaps.join("、")
+        )),
+        Ok(None) => Ok(format!("{source} 已安装")),
     }
-    Ok(format!("{source} 已安装"))
 }
 
 /// 在线包卸载源归一（评审追加·「在线扩展补卸载」后端半边）：签名统一接受

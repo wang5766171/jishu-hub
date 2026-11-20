@@ -167,6 +167,44 @@ mod agent_tool_tests {
         std::env::remove_var("JISHU_HUB_HOME");
     }
 
+    /// 04-R3：卸载带 [[agent-tool]] 的插件后重物化 → 幽灵工具名清除
+    ///（修前三卸载链不刷新物化清单，load_agent_tools 残留已卸载工具名
+    ///直到下次启停/重启）。
+    #[test]
+    fn rematerialize_after_uninstall_clears_ghost_tools() {
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+
+        save_composed_manifest(
+            "session.ghost-src",
+            &composed_toml("session.ghost-src", Some("ghost_probe")),
+        )
+        .unwrap();
+        materialize_agent_tools();
+        assert!(
+            load_agent_tools().iter().any(|t| t.name == "ghost_probe"),
+            "卸载前应物化 ghost_probe"
+        );
+
+        // 卸载 = 删插件目录（同 plugin_remove/CLI remove 目录形态路径），
+        // 随后走 04-R3 补的物化刷新 → 清单不再含幽灵工具。
+        std::fs::remove_dir_all(
+            crate::agent::plugin::composed::composed_plugins_dir().join("session.ghost-src"),
+        )
+        .unwrap();
+        materialize_agent_tools();
+        let tools = load_agent_tools();
+        assert!(
+            !tools.iter().any(|t| t.name == "ghost_probe"),
+            "卸载重物化后不应残留幽灵工具：{tools:?}"
+        );
+
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
     /// 物化文件缺失/损坏 → 空集（闸门自然拒绝）。
     #[test]
     fn load_agent_tools_tolerates_missing_file() {

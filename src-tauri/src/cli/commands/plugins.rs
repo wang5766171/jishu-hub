@@ -817,6 +817,8 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
             // 后清台账」语义（skillhub_install 注册的 hub 插件目录形态，
             // id 即台账 slug；无条目幂等无操作）。
             agent::skillhub::skillhub_forget(id);
+            // 04-R3：卸载后刷新 agent-tool 物化清单（防幽灵工具残留）。
+            agent::plugin::materialize_agent_tools();
             if ctx.json {
                 println!(
                     "{}",
@@ -846,6 +848,8 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
             })?;
             // 评审十：skillhub 台账收尾（同上——卸载链先删目录后清台账）。
             agent::skillhub::skillhub_forget(id);
+            // 04-R3：卸载后刷新 agent-tool 物化清单（防幽灵工具残留）。
+            agent::plugin::materialize_agent_tools();
             if ctx.json {
                 println!(
                     "{}",
@@ -892,6 +896,9 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
                                                // 评审十：skillhub 台账收尾——对齐 GUI 卸载链「先 plugin_remove 后清
                                                // 台账」语义（无条目幂等无操作）。
     agent::skillhub::skillhub_forget(id);
+    // 04-R3：卸载后刷新 agent-tool 物化清单（防幽灵工具残留——CLI 跨进程
+    // 无法借 GUI 侧启停联动刷新，必须自带；GUI 两链同款收口）。
+    agent::plugin::materialize_agent_tools();
 
     if ctx.json {
         println!(

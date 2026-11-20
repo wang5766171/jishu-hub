@@ -232,11 +232,11 @@ impl JishuSelfAgent {
 
     /// v0.9.8 需求15-F2：在线扩展安装后的引擎启动自检探针。
     ///
-    /// 背景：`pi install` 退出 0 = 装包+注册成功，但包的依赖会提升进共享
-    /// 池（`~/.jishu-agent/agent/npm/node_modules`），与扩展装载器产生
-    /// duplicate runtime modules 冲突——引擎**每次 spawn 即崩**（体验首跑
-    /// J11~J13 三连崩实例：rpiv-web-tools 装后全部会话不可用，手动删包
-    /// 才恢复）。hub 侧此前只看退出码，无装后验证无回滚。
+    /// 背景（深挖轮更正，见需求15 04 方案）：`pi install` 退出 0 = 装包+
+    /// 注册成功，但市场扩展常与内置包**工具名撞车**（如 rpiv-web-tools 与
+    /// pi-web-access 都注册 web_search）——上游 pi 把装载诊断计入
+    /// hasRuntimeErrors 直接 exit(1)，引擎每次 spawn 即崩（首跑 J11~J13
+    /// 三连崩实例）。hub 侧此前只看退出码，无装后验证无回滚。
     ///
     /// 探针语义：以与真实会话同构的 `pi --mode rpc` 起一个最小实例并发
     /// `{"type":"get_state"}`——扩展装载完成引擎才会应答（与
@@ -244,7 +244,12 @@ impl JishuSelfAgent {
     /// command=get_state`）；进程早退（stdout 关闭）= 装载期崩溃；限时
     /// 无应答 = 装载挂死。两条失败路径均判定「该安装毒化运行时」，由
     /// 调用方回滚卸载。
-    pub(crate) async fn verify_engine_boot() -> Result<(), String> {
+    ///
+    /// 返回值（深挖轮 R2 升级）：`Ok(Some(tools))` = 引擎健康但检出
+    /// 「工具与已装扩展重叠」警告（tools 为重叠工具名清单，随安装结果
+    /// 提示用户「能力重叠、按装载顺序生效其一」）；`Ok(None)` = 干净；
+    /// `Err(_)` = 自检失败（调用方回滚）。
+    pub(crate) async fn verify_engine_boot() -> Result<Option<Vec<String>>, String> {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
         /// 自检限时：正常冷启动（含扩展装载）秒级完成；预连接池同类 spawn
@@ -278,9 +283,13 @@ impl JishuSelfAgent {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("自检无法启动引擎（{e}）"))?;
-        // stderr 排水：装载期警告写满管道缓冲会阻塞子进程（Windows 4KB
-        // 起步），只排水不采集（崩溃取证走 pi_rpc_runtime 的富化日志）。
+        // stderr 排水兼采集（R2）：装载期警告写满管道缓冲会阻塞子进程
+        // （Windows 4KB 起步），持续排水；同时保留尾部 4KB 供握手成功后
+        // 提取「工具重叠」警告（full 取证仍走 pi_rpc_runtime 富化日志）。
+        let stderr_tail: std::sync::Arc<std::sync::Mutex<Vec<u8>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         if let Some(stderr) = child.stderr.take() {
+            let tail = stderr_tail.clone();
             tokio::spawn(async move {
                 use tokio::io::AsyncReadExt;
                 let mut stderr = stderr;
@@ -288,7 +297,14 @@ impl JishuSelfAgent {
                 loop {
                     match stderr.read(&mut sink).await {
                         Ok(0) | Err(_) => break,
-                        Ok(_) => {}
+                        Ok(n) => {
+                            let mut buf = tail.lock().unwrap_or_else(|e| e.into_inner());
+                            buf.extend_from_slice(&sink[..n]);
+                            let len = buf.len();
+                            if len > 4096 {
+                                buf.drain(..len - 4096);
+                            }
+                        }
                     }
                 }
             });
@@ -333,7 +349,17 @@ impl JishuSelfAgent {
                         == Some("response")
                         && msg.get("command").and_then(|v| v.as_str()) == Some("get_state");
                     if is_state_response {
-                        return Ok(());
+                        // 握手成功——从 stderr 尾部提取「工具重叠」警告。
+                        let tail = stderr_tail
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .clone();
+                        let overlaps = extract_overlap_tool_names(&String::from_utf8_lossy(&tail));
+                        return Ok(if overlaps.is_empty() {
+                            None
+                        } else {
+                            Some(overlaps)
+                        });
                     }
                 }
                 // stdout 关闭 = 进程已退出（装载期崩溃的典型形态）。
@@ -487,7 +513,7 @@ use crate::agent::traits::{
     TransportAdapter,
 };
 // JISHU_AGENT_VERSION_START (auto-updated by upgrade-version.mjs)
-pub const PI_AGENT_VERSION: &str = "1.5.0-15";
+pub const PI_AGENT_VERSION: &str = "1.5.0-16";
 // JISHU_AGENT_VERSION_END
 
 impl AgentManifest for JishuSelfAgent {
@@ -1123,6 +1149,30 @@ pub(crate) const PI_EXTENSION_PACKAGES: &[(&str, &str)] = &[
     ("npm:pi-web-access@0.32.0", "pi-web-access"),
 ];
 
+/// 需求15 深挖轮 R2：从探针 stderr 尾部提取「工具与已装扩展重叠」警告的
+/// 工具名清单（pi 装载器诊断行形如 `Tool "web_search" conflicts with
+/// <路径>`；fork R1 降级后此行以 warning 输出、引擎继续跑）。去重保序。
+fn extract_overlap_tool_names(stderr_tail: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in stderr_tail.lines() {
+        let Some(idx) = line.find("conflicts with") else {
+            continue;
+        };
+        let head = &line[..idx];
+        // 工具名取行内最后一个 Tool "…" 引用段（诊断行前缀为
+        // `Failed to load extension "<路径>": Tool "<名>"`）。
+        if let Some(q) = head.rfind('"') {
+            if let Some(start) = head[..q].rfind('"') {
+                let name = &head[start + 1..q];
+                if !name.is_empty() && !out.iter().any(|n| n == name) {
+                    out.push(name.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// pi 包管理命令行参数（install/update <source>）——mcp 与 4 扩展共用。
 fn pi_package_args(base_args: &[String], action: &str, source: &str) -> Vec<String> {
     let mut args = base_args.to_vec();
@@ -1519,7 +1569,25 @@ impl TerminalAdapter for JishuSelfAgent {
 
 #[cfg(test)]
 mod agent_tool_whitelist_tests {
-    use super::merge_agent_tool_names;
+    use super::{extract_overlap_tool_names, merge_agent_tool_names};
+
+    /// 需求15 深挖轮 R2：重叠工具名提取——诊断行解析/去重/非冲突行忽略。
+    #[test]
+    fn extract_overlap_tool_names_from_diagnostics() {
+        let stderr = concat!(
+            "Warning: Extension package \"x\": Host-provided packages must be in peerDependencies.\n",
+            "Failed to load extension \"C:\\a\\rpiv-web-tools\\index.ts\": Tool \"web_search\" conflicts with C:\\b\\pi-web-access\\dist\\index.js\n",
+            "Failed to load extension \"C:\\a\\rpiv-web-tools\\index.ts\": Tool \"fetch_content\" conflicts with C:\\b\\pi-web-access\\dist\\index.js\n",
+            "Failed to load extension \"C:\\a\\rpiv-web-tools\\index.ts\": Tool \"web_search\" conflicts with C:\\b\\pi-web-access\\dist\\index.js\n",
+        );
+        let tools = extract_overlap_tool_names(stderr);
+        assert_eq!(
+            tools,
+            vec!["web_search".to_string(), "fetch_content".to_string()]
+        );
+        // 无冲突行 → 空。
+        assert!(extract_overlap_tool_names("all good\nno conflict").is_empty());
+    }
 
     /// v0.9.8 需求10-③ P1 回归锚点：[[agent-tool]] 物化名并入 spawn 白名单
     /// （pi --tools 硬白名单不进名单则 agent 不可见——修复前该通道全断）。

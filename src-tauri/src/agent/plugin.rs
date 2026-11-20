@@ -360,7 +360,11 @@ fn known_plugin_ids() -> HashSet<String> {
 /// v0.9.8 需求15-F5：插件显示名解析（守卫提示人话化——此前直出内部 id
 /// 如 session.mermaid-render，用户在卡片上看到的是中文名）。优先级：
 /// 内置会话能力清单兜底名 → 市场精选目录标题 → 退回 id 本身。
+/// 需求15 深挖轮补充（04-R4）：核心引擎 jishu-self 映射正式产品名。
 fn plugin_display_name(id: &str) -> String {
+    if CORE_PLUGIN_IDS.contains(&id) {
+        return "Jishu Agent".to_string();
+    }
     if let Some((_, name)) = builtin_session_plugin_specs()
         .iter()
         .find(|(pid, _)| *pid == id)
@@ -1541,6 +1545,8 @@ mod tests {
             plugin_display_name("session.mermaid-render"),
             "Mermaid 图表渲染"
         );
+        // 04-R4：核心引擎 → 正式产品名（非内部代号 jishu-self）
+        assert_eq!(plugin_display_name("jishu-self"), "Jishu Agent");
         // 未知 id → 原样退回（不猜测）
         assert_eq!(plugin_display_name("no-such-plugin"), "no-such-plugin");
         // mermaid-render 为 curated required（默认安装集）——禁用被守卫拦下，

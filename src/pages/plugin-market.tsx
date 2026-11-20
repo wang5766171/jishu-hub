@@ -1118,16 +1118,22 @@ export function PluginMarketPanel({
                                 try {
                                   // 安装走 pi 包管理器（npm/git 装载 + settings.json
                                   // 注册一步完成，装完 hub 提示启用）。
-                                  await invokeCommand<string>("pi_package_install_online", { source });
+                                  const result = await invokeCommand<string>("pi_package_install_online", { source });
                                   // v0.9.8 需求4：装后引导卡（扩展源）——GUI 适配入口。
+                                  // 深挖轮 R2：安装结果串可能带「注意：」能力重叠
+                                  /// 提示段（工具与内置包撞名，共存生效其一）——并入引导卡。
+                                  const [baseMsg, overlapNote] = result.split("\n");
                                   const dispName = source.replace(/^npm:/, "").replace(/^git:.*\//, "");
                                   setGuideCard({
                                     title: dispName,
                                     kind: "extension",
-                                    description: t("market.guideExtensionDesc", "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件"),
+                                    description:
+                                      t("market.guideExtensionDesc", "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件") +
+                                      (overlapNote ? `\n${overlapNote}` : ""),
                                     packageName: source,
                                     guiAdaptable: true,
                                   });
+                                  void baseMsg;
                                   await load();
                                   onChanged?.();
                                 } catch (e) {
