@@ -165,4 +165,50 @@ describe("场景套装一键安装（需求5）", () => {
     expect(invokeCommand).toHaveBeenCalledWith("market_install", { pluginId: "item-a" });
     expect(invokeCommand).not.toHaveBeenCalledWith("market_install", { pluginId: "item-b" });
   });
+
+  /** 需求15-F6/F7：全部已装——已装行灰化（opacity）、「安装选中项」
+   *  翻终态「全部已安装」且不可点（不再是可点却逐项跳过的模糊态）。
+   *  夹具用纯 curated 两件（skillhub 已装态只在技能页签加载，精选页签
+   *  恒为未装——不掺 skillhub 件以免终态不成立）。 */
+  it("U3: 全部已装终态——行灰化 + 按钮翻「全部已安装」置灰", async () => {
+    const BUNDLE_ALL_INSTALLED = {
+      id: "bundle-all-installed",
+      scene: "programming",
+      title: "全装套装",
+      description: "两件均已装",
+      items: [
+        { ref: "curated:item-a", required: true },
+        { ref: "curated:item-b", required: false },
+      ],
+    };
+    invokeCommand.mockReset();
+    invokeCommand.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "plugin_list":
+          // item-a/item-b 均已装
+          return Promise.resolve({ plugins: [{ id: "item-a", enabled: true }, { id: "item-b", enabled: true }] });
+        case "market_list_bundles":
+          return Promise.resolve([BUNDLE_ALL_INSTALLED]);
+        case "market_list_curated":
+          return Promise.resolve([
+            { id: "item-a", kind: "agent", title: "件甲", description: "d", category: "c", scenes: [], required: false },
+            { id: "item-b", kind: "agent", title: "件乙", description: "d", category: "c", scenes: [], required: false },
+          ]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    await openBundleDialog();
+
+    const btn = [...document.querySelectorAll("[data-bundle-dialog] button")].find((b) =>
+      b.textContent?.includes("全部已安装"),
+    )!;
+    expect(btn).toBeTruthy();
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+    // F6：已装行灰化（与不可用项同款 opacity-55）
+    const installedRow = [...document.querySelectorAll("[data-bundle-dialog] label")].find((l) =>
+      l.textContent?.includes("件乙"),
+    ) as HTMLElement;
+    expect(installedRow.className).toContain("opacity-55");
+  });
 });

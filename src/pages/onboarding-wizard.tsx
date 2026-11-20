@@ -614,6 +614,16 @@ function SceneStep({ onNext, onSkip }: { onNext: (scenes?: string[]) => void; on
           );
         })}
       </div>
+      {/* 需求15-F8：零选中时「下一步」置灰无解释——出口其实在左下（自定义
+          跳过），但用户不知道为什么不能继续（首跑自动化即卡于此）。 */}
+      {selected.size === 0 && (
+        <div className="pb-1.5 text-center text-[11px] text-muted-foreground">
+          {t(
+            "onboarding.scenePickHint",
+            "选择至少一个场景继续，或点左下「自定义（跳过推荐）」",
+          )}
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <Button variant="ghost" size="sm" onClick={onSkip}>
           {t("onboarding.customSkip", "自定义（跳过推荐）")}

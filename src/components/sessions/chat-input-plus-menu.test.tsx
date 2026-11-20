@@ -110,4 +110,40 @@ describe("ChatInput + menu aggregation (v0.9.8 需求7)", () => {
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
     expect(textarea.value).toContain("@[写后诊断]");
   });
+
+  /** 需求15-F10：CLI 平铺与 MCP 组均空、仅 Skill 一项时——能力挂载组内
+   *  渲染一行占位说明（此前组内只剩 Skill，用户无从得知为什么没有别的）。 */
+  it("U3: cli/mcp 均空时显示能力挂载空态占位说明", async () => {
+    invokeCommand.mockImplementation((cmd: string) => {
+      if (cmd === "session_tool_list")
+        return Promise.resolve([
+          {
+            id: "jishu-cli-guide",
+            display_name: "jishu CLI 指南",
+            description: "d",
+            usage: "",
+            enabled: true,
+            injectable: true,
+            category: "skill",
+          },
+        ]);
+      return Promise.resolve({ agent_id: "codex", session_id: "session-1", process_id: 1 });
+    });
+    render(
+      <ChatInput
+        sessionId="session-1"
+        projectPath={"D:\\project"}
+        agentId="claude-code"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add context" }));
+    await waitFor(() => {
+      expect(screen.getByText("Capabilities")).toBeInTheDocument();
+    });
+    // Skill 子菜单组在（唯一可挂载项），空态占位说明同屏出现
+    expect(screen.getByText("Skill")).toBeInTheDocument();
+    expect(
+      screen.getByText("No mountable plugin tools yet — install from the plugin market"),
+    ).toBeInTheDocument();
+  });
 });

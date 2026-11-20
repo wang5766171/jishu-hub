@@ -1723,6 +1723,14 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                           {toolSubmenu === "skill" && skillTools.map((tool) => renderToolButton(tool, Sparkles, "text-[var(--icon-theme)]", true))}
                         </>
                       )}
+                      {/* 需求15-F10：CLI 平铺与 MCP 组均空（已装件多为 pi 扩展
+                          形态被设计过滤）时给一行占位说明——否则组内只剩
+                          Skill 一项，用户无从得知为什么没有别的。 */}
+                      {cliTools.length === 0 && mcpTools.length === 0 && (
+                        <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] leading-relaxed text-muted-foreground/60">
+                          {t("sessions.abilityEmptyHint", "暂无可挂载的插件工具，可在插件市场安装")}
+                        </div>
+                      )}
                     </div>
                     )
                     );

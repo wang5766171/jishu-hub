@@ -1498,7 +1498,11 @@ export function PluginMarketPanel({
                   key={item.ref}
                   className={cn(
                     "flex items-center gap-2 rounded-lg border px-2.5 py-2",
-                    info.unavailable ? "border-border/40 opacity-55" : "border-border/60",
+                    // 需求15-F6：已装项与不可用项同权重化——勾选框虽 disabled
+                    // 但形态与未装一致，用户会困惑「已装为何还能勾」。
+                    info.unavailable || info.installed
+                      ? "border-border/40 opacity-55"
+                      : "border-border/60",
                   )}
                 >
                   <input
@@ -1580,7 +1584,19 @@ export function PluginMarketPanel({
                 }}
               >
                 <Download className="h-3.5 w-3.5" />
-                <span className="ml-1">{t("market.bundleInstall", "安装选中项")}</span>
+                <span className="ml-1">
+                  {(() => {
+                    // 需求15-F7：全部已装时给终态文案，不再是「可点却逐项
+                    // 跳过」的模糊态。
+                    const allInstalled =
+                      !!bundleOpen &&
+                      bundleOpen.items.length > 0 &&
+                      bundleOpen.items.every((i) => resolveBundleItem(i.ref).installed);
+                    return allInstalled
+                      ? t("market.bundleAllInstalled", "全部已安装")
+                      : t("market.bundleInstall", "安装选中项");
+                  })()}
+                </span>
               </Button>
             </div>
           )}
