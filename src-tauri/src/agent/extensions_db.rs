@@ -294,6 +294,19 @@ pub fn forget_extension(pkg_key: &str) -> Result<(), String> {
     })
 }
 
+/// 卸载路径的级联停用（R2-T2 实测缺口收口）：扩展卸载后停用其适配件
+/// 并记台账（重装扩展后经 reconcile_cascade/恢复流回到启用）。失败仅
+/// 记日志——卸载主流程不因此回滚（文件已删，半途而废更糟）。
+pub fn cascade_disable_adapters(pkg_key: &str) -> Vec<String> {
+    match cascade_disable(pkg_key) {
+        Ok(list) => list,
+        Err(e) => {
+            log::warn!("[extensions-db] 卸载级联停用失败（{pkg_key}）: {e}");
+            Vec::new()
+        }
+    }
+}
+
 /// 级联停用：停用依赖 pkg_key 的全部**当前启用中**的适配件并记台账
 /// （用户此前已手动停的不重复记——恢复时不动它们）。
 fn cascade_disable(pkg_key: &str) -> Result<Vec<String>, String> {
@@ -695,6 +708,38 @@ mod tests {
             .any(|x| x == "session.usage"));
         assert!(disabled_entries().unwrap().is_empty());
 
+        std::env::remove_var("JISHU_HUB_HOME");
+        std::env::remove_var("JISHU_PI_SETTINGS");
+        std::env::remove_var("JISHU_EXTENSIONS_DB");
+    }
+
+    /// 卸载路径级联（R2-T2 实测缺口）：cascade_disable_adapters 停用适配
+    /// 件+记台账；扩展重装后 reconcile_cascade 不自动恢复（卸载态语义：
+    /// 恢复走显式 enable 或 reconcile 的 disabled 分支——此处锁停用事实）。
+    #[test]
+    fn cascade_disable_adapters_for_uninstall() {
+        let guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        std::env::set_var("JISHU_EXTENSIONS_DB", tmp.path().join("ext.db"));
+        let pi = tmp.path().join("pi.json");
+        std::fs::write(&pi, r#"{"packages": ["npm:pi-x@1.0"]}"#).unwrap();
+        std::env::set_var("JISHU_PI_SETTINGS", &pi);
+        ensure_schema().unwrap();
+        sync_registry_face(&[], &["npm:pi-x@1.0".to_string()], None).unwrap();
+        rebuild_adaptations(&[(
+            "session.usage".to_string(),
+            vec![("npm:pi-x".to_string(), None)],
+        )])
+        .unwrap();
+        let cascaded = cascade_disable_adapters("npm:pi-x");
+        assert_eq!(cascaded, vec!["session.usage".to_string()]);
+        assert!(crate::agent::plugin::load_plugin_config()
+            .disabled
+            .iter()
+            .any(|x| x == "session.usage"));
         std::env::remove_var("JISHU_HUB_HOME");
         std::env::remove_var("JISHU_PI_SETTINGS");
         std::env::remove_var("JISHU_EXTENSIONS_DB");

@@ -1882,7 +1882,18 @@ pub(crate) async fn pi_package_uninstall_online(source: String) -> Result<String
         agent::jishu_self::pi_registry::forget_disabled(pkg_dir)?;
     }
     let restored = agent::jishu_self::pi_registry::restore_replaced_by(&source);
+    // 需求4 D4-8b（R2-T2 实测抓到的卸载级联缺口）：扩展卸载后依赖它的
+    // 适配件**联动停用**（数据来源没了不该半死不活地跑——与停用路径同
+    // 语义；台账记行，扩展重装后经 reconcile 恢复）。
+    let cascaded = pkg
+        .as_deref()
+        .and_then(|dir| agent::extensions_db::pkg_key_of(dir))
+        .map(|pkg_key| agent::extensions_db::cascade_disable_adapters(&pkg_key))
+        .unwrap_or_default();
     let mut note = format!("{source} 已卸载");
+    if !cascaded.is_empty() {
+        note.push_str(&format!("；已停用界面插件 {}", cascaded.join("、")));
+    }
     if !restored.is_empty() {
         if agent::jishu_self::JishuSelfAgent::verify_engine_boot()
             .await

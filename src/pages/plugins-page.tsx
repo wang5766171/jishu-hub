@@ -589,14 +589,20 @@ export function PluginsPage({
   // 需求25：混合插件加载失败自动回滚 → plugins-changed 广播 → 插件中心
   // 需要刷新才能反映回滚后的开关状态（否则用户手动开启后 loader 延迟
   // 回滚，但开关显示停在开——竞态：手动 refresh 在 auto-disable 之前）。
+  // 需求4 D4-8b（R2-T2 实测抓到的刷新缺口）：确认卡启用适配件后
+  // plugins-changed 也会触发——登记簿（界面/基于行）必须一并刷新，
+  // 否则扩展包 tab 停留在启用前的旧适配态。
   useEffect(() => {
     const unlistenPromise = import("@tauri-apps/api/event").then(({ listen }) =>
-      listen("plugins-changed", () => void refresh()),
+      listen("plugins-changed", () => {
+        void refresh();
+        refreshExtGui();
+      }),
     );
     return () => {
       void unlistenPromise.then((fn) => fn());
     };
-  }, [refresh]);
+  }, [refresh, refreshExtGui]);
 
   const withBusy = useCallback(
     async (id: string, action: () => Promise<void>) => {
@@ -1468,11 +1474,31 @@ export function PluginsPage({
               disabled={busyCard}
               aria-label={pin ? tr("plugins.uninstallUpdate", "卸载更新") : tr("plugins.remove", "卸载")}
               title={pin ? tr("plugins.uninstallUpdate", "卸载更新") : tr("plugins.remove", "卸载")}
-              onClick={() =>
-                pin
-                  ? runPkg(() => invokeCommand("pi_package_install_online", { source: pin.source }))
-                  : runPkg(() => invokeCommand("pi_package_uninstall_online", { source: pkg }))
-              }
+              onClick={() => {
+                if (pin) {
+                  void runPkg(() => invokeCommand("pi_package_install_online", { source: pin.source }));
+                  return;
+                }
+                // 需求4 D4-8b④（R2-T5 实测抓到的缺口收口）：卸载被适配件
+                // 使用的扩展前先确认（界面将停用）——与市场已装卡同款。
+                void (async () => {
+                  const entry = extGui.get(`npm:${pkg}`);
+                  if (entry && entry.adapters.length > 0) {
+                    const ok = await confirmDialog({
+                      title: tr("plugins.remove", "卸载"),
+                      description: t("market.uninstallExtDepsWarn", {
+                        defaultValue: "该扩展被 {{n}} 个界面插件使用：{{names}}——卸载后这些界面将停用",
+                        n: entry.adapters.length,
+                        names: entry.adapters.map((a) => a.plugin_id).join("、"),
+                      }),
+                      confirmText: tr("plugins.remove", "卸载"),
+                      variant: "destructive",
+                    });
+                    if (!ok) return;
+                  }
+                  void runPkg(() => invokeCommand("pi_package_uninstall_online", { source: pkg }));
+                })();
+              }}
             >
               <Trash2 className="h-3 w-3" />
             </Button>
