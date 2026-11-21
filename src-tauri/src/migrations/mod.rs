@@ -13,6 +13,7 @@
 //! 双入口，消费者之前）跑差集；`migrations.lock` 文件锁防双进程并发；
 //! 每条迁移**必须幂等**（中断后重启从头重跑该条不出脏数据）。
 
+mod v0_9_8_equipment_db;
 mod v0_9_8_extensions_db;
 
 use std::path::PathBuf;
@@ -33,7 +34,8 @@ pub struct Migration {
 }
 
 /// 注册表（append-only：按版本序排列，只增不改；元素为静态项引用）。
-const MIGRATIONS: &[&Migration] = &[&v0_9_8_extensions_db::MIGRATION];
+const MIGRATIONS: &[&Migration] =
+    &[&v0_9_8_extensions_db::MIGRATION, &v0_9_8_equipment_db::MIGRATION];
 
 /// 已应用记录（applied.json 数组元素）。
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -306,11 +308,12 @@ mod tests {
         }])
         .unwrap();
         assert_eq!(load_applied().len(), 1);
-        // 注册表首个迁移已应用 → 差集空（真实注册表未来追加时本断言随版本更新）。
+        // 注册表已追加 M-2（v0.9.8-equipment-db）——仅应用 M-1 → 差集 1
+        // （真实注册表未来追加时本断言随版本更新）。
         let st = status();
         assert_eq!(
             st.get("pending").and_then(|p| p.as_array()).map(Vec::len),
-            Some(0)
+            Some(1)
         );
         std::env::remove_var("JISHU_MIGRATIONS_DIR");
     }

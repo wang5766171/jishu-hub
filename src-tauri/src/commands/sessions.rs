@@ -194,7 +194,11 @@ pub(crate) async fn delete_agent_session(
         .map_err(|_| "App state lock poisoned".to_string())?;
     s.registry
         .require_agent(&agent_id)?
-        .delete_session(&session_id, &encoded_name)
+        .delete_session(&session_id, &encoded_name)?;
+    // v0.9.8 需求5（合并版）：会话删除联动清理装备推荐资产（已推记忆/
+    // 任务画像的该会话行——防表无限增长；失败不阻断删除主流程）。
+    let _ = crate::agent::equipment_db::session_cleanup(&session_id);
+    Ok(())
 }
 
 /// Persist one turn's messages through the agent's session adapter

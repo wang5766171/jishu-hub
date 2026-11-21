@@ -35,6 +35,11 @@ pub const IMAGE_DISPATCH_OPEN: &str = "<JISHU-IMAGE-DISPATCH>";
 pub const IMAGE_DISPATCH_CLOSE: &str = "</JISHU-IMAGE-DISPATCH>";
 pub const EXEC_CONTRACT_OPEN: &str = "<JISHU-EXEC-CONTRACT>";
 pub const EXEC_CONTRACT_CLOSE: &str = "</JISHU-EXEC-CONTRACT>";
+/// 需求5（v0.9.8 合并版）：装备目录注入块（用户消息后缀；agent 侧装备
+/// 推荐的信息供给）。注意：agent 回复中的 `<JISHU-EQUIP-RECOMMEND>` 块
+/// 是 **UI 渲染指令**（前端解析成推荐卡），**不在剥离链**——两码事。
+pub const EQUIP_CATALOG_OPEN: &str = "<JISHU-EQUIP-CATALOG>";
+pub const EQUIP_CATALOG_CLOSE: &str = "</JISHU-EQUIP-CATALOG>";
 
 // ---------------------------------------------------------------------------
 // 话术版本登记（resources/prompts/，台账见该目录 CHANGELOG.md）
@@ -107,6 +112,14 @@ pub const PROMPT_MCP_SECTION: VersionedPrompt = VersionedPrompt {
     body: include_str!("../../resources/prompts/mcp-section.md"),
 };
 
+/// 装备目录注入块正文（需求5 合并版 v1）。占位符由
+/// equipment_db::catalog_block 填充：`{{catalog_lines}}`（逐行装备档案）。
+pub const PROMPT_EQUIP_CATALOG: VersionedPrompt = VersionedPrompt {
+    id: "equip-catalog",
+    version: 1,
+    body: include_str!("../../resources/prompts/equip-catalog.md"),
+};
+
 // ---------------------------------------------------------------------------
 // 回放剥离链（消息载荷面唯一入口）
 // ---------------------------------------------------------------------------
@@ -115,8 +128,8 @@ pub const PROMPT_MCP_SECTION: VersionedPrompt = VersionedPrompt {
 /// 不做历史格式兼容（用户裁决 2026-09-30）：旧小写连字符标记、legacy
 /// `[图片处理]` 行前缀与 `[JISHU-PROMT]` 配对块不再剥。
 pub fn strip_internal_prompts(text: &str) -> String {
-    strip_image_dispatch_block(&strip_mcp_hint_block(&strip_plugins_block(
-        &strip_exec_contract_block(text),
+    strip_equip_catalog_block(&strip_image_dispatch_block(&strip_mcp_hint_block(
+        &strip_plugins_block(&strip_exec_contract_block(text)),
     )))
 }
 
@@ -210,6 +223,24 @@ fn strip_image_dispatch_block(text: &str) -> String {
     }
     if let Some(end_rel) = text[start..].find(IMAGE_DISPATCH_CLOSE) {
         let after = &text[start + end_rel + IMAGE_DISPATCH_CLOSE.len()..];
+        result.push_str(after.trim_start_matches(['\r', '\n']));
+    }
+    result.trim_end().to_string()
+}
+
+/// 剥离 <JISHU-EQUIP-CATALOG>…</JISHU-EQUIP-CATALOG>（装备目录注入块，
+/// 需求5 合并版：agent 信息供给，展示面不可见）。
+fn strip_equip_catalog_block(text: &str) -> String {
+    let Some(start) = text.find(EQUIP_CATALOG_OPEN) else {
+        return text.to_string();
+    };
+    let mut result = String::new();
+    let prefix = &text[..start];
+    if !prefix.trim().is_empty() {
+        result.push_str(prefix);
+    }
+    if let Some(end_rel) = text[start..].find(EQUIP_CATALOG_CLOSE) {
+        let after = &text[start + end_rel + EQUIP_CATALOG_CLOSE.len()..];
         result.push_str(after.trim_start_matches(['\r', '\n']));
     }
     result.trim_end().to_string()

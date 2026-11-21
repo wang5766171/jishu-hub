@@ -33,6 +33,18 @@ pub struct MarketEntry {
     /// 技能源无此字段——前端以描述首句兜底）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_hint: Option<String>,
+    /// v0.9.8 需求5（合并版）：能力标签（装备档案官方固化层，L0 本地
+    /// 匹配与 agent 目录注入共用；中文短语，子串即命中）。
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// v0.9.8 需求5（合并版）：星级 2~5（5=hub 自产 / 4=官方钉版实测
+    /// 通过；★2 不进推荐）。默认 3=信号良好。
+    #[serde(default = "default_stars")]
+    pub stars: u8,
+}
+
+fn default_stars() -> u8 {
+    3
 }
 
 /// v0.9.8 需求5：场景套装条目——`ref` 引用而非复制（单一真源）：

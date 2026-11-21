@@ -107,6 +107,93 @@ pub struct AppState {
     /// 持久；引导重选场景时重置）。None/Some(false) = 未关闭。
     #[serde(default)]
     pub scene_suggest_dismissed: Option<bool>,
+    // ── v0.9.8 需求5（合并版）：装备推荐配置（六键；None = 默认开/1/含第三方）──
+    #[serde(default)]
+    pub equip_recommend_enabled: Option<bool>,
+    #[serde(default)]
+    pub equip_recommend_session_card: Option<bool>,
+    #[serde(default)]
+    pub equip_recommend_session_limit: Option<u32>,
+    #[serde(default)]
+    pub equip_recommend_input_bar: Option<bool>,
+    #[serde(default)]
+    pub equip_recommend_market_zone: Option<bool>,
+    #[serde(default)]
+    pub equip_recommend_third_party: Option<bool>,
+}
+
+/// 装备推荐配置视图（需求5 合并版；默认值在此单源）。
+pub struct EquipRecommendConfig {
+    pub enabled: bool,
+    pub session_card: bool,
+    pub session_limit: u32,
+    pub input_bar: bool,
+    pub market_zone: bool,
+    pub third_party: bool,
+}
+
+impl Default for EquipRecommendConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            session_card: true,
+            session_limit: 1,
+            input_bar: true,
+            market_zone: true,
+            third_party: true,
+        }
+    }
+}
+
+impl EquipRecommendConfig {
+    pub fn from_state(s: &AppState) -> Self {
+        Self {
+            enabled: s.equip_recommend_enabled.unwrap_or(true),
+            session_card: s.equip_recommend_session_card.unwrap_or(true),
+            session_limit: s.equip_recommend_session_limit.filter(|n| *n > 0).unwrap_or(1),
+            input_bar: s.equip_recommend_input_bar.unwrap_or(true),
+            market_zone: s.equip_recommend_market_zone.unwrap_or(true),
+            third_party: s.equip_recommend_third_party.unwrap_or(true),
+        }
+    }
+}
+
+pub fn equip_recommend_config() -> EquipRecommendConfig {
+    load_state()
+        .map(|s| EquipRecommendConfig::from_state(&s))
+        .unwrap_or_default()
+}
+
+/// 配置局部更新（None 字段不动；enabled=false 时其余键保留用户设置，
+/// 重开总开关即恢复原配置——不写「关=清空」的破坏语义）。
+pub fn set_equip_recommend_config(
+    enabled: Option<bool>,
+    session_card: Option<bool>,
+    session_limit: Option<u32>,
+    input_bar: Option<bool>,
+    market_zone: Option<bool>,
+    third_party: Option<bool>,
+) -> Result<(), String> {
+    let mut state = load_state().map_err(|e| e.to_string())?;
+    if let Some(v) = enabled {
+        state.equip_recommend_enabled = Some(v);
+    }
+    if let Some(v) = session_card {
+        state.equip_recommend_session_card = Some(v);
+    }
+    if let Some(v) = session_limit {
+        state.equip_recommend_session_limit = Some(v);
+    }
+    if let Some(v) = input_bar {
+        state.equip_recommend_input_bar = Some(v);
+    }
+    if let Some(v) = market_zone {
+        state.equip_recommend_market_zone = Some(v);
+    }
+    if let Some(v) = third_party {
+        state.equip_recommend_third_party = Some(v);
+    }
+    save_state(&state).map_err(|e| e.to_string())
 }
 
 fn state_path() -> Result<PathBuf, Box<dyn std::error::Error>> {

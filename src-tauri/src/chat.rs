@@ -395,29 +395,45 @@ fn compose_tool_message(
         return message;
     };
     let tools = s.tool_plugins.lock().unwrap_or_else(|e| e.into_inner());
+    // v0.9.8 需求5（合并版）：装备目录注入（L2 信息供给）——总开关+会话卡
+    // 链路双开才注入；目录=可装未装件（agent 看任务对照货架的唯一通道）。
+    let equip_block = {
+        let cfg = crate::hub::equip_recommend_config();
+        if !(cfg.enabled && cfg.session_card) {
+            String::new()
+        } else {
+            let installed_curated: Vec<String> = tools.iter().map(|t| t.id().to_string()).collect();
+            let installed_skillhub: Vec<String> =
+                agent::skillhub::skillhub_installed().keys().cloned().collect();
+            agent::equipment_db::catalog_block(&installed_curated, &installed_skillhub, cfg.third_party)
+        }
+    };
+    let mut out = message;
     if tool_ids.is_empty() {
         // v0.9.1 需求12：未勾选工具插件的会话也注入 MCP 解析服务提示——
         // 每个智能体每轮消息都能识别 jishu-hub 聚合服务并优先经它调用
         // MCP 工具（存在启用的 [mcp] 插件才有块；无则消息原样返回）。
         let refs: Vec<&agent::tool_plugin::ToolPlugin> = tools.iter().collect();
         let hint = agent::tool_plugin::render_hub_mcp_resolver_hint(&refs);
-        if hint.is_empty() {
-            return message;
+        if !hint.is_empty() {
+            out = format!("{out}\n\n{hint}");
         }
-        return format!("{message}\n\n{hint}");
+    } else {
+        let matched: Vec<&agent::tool_plugin::ToolPlugin> = tools
+            .iter()
+            .filter(|t| tool_ids.iter().any(|id| id == t.id()))
+            .collect();
+        if !matched.is_empty() {
+            let block = agent::tool_plugin::render_tool_block(&matched);
+            if !block.trim().is_empty() {
+                out = format!("{out}\n\n{block}");
+            }
+        }
     }
-    let matched: Vec<&agent::tool_plugin::ToolPlugin> = tools
-        .iter()
-        .filter(|t| tool_ids.iter().any(|id| id == t.id()))
-        .collect();
-    if matched.is_empty() {
-        return message;
+    if !equip_block.is_empty() {
+        out = format!("{out}\n\n{equip_block}");
     }
-    let block = agent::tool_plugin::render_tool_block(&matched);
-    if block.trim().is_empty() {
-        return message;
-    }
-    format!("{message}\n\n{block}")
+    out
 }
 
 #[tauri::command]

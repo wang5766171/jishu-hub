@@ -1182,16 +1182,139 @@ pub(crate) fn market_list_bundles() -> Result<Vec<agent::plugin::market::MarketB
     Ok(agent::plugin::market::market_list_bundles())
 }
 
+// ── v0.9.8 需求5（合并版）：装备推荐数据面（equipment.db 四表） ──
+
+/// 标签库整表（前端拉取后本地算 L0/L1；官方件档案由 curated 侧另行合并）。
+#[tauri::command]
+pub(crate) fn equipment_tags_list() -> Result<Vec<agent::equipment_db::EquipmentTagRow>, String> {
+    agent::equipment_db::tags_list()
+}
+
+/// 标签 upsert（懒固化/tags_hint 回写共用；空字段不覆盖已有值）。
+#[tauri::command]
+pub(crate) fn equipment_tag_upsert(
+    r#ref: String,
+    title: Option<String>,
+    tags: Option<Vec<String>>,
+    stars: Option<u8>,
+    source: Option<String>,
+) -> Result<(), String> {
+    agent::equipment_db::tag_upsert(&r#ref, title.as_deref(), tags.as_deref(), stars, source.as_deref())
+}
+
+/// 最近一份任务画像（L1 消费：市场推荐区/输入框建议条）。
+#[tauri::command]
+pub(crate) fn task_profile_latest() -> Result<Option<agent::equipment_db::TaskProfileRow>, String> {
+    agent::equipment_db::profile_latest()
+}
+
+/// 画像落盘（L2 推荐块解析时调用；同会话覆盖 + LRU 20）。
+#[tauri::command]
+pub(crate) fn task_profile_upsert(
+    session_id: String,
+    scene: String,
+    keywords: Vec<String>,
+) -> Result<(), String> {
+    agent::equipment_db::profile_upsert(&session_id, &scene, &keywords)
+}
+
+/// 该会话已推 ref 清单（防重复推过滤）。
+#[tauri::command]
+pub(crate) fn equip_recommended_list(session_id: String) -> Result<Vec<String>, String> {
+    agent::equipment_db::recommended_list(&session_id)
+}
+
+/// 该会话已推荐批次计数（限次硬闸判定）。
+#[tauri::command]
+pub(crate) fn equip_recommended_count(session_id: String) -> Result<i64, String> {
+    agent::equipment_db::recommended_batch_count(&session_id)
+}
+
+/// 推荐记录（推荐卡首次渲染时调用；幂等）。
+#[tauri::command]
+pub(crate) fn equip_recommended_add(
+    session_id: String,
+    refs: Vec<String>,
+) -> Result<(), String> {
+    agent::equipment_db::recommended_add(&session_id, &refs)
+}
+
+/// 重置推荐记忆（设置页动作）。
+#[tauri::command]
+pub(crate) fn equip_recommended_clear() -> Result<(), String> {
+    agent::equipment_db::recommended_clear()
+}
+
+/// 来源台账（诊断/版本前运行报告）。
+#[tauri::command]
+pub(crate) fn equip_origins_list() -> Result<Vec<agent::equipment_db::OriginRow>, String> {
+    agent::equipment_db::origins_list()
+}
+
+/// 装备推荐配置（六键；默认值 hub.rs 单源）。
+#[derive(serde::Serialize)]
+pub(crate) struct EquipConfigView {
+    pub enabled: bool,
+    pub session_card: bool,
+    pub session_limit: u32,
+    pub input_bar: bool,
+    pub market_zone: bool,
+    pub third_party: bool,
+}
+
+#[tauri::command]
+pub(crate) fn equip_config_get() -> Result<EquipConfigView, String> {
+    let c = crate::hub::equip_recommend_config();
+    Ok(EquipConfigView {
+        enabled: c.enabled,
+        session_card: c.session_card,
+        session_limit: c.session_limit,
+        input_bar: c.input_bar,
+        market_zone: c.market_zone,
+        third_party: c.third_party,
+    })
+}
+
+/// 配置局部更新（None 字段不动）。
+#[tauri::command]
+pub(crate) fn equip_config_set(
+    enabled: Option<bool>,
+    session_card: Option<bool>,
+    session_limit: Option<u32>,
+    input_bar: Option<bool>,
+    market_zone: Option<bool>,
+    third_party: Option<bool>,
+) -> Result<(), String> {
+    crate::hub::set_equip_recommend_config(
+        enabled,
+        session_card,
+        session_limit,
+        input_bar,
+        market_zone,
+        third_party,
+    )
+}
+
 /// C2-① 安装（幂等；pi-package 形态含 npm 包安装）。评审 P1-8：成功后
 /// rebuild_registry 热生效——清单/分发/settings.json packages 即时刷新
 /// （对齐 skillhub_install 既有写法，装完不用重启/手动刷新）。
+/// v0.9.8 需求5（合并版）：meta 携带推荐链路来源（via）与 agent 推荐理由
+/// 标签（tags）——安装收尾挂进 equipment.db（来源台账+标签固化）。
 #[tauri::command]
 pub(crate) async fn market_install(
     app: tauri::AppHandle,
     state: tauri::State<'_, Mutex<AppState>>,
     plugin_id: String,
+    meta: Option<agent::equipment_db::InstallMeta>,
 ) -> Result<String, String> {
     let result = agent::plugin::market::market_install(&plugin_id).await?;
+    let meta = meta.unwrap_or_default();
+    let _ = agent::equipment_db::record_install(
+        &format!("curated:{plugin_id}"),
+        meta.via_or_manual(),
+        None,
+        meta.tags.as_deref(),
+    );
     rebuild_registry(&app, &state);
     Ok(result)
 }
@@ -1290,13 +1413,22 @@ pub(crate) fn skillhub_installed() -> Result<std::collections::BTreeMap<String, 
 
 /// C2-③ 技能市场：安装（下载→校验→注册为 hub 目录形式插件→分发→记台账；
 /// 2026-11-14 用户裁决：安装导入 jishu hub 已安装，走 hub 插件链）。
+/// v0.9.8 需求5（合并版）：meta 携带 via/title/tags——安装收尾挂 equipment.db。
 #[tauri::command]
 pub(crate) async fn skillhub_install(
     app: tauri::AppHandle,
     state: tauri::State<'_, Mutex<AppState>>,
     slug: String,
+    meta: Option<agent::equipment_db::InstallMeta>,
 ) -> Result<String, String> {
     let result = agent::skillhub::skillhub_install(&slug).await?;
+    let meta = meta.unwrap_or_default();
+    let _ = agent::equipment_db::record_install(
+        &format!("skillhub:{slug}"),
+        meta.via_or_manual(),
+        meta.title.as_deref(),
+        meta.tags.as_deref(),
+    );
     // 插件清单/分发即时刷新（对齐 plugin_create_skill_folder 的安装后处理）。
     rebuild_registry(&app, &state);
     Ok(result)
@@ -1593,7 +1725,10 @@ fn conflict_infos_from_pairs(
 }
 
 #[tauri::command]
-pub(crate) async fn pi_package_install_online(source: String) -> Result<PiInstallOutcome, String> {
+pub(crate) async fn pi_package_install_online(
+    source: String,
+    meta: Option<agent::equipment_db::InstallMeta>,
+) -> Result<PiInstallOutcome, String> {
     let source = source.trim().to_string();
     if !(source.starts_with("npm:") || source.starts_with("git:")) {
         return Err("仅支持 npm:/git: 前缀源（如 npm:pi-fireworks@0.1.2）".to_string());
@@ -1615,7 +1750,10 @@ pub(crate) async fn pi_package_install_online(source: String) -> Result<PiInstal
                     .await
                     .map_err(|e| format!("安装失败：{e}"))?;
                 match agent::jishu_self::JishuSelfAgent::verify_engine_boot().await {
-                    Ok(()) => Ok(PiInstallOutcome::Installed),
+                    Ok(()) => {
+                        record_pi_install(&source, &meta);
+                        Ok(PiInstallOutcome::Installed)
+                    }
                     Err(f) => {
                         agent::jishu_self::JishuSelfAgent::run_pi_package_command(
                             "remove", &source,
@@ -1648,7 +1786,10 @@ pub(crate) async fn pi_package_install_online(source: String) -> Result<PiInstal
         .await
         .map_err(|e| format!("安装失败：{e}"))?;
     match agent::jishu_self::JishuSelfAgent::verify_engine_boot().await {
-        Ok(()) => Ok(PiInstallOutcome::Installed),
+        Ok(()) => {
+            record_pi_install(&source, &meta);
+            Ok(PiInstallOutcome::Installed)
+        }
         Err(failure) => {
             let pkg = source.replace("git:", "");
             let conflicts = conflict_infos_from_pairs(
@@ -1670,6 +1811,20 @@ pub(crate) async fn pi_package_install_online(source: String) -> Result<PiInstal
             ))
         }
     }
+}
+
+/// 需求5（合并版）：pi 扩展安装成功收尾挂 equipment.db（来源台账+标签
+/// 固化；ref 用 `pi:<去版本 source>` 归一——同包升级不堆行）。
+fn record_pi_install(source: &str, meta: &Option<agent::equipment_db::InstallMeta>) {
+    let meta = meta.clone().unwrap_or_default();
+    // npm:pkg@1.2 → pi:npm:pkg（去版本，与 equipment ref 语法一致）。
+    let base = source.rsplit_once('@').map(|(n, _)| n.to_string()).unwrap_or_else(|| source.to_string());
+    let _ = agent::equipment_db::record_install(
+        &format!("pi:{base}"),
+        meta.via_or_manual(),
+        meta.title.as_deref(),
+        meta.tags.as_deref(),
+    );
 }
 
 /// 需求15 方案 A：冲突确认后的「停用并安装」。流程（服务端自证，不信任

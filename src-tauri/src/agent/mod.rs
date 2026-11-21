@@ -40,6 +40,9 @@ pub mod traits;
 // 需求4 D4-8（v0.9.8）：扩展统一登记簿 extensions.db——插件↔扩展 M:N
 // 关系、停用台账（方案A迁入）、级联停用/恢复、前端查询视图。
 pub mod extensions_db;
+// 需求5（v0.9.8 合并版）：equipment.db——装备推荐四资产（第三方件标签
+// 库/任务画像/已推记忆/来源台账）；官方件档案真源在 curated.json 不落库。
+pub mod equipment_db;
 
 pub use capability::{AgentCapabilities, AgentHealth};
 pub use claude_code::ClaudeCodeAgent;
