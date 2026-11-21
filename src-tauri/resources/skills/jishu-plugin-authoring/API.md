@@ -96,3 +96,53 @@ api.useEffect(() => {
     .catch((e) => setData(null)); // api 无 console——错误请渲染进组件或静默降级
 }, []);
 ```
+
+## 六、挂载与 payload 契约（需求4 F2，2026-11-21——每类挂载递给组件什么数据）
+
+> 本节回答适配开发最关键的问题：「我的组件能拿到什么」。锚定测试
+> `src/components/observability/tool-call-card/bodies/other-payload.test.tsx`
+> 锁实现不漂移；改动 payload 形状必须先改本节（契约先行）。
+
+### tool-output 挂载（认领工具结果渲染）
+
+组件经 `[source] tool_name/tool_pattern` 认领工具后，该工具的消息内结果卡
+由你的组件替换渲染，收到 payload：
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `kind` | `"tool-result"` | 恒定 |
+| `toolName` | string | 工具名（如 `web_fetch`） |
+| `output` | string | 工具输出的**文本**（hub 归一化后） |
+| `input` | object（可选） | 工具**入参**（如 `{ url }`）——入参非空时携带 |
+| `details` | object（可选） | 工具结果的**结构化元数据**（如 web_fetch 的 `title/published/wordCount/contentType`）——工具提供 details 且非空时携带；直播与回放双路可得 |
+
+要点：需要网页标题/发布时间等元数据时**直接读 `payload.details`**，不要
+解析 `output` 文本（文本格式非契约，随时可变）。
+
+### block-renderer 挂载（代码块/块类型命中）
+
+| payload | 语义 |
+|---|---|
+| `{ kind: "code-block", language, code }` | 按语言命中（`[source] languages`） |
+| `{ kind: "block", blockType, block }` | 按内容块类型命中 |
+
+### 其余挂载（dock-panel/sidebar/rail/composer/menu/stream-card/titlebar-action/settings-page/panel/event-hook）
+
+payload = 清单 `[source]` 声明的聚合数据（messages/turns/task/signal，
+见 hub-page-capabilities.md「渲染键」）；无 tool-result 型 payload。
+
+### `[[adapt]]` 段（适配关系声明——需求4 D4-8）
+
+为**独立安装的 pi 扩展**做 GUI 适配的插件，在 plugin.toml 顶层声明（数组，
+一条一个扩展；`extension` 用**不带版本**的关系键，扩展升级不断链）：
+
+```toml
+[[adapt]]
+extension = "npm:pi-smart-fetch"      # 被适配扩展（无版本键）
+tools = ["web_fetch", "batch_web_fetch"]  # 可选：声明消费哪些工具；省略=整个扩展
+```
+
+声明后 hub 的扩展登记簿自动建立关系：扩展卡显示「界面：由本插件呈现」；
+**扩展停用/卸载时本插件自动联动停用**（数据来源断供即停，恢复时自动回来）；
+一个扩展可被多个插件适配（不同视角）、一个插件也可声明多条 `[[adapt]]`
+（整合多个扩展）。`jishu-cli extensions list` 可查登记簿现况。

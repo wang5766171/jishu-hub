@@ -507,7 +507,10 @@ JishuPlugin.register(pluginId, {
     //   task     → { kind: "task", task: TaskInfo }
     //   code-block（block-renderer 挂载）→ { kind: "code-block", language, code }
     //   block-type（block-renderer 挂载）→ { kind: "block", blockType, block }
-    //   tool-result（tool-output 挂载）→ { kind: "tool-result", toolName, output }
+    //   tool-result（tool-output 挂载）→ { kind: "tool-result", toolName, output,
+    //     input?, details? }  // input=工具入参、details=结构化元数据（网页标题/
+    //     发布时间等）——需要元数据直读 details，勿解析 output 文本；完整契约
+    //     见同目录 API.md 第六节「挂载与 payload 契约」
     // Message = { role, blocks: Block[] }；Block 按类型：
     //   { type: "text", text }
     //   { type: "thinking", thinking }
@@ -536,6 +539,87 @@ component: (api) => (props) => {
   return api.h("button", { onClick: () => setOpen(!open) }, open ? "收起" : "展开");
 },
 ```
+
+## 扩展 GUI 适配官方途径（为已安装的 pi 扩展做界面适配——需求4 F4）
+
+事实先说：**hub 客户端是编译产物，用户机器上没有源码**——适配所需的全部
+契约都在下面这些官方通道里；不需要、也不应该去找或扫描客户端代码。
+
+**第 0 步·判定要不要 GUI**（判定结果落档，市场卡/已装页立即可见）：
+
+- 工具输出**给人看**（网页正文/搜索结果/图表/任务状态/翻译对照）→ 适配有价值，继续。
+- 工具**给模型用**（记忆存取/代码检查/格式化/参数转换——输出供下一轮推理消费，人看无意义）→ **明确回复用户「该扩展是纯底层工具，无需界面适配」+ 一句理由**，执行 `jishu-cli extensions verdict <pkg_key> noneeded --note "理由"` 落档后结束（不开发、不进确认卡）。
+- 两头都沾（如 web_fetch：正文给人、元数据给模型）→ 按最常用消费方式选**最轻挂载位**。
+- 改判：`jishu-cli extensions verdict <pkg_key> pending` 重置为未判定。
+
+**①读官方资料**（随本技能同目录部署，随取随读）：本 SKILL.md（形态模板）
++ 同目录 `API.md`（能力唯一权威；第六节「挂载与 payload 契约」——tool-output
+挂载能拿到 `output/input/details`）+ 同目录 `hub-page-capabilities.md`（挂载位
+九类与选型口诀）。
+
+**②探查扩展本体**（就在本机，不必去别处找）：池路径
+`~/.jishu-agent/agent/npm/node_modules/<包名>/`——README → package.json →
+dist 入口源码（`registerTool` 处即工具清单与 details 形状）；可配合 pi-lens
+按符号定位。`jishu-cli extensions list` 查登记簿现况（内置/状态/已适配者）。
+
+**③选挂载位——按扩展能力特征对号入座**（探查完查表，不凭感觉）：
+
+| 扩展能力特征 | 挂载位 |
+|---|---|
+| 增强单条消息内的工具结果呈现（网页正文/搜索结果） | tool-output 认领 或 block-renderer |
+| 有任务进度/多步骤状态可看 | stream-card |
+| 周期性/常看的数据面板 | dock-panel / sidebar |
+| 轻量开关/模式切换 | rail / composer 挂件 |
+| 一次性动作入口 | titlebar-action |
+| 跨会话独立浏览的内容 | panel |
+
+配对合法性（源×挂载矩阵）见 hub-page-capabilities.md 与本技能配对矩阵——
+非法组合安装即拒。
+
+**④参考真实样例**：`~/.jishu-hub/plugins/` 是已装插件样例库（如
+session.task-board 的 plugin.toml）；tool-output 认领最小样例：
+
+```toml
+# plugin.toml —— 认领 web_fetch 的结果渲染 + 声明适配关系
+[plugin]
+id = "session.smart-fetch-view"
+name = "网页正文阅读器"
+description = "消息内渲染 web_fetch 抓取的网页正文与元数据"
+kind = "session-composed"
+
+[source]
+type = "tool-result"
+tool_name = "web_fetch"
+
+[render]
+component = "@file:component.js"
+mount = "tool-output"
+
+[[adapt]]
+extension = "npm:pi-smart-fetch"
+tools = ["web_fetch"]
+```
+
+```js
+// component.js —— payload.details 直读元数据，不解析 output 文本
+JishuPlugin.register("session.smart-fetch-view", {
+  version: 1,
+  component: (api) => (props) => {
+    const d = props.payload?.details ?? {};
+    const input = props.payload?.input ?? {};
+    return api.h("div", { className: "text-sm space-y-1" },
+      d.title ? api.h("div", { className: "font-medium" }, String(d.title)) : null,
+      input.url ? api.h("div", { className: "text-xs text-muted-foreground" }, String(input.url)) : null,
+      api.h("pre", { className: "text-xs whitespace-pre-wrap max-h-64 overflow-y-auto" },
+        String(props.payload?.output ?? "").slice(0, 4000)));
+  },
+});
+```
+
+产出走确认卡流程安装（`jishu-cli plugins add-hybrid <目录>` 或 GUI 确认卡）；
+`[[adapt]]` 声明会自动建立登记簿关系（扩展卡显示「界面：由本插件呈现」；
+**扩展停用/卸载时本插件自动联动停用，恢复时自动回来**——这是有意设计，
+数据来源断供就不该半死不活地跑）。
 
 ## 第四层：陷阱与最佳实践
 

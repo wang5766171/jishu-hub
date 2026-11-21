@@ -145,6 +145,12 @@ pub struct SkillDeclEntry {
     pub content: String,
     /// 目录形式源的 skill 目录（None = toml 内联/内置源，单文件分发）。
     pub source_dir: Option<PathBuf>,
+    /// 需求4 F1（v0.9.8）：内置源的**伴生文件**（文件名 → 内容）——与
+    /// SKILL.md 同目录部署（如 jishu-plugin-authoring 的 API.md/挂载位
+    /// 文档）。取证教训：SKILL.md 指引「同目录 API.md 唯一权威」而部署
+    /// 链只拷单文件 → 伴生文件断链，agent 被迫绕路（会话 01a1fbd8）。
+    /// 内容一致跳过（同 SKILL.md 语义）；文件清单只增不删（回收按目录）。
+    pub extra_files: Vec<(String, String)>,
 }
 
 /// 目录形式源：`plugins/<id>/skills/<name>/SKILL.md`——自带 frontmatter，
@@ -214,6 +220,7 @@ pub(crate) fn dir_source_skills(plugin_root: &Path, plugin_id: &str) -> Vec<Skil
             description,
             content,
             source_dir: Some(entry.path()),
+            extra_files: Vec::new(),
         });
     }
     out.sort_by(|a, b| a.dir_name.cmp(&b.dir_name));
@@ -242,6 +249,7 @@ pub fn load_skill_decls() -> Vec<SkillDeclEntry> {
                     description: description.to_string(),
                     content: render_skill_md(name.unwrap_or(&pid), description, body),
                     source_dir: None,
+                    extra_files: Vec::new(),
                 });
             }
         }
@@ -276,15 +284,31 @@ pub fn builtin_skill_decls() -> Vec<SkillDeclEntry> {
             description: BUILTIN_CAPABILITY_SKILL_DESC.to_string(),
             content: content.to_string(),
             source_dir: None,
+            extra_files: Vec::new(),
         },
         // v0.9.5 需求1（原需求26）4a：插件创作四层指南（判断/模板/API/陷阱）
         //——「对话即创建」的路由层：agent 读后能产出正确形态的插件并经
         // CLI 安装（add 统一寻址 / validate / add-hybrid）。
+        // 需求4 F1（v0.9.8）：伴生文件随包部署——API.md（能力参考唯一
+        // 权威，SKILL.md:41 指引的同目录文件）+ hub-page-capabilities.md
+        //（挂载位九类权威摘录）。此前部署链只拷 SKILL.md 单文件，伴生
+        // 文件必然 ENOENT（取证：会话 01a1fbd8 agent 按指引读 API.md 断链）。
         SkillDeclEntry {
             dir_name: PLUGIN_AUTHORING_SKILL_DIR.to_string(),
             description: PLUGIN_AUTHORING_SKILL_DESC.to_string(),
             content: authoring.to_string(),
             source_dir: None,
+            extra_files: vec![
+                (
+                    "API.md".to_string(),
+                    include_str!("../../resources/skills/jishu-plugin-authoring/API.md")
+                        .to_string(),
+                ),
+                (
+                    "hub-page-capabilities.md".to_string(),
+                    include_str!("../../resources/hub-page-capabilities.md").to_string(),
+                ),
+            ],
         },
     ]
 }
@@ -546,6 +570,26 @@ fn sync_with(
                     }
                 }
             };
+            // 需求4 F1（v0.9.8）：内置源伴生文件——与 SKILL.md 同目录、
+            // 内容一致跳过（同款语义）；失败记 Error 行不阻断其余分发。
+            if decl.source_dir.is_none() && !decl.extra_files.is_empty() {
+                let _ = std::fs::create_dir_all(&dir);
+                for (name, content) in &decl.extra_files {
+                    let target = dir.join(name);
+                    match std::fs::read_to_string(&target) {
+                        Ok(existing) if existing == *content => {}
+                        _ => {
+                            if let Err(e) = crate::util::atomic_write(&target, content.as_bytes()) {
+                                report.push(
+                                    agent_id,
+                                    &decl.dir_name,
+                                    &format!("Error: {e} ({name})"),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
             if action != "Skipped" || owned.contains(&own_key(agent_id, &decl.dir_name)) {
                 report.push(agent_id, &decl.dir_name, action);
             } else {
@@ -650,6 +694,7 @@ body",
             description: "d".to_string(),
             content: std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
             source_dir: Some(skill.clone()),
+            extra_files: Vec::new(),
         };
 
         // 1. 首部署：SKILL.md + 附属文件全落地。
@@ -748,6 +793,7 @@ body",
             description: "d".to_string(),
             content: std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
             source_dir: Some(skill.clone()),
+            extra_files: Vec::new(),
         };
 
         // 1. 首部署两目标。
@@ -822,6 +868,7 @@ body",
             description: String::new(),
             content: "x".to_string(),
             source_dir: Some(skill),
+            extra_files: Vec::new(),
         };
         let targets = vec![("test-agent".to_string(), dst_root.path().join("skills"))];
         sync_with(vec![decl], &targets, true);
@@ -896,6 +943,7 @@ body",
             description: "d".to_string(),
             content: std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
             source_dir: Some(skill),
+            extra_files: Vec::new(),
         };
         assert_eq!(decl.dir_name, "vm");
 
@@ -996,6 +1044,7 @@ body",
             description: String::new(),
             content: content.to_string(),
             source_dir: None,
+            extra_files: Vec::new(),
         };
 
         // 1) 首次分发 → Deployed + 归属记录。
@@ -1052,6 +1101,7 @@ body",
             description: String::new(),
             content: content.to_string(),
             source_dir: None,
+            extra_files: Vec::new(),
         };
 
         let report = sync_with(
