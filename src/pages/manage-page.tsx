@@ -8,6 +8,8 @@ import { CommandsPage } from "./commands-page";
 import { PluginsPage } from "./plugins-page";
 // 需求14 M2（S3）：外观设置页（主题卡列表）。
 import { AppearancePage } from "./appearance-page";
+// v0.9.8 需求5（合并版）：装备推荐设置页。
+import { RecommendPage } from "./recommend-page";
 import {
   FolderOpen,
   Rocket,
@@ -20,6 +22,7 @@ import {
   LayoutTemplate,
   Settings2,
   DatabaseBackup,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 // 批次5（v0.9.5 需求1 GUI 改造）：会话区 → 管理页导航事件。
@@ -61,6 +64,8 @@ const menuGroups: { titleKey: string; titleFallback: string; items: ManageMenuIt
       { id: "projects", icon: FolderOpen, labelKey: "manage.menuProjects", fallback: "项目管理" },
       { id: "plugins", icon: Blocks, labelKey: "manage.menuPlugins", fallback: "插件中心" },
       { id: "appearance", icon: Palette, labelKey: "manage.menuAppearance", fallback: "外观" },
+      // v0.9.8 需求5（合并版）：装备推荐设置（六开关+重置记忆）。
+      { id: "recommend", icon: Sparkles, labelKey: "manage.menuRecommend", fallback: "推荐" },
     ],
   },
   {
@@ -248,6 +253,7 @@ export function ManagePage({ onBack, onEnterProject, navigateToProjects, navigat
           />
         )}
         {activeTab === "appearance" && <AppearancePage />}
+        {activeTab === "recommend" && <RecommendPage />}
         {activeTab === "commands" && <CommandsPage />}
         {activeTab === "env" && (
           // 需求4 反馈裁决（2026-11-12 二轮）：主动进入形态——左侧菜单保留，

@@ -61,7 +61,8 @@
     "pageDescBackups": "Restore configuration snapshots, or import/export configs",
     "onboardingTitle": "Setup Guide",
     "onboardingDesc": "The setup guide installs the agent engine, checks runtimes (Node.js / npm / Git), and recommends plugins and skills.",
-    "onboardingReopen": "Run setup guide again"
+    "onboardingReopen": "Run setup guide again",
+    "menuRecommend": "Recommendations"
   },
   "env": {
     "title": "Environment Check",
@@ -386,7 +387,10 @@
     "taskUnreadDone": "Unread completed result",
     "scrollToBottom": "Scroll to bottom",
     "stagingDrag": "Drag to reorder",
-    "imageOnlyEditHint": "Resending with new text will not carry the original image — re-attach it if needed"
+    "imageOnlyEditHint": "Resending with new text will not carry the original image — re-attach it if needed",
+    "equipSuggestByTask": "Based on a recent task",
+    "equipSuggestByDraft": "Based on what you're typing",
+    "equipSuggestFallback": "For you"
   },
   "plugins": {
     "entryStepFace": "Business face (what · where)",
@@ -1837,7 +1841,7 @@
     "guideFirstUse": "First use",
     "guideGuiAdapt": "GUI adapt — generate a UI plugin for this extension",
     "guideExtensionDesc": "pi extension — background capability; generate a UI plugin via GUI adapt",
-    "bundleSection": "Scene bundles",
+    "bundleSection": "Recommendations",
     "bundleItems": "{{n}} items",
     "bundleRequired": "Required",
     "bundleUnavailable": "Unavailable",
@@ -1909,7 +1913,10 @@
     "searchUnified": "Search…",
     "clearSearch": "Clear search",
     "extSlow": "Slow network — the catalog is taking a while; retry later",
-    "extLoading": "Loading catalog…"
+    "extLoading": "Loading catalog…",
+    "recommendForYou": "For you",
+    "recommendByTask": "Based on a recent task: {{note}}",
+    "recommendHint": "A combo picked for your recent task"
   },
   "onboarding": {
     "initTitle": "Preparing your agent",
@@ -1956,7 +1963,8 @@
     "rtUpdateNoChange": "The update command for {{name}} finished, but the detected version is still v{{version}}. The update source may not offer the newer version yet, or a restart may be needed for it to take effect.",
     "rtUpdateFailed": "Update failed",
     "rtMethodInstaller": "online installer",
-    "rtOpenDownload": "Open download page"
+    "rtOpenDownload": "Open download page",
+    "recBundles": "Starter bundles"
   },
   "taskSteps": {
     "title": "Task steps",
@@ -1979,5 +1987,33 @@
     "hint": "Sync to apply the latest states in the plugin center.",
     "later": "Not now",
     "sync": "Sync"
+  },
+  "equip": {
+    "recommendTitle": "Recommended for this task",
+    "recommendAlreadyDone": "Equipment already recommended in this chat. See the plugin market for more.",
+    "recommendHint": "Uncheck to skip equipment you don't need",
+    "installSelected": "Install selected ({{n}})",
+    "installDone": "Install finished: {{ok}} succeeded, {{fail}} failed",
+    "installFailedWhy": "Install failed — view reason",
+    "cancelRemaining": "Cancel remaining",
+    "retryFailed": "Retry failed",
+    "skillSafetyNote": "Skill items install to your local skills folder and pass integrity checks",
+    "cfgTitle": "Equipment recommendations",
+    "cfgSubtitle": "Control where equipment recommendations appear",
+    "cfgEnabled": "Equipment recommendations",
+    "cfgEnabledDesc": "Recommend equipment you may need in chats, the input box and the market",
+    "cfgSessionCard": "In-chat recommendations",
+    "cfgSessionCardDesc": "Show one-click install cards when a task lacks a capability",
+    "cfgInputBar": "Input box suggestions",
+    "cfgInputBarDesc": "Suggest equipment above the input box in new chats",
+    "cfgMarketZone": "Market recommendations",
+    "cfgMarketZoneDesc": "Show recommended combos in the plugin market based on recent tasks",
+    "cfgThirdParty": "Include third-party equipment",
+    "cfgThirdPartyDesc": "Turn off to recommend official equipment only",
+    "cfgLimit": "Recommendations per chat",
+    "cfgLimitDesc": "How many times recommendations may appear in one chat",
+    "cfgReset": "Reset recommendation memory",
+    "cfgResetDesc": "Clear the \"recommended but not installed\" records so they can appear again",
+    "cfgResetDone": "Reset done"
   }
 }

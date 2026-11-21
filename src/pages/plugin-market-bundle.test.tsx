@@ -65,6 +65,16 @@ describe("场景套装一键安装（需求5）", () => {
           return Promise.resolve([]);
         case "skillhub_list":
           return Promise.resolve({ skills: [], total: 0 });
+        // 需求5（合并版）挂载期新增命令：配置默认开、标签库空、无画像。
+        case "equip_config_get":
+          return Promise.resolve({
+            enabled: true, session_card: true, session_limit: 1,
+            input_bar: true, market_zone: true, third_party: true,
+          });
+        case "equipment_tags_list":
+          return Promise.resolve([]);
+        case "task_profile_latest":
+          return Promise.resolve(null);
         default:
           return Promise.resolve({});
       }
@@ -108,11 +118,21 @@ describe("场景套装一键安装（需求5）", () => {
     await waitFor(() => {
       expect(document.body.textContent).toContain("成功 2 项、失败 1 项");
     });
-    expect(invokeCommand).toHaveBeenCalledWith("market_install", { pluginId: "item-a" });
-    expect(invokeCommand).toHaveBeenCalledWith("market_install", { pluginId: "item-b" });
-    expect(invokeCommand).toHaveBeenCalledWith("skillhub_install", { slug: "slug-c" });
+    expect(invokeCommand).toHaveBeenCalledWith("market_install", {
+      pluginId: "item-a",
+      meta: { via: "market-zone" },
+    });
+    expect(invokeCommand).toHaveBeenCalledWith("market_install", {
+      pluginId: "item-b",
+      meta: { via: "market-zone" },
+    });
+    expect(invokeCommand).toHaveBeenCalledWith("skillhub_install", {
+      slug: "slug-c",
+      meta: { via: "market-zone" },
+    });
 
-    // 失败项重试（mock 转成功）→ 汇总更新
+    // 失败项重试（mock 转成功）→ 五修②：重试保历史（先前 ✓ 不清屏）——
+    // 汇总=全量 3 件成功（旧口径会清成「成功 1 项」）。
     (globalThis as Record<string, unknown>).__retryPhase = true;
     const retryBtn = [...document.querySelectorAll("[data-bundle-dialog] button")].find((b) =>
       b.textContent?.includes("重试失败项"),
@@ -122,7 +142,7 @@ describe("场景套装一键安装（需求5）", () => {
       fireEvent.click(retryBtn);
     });
     await waitFor(() => {
-      expect(document.body.textContent).toContain("成功 1 项、失败 0 项");
+      expect(document.body.textContent).toContain("成功 3 项、失败 0 项");
     });
   });
 
@@ -141,6 +161,13 @@ describe("场景套装一键安装（需求5）", () => {
         ]);
       if (cmd === "skillhub_list") return Promise.resolve({ skills: [], total: 0 });
       if (cmd === "skillhub_installed") return Promise.resolve({});
+      if (cmd === "equip_config_get")
+        return Promise.resolve({
+          enabled: true, session_card: true, session_limit: 1,
+          input_bar: true, market_zone: true, third_party: true,
+        });
+      if (cmd === "equipment_tags_list") return Promise.resolve([]);
+      if (cmd === "task_profile_latest") return Promise.resolve(null);
       return Promise.resolve(cmd === "piindex_search" || cmd === "pi_package_catalog" ? [] : {});
     });
     await openBundleDialog();
@@ -162,8 +189,14 @@ describe("场景套装一键安装（需求5）", () => {
     await waitFor(() => {
       expect(document.body.textContent).toContain("成功 1 项、失败 0 项");
     });
-    expect(invokeCommand).toHaveBeenCalledWith("market_install", { pluginId: "item-a" });
-    expect(invokeCommand).not.toHaveBeenCalledWith("market_install", { pluginId: "item-b" });
+    expect(invokeCommand).toHaveBeenCalledWith("market_install", {
+      pluginId: "item-a",
+      meta: { via: "market-zone" },
+    });
+    expect(invokeCommand).not.toHaveBeenCalledWith("market_install", {
+      pluginId: "item-b",
+      meta: { via: "market-zone" },
+    });
   });
 
   /** 需求15-F6/F7：全部已装——已装行灰化（opacity）、「安装选中项」

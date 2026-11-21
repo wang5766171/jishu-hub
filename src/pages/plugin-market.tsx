@@ -28,6 +28,10 @@ import { ArrowDownToLine, Bot, Check, Download, ExternalLink, Info, Loader2, Pac
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { InstallGuideCard, type InstallGuideInfo } from "@/components/market/install-guide-card";
 import { buildGuiAdaptDraft } from "@/components/market/gui-adapt-draft";
+// v0.9.8 需求5（合并版）：装备推荐——共享执行器（五修）+ L1/L0 匹配 + 目录。
+import { fetchEquipConfig, fetchEquipmentTags, fetchLatestProfile, type CatalogEntry } from "@/features/equipment/api";
+import { buildCatalog, matchByProfile } from "@/features/equipment/match";
+import { kindNameOf, useEquipmentRunner } from "@/features/equipment/runner";
 
 interface MarketEntry {
   id: string;
@@ -302,13 +306,57 @@ export function PluginMarketPanel({
   const bundleCuratedRef = useRef<MarketEntry[]>([]);
   // v0.9.8 需求5：场景套装（精选源场景筛选区上方横滑卡）。
   const [bundles, setBundles] = useState<MarketBundle[]>([]);
-  const [bundleOpen, setBundleOpen] = useState<MarketBundle | null>(null);
+  const [bundleOpen, setBundleOpen] = useState<(MarketBundle & { dynamicNote?: string }) | null>(null);
   const [bundleChecked, setBundleChecked] = useState<Set<string>>(new Set());
-  // 串行安装执行器状态：per-item pending/running/ok/fail（单项失败继续下一项）。
-  const [bundleRun, setBundleRun] = useState<{
-    bundleId: string;
-    statuses: Array<{ ref: string; state: "pending" | "running" | "ok" | "fail"; error?: string }>;
-  } | null>(null);
+  // 需求5（合并版）：「为你推荐」动态区（L1 画像命中 ≥2 件时呈现；否则回落
+  // 入门套装横滑）。执行器抽离共享 hook（五修：取消令牌/重试保历史/失败
+  // 原因/安全行/类型名）。
+  const bundleRunner = useEquipmentRunner();
+  const [recommendZone, setRecommendZone] = useState<{ note: string; items: CatalogEntry[] } | null>(null);
+  useEffect(() => {
+    if (source !== "curated") return;
+    let cancelled = false;
+    void (async () => {
+      const config = await fetchEquipConfig();
+      if (cancelled || !config.enabled || !config.market_zone) {
+        setRecommendZone(null);
+        return;
+      }
+      const [curated, tagRows, pluginList, skillInstalled, piSources, profile] = await Promise.all([
+        invokeCommand<Array<{ id: string; kind: string; title: string; description: string; required: boolean; tags?: string[]; stars?: number }>>(
+          "market_list_curated",
+          { scene: null },
+        ).catch(() => []),
+        fetchEquipmentTags(),
+        invokeCommand<{ plugins: Array<{ id: string }> }>("plugin_list").catch(() => null),
+        invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({})),
+        invokeCommand<string[]>("pi_package_installed_sources").catch(() => []),
+        fetchLatestProfile(),
+      ]);
+      if (cancelled) return;
+      const installedRefs = new Set<string>();
+      for (const p of pluginList?.plugins ?? []) installedRefs.add(`curated:${p.id}`);
+      for (const slug of Object.keys(skillInstalled ?? {})) installedRefs.add(`skillhub:${slug}`);
+      for (const src of piSources ?? []) {
+        const at = src.lastIndexOf("@");
+        installedRefs.add(`pi:${at > 0 ? src.slice(0, at) : src}`);
+      }
+      const catalog = buildCatalog(curated ?? [], tagRows);
+      const hits = profile
+        ? matchByProfile(profile, { catalog, installedRefs, officialOnly: !config.third_party }, 6)
+        : [];
+      if (!cancelled) {
+        setRecommendZone(
+          hits.length >= 2
+            ? { note: profile?.keywords.slice(0, 3).join(" / ") ?? "", items: hits.map((h) => h.entry) }
+            : null,
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [source]);
   // v0.9.8 需求8 A3：扩展目录慢载兜底——piindex 无缓存且拉取中超过 8s 给
   // 「网络不佳」提示+重试（预拉取就位后仅首装首开会走到这里）。
   const [extSlow, setExtSlow] = useState(false);
@@ -670,63 +718,76 @@ export function PluginMarketPanel({
     [busyIds, load],
   );
 
-  // ── v0.9.8 需求5：套装条目解析与串行安装执行器 ──────────────────────────
-  /** curated:/skillhub: 引用 → 展示条目（curated: 未命中 = 清单漂移不可用；
-   * skillhub: 下架在安装期以失败态呈现——单项失败不打断整批）。 */
+  // ── v0.9.8 需求5（合并版）：套装/推荐条目解析 ─────────────────────────
+  // 执行器抽离至 useEquipmentRunner（五修：取消令牌/重试保历史/失败原因/
+  // 安全行/类型名）；此处仅条目解析。
+  /** curated:/skillhub:/pi: 引用 → 展示条目（curated: 未命中 = 清单漂移
+   * 不可用；skillhub/pi 下架在安装期以失败态呈现——单项失败不打断整批）。
+   * 五修⑤：类型名精确（kindNameOf 单源）+ skillhub 友好名（标签库 title）。 */
+  const equipTagsRef = useRef<Array<{ ref: string; title: string }>>([]);
+  useEffect(() => {
+    void fetchEquipmentTags().then((rows) => {
+      equipTagsRef.current = rows.map((r) => ({ ref: r.ref, title: r.title }));
+    });
+  }, []);
   const resolveBundleItem = useCallback(
-    (ref: string): { title: string; kindName: string; installed: boolean; unavailable: boolean } => {
+    (ref: string): { title: string; kindName: string; installed: boolean; unavailable: boolean; stars: number } => {
       if (ref.startsWith("curated:")) {
         const id = ref.slice("curated:".length);
         const e = bundleCuratedRef.current.find((c) => c.id === id);
-        if (!e) return { title: ref, kindName: "-", installed: false, unavailable: true };
-        return { title: e.title, kindName: t("market.guideKindPlugin", "插件"), installed: installedIds.has(id), unavailable: false };
+        if (!e) return { title: ref, kindName: "-", installed: false, unavailable: true, stars: 3 };
+        return {
+          title: e.title,
+          kindName: kindNameOf(ref, (e as { kind?: string }).kind, t),
+          installed: installedIds.has(id),
+          unavailable: false,
+          stars: (e as { stars?: number }).stars ?? 3,
+        };
       }
       if (ref.startsWith("skillhub:")) {
         const slug = ref.slice("skillhub:".length);
-        return { title: slug, kindName: t("market.guideKindSkill", "技能"), installed: !!skillInstalled[slug], unavailable: false };
+        // 五修⑤：skillhub 条目友好名——标签库 title（无则回退 slug）。
+        const friendly = equipTagsRef.current.find((r) => r.ref === ref)?.title;
+        return {
+          title: friendly || slug,
+          kindName: kindNameOf(ref, undefined, t),
+          installed: !!skillInstalled[slug],
+          unavailable: false,
+          stars: 3,
+        };
       }
-      return { title: ref, kindName: "-", installed: false, unavailable: true };
+      if (ref.startsWith("pi:")) {
+        const source = ref.slice("pi:".length);
+        return {
+          title: equipTagsRef.current.find((r) => r.ref === ref)?.title || source,
+          kindName: kindNameOf(ref, undefined, t),
+          installed: false,
+          unavailable: false,
+          stars: 3,
+        };
+      }
+      return { title: ref, kindName: "-", installed: false, unavailable: true, stars: 3 };
     },
     [installedIds, skillInstalled, t],
   );
 
-  /** 串行安装（技能装完再装下一项，规避并发写盘竞争）；单项失败继续，末尾
-   * 汇总（失败项可重试）。套装详情弹层即确认界面——单项不再弹确认卡。 */
-  const runBundleInstall = useCallback(
-    async (bundleId: string, refs: string[]) => {
-      const statuses = refs.map((ref) => ({ ref, state: "pending" as const }));
-      setBundleRun({ bundleId, statuses: [...statuses] });
-      for (let i = 0; i < refs.length; i++) {
-        setBundleRun((prev) =>
-          prev && prev.bundleId === bundleId
-            ? { ...prev, statuses: prev.statuses.map((s, j) => (j === i ? { ...s, state: "running" } : s)) }
-            : prev,
-        );
-        try {
-          const ref = refs[i];
-          if (ref.startsWith("curated:")) {
-            await invokeCommand<string>("market_install", { pluginId: ref.slice("curated:".length) });
-          } else if (ref.startsWith("skillhub:")) {
-            await invokeCommand<string>("skillhub_install", { slug: ref.slice("skillhub:".length) });
-          }
-          setBundleRun((prev) =>
-            prev && prev.bundleId === bundleId
-              ? { ...prev, statuses: prev.statuses.map((s, j) => (j === i ? { ...s, state: "ok" } : s)) }
-              : prev,
-          );
-        } catch (e) {
-          setBundleRun((prev) =>
-            prev && prev.bundleId === bundleId
-              ? { ...prev, statuses: prev.statuses.map((s, j) => (j === i ? { ...s, state: "fail", error: String(e) } : s)) }
-              : prev,
-          );
-        }
-      }
+  /** 弹层启动安装（执行器完成后刷新清单——与旧执行器行为一致）。 */
+  const startBundleRun = useCallback(() => {
+    if (!bundleOpen) return;
+    bundleRunner.setOnDone(() => {
       onChanged?.();
-      await load();
-    },
-    [load, onChanged],
-  );
+      void load();
+      bundleRunner.setOnDone(null);
+    });
+    const refs = bundleOpen.items
+      .filter((i) => i.required || bundleChecked.has(i.ref))
+      .filter((i) => !resolveBundleItem(i.ref).installed && !resolveBundleItem(i.ref).unavailable)
+      .map((i) => i.ref);
+    if (refs.length > 0) {
+      // 市场侧安装统一记 via=market-zone（入门套装/动态推荐同面）。
+      bundleRunner.run(refs.map((ref) => ({ ref, meta: { via: "market-zone" } })));
+    }
+  }, [bundleChecked, bundleOpen, bundleRunner, load, onChanged, resolveBundleItem]);
 
   const sceneTabs = useMemo(
     () => [{ id: "all", label: t("market.sceneAll", "全部") }, ...PLUGIN_SCENES.map((s) => ({ id: s.id, label: t(s.nameKey) }))],
@@ -796,12 +857,44 @@ export function PluginMarketPanel({
         </div>
       </div>
 
-      {/* v0.9.8 需求5：场景套装横滑卡（精选源；当前场景筛选命中时高亮联动） */}
-      {source === "curated" && bundles.length > 0 && (
+      {/* v0.9.8 需求5（合并版）：市场推荐区——L1 画像命中时「为你推荐」动态
+          组合卡；否则入门套装横滑（curated bundles 段，首启同款数据源）。 */}
+      {source === "curated" && (recommendZone || bundles.length > 0) && (
         <div className="flex items-stretch gap-2 overflow-x-auto pb-0.5" data-bundle-row="">
           <span className="shrink-0 self-center text-[10px] text-muted-foreground">
-            {t("market.bundleSection", "场景套装")}
+            {t("market.bundleSection", "装备推荐")}
           </span>
+          {recommendZone && (
+            <button
+              type="button"
+              data-bundle-card="dynamic"
+              onClick={() => {
+                setBundleOpen({
+                  id: "bundle-dynamic",
+                  scene: "custom",
+                  title: t("market.recommendForYou", "为你推荐"),
+                  description: recommendZone.note
+                    ? t("market.recommendByTask", { defaultValue: "根据最近任务：{{note}}", note: recommendZone.note })
+                    : t("market.recommendHint", "按最近任务挑选的组合"),
+                  items: recommendZone.items.map((e) => ({ ref: e.ref, required: false })),
+                  dynamicNote: recommendZone.note,
+                });
+                // 自适应推荐卡默认全勾（agent 为任务挑的；微调是减法）。
+                setBundleChecked(new Set(recommendZone.items.map((e) => e.ref)));
+              }}
+              className="shrink-0 rounded-lg border border-primary/60 bg-primary/10 px-3 py-1.5 text-left transition-colors"
+            >
+              <div className="text-xs font-medium text-foreground">
+                {t("market.recommendForYou", "为你推荐")}
+                <span className="ml-1 text-[10px] font-normal text-muted-foreground">
+                  {recommendZone.items.length} {t("market.bundleItems", { defaultValue: "{{n}} 项", n: "" })}
+                </span>
+              </div>
+              <div className="max-w-64 truncate text-[10px] text-muted-foreground">
+                {recommendZone.note || t("market.recommendHint", "按最近任务挑选的组合")}
+              </div>
+            </button>
+          )}
           {bundles.map((b) => (
             <button
               key={b.id}
@@ -809,8 +902,8 @@ export function PluginMarketPanel({
               data-bundle-card={b.scene}
               onClick={() => {
                 setBundleOpen(b);
+                // 入门套装默认勾必备（粗场景兜底；细分由自适应推荐承担）。
                 setBundleChecked(new Set(b.items.filter((i) => i.required).map((i) => i.ref)));
-                setBundleRun(null);
               }}
               className={cn(
                 "shrink-0 rounded-lg border px-3 py-1.5 text-left transition-colors",
@@ -1686,13 +1779,15 @@ export function PluginMarketPanel({
           confirm() 永不落定——点击安装无反应的根因）。 */}
       {confirmDialogNode}
 
-      {/* v0.9.8 需求5：套装详情弹层（勾选微调 + 串行安装 + 汇总/重试） */}
+      {/* v0.9.8 需求5（合并版）：套装/推荐详情弹层（勾选微调 + 共享执行器
+          串行安装 + 汇总/重试/取消——五修全量生效）。 */}
       <Dialog
         open={bundleOpen !== null}
         onOpenChange={(o) => {
-          if (!o && (!bundleRun || bundleRun.statuses.every((s) => s.state !== "running"))) {
+          // 五修①：running 期间禁关 ×（真取消走「取消剩余项」按钮——
+          // 进行中单项任其完成，不留半装态）。
+          if (!o && !bundleRunner.running) {
             setBundleOpen(null);
-            setBundleRun(null);
           }
         }}
       >
@@ -1701,10 +1796,17 @@ export function PluginMarketPanel({
             <DialogTitle>{bundleOpen?.title}</DialogTitle>
           </DialogHeader>
           <p className="-mt-1 text-xs text-muted-foreground">{bundleOpen?.description}</p>
+          {/* 五修④：含技能项时的安全说明行（与单品安装披露口径对齐）。 */}
+          {bundleOpen?.items.some((i) => i.ref.startsWith("skillhub:")) && (
+            <p className="text-[10px] text-muted-foreground/80">
+              {t("equip.skillSafetyNote", "技能项将安装到本地技能目录，已通过完整性校验")}
+            </p>
+          )}
           <div className="flex max-h-72 flex-col gap-1.5 overflow-y-auto">
             {bundleOpen?.items.map((item) => {
               const info = resolveBundleItem(item.ref);
-              const runState = bundleRun?.statuses.find((s) => s.ref === item.ref)?.state;
+              const st = bundleRunner.statuses.find((s) => s.ref === item.ref);
+              const runState = st?.state;
               const checked = bundleChecked.has(item.ref);
               return (
                 <label
@@ -1733,13 +1835,24 @@ export function PluginMarketPanel({
                     }
                   />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-xs text-foreground">{info.title}</span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="truncate text-xs text-foreground">{info.title}</span>
+                      <span className="shrink-0 font-mono text-[9px] text-amber-500">
+                        {"★".repeat(Math.max(1, Math.min(5, info.stars)))}
+                      </span>
+                    </span>
                     <span className="text-[10px] text-muted-foreground">
                       {info.kindName}
                       {item.required ? ` · ${t("market.bundleRequired", "必备")}` : ""}
                       {info.installed ? ` · ${t("market.installed", "已安装")}` : ""}
                       {info.unavailable ? ` · ${t("market.bundleUnavailable", "不可用")}` : ""}
                     </span>
+                    {/* 五修③：失败原因可见（行内展开，前 200 字符）。 */}
+                    {runState === "fail" && st?.error && (
+                      <span className="mt-0.5 block max-h-16 overflow-y-auto break-all font-mono text-[9px] text-destructive/80">
+                        {st.error.slice(0, 200)}
+                      </span>
+                    )}
                   </span>
                   {runState === "running" && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />}
                   {runState === "ok" && <Check className="h-3.5 w-3.5 shrink-0 text-[var(--icon-success)]" />}
@@ -1748,10 +1861,10 @@ export function PluginMarketPanel({
               );
             })}
           </div>
-          {bundleRun && bundleRun.statuses.every((s) => s.state !== "pending" && s.state !== "running") ? (
+          {bundleRunner.statuses.length > 0 && !bundleRunner.running ? (
             (() => {
-              const okCount = bundleRun.statuses.filter((s) => s.state === "ok").length;
-              const failed = bundleRun.statuses.filter((s) => s.state === "fail");
+              const okCount = bundleRunner.statuses.filter((s) => s.state === "ok").length;
+              const failed = bundleRunner.statuses.filter((s) => s.state === "fail");
               return (
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs text-muted-foreground">
@@ -1761,40 +1874,34 @@ export function PluginMarketPanel({
                       fail: failed.length,
                     })}
                   </span>
+                  {/* 五修②：重试保历史（成功 ✓ 保留，仅失败项重置）。 */}
                   {failed.length > 0 && (
-                    <Button
-                      size="sm"
-                      className="h-6 px-2 text-[10px]"
-                      onClick={() => {
-                        if (bundleOpen) void runBundleInstall(bundleOpen.id, failed.map((s) => s.ref));
-                      }}
-                    >
+                    <Button size="sm" className="h-6 px-2 text-[10px]" onClick={() => bundleRunner.retryFailed()}>
                       {t("market.bundleRetryFailed", "重试失败项")}
                     </Button>
                   )}
                 </div>
               );
             })()
+          ) : bundleRunner.running ? (
+            <div className="flex justify-end">
+              {/* 五修①：真取消——剩余项不再发起，进行中单项任其完成。 */}
+              <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => bundleRunner.cancel()}>
+                {t("equip.cancelRemaining", "取消剩余项")}
+              </Button>
+            </div>
           ) : (
             <div className="flex justify-end">
               <Button
                 size="sm"
                 disabled={(() => {
-                  if (bundleRun?.statuses.some((s) => s.state === "running")) return true;
                   if (!bundleOpen) return true;
                   const refs = bundleOpen.items
                     .filter((i) => i.required || bundleChecked.has(i.ref))
                     .filter((i) => !resolveBundleItem(i.ref).installed && !resolveBundleItem(i.ref).unavailable);
                   return refs.length === 0;
                 })()}
-                onClick={() => {
-                  if (!bundleOpen) return;
-                  const refs = bundleOpen.items
-                    .filter((i) => (i.required || bundleChecked.has(i.ref)))
-                    .filter((i) => !resolveBundleItem(i.ref).installed && !resolveBundleItem(i.ref).unavailable)
-                    .map((i) => i.ref);
-                  if (refs.length > 0) void runBundleInstall(bundleOpen.id, refs);
-                }}
+                onClick={startBundleRun}
               >
                 <Download className="h-3.5 w-3.5" />
                 <span className="ml-1">

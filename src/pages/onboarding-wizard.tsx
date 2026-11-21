@@ -658,6 +658,10 @@ function RecommendStep({
 }) {
   const { t } = useTranslation();
   const [plugins, setPlugins] = useState<MarketEntry[]>([]);
+  // 需求5（合并版）：所选场景的入门套装（curated bundles 段——粗场景级
+  // 兜底；细分场景由会话内自适应推荐卡承担）。套装条目与散装清单互斥
+  // （被套装覆盖的条目不再重复出现在散装区）。
+  const [bundles, setBundles] = useState<Array<{ title: string; description: string; entries: Array<{ entry: MarketEntry; required: boolean }> }>>([]);
   const [skills, setSkills] = useState<SkillhubEntry[]>([]);
   const [skillError, setSkillError] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(() => new Set(recommendPicksHolder));
@@ -679,12 +683,47 @@ function RecommendStep({
       ? scenes
       : PLUGIN_SCENES.filter((s) => s.id !== "custom").map((s) => s.id);
     try {
+      // 需求5（合并版）：入门套装优先——所选场景有官方套装的以套装形态
+      // 呈现（必备锁定+可选勾选）；套装覆盖的条目从散装清单剔除。
+      const [fullCurated, bundleList] = await Promise.all([
+        invokeCommand<MarketEntry[]>("market_list_curated", { scene: null }),
+        invokeCommand<Array<{ id: string; scene: string; title: string; description: string; items: Array<{ ref: string; required: boolean }> }>>("market_list_bundles").catch(() => []),
+      ]);
+      const entryById = new Map((fullCurated ?? []).map((e) => [e.id, e]));
+      const myBundles = (bundleList ?? []).filter((b) => scenes.includes(b.scene));
+      const coveredIds = new Set(
+        myBundles.flatMap((b) =>
+          b.items
+            .map((i) => i.ref.replace(/^curated:/, ""))
+            .filter((id) => entryById.has(id)),
+        ),
+      );
+      setBundles(
+        myBundles.map((b) => ({
+          title: b.title,
+          description: b.description,
+          entries: b.items
+            .filter((i) => i.ref.startsWith("curated:") && entryById.has(i.ref.slice("curated:".length)))
+            .map((i) => ({ entry: entryById.get(i.ref.slice("curated:".length))!, required: i.required })),
+        })),
+      );
+      // 入门套装口径：默认勾必备（粗场景兜底；可选项默认不勾——微调权在用户）。
+      applyPicked((prev) => {
+        const next = new Set(prev);
+        for (const b of myBundles) {
+          for (const item of b.items) {
+            if (item.required) next.add(`plugin::${item.ref.replace(/^curated:/, "")}`);
+          }
+        }
+        return next;
+      });
+
       const all: MarketEntry[] = [];
       const seen = new Set<string>();
       for (const scene of scenesToLoad) {
         const entries = await invokeCommand<MarketEntry[]>("market_list_curated", { scene });
         for (const e of entries ?? []) {
-          if (!e.required && !seen.has(e.id)) {
+          if (!e.required && !seen.has(e.id) && !coveredIds.has(e.id)) {
             seen.add(e.id);
             all.push(e);
           }
@@ -771,6 +810,17 @@ function RecommendStep({
 
   const proceed = () => {
     const items: InstallItem[] = [];
+    // 需求5（合并版）：套装条目（必备恒选；可选项走 picked）。
+    const bundleSeen = new Set<string>();
+    for (const b of bundles) {
+      for (const { entry, required } of b.entries) {
+        if (bundleSeen.has(entry.id)) continue;
+        bundleSeen.add(entry.id);
+        if (required || picked.has(`plugin::${entry.id}`)) {
+          items.push({ kind: "plugin", id: entry.id, title: entry.title, description: entry.description });
+        }
+      }
+    }
     for (const p of plugins) {
       if (picked.has(`plugin::${p.id}`)) {
         items.push({ kind: "plugin", id: p.id, title: p.title, description: p.description });
@@ -792,6 +842,36 @@ function RecommendStep({
           {t("onboarding.recommendHint", "勾选要装的（都可随时在插件市场增删）")}
         </div>
       </div>
+
+      {bundles.length > 0 && (
+        <div>
+          <div className="mb-2 text-sm font-medium text-muted-foreground">{t("onboarding.recBundles", "入门套装")}</div>
+          <div className="space-y-3">
+            {bundles.map((b, bi) => (
+              <div key={bi} className="rounded-xl border border-primary/35 bg-primary/5 p-3" data-onboarding-bundle={bi}>
+                <div className="text-sm font-medium text-foreground">{b.title}</div>
+                <div className="mb-2 text-xs text-muted-foreground">{b.description}</div>
+                <div className="space-y-1.5">
+                  {b.entries.map(({ entry, required }) => {
+                    const key = `plugin::${entry.id}`;
+                    return (
+                      <RecommendRow
+                        key={key}
+                        checked={required || picked.has(key)}
+                        onToggle={() => toggle(key)}
+                        title={entry.title}
+                        description={entry.description}
+                        state="idle"
+                        disabled={required}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {plugins.length > 0 && (
         <div>

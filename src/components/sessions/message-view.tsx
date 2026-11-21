@@ -21,6 +21,13 @@ import { InteractionBlockWithRenderers as InteractionBlock } from "./interaction
 import type { InteractionCardItem } from "./interaction-card";
 import { isInteractionToolName, looksLikeInteractionToolInput } from "@/lib/interaction-tools";
 import { PhaseDivider } from "./conversation-content";
+// v0.9.8 需求5（合并版）：装备推荐块——助手文本中的 <JISHU-EQUIP-RECOMMEND>
+// 块渲染为可安装推荐卡（直播/回放同链路：块留在消息文本里）。
+import {
+  EquipRecommendCard,
+  EquipSessionContext,
+  extractEquipSegments,
+} from "./equip-recommend-card";
 // v0.9.2 需求1 P1：行/轮次语义迁移至会话内核统一视图模型（单一权威，
 // 导航轨等轮次消费方读同一份，消除双实现契约对齐负担）。
 import { buildSessionRows, isUserToolResultOnlyMessage, type SessionRowModel } from "@/features/session-kernel/view-model";
@@ -183,6 +190,40 @@ const TextBlock = memo(function TextBlock({
     return (
       <div className="markdown-prose overflow-hidden whitespace-pre-wrap break-words text-sm">
         {highlightText(text, query, matchOffset ?? 0, currentMatch ?? -1)}
+      </div>
+    );
+  }
+
+  // v0.9.8 需求5（合并版）：推荐块分段渲染——文本段走既有 markdown，
+  // 推荐段渲染 EquipRecommendCard（搜索态上方已提前返回，不受影响）。
+  // 限次硬闸补丁：同一条消息内只有**首个**推荐块渲染成卡（卡自身的
+  // count 检查是异步的，同屏并发 mount 会双双通过——同消息多块在此处
+  // 同步拦死；跨消息的块因时间差由卡的 count 检查兜住）。
+  const segments = extractEquipSegments(text);
+  if (segments.some((s) => s.type === "recommend")) {
+    let recommendSeen = false;
+    return (
+      <div className="markdown-prose overflow-hidden">
+        {segments.map((seg, i) => {
+          if (seg.type === "text") {
+            return seg.content.trim() ? (
+              <ReactMarkdown
+                key={i}
+                remarkPlugins={REMARK_PLUGINS}
+                rehypePlugins={REHYPE_PLUGINS}
+                urlTransform={jishuUrlTransform}
+                components={{ pre: MarkdownPreWithRenderers, a: ArtifactLink }}
+              >
+                {seg.content}
+              </ReactMarkdown>
+            ) : null;
+          }
+          if (recommendSeen) {
+            return <div key={i} className="my-1 text-xs text-muted-foreground">·</div>;
+          }
+          recommendSeen = true;
+          return <EquipRecommendCard key={i} payload={seg.payload} />;
+        })}
       </div>
     );
   }
@@ -1059,13 +1100,15 @@ export const MessageView = memo(function MessageView({
     </div>
   );
 
-  if (flat) return fullMessageList;
+  if (flat) return <EquipSessionContext.Provider value={sessionId ?? null}>{fullMessageList}</EquipSessionContext.Provider>;
 
   return (
-    <div className="flex h-full flex-col">
-      <ScrollArea className="flex-1 min-h-0 message-scroll" data-message-stream>
-        {fullMessageList}
-      </ScrollArea>
-    </div>
+    <EquipSessionContext.Provider value={sessionId ?? null}>
+      <div className="flex h-full flex-col">
+        <ScrollArea className="flex-1 min-h-0 message-scroll" data-message-stream>
+          {fullMessageList}
+        </ScrollArea>
+      </div>
+    </EquipSessionContext.Provider>
   );
 });

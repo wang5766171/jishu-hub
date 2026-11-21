@@ -61,7 +61,8 @@
     "pageDescBackups": "配置快照的恢复，以及配置的导入导出",
     "onboardingTitle": "安装引导",
     "onboardingDesc": "安装引导包含智能体引擎安装与运行环境（Node.js / npm / Git）检查，以及插件与技能推荐。",
-    "onboardingReopen": "重新运行安装引导"
+    "onboardingReopen": "重新运行安装引导",
+    "menuRecommend": "推荐"
   },
   "env": {
     "title": "环境检测",
@@ -386,7 +387,10 @@
     "taskUnreadDone": "有完成结果未读",
     "scrollToBottom": "滚动到底部",
     "stagingDrag": "拖动调整顺序",
-    "imageOnlyEditHint": "补充文字重发将不再携带原图片，需要图片请重新上传"
+    "imageOnlyEditHint": "补充文字重发将不再携带原图片，需要图片请重新上传",
+    "equipSuggestByTask": "按最近任务推荐",
+    "equipSuggestByDraft": "按你输入的内容推荐",
+    "equipSuggestFallback": "为你推荐"
   },
   "plugins": {
     "entryStepFace": "业务形态（做什么·在哪用）",
@@ -1837,7 +1841,7 @@
     "guideFirstUse": "首次使用",
     "guideGuiAdapt": "GUI 适配——为这个扩展生成界面插件",
     "guideExtensionDesc": "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件",
-    "bundleSection": "场景套装",
+    "bundleSection": "装备推荐",
     "bundleItems": "{{n}} 项",
     "bundleRequired": "必备",
     "bundleUnavailable": "不可用",
@@ -1909,7 +1913,10 @@
     "searchUnified": "搜索…",
     "clearSearch": "清除搜索",
     "extSlow": "网络不佳，目录加载较慢——可稍后重试",
-    "extLoading": "目录加载中…"
+    "extLoading": "目录加载中…",
+    "recommendForYou": "为你推荐",
+    "recommendByTask": "根据最近任务：{{note}}",
+    "recommendHint": "按最近任务挑选的组合"
   },
   "onboarding": {
     "initTitle": "正在准备你的智能体",
@@ -1956,7 +1963,8 @@
     "rtUpdateNoChange": "{{name}} 的更新命令已执行完成，但检测到的版本仍为 v{{version}}。可能是更新源尚未提供该新版本，或新版本需要重启应用后生效。",
     "rtUpdateFailed": "更新失败",
     "rtMethodInstaller": "在线安装包",
-    "rtOpenDownload": "打开下载页手动更新"
+    "rtOpenDownload": "打开下载页手动更新",
+    "recBundles": "入门套装"
   },
   "taskSteps": {
     "title": "任务步骤",
@@ -1979,5 +1987,33 @@
     "hint": "同步后插件中心立即应用最新状态。",
     "later": "暂不同步",
     "sync": "同步"
+  },
+  "equip": {
+    "recommendTitle": "为这个任务推荐装备",
+    "recommendAlreadyDone": "本次会话已推荐过装备，可到插件市场查看更多",
+    "recommendHint": "取消勾选可跳过不需要的装备",
+    "installSelected": "安装选中项 ({{n}})",
+    "installDone": "安装完成：成功 {{ok}} 项、失败 {{fail}} 项",
+    "installFailedWhy": "安装失败，查看原因",
+    "cancelRemaining": "取消剩余项",
+    "retryFailed": "重试失败项",
+    "skillSafetyNote": "技能项将安装到本地技能目录，已通过完整性校验",
+    "cfgTitle": "装备推荐",
+    "cfgSubtitle": "控制各处的装备推荐如何出现",
+    "cfgEnabled": "装备推荐",
+    "cfgEnabledDesc": "在会话、输入框和市场中为你推荐可能需要的装备",
+    "cfgSessionCard": "会话内推荐",
+    "cfgSessionCardDesc": "任务缺少能力时，在对话中给出可一键安装的推荐卡",
+    "cfgInputBar": "输入框建议",
+    "cfgInputBarDesc": "新对话时在输入框上方给出装备建议",
+    "cfgMarketZone": "市场推荐区",
+    "cfgMarketZoneDesc": "插件市场按最近任务展示推荐组合",
+    "cfgThirdParty": "包含第三方装备",
+    "cfgThirdPartyDesc": "关闭后只推荐官方装备",
+    "cfgLimit": "每个会话的推荐次数",
+    "cfgLimitDesc": "同一会话内最多出现几次推荐",
+    "cfgReset": "重置推荐记忆",
+    "cfgResetDesc": "清除「推荐过未安装」的记录，让推荐重新出现",
+    "cfgResetDone": "已重置"
   }
 }

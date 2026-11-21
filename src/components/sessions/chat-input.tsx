@@ -5,7 +5,10 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { streamStore, useIsSessionStreaming } from "@/hooks/use-stream-store";
 import { Button } from "@/components/ui/button";
 import {
-  Zap, Blocks, Check, ChevronDown, KeyRound, MessagesSquare, Paperclip, Plus, Send, Server, Square, Sparkles, X } from "lucide-react";
+  Zap, Blocks, Check, ChevronDown, Download, KeyRound, Loader2, MessagesSquare, Paperclip, Plus, Send, Server, Square, Sparkles, X } from "lucide-react";
+// v0.9.8 需求5（合并版）：装备建议条数据源（L1/L0/入门分级）。
+import { fetchEquipConfig, fetchEquipmentTags, fetchLatestProfile } from "@/features/equipment/api";
+import { buildCatalog, installCommandFor, matchByProfile, matchByTags, officialFallback } from "@/features/equipment/match";
 import { FilePreview } from "./file-preview";
 import { InteractionComposer } from "./interaction-composer";
 import { MessageStaging, type StagedMessage } from "./message-staging";
@@ -463,62 +466,113 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     };
   }, [stagingSessionKey]);
 
-  // ── v0.9.8 需求6：会话输入框场景联动建议 ──────────────────────────────
-  // 空会话（新对话起始态）时按引导选择的场景给出「建议挂载」提示条。建议源 =
-  // curated entries（scenes[] 含所选场景）∩ 已装载可注入工具（sessionTools
-  // 按 id 匹配 + injectable）——点击即注入 pill、发送即生效；未装件的市场
-  // 发现归市场页（需求4/5 引导卡/套装），此处只荐「装了没挂」。仅默认工作
-  // 空间生效（项目空间无场景属性，本版从简）；× 关闭落 settings 持久化，
-  // 引导重选场景时重置。
+  // ── v0.9.8 需求5（合并版，原需求6 重写）：输入框装备建议条 ──────────────
+  // 新对话起始态：任务信号驱动的装备推荐（静态场景字段三守卫退役——存量
+  // 用户零可见的根因）。数据源分级（设计 §4.2）：
+  //   L1 最近任务画像（task_profiles）→ L0 输入草稿关键词 ∩ 标签库
+  //   → 都空回落官方入门推荐（stars 排序 top3）。
+  // 条目两类：未装件（点击出浮卡：星级+描述+安装钮，meta.via=input-bar）
+  // + 已装未挂件（curated 非 required ∩ sessionTools 可注入 → @[注入]）。
+  // 配置闸：总开关 + input_bar 链路开关；× 关闭落 settings 持久化。
   const [sceneSuggest, setSceneSuggest] = useState<{
-    sceneId: string;
-    items: Array<{ id: string; title: string }>;
+    origin: "profile" | "draft" | "fallback";
+    originNote?: string;
+    installItems: Array<{ ref: string; title: string; stars: number; kind?: string; description?: string }>;
+    mountItems: Array<{ id: string; title: string }>;
   } | null>(null);
+  // 草稿 debounce 快照（L0 用；避免每个按键触发重算）。
+  const [draftSnapshot, setDraftSnapshot] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setDraftSnapshot(message), 400);
+    return () => clearTimeout(timer);
+  }, [message]);
 
   useEffect(() => {
-    if (!showSceneSuggest || !projectPath) {
+    if (!showSceneSuggest) {
       setSceneSuggest(null);
       return;
     }
     let cancelled = false;
-    (async () => {
+    void (async () => {
       try {
-        const [scenes, dismissed, isDefault] = await Promise.all([
-          invokeCommand<string[] | null>("get_onboarding_scenes"),
-          invokeCommand<boolean>("get_scene_suggest_dismissed"),
-          invokeCommand<boolean>("is_default_workspace", { path: projectPath }),
+        const [dismissed, config] = await Promise.all([
+          invokeCommand<boolean>("get_scene_suggest_dismissed").catch(() => false),
+          fetchEquipConfig(),
         ]);
-        if (cancelled || dismissed || !isDefault || !scenes?.length) {
-          if (!cancelled)
-            devLog("capability", `scene-suggest skip: dismissed=${dismissed} default=${isDefault} scenes=${scenes?.length ?? 0}`);
+        if (cancelled || dismissed || !config.enabled || !config.input_bar) {
           setSceneSuggest(null);
           return;
         }
-        const curated = await invokeCommand<
-          Array<{ id: string; title: string; scenes: string[] }>
-        >("market_list_curated", { scene: null });
-        if (cancelled || !Array.isArray(curated)) {
-          setSceneSuggest(null);
-          return;
+        // 目录合并 + 已装态（派生态现场交叉算）。
+        const [curated, tagRows, pluginList, skillInstalled, piSources, profile] = await Promise.all([
+          invokeCommand<Array<{ id: string; kind: string; title: string; description: string; required: boolean; tags?: string[]; stars?: number }>>(
+            "market_list_curated",
+            { scene: null },
+          ).catch(() => []),
+          fetchEquipmentTags(),
+          invokeCommand<{ plugins: Array<{ id: string }> }>("plugin_list").catch(() => null),
+          invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({})),
+          invokeCommand<string[]>("pi_package_installed_sources").catch(() => []),
+          fetchLatestProfile(),
+        ]);
+        if (cancelled) return;
+        const installedRefs = new Set<string>();
+        for (const p of pluginList?.plugins ?? []) installedRefs.add(`curated:${p.id}`);
+        for (const slug of Object.keys(skillInstalled ?? {})) installedRefs.add(`skillhub:${slug}`);
+        for (const src of piSources ?? []) {
+          const at = src.lastIndexOf("@");
+          installedRefs.add(`pi:${at > 0 ? src.slice(0, at) : src}`);
         }
-        // 多场景取第一个（主场景）——并集推荐会失焦，违背「该挂什么」语义。
-        // 注意不按 enabled 过滤：那是「本会话是否已挂载」选中态（未挂=
-        // false），恰是建议对象；装载存在性由 sessionTools 清单本身保证。
-        const sceneId = scenes[0];
-        devLog(
-          "capability",
-          `scene-suggest inputs: tools=${sessionTools.length} curated=${curated.length}`,
-        );
-        const items = curated
-          .filter((c) => Array.isArray(c.scenes) && c.scenes.includes(sceneId))
-          .filter((c) =>
-            sessionTools.some((t) => t.id === c.id && t.injectable !== false),
-          )
-          .slice(0, 3)
+        const catalog = buildCatalog(curated ?? [], tagRows);
+        const input = { catalog, installedRefs, officialOnly: !config.third_party };
+        // 分级：L1 画像 → L0 草稿 → 官方入门回落。
+        let origin: "profile" | "draft" | "fallback" = "fallback";
+        let hits = profile ? matchByProfile(profile, input, 3) : [];
+        if (hits.length >= 2) {
+          origin = "profile";
+        } else {
+          hits = matchByTags(draftSnapshot, input, 3);
+          if (hits.length > 0) origin = "draft";
+        }
+        const installItems =
+          hits.length > 0
+            ? hits.map((h) => ({
+                ref: h.entry.ref,
+                title: h.entry.title,
+                stars: h.entry.stars,
+                kind: h.entry.kind,
+                description: h.entry.description,
+              }))
+            : officialFallback(input, 3).map((e) => ({
+                ref: e.ref,
+                title: e.title,
+                stars: e.stars,
+                kind: e.kind,
+                description: e.description,
+              }));
+        // 已装未挂：curated 非 required ∩ 可注入 sessionTools（点击 @[注入]）。
+        // 不按 enabled 过滤：那是「本会话是否已挂载」选中态，未挂恰是建议对象。
+        const mountItems = (curated ?? [])
+          .filter((c) => !c.required)
+          .filter((c) => sessionTools.some((t) => t.id === c.id && t.injectable !== false))
+          .slice(0, 2)
           .map((c) => ({ id: c.id, title: c.title }));
-        setSceneSuggest(items.length > 0 ? { sceneId, items } : null);
-        if (!cancelled)
-          devLog("capability", `scene-suggest ${items.length > 0 ? "hit" : "empty"}: scene=${sceneId} items=${items.map((i) => i.id).join(",")}`);
+        if (installItems.length === 0 && mountItems.length === 0) {
+          setSceneSuggest(null);
+          return;
+        }
+        if (!cancelled) {
+          setSceneSuggest({
+            origin,
+            originNote: origin === "profile" ? profile?.keywords.slice(0, 3).join(" / ") : undefined,
+            installItems,
+            mountItems,
+          });
+          devLog(
+            "capability",
+            `equip-suggest ${origin}: install=${installItems.map((i) => i.ref).join(",")} mount=${mountItems.map((i) => i.id).join(",")}`,
+          );
+        }
       } catch {
         if (!cancelled) setSceneSuggest(null);
       }
@@ -526,12 +580,34 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     return () => {
       cancelled = true;
     };
-    // sessionTools 后到（会话工具清单异步装载）——装载完成后重算建议交集。
-  }, [showSceneSuggest, projectPath, sessionTools]);
+    // sessionTools 后到（会话工具清单异步装载）+ 草稿快照变化重算 L0。
+  }, [showSceneSuggest, sessionTools, draftSnapshot]);
 
   const handleDismissSceneSuggest = useCallback(() => {
     setSceneSuggest(null);
     invokeCommand("set_scene_suggest_dismissed", { value: true }).catch(() => {});
+  }, []);
+
+  // 未装件浮卡（点击建议条胶囊展开：星级+描述+安装）。
+  const [suggestPopover, setSuggestPopover] = useState<{ ref: string; title: string; stars: number; kind?: string; description?: string } | null>(null);
+  const [suggestInstalling, setSuggestInstalling] = useState(false);
+  const handleSuggestInstall = useCallback(async (item: { ref: string; title: string }) => {
+    setSuggestInstalling(true);
+    try {
+      const target = installCommandFor(item.ref);
+      if (target) {
+        await invokeCommand(target.command, { ...target.args, meta: { via: "input-bar", title: item.title } });
+        setSuggestPopover(null);
+        // 装成即从建议条摘除该件（下次重算自然刷新）。
+        setSceneSuggest((prev) =>
+          prev ? { ...prev, installItems: prev.installItems.filter((i) => i.ref !== item.ref) } : prev,
+        );
+      }
+    } catch {
+      // 失败保留浮卡（用户可重试）；错误展示从简——安装链已有完整反馈面。
+    } finally {
+      setSuggestInstalling(false);
+    }
   }, []);
 
   /** 在光标处插入 `@[显示名] ` token（+ 菜单点击入口）。 */
@@ -1401,19 +1477,34 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
 
   return (
     <div ref={inputRootRef} className={cn("mx-auto w-full max-w-[var(--message-content-max-width)] px-4 pb-4 pt-2", containerClassName)}>
-      {/* v0.9.8 需求6：场景联动建议条（空会话 + 默认空间 + 未关闭时） */}
-      {sceneSuggest && sceneSuggest.items.length > 0 && (
+      {/* v0.9.8 需求5（合并版）：装备建议条（新对话起始态；L1/L0/入门分级，
+          未装件点击浮卡安装 + 已装未挂件 @[注入]）。 */}
+      {sceneSuggest && (sceneSuggest.installItems.length > 0 || sceneSuggest.mountItems.length > 0) && (
         <div
-          data-scene-suggest={sceneSuggest.sceneId}
-          className="mb-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-border/60 bg-muted/25 px-3 py-2 text-xs text-muted-foreground"
+          data-scene-suggest={sceneSuggest.origin}
+          className="relative mb-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-border/60 bg-muted/25 px-3 py-2 text-xs text-muted-foreground"
         >
           <Sparkles className="h-3.5 w-3.5 shrink-0 text-[var(--icon-theme)]" />
           <span>
-            {t("sessions.sceneSuggestTitle", {
-              scene: t(`scenes.${sceneSuggest.sceneId}`, { defaultValue: sceneSuggest.sceneId }),
-            })}
+            {sceneSuggest.origin === "profile"
+              ? t("sessions.equipSuggestByTask", { defaultValue: "按最近任务推荐", note: sceneSuggest.originNote ?? "" })
+              : sceneSuggest.origin === "draft"
+                ? t("sessions.equipSuggestByDraft", "按你输入的内容推荐")
+                : t("sessions.equipSuggestFallback", "为你推荐")}
           </span>
-          {sceneSuggest.items.map((item) => (
+          {sceneSuggest.installItems.map((item) => (
+            <button
+              key={item.ref}
+              type="button"
+              data-equip-suggest={item.ref}
+              onClick={() => setSuggestPopover(suggestPopover?.ref === item.ref ? null : item)}
+              className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-background/70 px-2.5 py-0.5 text-foreground/85 transition-fast hover:border-primary/60 hover:text-foreground"
+            >
+              <span className="font-mono text-[9px] text-amber-500">{"★".repeat(Math.max(1, Math.min(5, item.stars)))}</span>
+              {item.title}
+            </button>
+          ))}
+          {sceneSuggest.mountItems.map((item) => (
             <button
               key={item.id}
               type="button"
@@ -1431,6 +1522,41 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           >
             <X className="h-3.5 w-3.5" />
           </button>
+          {/* 未装件浮卡：星级+描述+安装（不直接装——设计内定：先确认再装）。 */}
+          {suggestPopover && (
+            <div
+              data-equip-popover={suggestPopover.ref}
+              className="absolute left-3 top-full z-30 mt-1 w-72 rounded-lg border border-border/70 bg-popover p-3 text-xs shadow-lg"
+            >
+              <div className="flex items-center gap-1.5">
+                <span className="font-medium text-foreground">{suggestPopover.title}</span>
+                <span className="font-mono text-[10px] text-amber-500">{"★".repeat(Math.max(1, Math.min(5, suggestPopover.stars)))}</span>
+              </div>
+              {suggestPopover.description && (
+                <p className="mt-1 line-clamp-3 text-[11px] leading-snug text-muted-foreground">
+                  {suggestPopover.description}
+                </p>
+              )}
+              <div className="mt-2 flex justify-end gap-1.5">
+                <button
+                  type="button"
+                  className="rounded-md border border-border/60 px-2 py-1 text-[10px] hover:bg-accent/50"
+                  onClick={() => setSuggestPopover(null)}
+                >
+                  {t("common.cancel", "取消")}
+                </button>
+                <button
+                  type="button"
+                  disabled={suggestInstalling}
+                  className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[10px] font-medium text-primary-foreground disabled:opacity-50"
+                  onClick={() => void handleSuggestInstall(suggestPopover)}
+                >
+                  {suggestInstalling ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                  {t("market.install", "安装")}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
       <div

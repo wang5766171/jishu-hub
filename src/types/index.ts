@@ -238,6 +238,7 @@ export type ManageTab =
   | "projects"
   | "plugins"
   | "appearance"
+  | "recommend"
   | "agent-models"
   | "agent-behavior"
   | "agent-templates"
