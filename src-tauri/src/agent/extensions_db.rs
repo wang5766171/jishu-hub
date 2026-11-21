@@ -608,7 +608,8 @@ pub fn sync_all() {
             .ok()
             .map(|d| PathBuf::from(d).join("npm").join("node_modules"));
         sync_registry_face(&builtin, &registered, pool_root.as_deref())?;
-        apply_builtin_verdict_presets()?;
+        // 需求17/R3 修正：builtin preset 仅在 M-1 迁移时写入一次（首次启动），
+        // 后续 sync 不覆盖——用户「重新判定」→ pending → 适配按钮出现。
         rebuild_adaptations(&crate::agent::plugin::adapt_declarations())?;
         // 预置适配关系（builtin.json preset_adapters）在 rebuild 之后插入
         // ——rebuild 全量 DELETE+从 plugin.toml [[adapt]] 重算会抹掉 preset 行。
@@ -632,7 +633,7 @@ pub fn apply_builtin_verdict_presets() -> Result<(), String> {
             // 给用户看当前判定依据+触发 agent 重评，非永久覆盖 hub 预置。
             conn.execute(
                 "UPDATE extensions SET gui_verdict = ?2, verdict_note = ?3, updated_at = ?4
-                 WHERE pkg_key = ?1",
+                 WHERE pkg_key = ?1 AND gui_verdict = 'pending'",
                 rusqlite::params![pkg_key, verdict, note, now_ms()],
             )?;
             Ok(())
