@@ -248,6 +248,10 @@ pub fn run() {
             // 需求4 D4-8：登记簿启动对账（注册面∪[[adapt]] 关系∪内置判定
             // 预置∪级联——索引层，失败不阻断启动）。
             agent::extensions_db::sync_all();
+            // 需求17：pi defaultTools 幂等初始化（全量核心工具）——spawn
+            // 不再传 --tools，核心工具由 pi settings defaultTools 管，
+            // 扩展工具由 packages 数组管（对齐 pi 原生机制）。
+            agent::jishu_self::pi_tools_config::ensure_default_tools_config();
             let _ = hub::migrate_v0_5_0();
             // Phase 1: 任务执行器扩展（v0.9.7 需求2 取代 conductor——去阶段化）
             task_plan::ensure_task_runner_extension();

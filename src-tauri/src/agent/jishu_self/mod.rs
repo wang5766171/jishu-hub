@@ -7,6 +7,7 @@ pub(crate) mod pi_models_config;
 pub(crate) mod pi_registry;
 pub(crate) mod pi_runtime;
 pub(crate) mod pi_session;
+pub(crate) mod pi_tools_config;
 mod probe;
 pub(crate) mod session_title;
 
@@ -1743,13 +1744,7 @@ impl TransportAdapter for JishuSelfAgent {
         // --tools 白名单（内置全集 read/bash/edit/write/grep/find/ls 去掉
         // bash/edit/write）。工具名与语义是 Pi 私有知识，属于 adapter 职责；
         // 对此后新 spawn 的进程生效（Pi 每条消息一个进程）。
-        // v0.9.2 需求7：扩展工具按启用插件聚合（热插拔）。
         let pi_extension_tools = crate::agent::plugin::enabled_pi_extension_tools();
-        // v0.9.8 需求10-③ P1：plugin-invoke 物化的 [[agent-tool]] 并入默认/
-        // 已配置两分支的白名单（只读档不并入——工具语义是触发插件动作，
-        // 属变更面，只读会话不放行）。ensure_default_tools_arg 的 ext 参数
-        // 同时喂 unset/已配置两路径，一处接线全覆盖。
-        let whitelist_with_agent_tools = merge_agent_tool_names(pi_extension_tools.clone());
         if let Some("readonly") = crate::hub::load_agent_tool_mode("jishu-self").as_deref() {
             // 只读模式保留交互与任务提交类扩展工具（问答纯交互；
             // lock/commit 为工作流操作，任务流须可用）。
@@ -1765,17 +1760,22 @@ impl TransportAdapter for JishuSelfAgent {
             //（MCP 工具良菱不齐，变更类工具不应进只读会话）。
             args.push("--no-mcp".to_string());
         }
-        // full-approve 与 full 工具集相同，差异只在 toolApproval 审批
-        // 开关（set_agent_tool_mode 已联动写入 Pi settings）。
-        // v0.9.1 需求13：初始工具集默认=全部工具集——settings 未配置
-        // defaultTools 时 spawn 显式传全集（Windows 含 powershell），消除
-        // pi 回退仅四件的歧义（存量未配置用户无需改配置即生效）；已配置
-        // 任何清单按配置生效。
-        ensure_default_tools_arg(
-            &mut args,
-            &config::load_jishu_config(),
-            &whitelist_with_agent_tools,
-        );
+        // 需求17（2026-11-21 用户裁决）：工具白名单根因修复——spawn 时不再
+        // 传 --tools。此前每次 spawn 都传硬白名单，导致 hub 不知道的工具来
+        // 源（npm 扩展等）被屏蔽（历史四次跌倒：内置扩展→runner→agent-tools
+        // →npm 扩展，每次都要手工补白名单）。
+        //
+        // 对齐 pi 原生管理方式：
+        // - 核心工具：pi settings.json `defaultTools`（启动时由
+        //   pi_tools_config::ensure_default_tools_config 幂等写入全量清单）
+        // - 扩展工具：pi settings.json `packages`（装了就加载，停了就不加载）
+        // - MCP 工具：pi 原生 direct 暴露机制（不传 --tools 时自然可用）
+        // - agent-tools：pi 原生扩展加载（物化到 extensions/ 后 pi 自动注册）
+        //
+        // 只读模式仍传限制性 --tools（上方分支处理）。
+        //
+        // 注意：ensure_default_tools_config 在 lib.rs setup 中调用（迁移之后），
+        // 首次升级时 defaultTools 即已写入，后续 spawn 不依赖命令行白名单。
         // Resume an existing Pi session when a real (non-transient) session id
         // is provided. Without this, Pi creates a fresh session on every process
         // spawn, losing all conversation history (the root cause of "agent

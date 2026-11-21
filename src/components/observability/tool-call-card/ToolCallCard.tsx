@@ -8,6 +8,7 @@ import { FileReadBody } from "./bodies/FileEditBody";
 import { ShellExecBody } from "./bodies/ShellExecBody";
 import { SearchBody } from "./bodies/SearchBody";
 import { OtherBody } from "./bodies/OtherBody";
+import { matchToolResultRenderer } from "@/features/session-kernel/plugins/mounts/use-block-renderers";
 import { useFileViewer } from "@/components/file-viewer";
 import { ChevronDown, ChevronRight, FileSearch } from "lucide-react";
 import { buildDiffPreview, getToolPath } from "@/lib/text-preview";
@@ -92,7 +93,7 @@ function ToolCallCardBodyResolved({ call }: { call: ToolCall }) {
     case "search":
       return <SearchBody input={call.input} output={call.output} />;
     default:
-      return <OtherBody input={call.input} output={call.output} details={call.details} kind={call.kind} />;
+      return <OtherBody input={call.input} output={call.output} details={call.details} kind={call.kind} toolName={call.toolName} />;
   }
 }
 
@@ -107,7 +108,12 @@ const statusBorder: Record<ToolCall["status"], string> = {
 export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCall }) {
   // v0.9.5 需求4（用户裁决）：默认恒收起——流式/完成/错误态一律收起，
   // 仅用户点击展开（要观察长时执行或错误详情时主动点开）。
-  const [expanded, setExpanded] = useState(false);
+  // 需求4 Q1 修正（2026-11-21）：被插件认领的 tool-output 卡默认展开——
+  // 用户装了 GUI 适配件就是为了看到效果，折叠等于白装。
+  const hasClaim = call.kind === "other" || call.kind === "web"
+    ? Boolean(matchToolResultRenderer(call.toolName))
+    : false;
+  const [expanded, setExpanded] = useState(hasClaim);
   const { openViewer } = useFileViewer();
   const { t } = useTranslation();
   const diff = call.kind === "file_edit" || call.kind === "file_write" ? buildDiffPreview(call.input) : null;

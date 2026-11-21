@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useSyncExternalStore } from "react";
 import i18n from "@/i18n";
 import type { ToolKind } from "../types";
 import { kindLabel } from "../kind-icon";
@@ -6,8 +6,15 @@ import { kindLabel } from "../kind-icon";
 // Markdown 自动渲染（零配置层一）；插件认领（8b tool-result 咨询）优先。
 import { SniffedOutput } from "../sniffed-output";
 import { matchToolResultRenderer } from "@/features/session-kernel/plugins/mounts/use-block-renderers";
+// 需求4 Q1 修复（2026-11-21）：OtherBody 被 memo 包裹，首次渲染时组合件可能
+// 尚未装载（异步 reloadComposed）→ 认领为空 → 后续装载完成但 memo 阻止
+// 重渲染 → 认领永远不生效。订阅 composedVersion：装载完成版本号自增 →
+// 本组件重渲染 → matchToolResultRenderer 重新匹配 → 认领组件生效。
+import { subscribeComposed, composedVersion } from "@/features/session-kernel/capabilities/composition/loader";
 
 export const OtherBody = memo(function OtherBody({ input, output, details, kind, toolName }: { input: Record<string, unknown>; output?: string; details?: Record<string, unknown>; kind: ToolKind; toolName?: string }) {
+  // 组合件版本订阅：装载/变更时本组件重渲染（认领链跟最新状态走）。
+  useSyncExternalStore(subscribeComposed, composedVersion, () => 0);
   // 8b：插件认领（source.tool_name/tool_pattern 匹配该工具 → 插件组件替换）。
   const claimed = toolName ? matchToolResultRenderer(toolName) : null;
 
