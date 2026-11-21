@@ -22,7 +22,7 @@ import {
   saveProfile,
   type CatalogEntry,
 } from "@/features/equipment/api";
-import { buildCatalog, installCommandFor } from "@/features/equipment/match";
+import { buildCatalog } from "@/features/equipment/match";
 import { kindNameOf, useEquipmentRunner } from "@/features/equipment/runner";
 
 /** 会话 id 供给（MessageView 提供127；TextBlock 深层消费免逐层透传）。 */

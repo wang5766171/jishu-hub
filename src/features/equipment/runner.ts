@@ -9,6 +9,7 @@
 // 执行语义不变：串行、单项失败继续、已装跳过（调用方过滤）。
 
 import { useCallback, useRef, useState } from "react";
+import type { TFunction } from "i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
 import type { InstallMeta } from "./api";
 import { installCommandFor } from "./match";
@@ -124,9 +125,10 @@ export function useEquipmentRunner(): RunnerResult {
 }
 
 /** ⑤：类型名精确映射（curated kind → 用户语言；skillhub/pi 前缀判定）。
- * i18n 键复用市场 guideKind 既有四键（plugin/skill/extension/composed）。 */
-export function kindNameOf(ref: string, kind?: string, t?: (k: string, d?: string) => string): string {
-  const tr = (key: string, d: string) => (t ? t(key, d) : d);
+ * i18n 键复用市场 guideKind 既有四键（plugin/skill/extension/composed）。
+ * t 参数用 i18next TFunction 类型（构建脚本严格 i18n 类型下裸函数签名不兼容）。 */
+export function kindNameOf(ref: string, kind?: string, t?: TFunction): string {
+  const tr = (key: string, d: string) => (t ? t(key, { defaultValue: d }) : d);
   if (ref.startsWith("skillhub:")) return tr("market.guideKindSkill", "技能");
   if (ref.startsWith("pi:")) return tr("market.guideKindExtension", "扩展");
   switch (kind) {
