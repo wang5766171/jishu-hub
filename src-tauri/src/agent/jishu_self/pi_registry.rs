@@ -1,30 +1,29 @@
-//! v0.9.8 需求15 方案 A：pi 扩展注册与冲突停用台账（hub 侧冲突治理）。
+//! v0.9.8 需求15 方案 A：pi 扩展注册与冲突停用（hub 侧冲突治理）。
+//! v0.9.8 需求4 D4-8：停用台账迁入扩展统一登记簿 extensions.db
+//! （原 pi-extension-overrides.json 由需求16 M-1 一次性迁入并归档）。
 //!
-//! 产品语义（用户裁决 2026-11-20）：
+//! 产品语义（用户裁决 2026-11-20/21）：
 //! - 拥抱 pi 原生 fail-loud（工具名冲突拒绝启动），hub 负责让用户永远
-//!   进不了崩态：安装探针检出冲突 → 说明「与已装能力重叠」→ 用户选择
+//!   进不了崩态：安装预检检出冲突 → 说明「与已装能力重叠」→ 用户选择
 //!   继续安装（停用对手）/取消（不装）。
 //! - 冲突治理**对所有扩展一致**（内置 vs 用户装、用户 A vs 用户 B 同规）；
 //!   差别只在处置面：内置只能停用（不可删除），自建可停用也可删除。
-//! - 「停用」= 仅从 pi settings.json `packages` 移除注册（文件保留）——
-//!   ensure_pi_extensions_installed 只按文件版本判定（不看注册），天然
-//!   不会把停用的内置装回来；「恢复」= 注册加回（零网络）。
+//! - 「停用」= 仅从 pi settings.json `packages` 移除注册（文件保留）+
+//!   登记簿 state=disabled + **级联停用依赖它的适配件**（2026-11-21
+//!   用户裁决：与其使用时高度不确定，不如联动停用）；「恢复」= 注册
+//!   加回（零网络）+ 级联精确反启。
+//!
+//! 本文件保留 pi settings.json 注册面的读写（pi 域唯一写入方）；台账/
+//! 级联/查询全部走 [`crate::agent::extensions_db`]。
 
 use std::path::PathBuf;
 
-/// 内置 pi 扩展展示名（市场卡/确认卡文案用；与钉版清单一一对应）。
-pub(crate) fn builtin_pi_display_name(pkg_dir_name: &str) -> Option<&'static str> {
-    Some(match pkg_dir_name {
-        "pi-subagents" => "子代理",
-        "@juicesharp/rpiv-ask-user-question" => "选项式提问",
-        "@juicesharp/rpiv-todo" => "待办清单",
-        "pi-web-access" => "联网搜索",
-        "pi-lens" => "写后诊断",
-        _ => return None,
-    })
+/// 内置 pi 扩展展示名（数据驱动：builtin.json；包装供旧调用点）。
+pub(crate) fn builtin_pi_display_name(pkg_dir_name: &str) -> Option<String> {
+    super::builtin_pi_display_name_of(pkg_dir_name)
 }
 
-/// 停用台账条目：被停用者是谁、被谁替代（替代者卸载时自动恢复）。
+/// 停用台账条目（需求15 命令响应形状——前端契约不变）。
 #[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq)]
 pub(crate) struct PiOverrideEntry {
     /// 被停用者的完整注册串（settings.json packages 条目原样，如
@@ -38,10 +37,6 @@ pub(crate) struct PiOverrideEntry {
     pub replaced_by: String,
 }
 
-fn overrides_path() -> Option<PathBuf> {
-    Some(crate::agent::manifest::hub_home().join("pi-extension-overrides.json"))
-}
-
 fn pi_settings_path() -> Option<PathBuf> {
     // 测试隔离：JISHU_PI_SETTINGS 指向临时文件（agent_dir 无既有重定向，
     // 直接写会碰开发机真实 pi 配置）。
@@ -53,23 +48,6 @@ fn pi_settings_path() -> Option<PathBuf> {
     super::paths::agent_dir()
         .ok()
         .map(|d| d.join("settings.json"))
-}
-
-/// 读停用台账（文件缺失/损坏 → 空表）。
-pub(crate) fn load_overrides() -> Vec<PiOverrideEntry> {
-    let Some(path) = overrides_path() else {
-        return Vec::new();
-    };
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|c| serde_json::from_str(&c).ok())
-        .unwrap_or_default()
-}
-
-fn save_overrides(entries: &[PiOverrideEntry]) -> Result<(), String> {
-    let path = overrides_path().ok_or("cannot resolve hub home")?;
-    let body = serde_json::to_string_pretty(entries).map_err(|e| e.to_string())?;
-    std::fs::write(path, body).map_err(|e| e.to_string())
 }
 
 /// 当前 pi settings.json 的 packages 注册表（读失败 → 空表）。
@@ -136,42 +114,57 @@ pub(crate) fn registered_source_of(pkg_dir: &str) -> Option<String> {
         .find(|s| package_dir_of(s).as_deref() == Some(pkg_dir))
 }
 
-/// 停用一个扩展（移注册不删文件）并记台账。幂等（已停用则仅补台账）。
+/// 读停用台账（extensions.db 视图；库缺失/损坏 → 空表）。
+pub(crate) fn load_overrides() -> Vec<PiOverrideEntry> {
+    let _ = crate::agent::extensions_db::ensure_schema();
+    crate::agent::extensions_db::disabled_entries()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| PiOverrideEntry {
+            source: e.source,
+            builtin: e.builtin,
+            display: e.display,
+            replaced_by: e.replaced_by,
+        })
+        .collect()
+}
+
+/// 停用一个扩展：移注册（pi 域）+ 登记簿 disabled + 级联停用适配件。
+/// 幂等（已停用则仅补台账面）。返回被级联停用的插件（提示用）。
 pub(crate) fn disable_extension(
     source: &str,
     display: &str,
     replaced_by: &str,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let pkg_dir = package_dir_of(source).ok_or("仅支持 npm: 源停用")?;
-    let builtin = builtin_pi_display_name(&pkg_dir).is_some();
     mutate_packages(
         |s| package_dir_of(s).as_deref() != Some(pkg_dir.as_str()),
         Vec::new(),
     )?;
-    let mut entries = load_overrides();
-    entries.retain(|e| package_dir_of(&e.source).as_deref() != Some(pkg_dir.as_str()));
-    entries.push(PiOverrideEntry {
-        source: source.to_string(),
-        builtin,
-        display: display.to_string(),
-        replaced_by: replaced_by.to_string(),
-    });
-    save_overrides(&entries)
+    let _ = crate::agent::extensions_db::ensure_schema();
+    crate::agent::extensions_db::set_extension_disabled(source, display, replaced_by)
 }
 
-/// 恢复一个被停用的扩展（注册加回 + 清台账条目）。文件仍在 → 零网络。
-pub(crate) fn enable_extension(pkg_dir: &str) -> Result<Option<PiOverrideEntry>, String> {
-    let Some(entry) = load_overrides()
-        .into_iter()
-        .find(|e| package_dir_of(&e.source).as_deref() == Some(pkg_dir))
-    else {
-        return Ok(None);
-    };
-    mutate_packages(|_| true, vec![entry.source.clone()])?;
-    let mut entries = load_overrides();
-    entries.retain(|e| e != &entry);
-    save_overrides(&entries)?;
-    Ok(Some(entry))
+/// 恢复一个被停用的扩展：注册加回（pi 域）+ 登记簿 active + 级联精确
+/// 反启。文件仍在 → 零网络。返回 (台账条目, 被级联恢复的插件)。
+pub(crate) fn enable_extension(
+    pkg_dir: &str,
+) -> Result<(Option<PiOverrideEntry>, Vec<String>), String> {
+    let _ = crate::agent::extensions_db::ensure_schema();
+    let pkg_key = format!("npm:{pkg_dir}");
+    let (entry, restored) = crate::agent::extensions_db::set_extension_active(&pkg_key)?;
+    if let Some(e) = &entry {
+        mutate_packages(|_| true, vec![e.source.clone()])?;
+    }
+    Ok((
+        entry.map(|e| PiOverrideEntry {
+            source: e.source,
+            builtin: e.builtin,
+            display: e.display,
+            replaced_by: e.replaced_by,
+        }),
+        restored,
+    ))
 }
 
 /// 替代者卸载钩子：恢复所有因它停用的扩展，返回恢复清单（含展示名，
@@ -184,23 +177,18 @@ pub(crate) fn restore_replaced_by(replacer_source: &str) -> Vec<PiOverrideEntry>
         }
         let pkg_dir = package_dir_of(&entry.source).unwrap_or_else(|| entry.source.clone());
         match enable_extension(&pkg_dir) {
-            Ok(Some(e)) => restored.push(e),
-            Ok(None) => {}
+            Ok((Some(e), _)) => restored.push(e),
+            Ok((None, _)) => {}
             Err(err) => log::warn!("[pi-registry] 恢复 {} 失败: {err}", entry.source),
         }
     }
     restored
 }
 
-/// 卸载自身钩子：被停用者本身被删除时，清掉它的台账条目。
+/// 卸载自身钩子：被停用者本身被删除时，清掉它的台账条目（含级联行）。
 pub(crate) fn forget_disabled(pkg_dir: &str) -> Result<(), String> {
-    let mut entries = load_overrides();
-    let before = entries.len();
-    entries.retain(|e| package_dir_of(&e.source).as_deref() != Some(pkg_dir));
-    if entries.len() != before {
-        save_overrides(&entries)?;
-    }
-    Ok(())
+    crate::agent::extensions_db::ensure_schema()?;
+    crate::agent::extensions_db::forget_extension(&format!("npm:{pkg_dir}"))
 }
 
 #[cfg(test)]
@@ -229,7 +217,7 @@ mod tests {
         assert_eq!(package_dir_of("git:github.com/a/b"), None);
     }
 
-    /// 停用/恢复闭环（临时 hub home + 临时 pi settings 双隔离）：
+    /// 停用/恢复闭环（hub home + pi settings + extensions.db 三重隔离）：
     /// disable 移注册+记台账 → enable 注册回来+清台账 →
     /// restore_replaced_by 按替代者恢复 → forget 清条目。
     #[test]
@@ -239,6 +227,7 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        std::env::set_var("JISHU_EXTENSIONS_DB", tmp.path().join("ext.db"));
         let pi_settings = tmp.path().join("pi-settings.json");
         std::fs::write(
             &pi_settings,
@@ -286,16 +275,20 @@ mod tests {
 
         std::env::remove_var("JISHU_HUB_HOME");
         std::env::remove_var("JISHU_PI_SETTINGS");
+        std::env::remove_var("JISHU_EXTENSIONS_DB");
     }
 
-    /// 包目录名/展示名映射。
+    /// 包目录名/展示名映射（数据驱动 builtin.json）。
     #[test]
     fn override_mappings() {
-        assert_eq!(builtin_pi_display_name("pi-web-access"), Some("联网搜索"));
+        assert_eq!(
+            builtin_pi_display_name("pi-web-access"),
+            Some("联网搜索".to_string())
+        );
         assert_eq!(builtin_pi_display_name("no-such"), None);
         assert_eq!(
             builtin_pi_display_name("@juicesharp/rpiv-todo"),
-            Some("待办清单")
+            Some("待办清单".to_string())
         );
     }
 }

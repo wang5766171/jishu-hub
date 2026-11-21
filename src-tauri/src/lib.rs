@@ -20,6 +20,9 @@ mod hub;
 mod image;
 mod llm;
 mod memory_store;
+// 需求16（v0.9.8）：版本数据迁移框架（每版本 append-only 迁移注册表；
+// GUI setup 与 CLI main 双入口，数据消费者之前执行）。
+mod migrations;
 mod orchestrator;
 // v0.9.6 需求6 F3：用户消息发送受理即落盘（pending_messages.db）。
 pub mod os_adapter;
@@ -236,6 +239,15 @@ pub fn run() {
         )
         .setup(|app| {
             let __setup_t0 = std::time::Instant::now();
+            // 需求16：版本数据迁移（所有数据消费者之前；critical 失败发
+            // migration-failed 事件由前端阻断卡接管，不在此 abort——
+            // 用户要看到友好界面+重试出路，不是闪退）。
+            if let Err(e) = migrations::run_pending(Some(app.handle().clone())) {
+                log::error!("[startup] 数据迁移未完成: {e}");
+            }
+            // 需求4 D4-8：登记簿启动对账（注册面∪[[adapt]] 关系∪内置判定
+            // 预置∪级联——索引层，失败不阻断启动）。
+            agent::extensions_db::sync_all();
             let _ = hub::migrate_v0_5_0();
             // Phase 1: 任务执行器扩展（v0.9.7 需求2 取代 conductor——去阶段化）
             task_plan::ensure_task_runner_extension();
@@ -622,6 +634,13 @@ pub fn run() {
             commands::agents::pi_package_install_confirmed,
             commands::agents::pi_package_uninstall_online,
             commands::agents::pi_extension_overrides_list,
+            // 需求4 D4-8/D4-8b：扩展统一登记簿（界面/基于行、判定落档）。
+            commands::agents::extension_registry_list,
+            commands::agents::plugin_extension_deps,
+            commands::agents::extension_gui_verdict_set,
+            // 需求16：迁移状态查询与重试。
+            commands::agents::migration_status,
+            commands::agents::migration_retry,
             commands::agents::skillhub_list,
             commands::agents::skillhub_detail,
             commands::agents::skillhub_installed,

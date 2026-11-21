@@ -14,6 +14,12 @@ pub fn run(cli: Cli) -> ExitCode {
     }
 
     let ctx = ExecutionContext::new(cli.json);
+    // 需求16：CLI 入口同样先跑数据迁移（GUI/CLI 双入口，文件锁互斥；
+    // critical 失败 fail-loud 退出——不在未迁移数据上执行命令）。
+    if let Err(e) = crate::migrations::run_pending(None) {
+        eprintln!("error: 数据升级未完成，命令已阻止：{e}");
+        return ExitCode::FAILURE;
+    }
     let result = dispatch(cli.command, &ctx);
 
     match result {
@@ -49,6 +55,7 @@ fn dispatch(cmd: Commands, ctx: &ExecutionContext) -> Result<(), CliError> {
         } => commands::orchestrator::evolve::run(plan.as_deref(), &project, dry_run, ctx),
         Commands::Acp { action } => commands::acp::run(action, ctx),
         Commands::Plugins { action } => commands::plugins::run(action, ctx),
+        Commands::Extensions { action } => commands::extensions::run(action, ctx),
         Commands::TaskArtifact { action } => {
             commands::task_artifact::run_task_artifact(action, ctx)
         }

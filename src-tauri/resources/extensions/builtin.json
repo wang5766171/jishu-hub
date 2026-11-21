@@ -1,0 +1,42 @@
+[
+  {
+    "source": "npm:pi-subagents@0.72.0",
+    "dir": "pi-subagents",
+    "display": "子代理",
+    "note": "子代理委派（subagent/bg_wait 工具；替换自研 jishu-subagent.ts）",
+    "gui_verdict": "noneeded",
+    "verdict_note": "模型并行委派的底层能力（subagent/bg_wait 工具）——如需界面呈现可重新判定"
+  },
+  {
+    "source": "npm:@juicesharp/rpiv-ask-user-question@2.11.0",
+    "dir": "@juicesharp/rpiv-ask-user-question",
+    "display": "选项式提问",
+    "note": "选项式提问（ask_user_question 工具；替换自研 request-user-input.ts）",
+    "gui_verdict": "noneeded",
+    "verdict_note": "模型向用户发选项确认的通道（ask_user_question 工具）——如需界面呈现可重新判定"
+  },
+  {
+    "source": "npm:@juicesharp/rpiv-todo@2.11.0",
+    "dir": "@juicesharp/rpiv-todo",
+    "display": "待办清单",
+    "note": "待办清单（todo 工具）",
+    "gui_verdict": "noneeded",
+    "verdict_note": "模型自维护任务进度的工具（todo）——如需界面呈现可重新判定"
+  },
+  {
+    "source": "npm:pi-lens@4.3.0",
+    "dir": "pi-lens",
+    "display": "写后诊断",
+    "note": "写后诊断（lens_diagnostics/ast_grep_*/lsp_navigation 等 13 工具）",
+    "gui_verdict": "noneeded",
+    "verdict_note": "代码诊断/符号定位工具（模型消费）——如需界面呈现可重新判定"
+  },
+  {
+    "source": "npm:pi-web-access@0.32.0",
+    "dir": "pi-web-access",
+    "display": "联网搜索",
+    "note": "Web 搜索/抓取（web_enable 装载器 + web_search/fetch_content 等 4 件，亦补齐 pi-subagents 内置 researcher 角色的工具依赖——T7 诊断后用户裁决默认安装，2026-09-27）",
+    "gui_verdict": "noneeded",
+    "verdict_note": "模型的联网搜索/抓取工具（web_search/fetch_content）——如需界面呈现可重新判定"
+  }
+]

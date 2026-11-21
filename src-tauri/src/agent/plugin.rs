@@ -30,12 +30,12 @@ pub use agent_tools::{
 };
 #[allow(unused_imports)]
 pub use composed::{
-    clear_pending_confirm_marker, composed_manifest_value, composed_pipeline_by_id,
-    composed_plugins_dir, composed_session_manifests, composed_session_plugin_specs,
-    delete_composed_plugin, ensure_builtin_composed_manifests, is_builtin_composed,
-    materialize_builtin_composed, pending_confirm_extras, pending_confirm_list,
-    resolve_pipeline_stages, save_composed_manifest, validate_composed_guards, PendingAssetInfo,
-    PendingHybridPlugin,
+    adapt_declarations, clear_pending_confirm_marker, composed_manifest_value,
+    composed_pipeline_by_id, composed_plugins_dir, composed_session_manifests,
+    composed_session_plugin_specs, delete_composed_plugin, ensure_builtin_composed_manifests,
+    is_builtin_composed, materialize_builtin_composed, pending_confirm_extras,
+    pending_confirm_list, resolve_pipeline_stages, save_composed_manifest,
+    validate_composed_guards, PendingAssetInfo, PendingHybridPlugin,
 };
 
 use std::collections::{HashMap, HashSet};

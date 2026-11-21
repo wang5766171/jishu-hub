@@ -98,6 +98,9 @@ fn rebuild_registry(app: &tauri::AppHandle, state: &tauri::State<'_, Mutex<AppSt
     // v0.9.5 需求5：npm 扩展包注册（settings.json packages）随插件启停
     // 对齐——禁用即摘条目（扩展不装载，含事件钩子），启用即补钉定源。
     crate::agent::plugin::sync_pi_packages_with_plugins();
+    // 需求4 D4-8：扩展统一登记簿随插件/启停/装卸变化对账（注册面∪
+    // [[adapt]] 关系表∪级联停用——索引层，失败不阻断装载）。
+    crate::agent::extensions_db::sync_all();
 }
 
 /// 启停插件并热生效（core 插件拒绝；写 plugins.json 持久化；agent 与 tool
@@ -1512,9 +1515,9 @@ pub(crate) struct BuiltinPin {
 
 #[tauri::command]
 pub(crate) fn pi_package_builtin_pins() -> Result<Vec<BuiltinPin>, String> {
-    Ok(agent::jishu_self::PI_EXTENSION_PACKAGES
+    Ok(agent::jishu_self::builtin_extensions()
         .iter()
-        .map(|(source, _dir)| {
+        .map(|(source, _dir, _display)| {
             // 第三轮评审修复：换 parse_npm_source（rsplit 对 scoped 无版本
             // 源会解出空包名 + 乱码版本——还原锚点失真）。
             let (package, version) = agent::jishu_self::parse_npm_source(source);
@@ -1571,14 +1574,14 @@ fn conflict_infos_from_pairs(
             } else {
                 return None;
             };
-            let builtin = agent::jishu_self::pi_registry::builtin_pi_display_name(&opponent_pkg)
-                .is_some();
-            let opponent_source = agent::jishu_self::pi_registry::registered_source_of(&opponent_pkg)
-                .unwrap_or_else(|| format!("npm:{opponent_pkg}"));
+            let builtin =
+                agent::jishu_self::pi_registry::builtin_pi_display_name(&opponent_pkg).is_some();
+            let opponent_source =
+                agent::jishu_self::pi_registry::registered_source_of(&opponent_pkg)
+                    .unwrap_or_else(|| format!("npm:{opponent_pkg}"));
             let opponent_display =
                 agent::jishu_self::pi_registry::builtin_pi_display_name(&opponent_pkg)
-                    .unwrap_or(&opponent_pkg)
-                    .to_string();
+                    .unwrap_or_else(|| opponent_pkg.clone());
             Some(PiConflictInfo {
                 tool: p.tool,
                 opponent_source,
@@ -1683,12 +1686,12 @@ pub(crate) async fn pi_package_install_confirmed(
     source: String,
 ) -> Result<PiInstallConfirmed, String> {
     let source = source.trim().to_string();
-    let pkg = source.strip_prefix("npm:").map(|rest| {
-        match rest.rsplit_once('@') {
+    let pkg = source
+        .strip_prefix("npm:")
+        .map(|rest| match rest.rsplit_once('@') {
             Some((n, v)) if !n.is_empty() && !v.is_empty() && !n.ends_with('/') => n.to_string(),
             _ => rest.to_string(),
-        }
-    });
+        });
     // 文件保障：预检可能因取消被回滚（或从未预检）——复装（幂等）。
     if let Some(pkg) = &pkg {
         let Some(agent_dir) = agent::jishu_self::pi_config_dir() else {
@@ -1776,6 +1779,48 @@ pub(crate) async fn pi_package_install_confirmed(
 pub(crate) fn pi_extension_overrides_list() -> Vec<agent::jishu_self::pi_registry::PiOverrideEntry>
 {
     agent::jishu_self::pi_registry::load_overrides()
+}
+
+// ── 需求4 D4-8/D4-8b：扩展统一登记簿查询与判定落档 ──
+
+/// 全量扩展清单（含 adapters 反查）——已装页「扩展包」tab 与市场已装卡
+/// 的「界面」行消费（gui_verdict=adapted 为派生值）。
+#[tauri::command]
+pub(crate) fn extension_registry_list(
+) -> Result<Vec<agent::extensions_db::ExtensionEntryView>, String> {
+    agent::extensions_db::ensure_schema()?;
+    agent::extensions_db::registry_list()
+}
+
+/// 插件依赖视图——适配件「基于」行消费（plugin_id → deps）。
+#[tauri::command]
+pub(crate) fn plugin_extension_deps() -> Result<Vec<agent::extensions_db::PluginDepView>, String> {
+    agent::extensions_db::ensure_schema()?;
+    agent::extensions_db::plugin_deps()
+}
+
+/// D4-7 第 0 步判定结果落档（pending|noneeded；adapted 为派生不落库）。
+/// 与 CLI `jishu-cli extensions verdict` 共用实现——agent 在会话中经 CLI
+/// 直写登记簿，GUI 即时可见。
+#[tauri::command]
+pub(crate) fn extension_gui_verdict_set(
+    pkg_key: String,
+    verdict: String,
+    note: Option<String>,
+) -> Result<(), String> {
+    agent::extensions_db::set_verdict(&pkg_key, &verdict, note.as_deref())
+}
+
+// ── 需求16：迁移状态查询与重试（前端阻断卡/进度呈现） ──
+
+#[tauri::command]
+pub(crate) fn migration_status() -> serde_json::Value {
+    crate::migrations::status()
+}
+
+#[tauri::command]
+pub(crate) fn migration_retry(app: tauri::AppHandle) -> Result<(), String> {
+    crate::migrations::run_pending(Some(app))
 }
 
 /// 在线包卸载源归一（评审追加·「在线扩展补卸载」后端半边）：签名统一接受

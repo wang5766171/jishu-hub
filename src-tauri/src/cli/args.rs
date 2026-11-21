@@ -120,6 +120,13 @@ pub enum Commands {
         action: PluginAction,
     },
 
+    /// Extension registry (v0.9.8 需求4 D4-8/D4-7)：登记簿查询与 GUI 适配
+    /// 价值判定落档——agent 在会话中经本通道直写判定结果，GUI 即时可见。
+    Extensions {
+        #[command(subcommand)]
+        action: ExtensionAction,
+    },
+
     /// Tool-plugin CLI artifacts (v0.8.1 需求10：lock-requirement/commit-plan).
     #[command(name = "task-artifact")]
     TaskArtifact {
@@ -399,6 +406,25 @@ pub enum AcpAction {
 }
 
 // ── Plugins（v0.8.1 需求4）────────────────────────────────────────────────────
+
+/// 需求4 D4-8/D4-7（v0.9.8）：extensions 子命令动作。
+#[derive(Subcommand, Debug)]
+pub enum ExtensionAction {
+    /// List the extension registry（含 builtin/状态/适配关系/判定）。
+    List,
+
+    /// Record the GUI-adaptation verdict for an extension（agent 第 0 步
+    /// 判定落档通道：noneeded=纯底层工具无需界面；pending=重置为未判定）。
+    Verdict {
+        /// 无版本关系键（如 npm:pi-smart-fetch）。
+        pkg_key: String,
+        /// pending | noneeded。
+        verdict: String,
+        /// 一句话判定依据（可选）。
+        #[arg(long = "note")]
+        note: Option<String>,
+    },
+}
 
 #[derive(Subcommand, Debug)]
 pub enum PluginAction {

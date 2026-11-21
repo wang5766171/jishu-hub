@@ -590,7 +590,62 @@ pub fn validate_composed_guards(id: &str, value: &toml::Value) -> Result<(), Str
             }
         }
     }
+    // 需求4 D4-8（2026-11-21）：[[adapt]] 段形态校验——插件↔扩展 M:N 关系
+    // 声明（每条：extension 非空、可选 tools 字符串数组）。装校 fail loud
+    // 防脏关系进登记簿（rebuild 全量重算的源头）。
+    if let Some(adapt) = value.get("adapt") {
+        let Some(arr) = adapt.as_array() else {
+            return Err("[[adapt]] 须为数组段（每条声明一个被适配的扩展）".to_string());
+        };
+        for item in arr {
+            let ext = item.get("extension").and_then(|v| v.as_str()).unwrap_or("");
+            if ext.trim().is_empty() {
+                return Err(
+                    "[[adapt]] 每条须声明非空 extension（如 \"npm:pi-smart-fetch\"，不带版本）"
+                        .to_string(),
+                );
+            }
+            if let Some(tools) = item.get("tools") {
+                let ok = tools.as_array().is_some_and(|t| {
+                    t.iter()
+                        .all(|x| x.as_str().is_some_and(|s| !s.trim().is_empty()))
+                });
+                if !ok {
+                    return Err(
+                        "[[adapt]] tools 须为非空字符串数组（省略 = 适配整个扩展）".to_string()
+                    );
+                }
+            }
+        }
+    }
     Ok(())
+}
+
+/// 需求4 D4-8：全量组合件的 [[adapt]] 声明（extensions.db 关系表重建的
+/// 真源输入）。返回 (plugin_id, [(extension, tools)])——tools None=整扩展。
+pub fn adapt_declarations() -> Vec<(String, Vec<(String, Option<Vec<String>>)>)> {
+    let mut out = Vec::new();
+    for (id, manifest) in composed_session_manifests() {
+        let Some(arr) = manifest.get("adapt").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        let mut sections = Vec::new();
+        for item in arr {
+            let Some(ext) = item.get("extension").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let tools = item.get("tools").and_then(|v| v.as_array()).map(|t| {
+                t.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect::<Vec<_>>()
+            });
+            sections.push((ext.to_string(), tools));
+        }
+        if !sections.is_empty() {
+            out.push((id, sections));
+        }
+    }
+    out
 }
 
 /// 用户组合清单保存（需求13 C3 向导落点）：校验可解析 + id 一致 + 非内置 +

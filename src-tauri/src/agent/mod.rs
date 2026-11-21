@@ -37,6 +37,9 @@ pub mod plugin;
 pub mod skillhub;
 pub mod tool_plugin;
 pub mod traits;
+// 需求4 D4-8（v0.9.8）：扩展统一登记簿 extensions.db——插件↔扩展 M:N
+// 关系、停用台账（方案A迁入）、级联停用/恢复、前端查询视图。
+pub mod extensions_db;
 
 pub use capability::{AgentCapabilities, AgentHealth};
 pub use claude_code::ClaudeCodeAgent;

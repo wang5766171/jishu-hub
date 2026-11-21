@@ -394,9 +394,7 @@ impl JishuSelfAgent {
     /// 幂等补注册）；`Ok(Some(pairs))` = 冲突（**文件保留**——确认后
     /// 复用；取消路径由调用方 `npm uninstall` 清理）；`Err` = 预检自身
     /// 失败（文件已回滚）。
-    pub(crate) async fn precheck_extension(
-        pkg: &str,
-    ) -> Result<Option<Vec<ConflictPair>>, String> {
+    pub(crate) async fn precheck_extension(pkg: &str) -> Result<Option<Vec<ConflictPair>>, String> {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
         const PRECHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -454,8 +452,8 @@ impl JishuSelfAgent {
             .ok_or_else(|| "包已下载但找不到扩展入口文件".to_string())?;
 
         // 3) 装载试运行（-e 绝对路径；--no-session 零写盘）。
-        let runtime = pi_runtime::resolve_pi_runtime()
-            .map_err(|e| format!("预检无法启动引擎（{e}）"))?;
+        let runtime =
+            pi_runtime::resolve_pi_runtime().map_err(|e| format!("预检无法启动引擎（{e}）"))?;
         let mut args = runtime.base_args;
         args.push("--mode".to_string());
         args.push("rpc".to_string());
@@ -465,7 +463,11 @@ impl JishuSelfAgent {
         let mut cmd =
             crate::os_adapter::shell::shell_command(&runtime.program.to_string_lossy(), args);
         let cwd = crate::project::default_workspace_root();
-        cmd.current_dir(if cwd.exists() { cwd } else { std::env::temp_dir() });
+        cmd.current_dir(if cwd.exists() {
+            cwd
+        } else {
+            std::env::temp_dir()
+        });
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -503,7 +505,10 @@ impl JishuSelfAgent {
                 .write_all(b"{\"type\":\"get_state\"}\n")
                 .await
                 .map_err(|e| format!("预检发送失败：{e}"))?;
-            stdin.flush().await.map_err(|e| format!("预检发送失败：{e}"))?;
+            stdin
+                .flush()
+                .await
+                .map_err(|e| format!("预检发送失败：{e}"))?;
         }
         let stdout = child
             .stdout
@@ -593,7 +598,7 @@ impl JishuSelfAgent {
         let root = std::path::Path::new(&base).join("npm").join("node_modules");
         let mut installed: Vec<&'static str> = Vec::new();
         let mut failed: Vec<String> = Vec::new();
-        for (source, dir_name) in PI_EXTENSION_PACKAGES {
+        for (source, dir_name, _display) in builtin_extensions() {
             let target = root.join(dir_name);
             // 第三轮评审修复：经 parse_npm_source 解析（rsplit 对 scoped
             // 无版本源会解出 "scope/pkg" 当版本——此处消费钉定源恒带版本，
@@ -634,10 +639,10 @@ impl JishuSelfAgent {
     /// 注册同步（plugin::sync_pi_packages_with_plugins）复用同一真源。
     /// v0.9.5 需求11：pi-mcp-adapter 已退役（pi 1.1.0 原生 MCP），不再安装。
     pub(crate) fn pinned_source_for_package(name: &str) -> Option<&'static str> {
-        PI_EXTENSION_PACKAGES
+        builtin_extensions()
             .iter()
-            .find(|(_, dir)| *dir == name)
-            .map(|(source, _)| *source)
+            .find(|(_, dir, _)| dir == name)
+            .map(|(source, _, _)| source.as_str())
     }
 }
 
@@ -1338,26 +1343,74 @@ pub(crate) fn parse_npm_source(source: &str) -> (String, String) {
 }
 
 /// v0.9.5 需求5：随包初始化安装的 pi 扩展（钉定版本，与 mcp 同策略——
-/// 可预测、离线可复现；peer 面已核 fork 0.87.1-13 全覆盖）。元素 =
-/// (npm 安装源, node_modules 目录名——scoped 包含 @scope/ 层级)。
-/// 版本依据 2026-09-27 npm 元数据；升级走此处改钉 + update 命令。
-pub(crate) const PI_EXTENSION_PACKAGES: &[(&str, &str)] = &[
-    // 子代理委派（subagent/bg_wait 工具；替换自研 jishu-subagent.ts）
-    ("npm:pi-subagents@0.72.0", "pi-subagents"),
-    // 选项式提问（ask_user_question 工具；替换自研 request-user-input.ts）
-    (
-        "npm:@juicesharp/rpiv-ask-user-question@2.11.0",
-        "@juicesharp/rpiv-ask-user-question",
-    ),
-    // 待办清单（todo 工具）
-    ("npm:@juicesharp/rpiv-todo@2.11.0", "@juicesharp/rpiv-todo"),
-    // 写后诊断（lens_diagnostics/ast_grep_*/lsp_navigation 等 13 工具）
-    ("npm:pi-lens@4.3.0", "pi-lens"),
-    // Web 搜索/抓取（web_enable 装载器 + web_search/fetch_content 等 4 件，
-    // 亦补齐 pi-subagents 内置 researcher 角色的工具依赖——T7 诊断后用户
-    // 裁决默认安装，2026-09-27）
-    ("npm:pi-web-access@0.32.0", "pi-web-access"),
-];
+/// 可预测、离线可复现）。**D4-8（2026-11-21 用户裁决）数据结构化**：
+/// 硬编码常量退役，改为打包数据 resources/extensions/builtin.json
+/// （include_str 编译期单源）——内置与用户装在 extensions.db 同构
+/// （builtin 仅标记列）。元素 = (npm 安装源, node_modules 目录名, 展示名)。
+pub(crate) fn builtin_extensions() -> &'static Vec<(String, String, String)> {
+    static CACHE: std::sync::OnceLock<Vec<(String, String, String)>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        #[derive(serde::Deserialize)]
+        struct Entry {
+            source: String,
+            dir: String,
+            display: String,
+        }
+        let raw = include_str!("../../../resources/extensions/builtin.json");
+        match serde_json::from_str::<Vec<Entry>>(raw) {
+            Ok(list) => list
+                .into_iter()
+                .map(|e| (e.source, e.dir, e.display))
+                .collect(),
+            // 打包资源损坏属构建事故：fail-loud 日志（不 panic 阻断启动——
+            // ensure 会跳过安装并在日志暴露），单测锁解析完整性。
+            Err(e) => {
+                log::error!("[builtin-extensions] builtin.json 解析失败: {e}");
+                Vec::new()
+            }
+        }
+    })
+}
+
+/// 内置扩展展示名（包目录名 → 数据查询；替代原 match 表）。
+pub(crate) fn builtin_pi_display_name_of(dir_name: &str) -> Option<String> {
+    builtin_extensions()
+        .iter()
+        .find(|(_, dir, _)| dir == dir_name)
+        .map(|(_, _, display)| display.clone())
+}
+
+/// 内置扩展的 GUI 判定预置（builtin.json 的 gui_verdict/verdict_note——
+/// 用户裁决「内置=预置的」）：内置五件均为模型消费的底层能力，出厂即
+/// 「无需界面」。用户可经 `extensions verdict <pkg> pending` 或界面
+/// 「重新判定」改判——**只在仍为 pending 时落预置，不覆盖用户改判**。
+pub(crate) fn builtin_gui_verdicts() -> &'static Vec<(String, String, String)> {
+    static CACHE: std::sync::OnceLock<Vec<(String, String, String)>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        #[derive(serde::Deserialize)]
+        struct Entry {
+            dir: String,
+            #[serde(default)]
+            gui_verdict: Option<String>,
+            #[serde(default)]
+            verdict_note: Option<String>,
+        }
+        let raw = include_str!("../../../resources/extensions/builtin.json");
+        serde_json::from_str::<Vec<Entry>>(raw)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|e| {
+                e.gui_verdict.filter(|v| v == "noneeded").map(|v| {
+                    (
+                        format!("npm:{}", e.dir),
+                        v,
+                        e.verdict_note.unwrap_or_default(),
+                    )
+                })
+            })
+            .collect()
+    })
+}
 
 /// 需求15 方案 A：探针失败结构——reason 为用户文案；stderr_tail 供调用方
 /// 区分「工具名冲突」（转确认流）与其他装载故障（回滚+报错）。
@@ -1398,8 +1451,7 @@ pub(crate) struct ConflictPair {
 /// 分隔符归一为斜杠）。纯函数。
 pub(crate) fn pkg_dir_from_path(path_text: &str) -> Option<String> {
     let nm = path_text.rfind("node_modules")?;
-    let rest = path_text[nm + "node_modules".len()..]
-        .trim_start_matches(['\\', '/']);
+    let rest = path_text[nm + "node_modules".len()..].trim_start_matches(['\\', '/']);
     let mut end = rest.find(['\\', '/']).unwrap_or(rest.len());
     if rest[..end].starts_with('@') {
         if let Some(sep) = rest[end..].find(['\\', '/']) {
@@ -1486,7 +1538,7 @@ fn spawn_env_overrides(
 
 #[cfg(test)]
 mod mcp_tests {
-    use super::{pi_package_args, PI_EXTENSION_PACKAGES};
+    use super::{builtin_extensions, pi_package_args};
 
     /// v0.9.1 需求13：未配置 defaultTools → 追加 --tools 全集；已配置 → 不动。
     #[test]
@@ -1587,10 +1639,12 @@ mod mcp_tests {
 
     /// v0.9.5 需求5：4 扩展钉定源与目录名对齐（安装探测落点 = node_modules/
     /// <目录名>；scoped 包目录名含 @scope/ 层级），且源均为 npm: 带精确版本。
+    /// v0.9.8 D4-8：常量改数据驱动（builtin.json），断言语义不变。
     #[test]
     fn pi_extension_packages_pinned_and_scoped_dirs() {
-        assert_eq!(PI_EXTENSION_PACKAGES.len(), 5);
-        for (source, dir) in PI_EXTENSION_PACKAGES {
+        let packages = builtin_extensions();
+        assert_eq!(packages.len(), 5);
+        for (source, dir, _display) in packages {
             assert!(source.starts_with("npm:"), "{source} 非 npm 源");
             let name = source
                 .strip_prefix("npm:")
@@ -1603,7 +1657,7 @@ mod mcp_tests {
                     n
                 })
                 .unwrap();
-            assert_eq!(name, *dir, "{source} 与目录名 {dir} 不一致");
+            assert_eq!(name, dir, "{source} 与目录名 {dir} 不一致");
         }
         // 包名 → 钉定源反查（packages 同步真源）：4 扩展 + web 共 5 项
         //（pi-mcp-adapter 已随 pi 1.1.0 原生 MCP 退役——需求11，不再安装）。
