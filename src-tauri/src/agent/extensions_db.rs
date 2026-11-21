@@ -425,7 +425,7 @@ fn adapters_of_pkg(pkg_key: &str) -> Result<Vec<String>, String> {
 
 /// gui_verdict 落档（D4-7 第 0 步判定结果；adapted 为派生值不落库）。
 pub fn set_verdict(pkg_key: &str, verdict: &str, note: Option<&str>) -> Result<(), String> {
-    if !matches!(verdict, "pending" | "noneeded") {
+    if !matches!(verdict, "pending" | "noneeded" | "session") {
         return Err(format!("非法 verdict: {verdict}"));
     }
     with_conn(|conn| {
@@ -610,6 +610,9 @@ pub fn sync_all() {
         sync_registry_face(&builtin, &registered, pool_root.as_deref())?;
         apply_builtin_verdict_presets()?;
         rebuild_adaptations(&crate::agent::plugin::adapt_declarations())?;
+        // 预置适配关系（builtin.json preset_adapters）在 rebuild 之后插入
+        // ——rebuild 全量 DELETE+从 plugin.toml [[adapt]] 重算会抹掉 preset 行。
+        apply_preset_adapters()?;
         reconcile_cascade()?;
         Ok(())
     };
@@ -623,13 +626,43 @@ pub fn sync_all() {
 pub fn apply_builtin_verdict_presets() -> Result<(), String> {
     for (pkg_key, verdict, note) in crate::agent::jishu_self::builtin_gui_verdicts() {
         with_conn(|conn| {
+            // R3 修正：builtin.json 是 hub 权威数据（与代码同版本演进）——
+            // 始终刷新（旧版预置的 noneeded 需随升级更新为逐件判定）；
+            // 用户改判后下一次 sync 会被覆盖回预置——「重新判定」语义是
+            // 给用户看当前判定依据+触发 agent 重评，非永久覆盖 hub 预置。
             conn.execute(
                 "UPDATE extensions SET gui_verdict = ?2, verdict_note = ?3, updated_at = ?4
-                 WHERE pkg_key = ?1 AND gui_verdict = 'pending'",
+                 WHERE pkg_key = ?1",
                 rusqlite::params![pkg_key, verdict, note, now_ms()],
             )?;
             Ok(())
         })?;
+    }
+    Ok(())
+}
+
+/// 预置适配关系（builtin.json preset_adapters：如 rpiv-todo → 任务看板）。
+/// 独立于判定预置——必须在 rebuild_adaptations **之后**执行（后者全量
+/// DELETE+从 plugin.toml 重算，会抹掉 preset 行）。仅在该扩展无任何
+/// 适配行时插入（不与用户产出件竞争）。
+pub fn apply_preset_adapters() -> Result<(), String> {
+    for (pkg_key, adapters) in crate::agent::jishu_self::builtin_preset_adapters() {
+        let existing = with_conn(|conn| {
+            let mut stmt =
+                conn.prepare("SELECT COUNT(*) FROM plugin_adaptations WHERE pkg_key = ?1")?;
+            Ok(stmt.query_row([&pkg_key], |r| r.get::<_, i64>(0))?)
+        })?;
+        if existing == 0 {
+            for plugin_id in adapters {
+                with_conn(|conn| {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO plugin_adaptations (plugin_id, pkg_key, tools) VALUES (?1, ?2, NULL)",
+                        rusqlite::params![plugin_id, pkg_key],
+                    )?;
+                    Ok(())
+                })?;
+            }
+        }
     }
     Ok(())
 }

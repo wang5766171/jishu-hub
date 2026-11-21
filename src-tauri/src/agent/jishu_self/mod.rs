@@ -1373,6 +1373,30 @@ pub(crate) fn builtin_extensions() -> &'static Vec<(String, String, String)> {
 }
 
 /// 内置扩展展示名（包目录名 → 数据查询；替代原 match 表）。
+/// 内置扩展的预置适配关系（builtin.json preset_adapters——R2 用户裁决：
+/// rpiv-todo 有任务看板 GUI，应在数据层建立关系）。
+pub(crate) fn builtin_preset_adapters() -> &'static Vec<(String, Vec<String>)> {
+    static CACHE: std::sync::OnceLock<Vec<(String, Vec<String>)>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        #[derive(serde::Deserialize)]
+        struct Entry {
+            dir: String,
+            #[serde(default)]
+            preset_adapters: Option<Vec<String>>,
+        }
+        let raw = include_str!("../../../resources/extensions/builtin.json");
+        serde_json::from_str::<Vec<Entry>>(raw)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|e| {
+                e.preset_adapters
+                    .filter(|a| !a.is_empty())
+                    .map(|a| (format!("npm:{}", e.dir), a))
+            })
+            .collect()
+    })
+}
+
 pub(crate) fn builtin_pi_display_name_of(dir_name: &str) -> Option<String> {
     builtin_extensions()
         .iter()
@@ -1381,9 +1405,11 @@ pub(crate) fn builtin_pi_display_name_of(dir_name: &str) -> Option<String> {
 }
 
 /// 内置扩展的 GUI 判定预置（builtin.json 的 gui_verdict/verdict_note——
-/// 用户裁决「内置=预置的」）：内置五件均为模型消费的底层能力，出厂即
-/// 「无需界面」。用户可经 `extensions verdict <pkg> pending` 或界面
-/// 「重新判定」改判——**只在仍为 pending 时落预置，不覆盖用户改判**。
+/// 用户裁决「内置=预置的」）：逐件判定（R2 用户裁决修正 2026-11-21：
+/// 一刀切 noneeded 是错的——todo 有任务看板 GUI；ask-user/lens/web-access
+/// 结果在会话内呈现；仅 subagents 真后台）。用户可经 `extensions verdict
+/// <pkg> pending` 或界面「重新判定」改判——**只在仍为 pending 时落预置，
+/// 不覆盖用户改判**。
 pub(crate) fn builtin_gui_verdicts() -> &'static Vec<(String, String, String)> {
     static CACHE: std::sync::OnceLock<Vec<(String, String, String)>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| {
@@ -1400,13 +1426,16 @@ pub(crate) fn builtin_gui_verdicts() -> &'static Vec<(String, String, String)> {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|e| {
-                e.gui_verdict.filter(|v| v == "noneeded").map(|v| {
-                    (
-                        format!("npm:{}", e.dir),
-                        v,
-                        e.verdict_note.unwrap_or_default(),
-                    )
-                })
+                // noneeded | session（会话内呈现）| adapted（有预置适配件）
+                e.gui_verdict
+                    .filter(|v| v == "noneeded" || v == "session" || v == "adapted")
+                    .map(|v| {
+                        (
+                            format!("npm:{}", e.dir),
+                            v,
+                            e.verdict_note.unwrap_or_default(),
+                        )
+                    })
             })
             .collect()
     })

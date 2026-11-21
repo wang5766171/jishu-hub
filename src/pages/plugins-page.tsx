@@ -1391,9 +1391,11 @@ export function PluginsPage({
                       {tr("market.addAdaptAction", "新增适配")}
                     </Button>
                   </>
-                ) : entry.gui_verdict === "noneeded" ? (
+                ) : entry.gui_verdict === "noneeded" || entry.gui_verdict === "session" ? (
                   <span className="flex items-center gap-1" title={entry.verdict_note ?? undefined}>
-                    {tr("market.extGuiNotNeeded", "无需（后台能力）")}
+                    {entry.gui_verdict === "session"
+                      ? tr("market.extGuiSession", "会话内呈现")
+                      : tr("market.extGuiNotNeeded", "后台能力（无独立界面）")}
                     <button
                       type="button"
                       className="underline decoration-dotted underline-offset-2 hover:text-foreground"
@@ -1991,8 +1993,37 @@ export function PluginsPage({
         {activeTab === "mcp" && !search.trim() && filtersIdle && <NativeMcpSection />}
 {/* v0.9.7 需求3 十四轮：扩展包参与检索——扩展包 tab 无搜索显示全量；
     搜索态生态件命中卡并入全库结果（插件全库命中 + 扩展包命中）。
-    十七轮：扩展卡无形态/实现徽章，筛选激活时同样隐藏。 */}
-        {activeTab === "extension" && !search.trim() && filtersIdle && renderExtCards()}
+    十七轮：扩展卡无形态/实现徽章，这两维激活时隐藏。
+    需求4 R2 后修正（用户裁决 2026-11-21）：扩展卡有来源徽章（内置=
+    有钉版/市场安装=无钉版）——来源筛选应生效而非隐藏全部；仅
+    实现/形态筛选激活时仍隐藏（扩展卡无此两维徽章）。 */}
+        {activeTab === "extension" && !search.trim()
+          && (sourceFilter === "all" || (implFilter !== "all" || formFilter !== "all" ? false : true))
+          && renderExtCards(
+            sourceFilter === "builtin"
+              ? extInstalled.filter((src) => {
+                  const m = src.match(NPM_SOURCE_RE);
+                  const pkg = m?.[1] ?? src.replace(/^npm:/, "");
+                  return extPins.some((p) => p.package === pkg);
+                })
+              : sourceFilter === "market"
+                ? extInstalled.filter((src) => {
+                    const m = src.match(NPM_SOURCE_RE);
+                    const pkg = m?.[1] ?? src.replace(/^npm:/, "");
+                    return !extPins.some((p) => p.package === pkg);
+                  })
+                : extInstalled,
+          )}
+        {activeTab === "extension" && !search.trim() && implFilter !== "all" && (
+          <p className="col-span-full py-8 text-center text-sm text-muted-foreground">
+            {tr("plugins.extFilteredOut", "扩展包不支持按实现方式筛选——请切回「全部」")}
+          </p>
+        )}
+        {activeTab === "extension" && !search.trim() && formFilter !== "all" && (
+          <p className="col-span-full py-8 text-center text-sm text-muted-foreground">
+            {tr("plugins.extFilteredOut", "扩展包不支持按形态筛选——请切回「全部」")}
+          </p>
+        )}
         {search.trim() && filtersIdle && extInstalled.filter(matchesExtSearch).length > 0 && renderExtCards(extInstalled.filter(matchesExtSearch))}
         {(result?.plugins ?? [])
           .filter((x) =>

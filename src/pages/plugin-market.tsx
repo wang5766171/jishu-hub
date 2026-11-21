@@ -1188,9 +1188,11 @@ export function PluginMarketPanel({
                                         {t("market.addAdaptAction", "新增适配")}
                                       </Button>
                                     </>
-                                  ) : entry.gui_verdict === "noneeded" ? (
+                                  ) : entry.gui_verdict === "noneeded" || entry.gui_verdict === "session" ? (
                                     <span className="flex items-center gap-1" title={entry.verdict_note ?? undefined}>
-                                      {t("market.extGuiNotNeeded", "无需（后台能力）")}
+                                      {entry.gui_verdict === "session"
+                                        ? t("market.extGuiSession", "会话内呈现")
+                                        : t("market.extGuiNotNeeded", "后台能力（无独立界面）")}
                                       <button
                                         type="button"
                                         className="underline decoration-dotted underline-offset-2 hover:text-foreground"
