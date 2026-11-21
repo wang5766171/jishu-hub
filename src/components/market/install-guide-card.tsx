@@ -1,4 +1,4 @@
-import { Blocks, KeyRound, Lightbulb, Palette, X } from "lucide-react";
+import { Blocks, Check, KeyRound, Lightbulb, Palette, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -26,6 +26,9 @@ export interface InstallGuideInfo {
   usageHint?: string;
   /** GUI 适配入口（pi 扩展类：有后台能力无 hub 呈现）。 */
   guiAdaptable?: boolean;
+  /** 需求4 D4-8b：重装/已适配态——界面已有插件提供时改示「界面：将由 XX
+      提供」，不再弹适配按钮。 */
+  providedBy?: string;
   /** 扩展包名（GUI 适配预填文案用）。 */
   packageName?: string;
 }
@@ -122,6 +125,17 @@ export function InstallGuideCard({
           <Palette className="h-3.5 w-3.5 shrink-0 text-primary" />
           <span className="flex-1">{t("market.guideGuiAdapt", "GUI 适配——为这个扩展生成界面插件")}</span>
         </button>
+      )}
+
+      {/* 需求4 D4-8b：重装/已适配态——关系已在登记簿，改示由谁提供界面，
+          不再弹适配按钮（关系随重装自动恢复）。 */}
+      {info.providedBy && (
+        <div className="mt-2 flex items-center gap-2 rounded-lg bg-muted/40 px-2.5 py-2 text-xs text-muted-foreground">
+          <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+          <span className="min-w-0 flex-1 truncate">
+            {t("market.guiProvidedBy", { defaultValue: "界面：将由「{{name}}」提供", name: info.providedBy })}
+          </span>
+        </div>
       )}
     </div>
   );

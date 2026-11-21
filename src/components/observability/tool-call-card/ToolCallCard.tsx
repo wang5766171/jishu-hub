@@ -92,7 +92,7 @@ function ToolCallCardBodyResolved({ call }: { call: ToolCall }) {
     case "search":
       return <SearchBody input={call.input} output={call.output} />;
     default:
-      return <OtherBody input={call.input} output={call.output} kind={call.kind} />;
+      return <OtherBody input={call.input} output={call.output} details={call.details} kind={call.kind} />;
   }
 }
 

@@ -361,7 +361,7 @@ function interactionBlockToItem(block: Extract<ContentBlock, { type: "interactio
 function buildRenderItemsForMessages(
   messages: Message[],
   messageIndices: number[],
-  resultMap: Map<string, string>,
+  resultMap: Map<string, { output: string; details?: Record<string, unknown> }>,
   errorToolIds: Set<string>,
 ): RenderItem[] {
   const items: RenderItem[] = [];
@@ -410,7 +410,7 @@ function buildRenderItemsForMessages(
           const inputObj = (block.input && typeof block.input === "object") ? (block.input as any) : {};
           const rawPrompt = inputObj.question || inputObj.prompt || "";
           const rawOptions = Array.isArray(inputObj.options) ? inputObj.options : [];
-          const rawAnswer = resultMap.get(block.id) || "";
+          const rawAnswer = resultMap.get(block.id)?.output ?? "";
 
           const parsedOptions = rawOptions.map((opt: any) => {
             if (typeof opt === "string") {
@@ -456,7 +456,9 @@ function buildRenderItemsForMessages(
           input: typeof block.input === "object" && block.input !== null
             ? (block.input as Record<string, unknown>)
             : {},
-          output: resultMap.get(block.id),
+          output: resultMap.get(block.id)?.output,
+          // 需求4 F3：回放路 details 透传（payload 契约见 API.md 挂载节）。
+          details: resultMap.get(block.id)?.details,
         });
         return;
       }
@@ -866,12 +868,18 @@ export const MessageView = memo(function MessageView({
   }, [messages, renderingQuery]);
 
   const resultMap = useMemo(() => {
-    const map = new Map<string, string>();
+    const map = new Map<string, { output: string; details?: Record<string, unknown> }>();
     for (const msg of messages) {
       for (const block of msg.content) {
         if (block.type !== "tool_result" || !block.tool_use_id) continue;
         const content = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
-        map.set(block.tool_use_id, content);
+        // 需求4 F3：details 随结果透传（回放路；直播路在 use-stream-store）。
+        const details =
+          (block as { details?: Record<string, unknown> }).details &&
+          typeof (block as { details?: Record<string, unknown> }).details === "object"
+            ? (block as { details?: Record<string, unknown> }).details
+            : undefined;
+        map.set(block.tool_use_id, { output: content, details });
       }
     }
     return map;

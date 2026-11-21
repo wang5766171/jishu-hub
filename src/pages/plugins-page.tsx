@@ -27,6 +27,7 @@ import { PluginCreateEntry } from "./plugin-create-entry";
 import { PluginMarketPanel } from "./plugin-market";
 import { marketUpdateFailures, startExtensionUpdateAll, startSkillUpdateAll, updatesPending, useMarketUpdates, type ExtensionUpdateStatus, type SkillUpdateStatus } from "./plugin-market-updates";
 import { MarketSearchBox } from "./plugin-market";
+import { buildGuiAdaptDraft } from "@/components/market/gui-adapt-draft";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
 import { isPluginForm, PLUGIN_FORM_VALUES, type PluginForm } from "./plugin-wizard-utils";
 import { composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
@@ -88,6 +89,30 @@ interface PluginDescriptor {
 interface PluginListResult {
   plugins: PluginDescriptor[];
   manifest_errors: [string, string][];
+}
+
+/** 需求4 D4-8b：扩展统一登记簿视图（契约=Rust extension_registry_list，
+ * snake_case）。 */
+interface ExtGuiAdapter {
+  plugin_id: string;
+  enabled: boolean;
+  cascade_disabled: boolean;
+}
+interface ExtGuiEntry {
+  source: string;
+  pkg_key: string;
+  display: string;
+  builtin: boolean;
+  state: string;
+  replaced_by: string | null;
+  gui_verdict: string;
+  verdict_note: string | null;
+  adapters: ExtGuiAdapter[];
+}
+interface ExtGuiDep {
+  pkg_key: string;
+  display: string;
+  state: string;
 }
 
 /** 需求19 第二轮：管理页分类。v0.9.7 需求3（2026-11-14 用户裁决）分类重整
@@ -468,6 +493,35 @@ export function PluginsPage({
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updateBusy, setUpdateBusy] = useState<string | null>(null);
   const batchUpdates = useMarketUpdates();
+
+  // ── 需求4 D4-8b（v0.9.8）：扩展统一登记簿消费面 ──
+  // 扩展条目「界面」行（adapters 反查）+ 适配件「基于」行 + 级联停用呈现。
+  const [extGui, setExtGui] = useState<Map<string, ExtGuiEntry>>(new Map());
+  const [pluginDeps, setPluginDeps] = useState<Map<string, ExtGuiDep[]>>(new Map());
+  const refreshExtGui = useCallback(() => {
+    void (async () => {
+      try {
+        const [entries, deps] = await Promise.all([
+          invokeCommand<ExtGuiEntry[]>("extension_registry_list").catch(() => [] as ExtGuiEntry[]),
+          invokeCommand<Array<{ plugin_id: string; deps: ExtGuiDep[] }>>("plugin_extension_deps").catch(() => []),
+        ]);
+        setExtGui(new Map((entries ?? []).map((e) => [e.pkg_key, e])));
+        setPluginDeps(new Map((deps ?? []).map((d) => [d.plugin_id, d.deps])));
+      } catch {
+        // 索引层：失败静默（两行整体隐藏，不阻塞清单）。
+      }
+    })();
+  }, []);
+  useEffect(() => { refreshExtGui(); }, [refreshExtGui]);
+  /** 适配件名点击 → 跳到该插件所在分类 tab 并聚光（复用 spotlight 事件）。 */
+  const jumpToPlugin = useCallback((id: string) => {
+    const hit = result?.plugins.find((p) => p.id === id);
+    if (hit) {
+      setSearch("");
+      setActiveTab(categoryOf(hit));
+    }
+    window.dispatchEvent(new CustomEvent("jishu:plugin-spotlight", { detail: { id } }));
+  }, [result]);
   /** 实现徽章/筛选判定（十八轮：市场感知移除——「市场安装」归来源维度
    * sourceOf；实现=纯实现语义，核心引擎卡返回 null 不参与）。 */
   const implOfCard = (p: PluginDescriptor): ImplKind | null => implKindOf(p);
@@ -578,9 +632,18 @@ export function PluginsPage({
   const handleRemove = useCallback(
     (plugin: PluginDescriptor) => {
       void (async () => {
+        // 需求4 D4-8b：适配插件卸载提示——告知其呈现的扩展将失去此界面。
+        const deps = pluginDeps.get(plugin.id);
+        const depsNote =
+          deps && deps.length > 0
+            ? "\n" + t("market.uninstallAdapterWarn", {
+                defaultValue: "该插件为「{{ext}}」提供界面——卸载后该扩展失去此界面（扩展本体不受影响）",
+                ext: deps.map((d) => d.display).join("、"),
+              })
+            : "";
         const ok = await confirmDialog({
           title: t("plugins.removeTitle", { name: plugin.display_name }),
-          description: t("plugins.removeDesc"),
+          description: t("plugins.removeDesc") + depsNote,
           confirmText: t("plugins.removeConfirm"),
           variant: "destructive",
         });
@@ -588,9 +651,10 @@ export function PluginsPage({
         await withBusy(plugin.id, async () => {
           await invokeCommand("plugin_remove", { pluginId: plugin.id });
         });
+        refreshExtGui();
       })();
     },
-    [confirmDialog, t, withBusy],
+    [confirmDialog, pluginDeps, refreshExtGui, t, withBusy],
   );
 
   /** 7c 层二：导入扩展（文件选择 → 摘要确认 → 复制，默认不启用——
@@ -924,8 +988,50 @@ export function PluginsPage({
                     : tr("plugins.mcpConnecting", "启动中·稍后自动恢复")}
                 </span>
               )}
+              {(() => {
+                // 需求4 D4-8b：级联停用/手动覆盖呈现（登记簿 deps 驱动）。
+                const deps = pluginDeps.get(plugin.id);
+                if (!deps || deps.length === 0) return null;
+                const stopped = deps.filter((d) => d.state === "disabled" || d.state === "missing");
+                if (stopped.length === 0) return null;
+                return (
+                  <Badge variant="outline" className="border-amber-500/50 px-1 py-0 text-[9px] text-amber-600">
+                    {!plugin.enabled
+                      ? tr("market.cascadeDisabledTag", "因数据来源停用而停用")
+                      : tr("market.manualOverrideWarn", "数据来源已停用（当前为手动启用）")}
+                  </Badge>
+                );
+              })()}
               {plugin.kind === "session" && <MountFaces pluginId={plugin.id} primary={formOf(plugin)} />}
             </div>
+            {/* 需求4 D4-8b：基于行——适配件的数据来源（点击跳扩展包 tab 并以
+                名称搜索定位）；空态守卫=无 deps 记录不露行。 */}
+            {(() => {
+              const deps = pluginDeps.get(plugin.id);
+              if (!deps || deps.length === 0) return null;
+              return (
+                <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground/80">
+                  <span className="shrink-0">{tr("market.basedOnLabel", "基于")}</span>
+                  {deps.map((d) => (
+                    <button
+                      key={d.pkg_key}
+                      type="button"
+                      className={cn(
+                        "max-w-[130px] truncate underline decoration-dotted underline-offset-2 hover:text-foreground",
+                        (d.state === "disabled" || d.state === "missing") && "text-amber-600",
+                      )}
+                      title={d.pkg_key}
+                      onClick={() => {
+                        setActiveTab("extension");
+                        setSearch(d.display);
+                      }}
+                    >
+                      {d.display}
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
             {/* 说明（v0.9.3 需求11 用户裁决：中文说明取代 id/版本显示；编码与
              * 版本等运维信息收进 title 悬停）。来源链：session → i18n →
              * Rust description（[tool]/[skill] 首句或内置对照表）→ 类型兜底。 */}
@@ -1247,6 +1353,72 @@ export function PluginsPage({
           ) : (
             <div className="min-h-[26px]" />
           )}
+          {/* 需求4 D4-8b：界面行（登记簿驱动，四态；空态守卫=无记录不露行）。
+              适配/新增适配=D4-6 持久入口（与市场引导卡同一预填草稿链）。 */}
+          {(() => {
+            const entry = extGui.get(`npm:${pkg}`);
+            if (!entry || entry.state === "disabled") return null;
+            const launch = () =>
+              onLaunchDescribe?.(buildGuiAdaptDraft(t, { title: entry.display, packageName: `npm:${pkg}` }));
+            return (
+              <div className="flex min-h-[18px] flex-wrap items-center gap-1 text-[10px] text-muted-foreground/80">
+                <span className="shrink-0">{tr("market.extGuiLabel", "界面")}</span>
+                {entry.adapters.length > 0 ? (
+                  <>
+                    {entry.adapters.map((a) => (
+                      <button
+                        key={a.plugin_id}
+                        type="button"
+                        className="max-w-[130px] truncate underline decoration-dotted underline-offset-2 hover:text-foreground"
+                        title={a.plugin_id}
+                        onClick={() => jumpToPlugin(a.plugin_id)}
+                      >
+                        {a.plugin_id}
+                      </button>
+                    ))}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-4 px-1.5 text-[9px]"
+                      onClick={launch}
+                    >
+                      {tr("market.addAdaptAction", "新增适配")}
+                    </Button>
+                  </>
+                ) : entry.gui_verdict === "noneeded" ? (
+                  <span className="flex items-center gap-1" title={entry.verdict_note ?? undefined}>
+                    {tr("market.extGuiNotNeeded", "无需（后台能力）")}
+                    <button
+                      type="button"
+                      className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+                      onClick={() => {
+                        void invokeCommand("extension_gui_verdict_set", {
+                          pkgKey: entry.pkg_key,
+                          verdict: "pending",
+                        })
+                          .catch(() => null)
+                          .then(() => refreshExtGui());
+                      }}
+                    >
+                      {tr("market.extGuiReset", "重新判定")}
+                    </button>
+                  </span>
+                ) : (
+                  <>
+                    <span>{tr("market.extGuiNone", "未适配")}</span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-4 px-1.5 text-[9px]"
+                      onClick={launch}
+                    >
+                      {tr("market.adaptAction", "适配")}
+                    </Button>
+                  </>
+                )}
+              </div>
+            );
+          })()}
           <div className="mt-auto flex flex-wrap items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/70">
             {upd?.has_update ? (
               <span className="shrink-0 text-amber-600">→ v{upd.latest}</span>

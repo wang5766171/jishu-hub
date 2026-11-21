@@ -27,6 +27,7 @@ import { PLUGIN_SCENES } from "@/lib/plugin-scenes";
 import { ArrowDownToLine, Bot, Check, Download, ExternalLink, Info, Loader2, Package, RefreshCw, Search, X, ShieldCheck, Sparkles, Star, Trash2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { InstallGuideCard, type InstallGuideInfo } from "@/components/market/install-guide-card";
+import { buildGuiAdaptDraft } from "@/components/market/gui-adapt-draft";
 
 interface MarketEntry {
   id: string;
@@ -126,6 +127,27 @@ interface PiOverrideEntryView {
   builtin: boolean;
   display: string;
   replaced_by: string;
+}
+
+/** 需求4 D4-8b：扩展统一登记簿条目（extension_registry_list，snake_case）。 */
+interface ExtGuiEntryView {
+  source: string;
+  pkg_key: string;
+  display: string;
+  builtin: boolean;
+  state: string;
+  replaced_by: string | null;
+  gui_verdict: string;
+  verdict_note: string | null;
+  adapters: Array<{ plugin_id: string; enabled: boolean; cascade_disabled: boolean }>;
+}
+
+/** 注册串 → 无版本关系键（npm:pkg@1.0 → npm:pkg；非 npm 源原样）。 */
+function pkgKeyOf(source: string): string {
+  if (!source.startsWith("npm:")) return source;
+  const rest = source.slice(4);
+  const m = rest.match(/^(@[^/]+\/[^@]+|[^@]+)@.*$/);
+  return "npm:" + (m ? m[1] : rest);
 }
 
 /** 已装源串与 piindex 条目匹配（npm 源按包名前缀；git 源归一 https
@@ -299,6 +321,27 @@ export function PluginMarketPanel({
   // 需求15 方案 A：冲突停用台账（卡上呈现「已停用（被 XX 替代）」——
   // 内置不可删除只显示替代提示；用户停用件可删除）。
   const [piOverrides, setPiOverrides] = useState<PiOverrideEntryView[]>([]);
+  // 需求4 D4-8b：扩展统一登记簿（已装卡「界面」行+卸载依赖提示用）。
+  const [extGui, setExtGui] = useState<Map<string, ExtGuiEntryView>>(new Map());
+  const refreshExtGui = useCallback(() => {
+    void invokeCommand<ExtGuiEntryView[]>("extension_registry_list")
+      .then((entries) => setExtGui(new Map((entries ?? []).map((e) => [e.pkg_key, e]))))
+      .catch(() => setExtGui(new Map()));
+  }, []);
+  useEffect(() => { refreshExtGui(); }, [refreshExtGui]);
+  /** 安装后即时判定（fresh 读登记簿）：已适配→providedBy；判定无需→收起入口。 */
+  const guiStateFor = useCallback(async (source: string): Promise<{ providedBy?: string; noneeded?: boolean }> => {
+    try {
+      const entries = await invokeCommand<ExtGuiEntryView[]>("extension_registry_list");
+      const entry = (entries ?? []).find((e) => e.pkg_key === pkgKeyOf(source));
+      if (!entry) return {};
+      if (entry.adapters.length > 0) return { providedBy: entry.adapters[0].plugin_id };
+      if (entry.gui_verdict === "noneeded") return { noneeded: true };
+      return {};
+    } catch {
+      return {};
+    }
+  }, []);
   // 需求3 补充：piindex 检索结果（在线库主源；npm 检索为兜底）；更新检查。
   const [piindex, setPiindex] = useState<PiindexEntry[] | null>(null);
   // 需求3 四轮：分类过滤 / 重新加载。
@@ -324,24 +367,21 @@ export function PluginMarketPanel({
     if (kind === "composed" || kind === "composed-theme") return "composed";
     return "plugin";
   }, []);
-  /** 技能类示例：描述首句改造为建议 prompt（设计既定从简形态）。 */
+  /** 技能类示例：模板句（需求4 D4-4——不再复用描述首句，与说明文字同文
+   * 无信息量；skillhub 元数据暂无示例字段，给可操作的用法句式）。 */
   const firstSentence = useCallback((text: string) => {
-    const m = text.split(/[。．!？！?\n]/)[0]?.trim();
-    return m && m.length > 1 ? m : text.slice(0, 40);
-  }, []);
-  /** GUI 适配预填文案：携带挂载位九类浓缩清单（agent 无通道读打包资源，
-   * 契约浓缩版内联；权威源 resources/hub-page-capabilities.md）。 */
-  const buildGuiAdaptText = useCallback((info: InstallGuideInfo) => {
-    const pkg = info.packageName ? `（包：${info.packageName}）` : "";
-    return [
-      `我刚安装了扩展「${info.title}」${pkg}，说明：${info.description}`,
-      "请为它开发一个 jishu hub 适配插件，要求：",
-      "1. 先读 jishu-plugin-authoring 技能（插件创作指南），了解插件形态与 plugin.toml 清单写法；",
-      "2. hub 页面能力（挂载位九类，选与该扩展能力最匹配的 1-2 类）：dock-panel 停靠面板 / sidebar 侧栏 / rail 会话栏挂件 / composer 输入框尾挂件 / block-renderer 消息内块渲染器（按代码块语言或内容类型命中）/ stream-card 流内卡 / titlebar-action 标题栏动作 / settings-page 设置页 / panel 独立面板；",
-      "3. 探查该扩展的公开 API 与数据形态（可用 pi-lens 等工具），生成能将其能力呈现到会话界面的适配插件；",
-      "4. 产出走确认卡流程，我确认后启用。",
-    ].join("\n");
-  }, []);
+    const name = text.split(/[。．!？！?\n]/)[0]?.trim() || text.slice(0, 24) || "该技能";
+    return t("market.skillFirstUse", {
+      defaultValue: "在会话里说：使用「{{name}}」完成对应任务",
+      name,
+    });
+  }, [t]);
+  /** GUI 适配预填文案（需求4 F5）：委托共享实现（与已装页持久入口同源，
+   * 官方信息源四通道+第 0 步判定+双语）。 */
+  const buildGuiAdaptText = useCallback(
+    (info: InstallGuideInfo) => buildGuiAdaptDraft(t, info),
+    [t],
+  );
 
   // 评审 P1-13 修复①：搜索关键词 300ms 防抖（局部 state + 定时器，卸载清理
   // 由 effect 返回）——不再每击键立即触发 load 发 IPC。
@@ -1127,6 +1167,53 @@ export function PluginMarketPanel({
                         )}
                         {source && installed && (
                           <>
+                            {/* 需求4 D4-8b：已装态界面行（登记簿驱动）+ D4-6
+                                持久入口（新增适配；与引导卡同一预填链）。 */}
+                            {(() => {
+                              const entry = extGui.get(pkgKeyOf(source));
+                              if (!entry || entry.state === "disabled") return null;
+                              const launch = () =>
+                                onLaunchDescribe?.(
+                                  buildGuiAdaptDraft(t, { title: entry.display, packageName: pkgKeyOf(source) }),
+                                );
+                              return (
+                                <span className="flex items-center gap-1 text-[9px] text-muted-foreground/80">
+                                  <span>{t("market.extGuiLabel", "界面")}</span>
+                                  {entry.adapters.length > 0 ? (
+                                    <>
+                                      <span className="max-w-[160px] truncate underline decoration-dotted" title={entry.adapters.map((a) => a.plugin_id).join("、")}>
+                                        {entry.adapters.map((a) => a.plugin_id).join("、")}
+                                      </span>
+                                      <Button variant="outline" size="sm" className="h-4 px-1.5 text-[9px]" onClick={launch}>
+                                        {t("market.addAdaptAction", "新增适配")}
+                                      </Button>
+                                    </>
+                                  ) : entry.gui_verdict === "noneeded" ? (
+                                    <span className="flex items-center gap-1" title={entry.verdict_note ?? undefined}>
+                                      {t("market.extGuiNotNeeded", "无需（后台能力）")}
+                                      <button
+                                        type="button"
+                                        className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+                                        onClick={() => {
+                                          void invokeCommand("extension_gui_verdict_set", {
+                                            pkgKey: entry.pkg_key,
+                                            verdict: "pending",
+                                          })
+                                            .catch(() => null)
+                                            .then(() => refreshExtGui());
+                                        }}
+                                      >
+                                        {t("market.extGuiReset", "重新判定")}
+                                      </button>
+                                    </span>
+                                  ) : (
+                                    <Button variant="outline" size="sm" className="h-4 px-1.5 text-[9px]" onClick={launch}>
+                                      {t("market.adaptAction", "适配")}
+                                    </Button>
+                                  )}
+                                </span>
+                              );
+                            })()}
                             <span className="text-muted-foreground">{t("market.installed")}</span>
                             {/* 评审需求16：在线生态卡已装项补卸载（系统内置除外
                                 ——source 构造与安装同源 npm:/git:）。 */}
@@ -1140,12 +1227,30 @@ export function PluginMarketPanel({
                                 title={t("market.uninstall", "卸载")}
                                 onClick={() =>
                                   void (async () => {
+                                    // 需求4 D4-8b：卸载双向提示——扩展被适配件
+                                    // 使用时先确认（界面将停用）。
+                                    const entry = extGui.get(pkgKeyOf(source));
+                                    if (entry && entry.adapters.length > 0) {
+                                      const ok = await confirmDialog({
+                                        title: t("market.uninstall", "卸载"),
+                                        description:
+                                          t("market.uninstallExtDepsWarn", {
+                                            defaultValue: "该扩展被 {{n}} 个界面插件使用：{{names}}——卸载后这些界面将停用",
+                                            n: entry.adapters.length,
+                                            names: entry.adapters.map((a) => a.plugin_id).join("、"),
+                                          }),
+                                        confirmText: t("market.uninstall", "卸载"),
+                                        variant: "destructive",
+                                      });
+                                      if (!ok) return;
+                                    }
                                     setActionError(null);
                                     setBusyIds((prev) => new Set(prev).add(source));
                                     try {
                                       await invokeCommand<string>("pi_package_uninstall_online", { source });
                                       await load();
                                       await refreshInstalled();
+                                      await refreshExtGui();
                                       onChanged?.();
                                     } catch (e) {
                                       setActionError(String(e));
@@ -1206,6 +1311,7 @@ export function PluginMarketPanel({
                                     const stopped = confirmed.disabled
                                       .map((d) => d.opponent_display)
                                       .join("、");
+                                    const gs = await guiStateFor(source);
                                     setGuideCard({
                                       title: dispName,
                                       kind: "extension",
@@ -1213,18 +1319,22 @@ export function PluginMarketPanel({
                                         t("market.guideExtensionDesc", "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件") +
                                         (stopped ? `\n${t("market.conflictStopped", { defaultValue: "已停用：{{items}}（卸载本扩展时自动恢复）", items: stopped })}` : ""),
                                       packageName: source,
-                                      guiAdaptable: true,
+                                      guiAdaptable: !gs.providedBy && !gs.noneeded,
+                                      providedBy: gs.providedBy,
                                     });
                                   } else {
                                     // v0.9.8 需求4：装后引导卡（扩展源）——GUI 适配入口。
+                                    const gs = await guiStateFor(source);
                                     setGuideCard({
                                       title: dispName,
                                       kind: "extension",
                                       description: t("market.guideExtensionDesc", "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件"),
                                       packageName: source,
-                                      guiAdaptable: true,
+                                      guiAdaptable: !gs.providedBy && !gs.noneeded,
+                                      providedBy: gs.providedBy,
                                     });
                                   }
+                                  refreshExtGui();
                                   await load();
                                   onChanged?.();
                                 } catch (e) {
@@ -1328,14 +1438,18 @@ export function PluginMarketPanel({
                               await invokeCommand<string>("pi_package_install_online", {
                                 source: "npm:" + pkg.name + "@" + pkg.version,
                               });
-                              // v0.9.8 需求4：装后引导卡（扩展检索源）——GUI 适配入口。
+                              // v0.9.8 需求4：装后引导卡（扩展检索源）——GUI 适配入口
+                              //（D4-8b：已适配重装态改示 providedBy；冲突结果消费归需求15 批）。
+                              const gs = await guiStateFor("npm:" + pkg.name + "@" + pkg.version);
                               setGuideCard({
                                 title: pkg.name,
                                 kind: "extension",
                                 description: pkg.description || t("market.guideExtensionDesc", "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件"),
                                 packageName: "npm:" + pkg.name + "@" + pkg.version,
-                                guiAdaptable: true,
+                                guiAdaptable: !gs.providedBy && !gs.noneeded,
+                                providedBy: gs.providedBy,
                               });
+                              refreshExtGui();
                               await load();
                             } catch (e) {
                               setActionError(String(e));

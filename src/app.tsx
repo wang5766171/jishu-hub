@@ -4,6 +4,7 @@ import { attachRuntimeLogBridge, hydrateDevLogForced } from "@/lib/dev-log";
 import { attachWindowActivityTracking } from "@/features/session-kernel/window-activity";
 import { lazy, Suspense } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
+import { MigrationOverlay } from "@/components/migration-overlay";
 import { useTranslation } from "react-i18next";
 import { Copy, Minus, Pin, PinOff, Settings, Square, Sun, Palette, Moon, Info, X } from "lucide-react";
 import { ProjectTabs } from "@/components/titlebar/project-tabs";
@@ -955,7 +956,13 @@ function AppContentWrapper() {
     );
   }
 
-  return <AppContent />;
+  return (
+    <>
+      {/* 需求16：数据迁移用户呈现（进度条/critical 阻断卡）——全局浮层。 */}
+      <MigrationOverlay />
+      <AppContent />
+    </>
+  );
 }
 
 function App() {

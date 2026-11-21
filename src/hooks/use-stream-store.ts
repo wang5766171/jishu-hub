@@ -390,7 +390,16 @@ class StreamStore {
       // v0.9.4 需求8：结束时刻（完成态 duration 展示；startedAt 同源配对）。
       const endedAt = Date.now();
       tools = tools.map((tool) => (
-        tool.id === data.call_id ? { ...tool, output: data.output, isError: data.is_error, endedAt } : tool
+        tool.id === data.call_id ? {
+          ...tool,
+          output: data.output,
+          isError: data.is_error,
+          endedAt,
+          // 需求4 F3：details 透传至工具卡（tool-output 挂载渲染器 payload 消费）。
+          ...(data.details && typeof data.details === "object"
+            ? { details: data.details as Record<string, unknown> }
+            : {}),
+        } : tool
       ));
       if (!content.some((block) => block.type === "tool_result" && block.tool_use_id === data.call_id)) {
         // 需求12 二轮：details 随块透传（待办面板等消费方实时取快照）。

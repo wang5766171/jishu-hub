@@ -159,6 +159,8 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     startedAt: tool.startedAt,
     endedAt: tool.endedAt,
     partialOutput: tool.partialOutput,
+    // 需求4 F3：直播路 details 透传（回放路在 message-view resultMap）。
+    details: (tool as { details?: Record<string, unknown> }).details,
   }));
   // Split the content array into assistant segments at the indices where Pi
   // injected a steer (user message) mid-turn. With no splits there is a single

@@ -20,6 +20,10 @@ export interface ToolCall {
   status: ToolStatus;
   input: Record<string, unknown>;
   output?: string;
+  /** 需求4 F3（2026-11-21 用户裁决做）：pi 工具结果的结构化 details
+   *（如 web_fetch 的 title/published/wordCount 元数据）——tool-output 挂载
+   * 渲染器的 payload 透传字段（直播与回放双路可得；无 details 工具不携带）。 */
+  details?: Record<string, unknown>;
   error?: string;
   /** v0.9.8 需求9-①：曾失败、经重试成功的调用（直播=AutoRetryStatus 翻转，
    * 回放=同消息内同名工具存在后置成功结果的启发式）——状态归 success +

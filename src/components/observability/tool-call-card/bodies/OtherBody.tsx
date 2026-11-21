@@ -7,7 +7,7 @@ import { kindLabel } from "../kind-icon";
 import { SniffedOutput } from "../sniffed-output";
 import { matchToolResultRenderer } from "@/features/session-kernel/plugins/mounts/use-block-renderers";
 
-export const OtherBody = memo(function OtherBody({ input, output, kind, toolName }: { input: Record<string, unknown>; output?: string; kind: ToolKind; toolName?: string }) {
+export const OtherBody = memo(function OtherBody({ input, output, details, kind, toolName }: { input: Record<string, unknown>; output?: string; details?: Record<string, unknown>; kind: ToolKind; toolName?: string }) {
   // 8b：插件认领（source.tool_name/tool_pattern 匹配该工具 → 插件组件替换）。
   const claimed = toolName ? matchToolResultRenderer(toolName) : null;
 
@@ -20,7 +20,20 @@ export const OtherBody = memo(function OtherBody({ input, output, kind, toolName
         </pre>
       )}
       {claimed ? (
-        <claimed.component payload={{ kind: "tool-result", toolName: toolName ?? "", output: output ?? "" }} options={claimed.options} actions={[]} />
+        <claimed.component
+          // 需求4 F3 契约（API.md「挂载与 payload 契约」节）：tool-output
+          // 挂载 payload = { kind, toolName, output, input?, details? }——
+          // input=工具入参、details=扩展工具结果结构化元数据（无则不携带）。
+          payload={{
+            kind: "tool-result",
+            toolName: toolName ?? "",
+            output: output ?? "",
+            ...(Object.keys(input).length > 0 ? { input } : {}),
+            ...(details && Object.keys(details).length > 0 ? { details } : {}),
+          }}
+          options={claimed.options}
+          actions={[]}
+        />
       ) : output ? (
         <>
           <SniffedOutput output={output} />
