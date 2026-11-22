@@ -94,3 +94,54 @@ describe("UserTextWithPills（M7 → v0.9.0 需求3：元数据契约）", () =>
     expect(container.querySelector("svg.lucide-package")).toBeTruthy();
   });
 });
+
+// v0.9.8 需求9 路线甲：内联渲染（用户填入位置）+trailing 排重+编辑重扫。
+describe("embedded-tools 需求9 甲（内联位置渲染）", () => {
+  const names = { "dev-god": "写后诊断", "skill-a": "编程大神.Skill" } as Record<string, string>;
+  const cats = { "dev-god": "cli", "skill-a": "skill" } as Record<string, string>;
+
+  it("U9-甲1: hasKnownToolToken——命中映射才 true（未知/无字样 false）", async () => {
+    const { hasKnownToolToken } = await import("./embedded-tools");
+    expect(hasKnownToolToken("用 @[写后诊断] 查", names)).toBe(true);
+    expect(hasKnownToolToken("@[不认识的] 查", names)).toBe(false);
+    expect(hasKnownToolToken("纯文本", names)).toBe(false);
+    expect(hasKnownToolToken("@[写后诊断]", undefined)).toBe(false);
+  });
+
+  it("U9-甲2: UserTextWithPills 内联命中时 trailing 排重（不双份）", () => {
+    render(
+      <UserTextWithPills
+        text="用 @[写后诊断] 查代码"
+        toolIds={["dev-god"]}
+        toolNames={names}
+        toolCats={cats}
+      />,
+    );
+    // 内联 pill（data-tool-pill）恰一个；trailing pills（组渲染）不出现
+    // 同名——dev-god 已被内联覆盖。
+    expect(document.querySelectorAll("[data-tool-pill]").length).toBe(1);
+    expect(document.body.textContent).toContain("写后诊断");
+  });
+
+  it("U9-甲3: 无字样（历史剥离消息）——trailing 照旧（toolIds 全量尾随）", () => {
+    render(
+      <UserTextWithPills
+        text="用 写后诊断 查代码"
+        toolIds={["dev-god"]}
+        toolNames={names}
+        toolCats={cats}
+      />,
+    );
+    // 无内联；尾随组渲染在（EmbeddedToolPills 的 pill 无 data-tool-pill——
+    // 组形态），文本原样。
+    expect(document.querySelectorAll("[data-tool-pill]").length).toBe(0);
+    expect(document.body.textContent).toContain("写后诊断");
+  });
+
+  it("U9-甲4: scanToolIdsFromText——从文本反扫 id（编辑提交用），未知不收", async () => {
+    const { scanToolIdsFromText } = await import("./embedded-tools");
+    expect(scanToolIdsFromText("用 @[写后诊断] 和 @[编程大神.Skill]", names)).toEqual(["dev-god", "skill-a"]);
+    expect(scanToolIdsFromText("@[不认识的] 原样", names)).toEqual([]);
+    expect(scanToolIdsFromText("无字样", names)).toEqual([]);
+  });
+});

@@ -190,15 +190,15 @@ describe("ChatInput + menu aggregation (v0.9.8 需求7)", () => {
     expect(toolIds).toEqual(["plugin:video-pipeline"]);
   });
 
-  it("U-EXT3: extractToolTokens——扩展 token 保留原文且归一 id；传统件剥离子集不变", () => {
-    // 导出的纯函数级验证（chat-input 单源导出）。
+  it("U-EXT3: extractToolTokens——全部类型保留原文（需求9 路线甲）且归一 id", () => {
+    // 导出的纯函数级验证（chat-input 单源导出）。需求9 甲：keep_text 语义
+    // 推广至全部类型——位置随消息文本持久，渲染就地内联。
     const tools = [
       { id: "dev-god", display_name: "写后诊断" },
       { id: "npm:pi-lens", display_name: "扩展·写后诊断", keep_text: true },
     ];
     const { text, toolIds } = extractToolTokens("用 @[写后诊断] 和 @[扩展·写后诊断] 查代码", tools);
-    // 传统件剥离；扩展保留原文（点名传给 agent）。
-    expect(text.replace(/  +/g, " ")).toBe("用 和 @[扩展·写后诊断] 查代码");
+    expect(text).toBe("用 @[写后诊断] 和 @[扩展·写后诊断] 查代码");
     expect(toolIds).toEqual(["dev-god", "npm:pi-lens"]);
   });
 

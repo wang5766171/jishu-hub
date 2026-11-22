@@ -7,7 +7,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { useSessionStream } from "@/hooks/use-stream-store";
 import { InlineImages, stripImagePrompt } from "./inline-image";
-import { EmbeddedToolPills, useSessionToolCats, useSessionToolNames } from "./embedded-tools";
+import { EmbeddedToolPills, UserTextWithPills, hasKnownToolToken, scanToolIdsFromText, useSessionToolCats, useSessionToolNames } from "./embedded-tools";
 // v0.9.7 需求6 F2：产物引用链接（jishu-artifact://）——Q14：仅助手消息两处接入。
 import { jishuUrlTransform } from "@/lib/markdown-url";
 import { ArtifactLink } from "./artifact-link";
@@ -559,7 +559,8 @@ function StreamingUserBubble({ text, toolIds, toolNames, toolCats, onEdit }: { t
             <div className="flex flex-col gap-2" onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                if (draft.trim()) { setEditing(false); onEdit?.(draft.trim(), draftToolIds); }
+                // 需求9 甲：pill 列表空（文本含字样形态）→ 从文本重扫 ids。
+                if (draft.trim()) { setEditing(false); onEdit?.(draft.trim(), draftToolIds.length > 0 ? draftToolIds : scanToolIdsFromText(draft.trim(), toolNames)); }
               } else if (e.key === "Escape") {
                 setEditing(false);
               }
@@ -596,7 +597,7 @@ function StreamingUserBubble({ text, toolIds, toolNames, toolCats, onEdit }: { t
                 <button
                   type="button"
                   disabled={!draft.trim()}
-                  onClick={() => { const v = draft.trim(); setEditing(false); if (v) onEdit?.(v, draftToolIds); }}
+                  onClick={() => { const v = draft.trim(); setEditing(false); if (v) onEdit?.(v, draftToolIds.length > 0 ? draftToolIds : scanToolIdsFromText(v, toolNames)); }}
                   className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground disabled:opacity-40"
                 >
                   {t("sessions.editResend", "重发")}
@@ -605,9 +606,20 @@ function StreamingUserBubble({ text, toolIds, toolNames, toolCats, onEdit }: { t
             </div>
           ) : (
             <>
-              <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} toolCats={toolCats} />
               <InlineImages text={text} />
-              {display}
+              {/* v0.9.8 需求9 路线甲：正文含可内联 @[名] 字样→就地内联（用户
+                  填入位置，与回放同位——修「发送前置/回放末尾」跳位）；无字样
+                  （历史形态/无点名）→ 尾随兜底（与回放旧路径同序）。 */}
+              {hasKnownToolToken(display, toolNames) ? (
+                <UserTextWithPills text={display} toolIds={toolIds} toolNames={toolNames} toolCats={toolCats} />
+              ) : (
+                <>
+                  {display}
+                  {toolIds.length > 0 && (
+                    <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} toolCats={toolCats} trailing />
+                  )}
+                </>
+              )}
             </>
           )}
         </div>
@@ -620,7 +632,8 @@ function StreamingUserBubble({ text, toolIds, toolNames, toolCats, onEdit }: { t
               // 评审 P2-9 修复：剥图片标记后的文本进草稿（纯附件消息为空串
               // +占位文案），不再回填标记原文。
               setDraft(stripped);
-              setDraftToolIds(toolIds);
+              // 需求9 甲：文本含 @[名] 字样 → pill 列表不置（字样即载体）。
+              setDraftToolIds(hasKnownToolToken(stripped, toolNames) ? [] : toolIds);
               setEditing(true);
             }}
             className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 mt-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"

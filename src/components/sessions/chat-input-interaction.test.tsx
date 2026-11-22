@@ -213,26 +213,29 @@ describe("ChatInput interaction submission", () => {
 });
 
 // 评审 P1-15：编辑重发与发送链同构——extractToolTokens 导出为单源管线，
-// chat-page 编辑重发复用。此处锁定剥离/归一/保留行为。
-describe("extractToolTokens（P1-15 编辑重发单源管线）", () => {
+// chat-page 编辑重发复用。v0.9.8 需求9 路线甲（用户裁决「用户放在哪就是
+// 哪」）：**全部类型保留 @[名] 原文**（位置随消息文本持久，渲染就地内联
+// pill 化）；归一提取 toolIds 照旧。
+describe("extractToolTokens（需求9 路线甲：恒保留原文）", () => {
   const tools = [
     { id: "tool-alpha", display_name: "工具甲" },
     { id: "tool-beta", display_name: "工具乙" },
+    { id: "npm:pi-lens", display_name: "扩展·写后诊断", keep_text: true },
   ];
 
-  it("剥离已注册 token、归一为插件 id、去首部空白", () => {
+  it("已注册 token 保留原文（用户填入位置持久）、归一为插件 id", () => {
     const { text, toolIds } = extractToolTokens("@[工具甲] 请处理附件", tools);
-    expect(text).toBe("请处理附件");
+    expect(text).toBe("@[工具甲] 请处理附件");
     expect(toolIds).toEqual(["tool-alpha"]);
   });
 
-  it("多 token 依次归一（顺序保留）", () => {
-    const { text, toolIds } = extractToolTokens("@[工具甲]@[工具乙]", tools);
-    expect(text).toBe("");
+  it("多 token 依次归一（顺序保留）、全文原样（含句中位置）", () => {
+    const { text, toolIds } = extractToolTokens("用 @[工具甲] 和 @[工具乙] 查代码", tools);
+    expect(text).toBe("用 @[工具甲] 和 @[工具乙] 查代码");
     expect(toolIds).toEqual(["tool-alpha", "tool-beta"]);
   });
 
-  it("未匹配插件的 token 原样保留（不吞字）", () => {
+  it("未匹配插件的 token 原样保留（不吞字）、不进 toolIds", () => {
     const { text, toolIds } = extractToolTokens("@[不存在的工具] 原样", tools);
     expect(text).toBe("@[不存在的工具] 原样");
     expect(toolIds).toEqual([]);

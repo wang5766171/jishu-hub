@@ -401,6 +401,23 @@ class StreamStore {
             : {}),
         } : tool
       ));
+      // v0.9.8 需求9 D9-3（直播翻转）：模型自行重跑同名命令成功时旧失败卡
+      // 当场翻「已重试成功」——不再等回合结束回放重算（用户原始抱怨「流式
+      // 阶段很多红框」）。紧档规则与回放共用 computeRetriedSuccessFlags
+      //（两侧口径单一实现，防双标）。auto_retry success 全翻机制并存
+      //（pi 机制级重试重做整次调用，语义不同层）。
+      {
+        const flags = computeRetriedSuccessFlags(
+          tools.map((tool) => ({ id: tool.id, name: tool.name, isError: Boolean(tool.isError) })),
+        );
+        if (flags.size > 0) {
+          tools = tools.map((tool) =>
+            tool.isError && flags.has(tool.id) && !tool.retriedSuccess
+              ? { ...tool, retriedSuccess: true }
+              : tool,
+          );
+        }
+      }
       if (!content.some((block) => block.type === "tool_result" && block.tool_use_id === data.call_id)) {
         // 需求12 二轮：details 随块透传（待办面板等消费方实时取快照）。
         content = [
@@ -725,6 +742,7 @@ class StreamStore {
 }
 
 import { devLog } from "@/lib/dev-log";
+import { computeRetriedSuccessFlags } from "@/lib/retry-flag";
 
 export const streamStore = new StreamStore();
 

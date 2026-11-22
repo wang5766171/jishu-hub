@@ -13,7 +13,8 @@ import { extractCodeText } from "./code-block-text";
 // v0.9.7 需求6 F2：产物引用链接（jishu-artifact://）——Q14：仅助手消息两处接入。
 import { jishuUrlTransform } from "@/lib/markdown-url";
 import { ArtifactLink } from "./artifact-link";
-import { EmbeddedToolPills, useSessionToolCats, useSessionToolNames } from "./embedded-tools";
+import { EmbeddedToolPills, UserTextWithPills, hasKnownToolToken, scanToolIdsFromText, useSessionToolCats, useSessionToolNames } from "./embedded-tools";
+import { computeRetriedSuccessFlags } from "@/lib/retry-flag";
 import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
@@ -411,11 +412,11 @@ function buildRenderItemsForMessages(
     messages[messageIndex].content.some((block) => block.type === "interaction"),
   );
 
-  // v0.9.8 需求9-① 回放侧：同名后置成功启发式——失败调用之后存在同名工具的
-  // 成功结果（pi auto_retry 重做 / 模型自行重试成功），该失败卡按「已重试
-  // 成功」呈现（status success + 已重试徽标，错误输出保留可展开——用户裁决
-  // 「重试成功后算作成功」，历史不删）。直播侧同语义翻转见 use-stream-store
-  // auto_retry_status 分支；两机制对齐「最终结果呈现」。
+  // v0.9.8 需求9-①→D9-4 紧档：失败卡之后**第一张同名调用** success 才翻
+  //「已重试成功」（宽档「任意后续同名成功即翻」废弃——bash 类通用工具
+  // 换了目的跑成功不再洗白前面的失败；失败→失败都不翻，错误输出保留
+  // 可展开）。直播侧（use-stream-store）与回放共用 computeRetriedSuccessFlags
+  // ——两侧口径单一实现。
   const orderedCalls: Array<{ id: string; name: string; isError: boolean }> = [];
   for (const messageIndex of messageIndices) {
     for (const block of messages[messageIndex].content) {
@@ -424,14 +425,7 @@ function buildRenderItemsForMessages(
       }
     }
   }
-  const retriedToolIds = new Set<string>();
-  orderedCalls.forEach((call, i) => {
-    if (!call.isError) return;
-    const hasLaterSuccess = orderedCalls
-      .slice(i + 1)
-      .some((c) => c.name === call.name && !c.isError && resultMap.has(c.id));
-    if (hasLaterSuccess) retriedToolIds.add(call.id);
-  });
+  const retriedToolIds = computeRetriedSuccessFlags(orderedCalls);
 
   const flushTools = () => {
     if (pendingTools.length === 0) return;
@@ -722,7 +716,8 @@ function UserBubble({
             <div className="flex flex-col gap-2" onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                if (draft.trim()) { setEditing(false); onEditSubmit?.(draft.trim(), draftToolIds); }
+                // 需求9 甲：pill 列表空（文本含字样形态）→ 从文本重扫 ids。
+                if (draft.trim()) { setEditing(false); onEditSubmit?.(draft.trim(), draftToolIds.length > 0 ? draftToolIds : scanToolIdsFromText(draft.trim(), toolNames)); }
               } else if (e.key === "Escape") {
                 setEditing(false);
               }
@@ -753,7 +748,7 @@ function UserBubble({
                 <button
                   type="button"
                   disabled={!draft.trim()}
-                  onClick={() => { const text = draft.trim(); setEditing(false); if (text) onEditSubmit?.(text, draftToolIds); }}
+                  onClick={() => { const text = draft.trim(); setEditing(false); if (text) onEditSubmit?.(text, draftToolIds.length > 0 ? draftToolIds : scanToolIdsFromText(text, toolNames)); }}
                   className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground disabled:opacity-40"
                 >
                   {t("sessions.editResend", "重发")}
@@ -792,6 +787,18 @@ function UserBubble({
             // 本就是后缀追加，原「pill 恒前置」误导（用户实测 #3）；与
             // UserTextWithPills（暂存/steer 路径）同序，展示面单源。
             if (item.block.type === "text" && item.block === firstTextBlock) {
+              // v0.9.8 需求9 路线甲：正文含可内联 @[名] 字样（新消息——用户
+              // 填入位置随文本持久）→ UserTextWithPills 就地内联（trailing
+              // 排重内置）；无字样（历史剥离消息）→ 原 TextBlock+尾随路径
+              //（保留搜索高亮——含字样路径为排版一致暂不参与搜索高亮，
+              // 用户消息内命中工具名旁属边缘场景，取舍如实记录）。
+              if (hasKnownToolToken(displayText, toolNames)) {
+                return (
+                  <div key={`b-${item.blockIndex}`} className="overflow-hidden">
+                    <UserTextWithPills text={displayText} toolIds={toolIds} toolNames={toolNames} toolCats={toolCats} />
+                  </div>
+                );
+              }
               return (
                 <div key={`b-${item.blockIndex}`} className="overflow-hidden">
                   <TextBlock
@@ -847,7 +854,9 @@ function UserBubble({
                 e.stopPropagation();
                 if (bubbleRef.current) setEditWidth(bubbleRef.current.offsetWidth);
                 setDraft(displayText || copyText);
-                setDraftToolIds(toolIds);
+                // 需求9 甲：文本含 @[名] 字样（新消息）→ pill 列表不置
+                //（字样即载体，用户可在文中挪位置/删改；提交时重扫）。
+                setDraftToolIds(hasKnownToolToken(displayText || copyText, toolNames) ? [] : toolIds);
                 setEditing(true);
               }}
               className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 mt-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"

@@ -192,6 +192,40 @@ export function EmbeddedToolPill({ name, kind }: { name: string; kind?: string }
  * 是后缀追加（compose_tool_message 单源），原「pill 恒前置」误导用户以为
  * 工具挂在了消息开头（用户实测 #3「插件永远在最前面」）。真实插入位置的
  * 元数据方案（A）留待用户验收 B 后裁决。 */
+/** v0.9.8 需求9 路线甲：正文是否含**可内联**的 @[名] 字样（名字在
+ * toolNames 映射中）——含则渲染走 UserTextWithPills 内联（用户填入位置），
+ * 不含（历史剥离消息）走原 TextBlock+尾随 pill 路径。 */
+export function hasKnownToolToken(
+  text: string,
+  toolNames: Record<string, string> | undefined,
+): boolean {
+  if (!text || !text.includes("@[") || !toolNames) return false;
+  const known = new Set(Object.values(toolNames));
+  const re = /@\[([^\]]+)\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (known.has(m[1])) return true;
+  }
+  return false;
+}
+
+/** v0.9.8 需求9 路线甲：编辑提交时从 draft 文本反扫工具 id（@[名] 字样
+ * 即载体——编辑态 pill 列表在文本含字样时不置，提交以文本为准）。 */
+export function scanToolIdsFromText(
+  text: string,
+  toolNames: Record<string, string>,
+): string[] {
+  const ids: string[] = [];
+  const nameToId = new Map(Object.entries(toolNames).map(([id, name]) => [name, id]));
+  const re = /@\[([^\]]+)\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const id = nameToId.get(m[1]);
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
 export function UserTextWithPills({
   text,
   toolIds,
@@ -204,11 +238,14 @@ export function UserTextWithPills({
   /** 需求7 补充：id→category（pill 图标按类型）。 */
   toolCats?: Record<string, string>;
 }) {
-  // v0.9.8 需求5（合并版）：扩展点名（keep_text 形态）的 `@[扩展名]` 原文
-  // 内联 pill 化——扩展无注入块，回放 tool_ids 快照不含它，点名信息就在
-  // 正文里；名字在 toolNames 映射中存在才转换（未知 @[x] 按原文）。传统
-  // 件（剥离形态）正文不含 @[名]，此分支天然不触发——展示面单源不破。
+  // v0.9.8 需求5（合并版）：`@[名]` 原文内联 pill 化（名字在 toolNames
+  // 映射中存在才转换——未知 @[x] 按原文）。
+  // v0.9.8 需求9 路线甲（用户裁决「用户放在哪就是哪」）：全部类型 token
+  // 原文保留（发送链 extractToolTokens 恒保留），内联渲染即用户填入位置；
+  // trailing pill 只兜底渲染**未被内联覆盖**的 id（历史剥离消息无字样→
+  // 全部尾随；新消息全内联→尾随空——防内联+尾随双份）。
   let textNode: import("react").ReactNode = text;
+  const inlinedNames = new Set<string>();
   const knownNames = new Set(Object.values(toolNames));
   if (text.includes("@[") && knownNames.size > 0) {
     const parts: import("react").ReactNode[] = [];
@@ -219,6 +256,7 @@ export function UserTextWithPills({
       if (!knownNames.has(m[1])) continue;
       if (m.index > last) parts.push(text.slice(last, m.index));
       parts.push(<EmbeddedToolPill key={`pill-${m.index}`} name={m[1]} kind={kindForName(toolNames, toolCats, m[1])} />);
+      inlinedNames.add(m[1]);
       last = m.index + m[0].length;
     }
     if (last === 0) {
@@ -228,10 +266,11 @@ export function UserTextWithPills({
       textNode = parts;
     }
   }
+  const trailingIds = toolIds.filter((id) => !inlinedNames.has(toolNames[id]));
   return (
     <span className="whitespace-pre-wrap break-all">
       {textNode}
-      <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} toolCats={toolCats} trailing />
+      <EmbeddedToolPills toolIds={trailingIds} toolNames={toolNames} toolCats={toolCats} trailing />
     </span>
   );
 }

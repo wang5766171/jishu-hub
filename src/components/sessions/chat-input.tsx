@@ -76,10 +76,12 @@ export function extractToolTokens(text: string, tools: ToolTokenSource[]): { tex
     const tool = tools.find((t) => t.display_name === name);
     if (!tool) return match;
     ids.push(tool.id);
-    // v0.9.8 需求5：扩展点名保留原文——pi 扩展无说明块可注入，@[扩展名]
-    // 本身就是要让 agent 看到的信息（工具可用性由 pi packages 机制保证）。
-    if (tool.keep_text) return match;
-    return "";
+    // v0.9.8 需求9 路线甲（用户裁决「用户放在哪就是哪」）：**全部类型**
+    // 保留 @[名] 原文——用户填入位置随消息文本持久（落盘/回放），渲染时
+    // 就地内联 pill 化；模型可见点名及其位置（工具说明块照常由 hub 注入，
+    // 需求5 扩展件 keep_text 语义推广至全部类型）。历史剥离消息无字样，
+    // 渲染回退尾随 pill（旧形态）。
+    return match;
   });
   TOOL_TOKEN_RE.lastIndex = 0;
   return { text: replaced.trimStart(), toolIds: ids };
