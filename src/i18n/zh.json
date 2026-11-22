@@ -386,13 +386,10 @@
     "scrollToBottom": "滚动到底部",
     "stagingDrag": "拖动调整顺序",
     "imageOnlyEditHint": "补充文字重发将不再携带原图片，需要图片请重新上传",
-    "equipSuggestByTask": "按最近任务推荐",
-    "equipSuggestByDraft": "按你输入的内容推荐",
-    "equipSuggestFallback": "为你推荐",
-    "equipSuggestMountable": "已装可快速挂载",
-    "equipSuggestMountHint": "已安装——点击挂载到本会话",
-    "equipSuggestByProject": "按当前项目推荐",
-    "extensionSection": "扩展"
+    "equipSuggestMountHint": "点击使用",
+    "extensionSection": "扩展",
+    "equipSuggestTitle": "推荐插件",
+    "equipSuggestInstallHint": "点击安装使用"
   },
   "plugins": {
     "entryStepFace": "业务形态（做什么·在哪用）",

@@ -48,6 +48,9 @@ const fixtures = (opts?: { dismissed?: boolean; profile?: { scene: string; keywo
           // enabled=会话级挂载选中态：建议对象恰是「装了没挂」（enabled=false）
           { id: "task-plan", display_name: "流程规划", description: "", usage: "", enabled: false, injectable: true, category: "cli" },
           { id: "not-injectable", display_name: "扩展件", description: "", usage: "", enabled: false, injectable: false, category: "cli" },
+          // 需求5 优化轮：用户自装技能（category=skill，不在 curated——
+          // 此前被 curated 交集挡在挂载建议外）。
+          { id: "pmaster", display_name: "产品经理综合技能", description: "", usage: "", enabled: false, injectable: true, category: "skill" },
         ]);
       case "get_scene_suggest_dismissed":
         return Promise.resolve(opts?.dismissed ?? false);
@@ -102,12 +105,17 @@ describe("ChatInput 装备建议条（v0.9.8 需求5 合并版）", () => {
 
     // 建议条出现：按最近任务（画像 video）→ 未装推荐=视频生成助手（tags 命中）
     await waitFor(() => {
-      expect(screen.getByText("按最近任务推荐")).toBeInTheDocument();
+      expect(screen.getByText("推荐插件")).toBeInTheDocument();
     });
     expect(screen.getByRole("button", { name: /视频生成助手/ })).toBeInTheDocument();
-    // 已装未挂件（task-plan 可注入）也在条上——sessionTools 异步就位后第二轮计算
+    // 已装可挂载件在条上——含用户自装技能（pmaster，不在 curated 也进——
+    // 需求5 优化轮扩源）与 curated 件（流程规划）。
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "流程规划" })).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      const skill = screen.getByRole("button", { name: /产品经理综合技能/ });
+      expect(skill.getAttribute("title")).toBe("点击使用");
     });
     // 画像未命中的件不出现
     expect(screen.queryByText("写后诊断")).not.toBeInTheDocument();
@@ -122,7 +130,7 @@ describe("ChatInput 装备建议条（v0.9.8 需求5 合并版）", () => {
     fixtures();
     renderInput();
     await waitFor(() => {
-      expect(screen.getByText("按最近任务推荐")).toBeInTheDocument();
+      expect(screen.getByText("推荐插件")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: /视频生成助手/ }));
@@ -154,7 +162,7 @@ describe("ChatInput 装备建议条（v0.9.8 需求5 合并版）", () => {
     await waitFor(() =>
       expect(invokeCommand).toHaveBeenCalledWith("get_scene_suggest_dismissed"),
     );
-    expect(screen.queryByText("按最近任务推荐")).not.toBeInTheDocument();
+    expect(screen.queryByText("推荐插件")).not.toBeInTheDocument();
     unmount();
 
     // b) input_bar 链路开关关
@@ -170,28 +178,28 @@ describe("ChatInput 装备建议条（v0.9.8 需求5 合并版）", () => {
     await waitFor(() =>
       expect(invokeCommand).toHaveBeenCalledWith("equip_config_get"),
     );
-    expect(screen.queryByText("按最近任务推荐")).not.toBeInTheDocument();
+    expect(screen.queryByText("推荐插件")).not.toBeInTheDocument();
   });
 
   it("U3: 点 × 持久化关闭标志并立即隐藏", async () => {
     fixtures();
     renderInput();
     await waitFor(() => {
-      expect(screen.getByText("按最近任务推荐")).toBeInTheDocument();
+      expect(screen.getByText("推荐插件")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByTitle("不再提示"));
     await waitFor(() => {
       expect(invokeCommand).toHaveBeenCalledWith("set_scene_suggest_dismissed", { value: true });
     });
-    expect(screen.queryByText("按最近任务推荐")).not.toBeInTheDocument();
+    expect(screen.queryByText("推荐插件")).not.toBeInTheDocument();
   });
 
   it("U4: 无画像无命中 → 官方入门回落（stars 排序）", async () => {
     fixtures({ profile: null });
     renderInput();
     await waitFor(() => {
-      expect(screen.getByText("为你推荐")).toBeInTheDocument();
+      expect(screen.getByText("推荐插件")).toBeInTheDocument();
     });
     // 入门回落取未装 curated 件（stars 排序 top3）
     expect(screen.getAllByRole("button", { name: /视频生成助手|流程规划|写后诊断|配音助手/ }).length).toBeGreaterThan(0);

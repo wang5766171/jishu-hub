@@ -386,13 +386,10 @@
     "scrollToBottom": "Scroll to bottom",
     "stagingDrag": "Drag to reorder",
     "imageOnlyEditHint": "Resending with new text will not carry the original image — re-attach it if needed",
-    "equipSuggestByTask": "Based on a recent task",
-    "equipSuggestByDraft": "Based on what you're typing",
-    "equipSuggestFallback": "For you",
-    "equipSuggestMountable": "Installed — quick mount",
-    "equipSuggestMountHint": "Already installed — click to mount in this chat",
-    "equipSuggestByProject": "Based on this project",
-    "extensionSection": "Extensions"
+    "equipSuggestMountHint": "Click to use",
+    "extensionSection": "Extensions",
+    "equipSuggestTitle": "Recommended plugins",
+    "equipSuggestInstallHint": "Click to install and use"
   },
   "plugins": {
     "entryStepFace": "Business face (what · where)",

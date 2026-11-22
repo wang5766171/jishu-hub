@@ -593,13 +593,24 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                 kind: e.kind,
                 description: e.description,
               }));
-        // 已装未挂：curated 非 required ∩ 可注入 sessionTools（点击 @[注入]）。
-        // 不按 enabled 过滤：那是「本会话是否已挂载」选中态，未挂恰是建议对象。
-        const mountItems = (curated ?? [])
-          .filter((c) => !c.required)
-          .filter((c) => sessionTools.some((t) => t.id === c.id && t.injectable !== false))
-          .slice(0, 2)
-          .map((c) => ({ id: c.id, title: c.title }));
+        // 已装可挂载（点击 @[注入]）：**已装技能本体**（用户装的 skill 类，
+        // 需求5 优化轮：不限定官方清单——用户装的 pmaster 等技能此前被
+        // curated 交集挡在外面"装的技能都不推荐"）∪ curated 非 required
+        // 命中件。不按 enabled 过滤：那是会话级挂载选中态，未挂恰是建议对象。
+        const mountSeen = new Set<string>();
+        const mountItems: Array<{ id: string; title: string }> = [];
+        for (const tool of sessionTools) {
+          if (mountItems.length >= 6) break;
+          const isSkill = tool.category === "skill";
+          const inCuratedNonRequired = (curated ?? []).some(
+            (c) => !c.required && c.id === tool.id,
+          );
+          if (!(isSkill || inCuratedNonRequired)) continue;
+          if (tool.injectable === false) continue;
+          if (mountSeen.has(tool.id)) continue;
+          mountSeen.add(tool.id);
+          mountItems.push({ id: tool.id, title: tool.display_name });
+        }
         if (installItems.length === 0 && mountItems.length === 0) {
           setSceneSuggest(null);
           return;
@@ -1537,22 +1548,13 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           className="relative mb-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-border/60 bg-muted/25 px-3 py-2 text-xs text-muted-foreground"
         >
           <Sparkles className="h-3.5 w-3.5 shrink-0 text-[var(--icon-theme)]" />
-          <span>
-            {sceneSuggest.installItems.length === 0
-              ? t("sessions.equipSuggestMountable", "已装可快速挂载")
-              : sceneSuggest.origin === "workspace"
-                ? t("sessions.equipSuggestByProject", "按当前项目推荐")
-                : sceneSuggest.origin === "profile"
-                  ? t("sessions.equipSuggestByTask", { defaultValue: "按最近任务推荐", note: sceneSuggest.originNote ?? "" })
-                  : sceneSuggest.origin === "draft"
-                    ? t("sessions.equipSuggestByDraft", "按你输入的内容推荐")
-                    : t("sessions.equipSuggestFallback", "为你推荐")}
-          </span>
+          <span>{t("sessions.equipSuggestTitle", "推荐插件")}</span>
           {sceneSuggest.installItems.map((item) => (
             <button
               key={item.ref}
               type="button"
               data-equip-suggest={item.ref}
+              title={t("sessions.equipSuggestInstallHint", "点击安装使用")}
               onClick={() => setSuggestPopover(suggestPopover?.ref === item.ref ? null : item)}
               className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-background/70 px-2.5 py-0.5 text-foreground/85 transition-fast hover:border-primary/60 hover:text-foreground"
             >
@@ -1565,7 +1567,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
               key={item.id}
               type="button"
               data-mount-suggest={item.id}
-              title={t("sessions.equipSuggestMountHint", "已安装——点击挂载到本会话")}
+              title={t("sessions.equipSuggestMountHint", "点击使用")}
               onClick={() => insertToolToken(item.title)}
               className="inline-flex items-center gap-1 rounded-full border border-dashed border-border/70 bg-background/70 px-2.5 py-0.5 text-foreground/75 transition-fast hover:border-primary/50 hover:text-foreground"
             >
