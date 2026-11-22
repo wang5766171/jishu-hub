@@ -2010,18 +2010,17 @@ export function PluginsPage({
           // 可见扩展卡：搜索态参与搜索；扩展包 tab 参与来源筛选（内置=钉版/
           // 市场安装=无钉版——需求4 R3 口径）；实现/形态维无值=不匹配；其他
           // tab 不渲染。
-          const extBySource = (src: string) => {
-            if (sourceFilter === "all") return true;
+          // 扩展卡来源标签（与卡上徽章同源：内置=钉版/市场安装=无钉版）。
+          const extSourceOf = (src: string): SourceValue => {
             const m = src.match(NPM_SOURCE_RE);
             const pkg = m?.[1] ?? src.replace(/^npm:/, "");
-            const pinned = extPins.some((p) => p.package === pkg);
-            return sourceFilter === "builtin" ? pinned : !pinned;
+            return extPins.some((p) => p.package === pkg) ? "builtin" : "market";
           };
           const extDimsOk = implFilter === "all" && formFilter === "all";
           const visibleExts = search.trim()
-            ? (extDimsOk ? extInstalled.filter((src) => matchesExtSearch(src) && extBySource(src)) : [])
+            ? (extDimsOk ? extInstalled.filter((src) => matchesExtSearch(src) && (sourceFilter === "all" || extSourceOf(src) === sourceFilter)) : [])
             : activeTab === "extension" && extDimsOk
-              ? extInstalled.filter(extBySource)
+              ? extInstalled.filter((src) => sourceFilter === "all" || extSourceOf(src) === sourceFilter)
               : [];
           return (
             <>
