@@ -307,3 +307,43 @@ describe("v0.9.8 需求9-①：auto_retry 成功结束翻转失败卡（重试�
     expect(tools[0].retriedSuccess).toBeUndefined();
   });
 });
+
+describe("v0.9.8 需求19-B：drop 保留 alias（pi 死亡终局事件必达）", () => {
+  it("首次停止 drop 后 alias 保留——pi 死亡 turn_complete(Error) 按注册键（pending）可达重建流", () => {
+    const pendingId = "pending-req19-abort";
+    const realId = "01a20357-req19-7144-b7b0";
+    streamStore.drop(pendingId);
+    streamStore.drop(realId);
+
+    // ① 首发挂 pending 键；连接建立登记 alias（pending↔真实 id）。
+    streamStore.start(pendingId, "复测窗口期停止");
+    streamStore.alias(pendingId, realId);
+    // ② 首次停止收口 drop（经 canonical 解析删流条目）——alias 必须保留
+    //    （修前此处连 alias 清掉，后续键失联）。
+    streamStore.drop(realId);
+    expect(streamStore.getState(realId)).toBeNull();
+    // ③ 再发验证：流重建（canonical(realId) 经 alias 仍解析到 pending 键）。
+    streamStore.start(realId, "再发验证");
+    expect(streamStore.getState(pendingId)).not.toBeNull();
+    // ④ pi 死亡：turn_complete(Error) 按连接注册键（pending）到达——必须被
+    //    接收而非拒收（lifecycle-only 无流拒绝只对「真的无流」成立）。
+    const terminal = {
+      ...chunk({ kind: "turn_complete", reason: "Error", usage: null }),
+      session_id: pendingId,
+    } satisfies StreamChunk;
+    expect(streamStore.pushTracked(pendingId, terminal)).toBe(true);
+    streamStore.drop(realId);
+  });
+
+  it("getStreamingIds 别名展开在 alias 保留语义下仍只含流式中的会话", () => {
+    const pendingId = "pending-req19-idle";
+    const realId = "01a-idle-req19";
+    streamStore.drop(pendingId);
+    streamStore.drop(realId);
+    streamStore.alias(pendingId, realId);
+    // 无流条目 → 两键都不在流式集合（保留 alias 不产生幽灵「处理中」）。
+    const ids = streamStore.getStreamingIds();
+    expect(ids).not.toContain(pendingId);
+    expect(ids).not.toContain(realId);
+  });
+});

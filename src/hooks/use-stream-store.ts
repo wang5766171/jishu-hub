@@ -649,9 +649,13 @@ class StreamStore {
     devLog("store", "drop", { id: sid });
     const key = this.canonical(sid);
     this.sessions.delete(key);
-    for (const [k, v] of Array.from(this.aliases.entries())) {
-      if (v === key || k === key) this.aliases.delete(k);
-    }
+    // v0.9.8 需求19-B：alias（pending↔真实 id 等价关系）**保留**——它是
+    // 事实而非流状态，不随流结束失效。此前 drop 连 alias 一起清：首次
+    // 停止收口后再发消息，流重建挂真实 id 键；pi 进程死亡时连接循环按
+    // 注册键（pending）发 turn_complete(Error)，alias 已清 → 键失联 →
+    // lifecycle-only 事件被 pushTracked 拒收 → 流永等不到终结者（会话
+    // 「处理中」永挂、停止无效，仅重启恢复）。pending 键带时间戳不复用，
+    // 保留 alias 无错误路由风险；量级=会话数×2。
     this.scheduleFlush();
   }
 

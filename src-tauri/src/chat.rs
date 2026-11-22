@@ -726,15 +726,30 @@ pub(crate) fn remove_process_entries_from(
     }
 }
 
+/// v0.9.8 需求19-D：abort_chat 结果标记。`process_found=false`（进程表无
+/// 此会话——pi 已死亡/连接循环已退出）时前端不等 turn_complete(Aborted)
+/// 回执（永远等不到），本地直接收口（onAbort 提交后 drop 流）——修复
+/// 「僵尸处理中 + 停止无效，仅重启恢复」。
+#[derive(serde::Serialize)]
+pub struct AbortChatOutcome {
+    pub process_found: bool,
+}
+
 #[tauri::command]
-pub async fn abort_chat(app: AppHandle, session_id: String) -> Result<(), String> {
+pub async fn abort_chat(app: AppHandle, session_id: String) -> Result<AbortChatOutcome, String> {
     let chat_state = app.state::<Mutex<ChatState>>();
     let process = {
         let s = chat_state
             .lock()
             .map_err(|_| "Chat state lock poisoned".to_string())?;
         let Some(process) = s.processes.get(&session_id).cloned() else {
-            return Ok(());
+            // 需求19-D：进程已死/未注册——如实告知前端（此前静默 Ok(())，
+            // 前端误以为回执将至而永等）。
+            log::warn!(
+                "abort_chat: no live process for session {} (engine dead?) — frontend will settle locally",
+                session_id
+            );
+            return Ok(AbortChatOutcome { process_found: false });
         };
         process
     };
@@ -743,7 +758,7 @@ pub async fn abort_chat(app: AppHandle, session_id: String) -> Result<(), String
     if let Some(acp) = &process.acp {
         acp.send_cancel().await;
         log::info!("cancelled ACP prompt in session {}", session_id);
-        return Ok(());
+        return Ok(AbortChatOutcome { process_found: true });
     }
 
     {
@@ -818,7 +833,7 @@ pub async fn abort_chat(app: AppHandle, session_id: String) -> Result<(), String
             process.agent_id,
             session_id
         );
-        return Ok(());
+        return Ok(AbortChatOutcome { process_found: true });
     }
 
     let abort_result = {
@@ -835,7 +850,7 @@ pub async fn abort_chat(app: AppHandle, session_id: String) -> Result<(), String
     match abort_result {
         Ok(()) => {
             log::info!("aborted {} chat session {}", process.agent_id, session_id);
-            Ok(())
+            Ok(AbortChatOutcome { process_found: true })
         }
         Err(err) => {
             log::warn!(

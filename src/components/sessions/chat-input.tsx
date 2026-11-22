@@ -1382,13 +1382,21 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       ?? activeSessionId
       ?? sessionId;
     if (abortKey) {
-      await invokeCommand("abort_chat", { sessionId: abortKey });
+      const abortRes = await invokeCommand<{ process_found?: boolean }>("abort_chat", { sessionId: abortKey });
       await onAbort?.();
       // v0.9.4 需求7 测试期重构：此处不再 drop 任何流键——抢先 drop 会让
       // 晚到的 turn_complete(Aborted)（唯一回合终结者：重复提交防重 + steering
       // 重发收口 + 流 drop）被 pushTracked 拒绝，收口死。流的生命周期归属
       // turn_complete 处理；极端丢失（进程崩溃）由重挂载对账（chat_turn_active）
       // 兜底。
+      // v0.9.8 需求19-D 例外：process_found=false（引擎进程已死——进程表无
+      // 此会话）时 turn_complete(Aborted) 回执**永远不会来**（无接收者），
+      // 重挂载对账只在重启后生效——不等，onAbort 本地提交完成后直接 drop
+      // 收口（停止救回：②气泡/停止键立即退场，消息已入缓存，可继续发消息）。
+      if (abortRes && abortRes.process_found === false) {
+        streamStore.drop(abortKey);
+        devLog("store", "abort 引擎已死：本地收口（不等回执）", { id: abortKey });
+      }
       setSending(false);
       setActiveSessionId(null);
     } else {
