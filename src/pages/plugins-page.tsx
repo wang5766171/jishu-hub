@@ -1991,42 +1991,14 @@ export function PluginsPage({
             mcp.json 非 jishu-hub 用户条目；与聚合插件互补）。十七轮：同上
             筛选门控。 */}
         {activeTab === "mcp" && !search.trim() && filtersIdle && <NativeMcpSection />}
-{/* v0.9.7 需求3 十四轮：扩展包参与检索——扩展包 tab 无搜索显示全量；
-    搜索态生态件命中卡并入全库结果（插件全库命中 + 扩展包命中）。
-    十七轮：扩展卡无形态/实现徽章，这两维激活时隐藏。
-    需求4 R2 后修正（用户裁决 2026-11-21）：扩展卡有来源徽章（内置=
-    有钉版/市场安装=无钉版）——来源筛选应生效而非隐藏全部；仅
-    实现/形态筛选激活时仍隐藏（扩展卡无此两维徽章）。 */}
-        {activeTab === "extension" && !search.trim()
-          && (sourceFilter === "all" || (implFilter !== "all" || formFilter !== "all" ? false : true))
-          && renderExtCards(
-            sourceFilter === "builtin"
-              ? extInstalled.filter((src) => {
-                  const m = src.match(NPM_SOURCE_RE);
-                  const pkg = m?.[1] ?? src.replace(/^npm:/, "");
-                  return extPins.some((p) => p.package === pkg);
-                })
-              : sourceFilter === "market"
-                ? extInstalled.filter((src) => {
-                    const m = src.match(NPM_SOURCE_RE);
-                    const pkg = m?.[1] ?? src.replace(/^npm:/, "");
-                    return !extPins.some((p) => p.package === pkg);
-                  })
-                : extInstalled,
-          )}
-        {activeTab === "extension" && !search.trim() && implFilter !== "all" && (
-          <p className="col-span-full py-8 text-center text-sm text-muted-foreground">
-            {tr("plugins.extFilteredOut", "扩展包不支持按实现方式筛选——请切回「全部」")}
-          </p>
-        )}
-        {activeTab === "extension" && !search.trim() && formFilter !== "all" && (
-          <p className="col-span-full py-8 text-center text-sm text-muted-foreground">
-            {tr("plugins.extFilteredOut", "扩展包不支持按形态筛选——请切回「全部」")}
-          </p>
-        )}
-        {search.trim() && filtersIdle && extInstalled.filter(matchesExtSearch).length > 0 && renderExtCards(extInstalled.filter(matchesExtSearch))}
-        {(result?.plugins ?? [])
-          .filter((x) =>
+{/* 需求7 后续修复轮（用户裁决 2026-11-22）：扩展包检索/空态统一口径——
+    「能检索到就显示，检索不到就显示暂无插件」，删除筛选激活/tab 形态的
+    特殊分支与专项提示（此前两套条件不一致：扩展 tab+来源筛选时扩展卡
+    渲染列表、空态判定却按 !filtersIdle 同时出「暂无插件」——自相矛盾）。
+    两源统一过滤：插件网格 + 扩展卡，都空才显示暂无。 */}
+        {(() => {
+          // 可见插件（网格）：搜索态全库 / tab 态按分类，实现/来源/形态筛选叠加。
+          const visiblePlugins = (result?.plugins ?? []).filter((x) =>
             search.trim()
               ? matchesSearch(x) && (implFilter === "all" || implOfCard(x) === implFilter)
                   && (sourceFilter === "all" || sourceOf(x, !!skillLedger[x.id]) === sourceFilter)
@@ -2034,36 +2006,40 @@ export function PluginsPage({
               : categoryOf(x) === activeTab && (implFilter === "all" || implOfCard(x) === implFilter)
                   && (sourceFilter === "all" || sourceOf(x, !!skillLedger[x.id]) === sourceFilter)
                   && (formFilter === "all" || formOf(x) === formFilter),
-          )
-          .map((plugin) => renderCard(plugin))}
+          );
+          // 可见扩展卡：搜索态参与搜索；扩展包 tab 参与来源筛选（内置=钉版/
+          // 市场安装=无钉版——需求4 R3 口径）；实现/形态维无值=不匹配；其他
+          // tab 不渲染。
+          const extBySource = (src: string) => {
+            if (sourceFilter === "all") return true;
+            const m = src.match(NPM_SOURCE_RE);
+            const pkg = m?.[1] ?? src.replace(/^npm:/, "");
+            const pinned = extPins.some((p) => p.package === pkg);
+            return sourceFilter === "builtin" ? pinned : !pinned;
+          };
+          const extDimsOk = implFilter === "all" && formFilter === "all";
+          const visibleExts = search.trim()
+            ? (extDimsOk ? extInstalled.filter((src) => matchesExtSearch(src) && extBySource(src)) : [])
+            : activeTab === "extension" && extDimsOk
+              ? extInstalled.filter(extBySource)
+              : [];
+          return (
+            <>
+        {visibleExts.length > 0 && renderExtCards(visibleExts)}
+        {visiblePlugins.map((x) => renderCard(x))}
+        {visiblePlugins.length === 0 && visibleExts.length === 0 && (
+          <p className="col-span-full py-10 text-center text-sm text-muted-foreground">
+            {search.trim()
+              ? tr("plugins.searchEmpty", "无匹配插件")
+              : result && result.plugins.length === 0
+                ? tr("plugins.empty", "无插件")
+                : tr("plugins.categoryEmpty", "暂无插件")}
+          </p>
+        )}
+            </>
+          );
+        })()}
       </div>
-      {(result?.plugins ?? []).filter((x) =>
-        search.trim()
-          ? matchesSearch(x) && (implFilter === "all" || implOfCard(x) === implFilter)
-              && (sourceFilter === "all" || sourceOf(x, !!skillLedger[x.id]) === sourceFilter)
-              && (formFilter === "all" || formOf(x) === formFilter)
-          : categoryOf(x) === activeTab && (implFilter === "all" || implOfCard(x) === implFilter)
-              && (sourceFilter === "all" || sourceOf(x, !!skillLedger[x.id]) === sourceFilter)
-              && (formFilter === "all" || formOf(x) === formFilter),
-      ).length === 0 &&
-        // v0.9.7 第三轮评审修复 P1-4：空态误判——旧条件把「装过扩展包」
-        //（extInstalled 全局非空）当成「当前视图有内容」，但扩展卡只在
-        // 扩展包 tab（或搜索态）渲染：装过扩展包的用户切到无插件分类看到
-        // 整片空白无提示。按「当前视图实际会渲染的区块」判断：tab 模式下
-        // 非扩展包 tab 不看 extInstalled；扩展包 tab 且筛选 idle 时才以
-        // 扩展卡有无为准（筛选激活时扩展卡隐藏，视为无内容）。
-        (search.trim()
-          ? !filtersIdle || extInstalled.filter(matchesExtSearch).length === 0
-          : activeTab !== "extension" || !filtersIdle || extInstalled.length === 0) && (
-        <p className="py-10 text-center text-sm text-muted-foreground">
-          {search.trim()
-            ? tr("plugins.searchEmpty", "无匹配插件")
-            : result && result.plugins.length === 0
-              ? tr("plugins.empty", "无插件")
-              : tr("plugins.categoryEmpty", "暂无插件")}
-        </p>
-      )}
-
       <p className="text-xs text-muted-foreground">
         {tr("plugins.hint", "")}
       </p>
