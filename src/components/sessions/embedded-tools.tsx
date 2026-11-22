@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
-import { Blocks, Package, Server, Sparkles, X } from "lucide-react";
+import { Blocks, Package, Server, Sparkles, Wrench, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** 会话工具条目（后端 session_tool_list，与 chat-input 的 SessionTool 同构）。 */
@@ -165,6 +165,8 @@ function pillIcon(kind?: string) {
       return <Server className="h-3 w-3 shrink-0 text-[var(--icon-action)]" />;
     case "extension":
       return <Package className="h-3 w-3 shrink-0 text-[var(--icon-config)]" />;
+    case "agent-tool":
+      return <Wrench className="h-3 w-3 shrink-0 text-[var(--icon-action)]" />;
     default:
       return <Blocks className="h-3 w-3 shrink-0 text-[var(--icon-config)]" />;
   }

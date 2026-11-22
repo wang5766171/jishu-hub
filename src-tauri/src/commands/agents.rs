@@ -323,7 +323,101 @@ pub(crate) fn session_tool_list(
             });
         }
     }
+    // 需求7 补充四：混合件 [[agent-tool]] 进挂载清单（插件级聚合）。
+    list.extend(agent_tool_session_entries(&selected));
+
     list
+}
+
+/// 需求7 补充四（用户裁决 2026-11-22「自己加的无 UI 工具插件如何引用」）：
+/// 启用态 [[agent-tool]] 混合件 → 插件级挂载条目（一件多工具聚合展示工具
+/// 名清单）；keep_text=true（工具已由 pi 原生可用，@点名=本轮优先用，同
+/// 扩展语义）。数据源=物化清单 agent-tools.json（启用态已过滤），显示名
+/// 回退 plugin.toml [plugin].name。
+fn agent_tool_session_entries(selected: &std::collections::HashSet<String>) -> Vec<SessionToolInfo> {
+    let tools = agent::plugin::load_agent_tools();
+    let manifests = agent::plugin::composed_session_manifests();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for t in &tools {
+        if !seen.insert(t.plugin_id.clone()) {
+            continue; // 一件多工具 → 插件级一行
+        }
+        let (display, desc) = manifests
+            .iter()
+            .find(|(id, _)| *id == t.plugin_id)
+            .map(|(_, m)| {
+                let name = m
+                    .get("plugin")
+                    .and_then(|p| p.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(t.plugin_id.as_str())
+                    .to_string();
+                let tool_names: Vec<String> = tools
+                    .iter()
+                    .filter(|x| x.plugin_id == t.plugin_id)
+                    .map(|x| x.name.clone())
+                    .collect();
+                (name, format!("插件工具：{}", tool_names.join(" / ")))
+            })
+            .unwrap_or_else(|| (t.plugin_id.clone(), "插件工具".to_string()));
+        let id = format!("plugin:{}", t.plugin_id);
+        out.push(SessionToolInfo {
+            id: id.clone(),
+            display_name: display,
+            description: desc,
+            usage: String::new(),
+            enabled: selected.contains(&id),
+            injectable: true,
+            category: "agent-tool".to_string(),
+            keep_text: true,
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod agent_tool_entry_tests {
+    use super::*;
+
+    /// 需求7 补充四：物化清单+plugin.toml 名称 → 插件级条目（聚合+keep_text）。
+    /// 环境隔离：JISHU_HUB_HOME 指临时目录。
+    #[test]
+    fn aggregates_plugin_level_entry_with_tool_names() {
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        std::fs::write(
+            tmp.path().join("agent-tools.json"),
+            r#"[{"plugin_id":"video-pipeline","name":"video_pipeline","description":"d"},
+                {"plugin_id":"video-pipeline","name":"storyboard","description":"d"},
+                {"plugin_id":"other","name":"x_tool","description":"d"}]"#,
+        )
+        .unwrap();
+        let pdir = tmp.path().join("plugins").join("video-pipeline");
+        std::fs::create_dir_all(&pdir).unwrap();
+        std::fs::write(
+            pdir.join("plugin.toml"),
+            r#"[plugin]
+id = "video-pipeline"
+name = "视频流水线"
+"#,
+        )
+        .unwrap();
+
+        let entries = agent_tool_session_entries(&Default::default());
+        assert_eq!(entries.len(), 2, "插件级聚合：两件两行");
+        let first = entries.iter().find(|e| e.id == "plugin:video-pipeline").unwrap();
+        assert_eq!(first.display_name, "视频流水线", "显示名取 plugin.toml");
+        assert_eq!(first.category, "agent-tool");
+        assert!(first.keep_text, "点名保留原文（同扩展语义）");
+        assert!(first.description.contains("video_pipeline / storyboard"));
+        let second = entries.iter().find(|e| e.id == "plugin:other").unwrap();
+        assert_eq!(second.display_name, "other", "无 toml 回退插件 id");
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
 }
 
 /// 设置会话启用的工具插件集合（prompt 注入依据；空集合移除条目）。
@@ -337,10 +431,14 @@ pub(crate) fn session_set_tools(session_id: String, tool_ids: Vec<String>) -> Re
     let (extension_ids, plugin_ids): (Vec<String>, Vec<String>) = tool_ids
         .into_iter()
         .partition(|id| {
-            id.starts_with("npm:")
-                && agent::extensions_db::registry_list()
-                    .map(|l| l.iter().any(|e| e.pkg_key == *id && e.state == "active"))
-                    .unwrap_or(false)
+            // 需求7 补充一：pi 扩展 pkg_key；补充四：agent-tool 混合件
+            // plugin:<id>——两者都是 keep_text 点名形态（会话集记录点名，
+            // compose 侧 tool_plugins 匹配自然滤掉）。
+            id.starts_with("plugin:")
+                || (id.starts_with("npm:")
+                    && agent::extensions_db::registry_list()
+                        .map(|l| l.iter().any(|e| e.pkg_key == *id && e.state == "active"))
+                        .unwrap_or(false))
         });
     let _ = extension_ids;
     agent::tool_plugin::set_session_tools(&session_id, &plugin_ids)

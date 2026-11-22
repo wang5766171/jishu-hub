@@ -389,7 +389,8 @@
     "equipSuggestMountHint": "点击使用",
     "extensionSection": "扩展",
     "equipSuggestTitle": "推荐插件",
-    "equipSuggestInstallHint": "点击安装使用"
+    "equipSuggestInstallHint": "点击安装使用",
+    "agentToolSection": "插件工具"
   },
   "plugins": {
     "entryStepFace": "业务形态（做什么·在哪用）",

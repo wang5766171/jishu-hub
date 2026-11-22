@@ -76,6 +76,17 @@ const sessionTools = [
     category: "extension",
     keep_text: true,
   },
+  // 需求7 补充四：自建 [[agent-tool]] 混合件（插件级聚合条目）。
+  {
+    id: "plugin:video-pipeline",
+    display_name: "视频流水线",
+    description: "插件工具：video_pipeline / storyboard",
+    usage: "",
+    enabled: false,
+    injectable: true,
+    category: "agent-tool",
+    keep_text: true,
+  },
 ];
 
 describe("ChatInput + menu aggregation (v0.9.8 需求7)", () => {
@@ -154,6 +165,29 @@ describe("ChatInput + menu aggregation (v0.9.8 需求7)", () => {
 
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
     expect(textarea.value).toContain("@[扩展·写后诊断]");
+  });
+
+  it("U-AT1: 插件工具组在 + 菜单呈现（混合件 [[agent-tool]] 引用入口）", async () => {
+    await openMenu();
+    expect(screen.getByText("Plugin tools")).toBeInTheDocument();
+    expect(screen.queryByText("视频流水线")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Plugin tools"));
+    await waitFor(() => {
+      expect(screen.getByText("视频流水线")).toBeInTheDocument();
+    });
+  });
+
+  it("U-AT2: 点插件工具条目注入 token；keep_text 保留原文+归一 id", async () => {
+    await openMenu();
+    fireEvent.click(screen.getByText("Plugin tools"));
+    fireEvent.click(screen.getByText("视频流水线"));
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textarea.value).toContain("@[视频流水线]");
+    const { text, toolIds } = extractToolTokens(textarea.value, [
+      { id: "plugin:video-pipeline", display_name: "视频流水线", keep_text: true },
+    ]);
+    expect(text).toContain("@[视频流水线]");
+    expect(toolIds).toEqual(["plugin:video-pipeline"]);
   });
 
   it("U-EXT3: extractToolTokens——扩展 token 保留原文且归一 id；传统件剥离子集不变", () => {

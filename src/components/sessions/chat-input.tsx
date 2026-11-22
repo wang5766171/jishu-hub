@@ -5,7 +5,7 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { streamStore, useIsSessionStreaming } from "@/hooks/use-stream-store";
 import { Button } from "@/components/ui/button";
 import {
-  Zap, Blocks, Check, ChevronDown, Download, KeyRound, Loader2, MessagesSquare, Package, Paperclip, Plus, Send, Server, Square, Sparkles, X } from "lucide-react";
+  Zap, Blocks, Check, ChevronDown, Download, KeyRound, Loader2, MessagesSquare, Package, Paperclip, Plus, Send, Server, Square, Sparkles, Wrench, X } from "lucide-react";
 // v0.9.8 需求5（合并版）：装备建议条数据源（L1/L0/入门分级）。
 import { fetchEquipConfig, fetchEquipmentTags, fetchLatestProfile, fetchWorkspaceScene } from "@/features/equipment/api";
 import { buildCatalog, installCommandFor, matchByProfile, matchByTags, matchByWorkspaceScene, officialFallback } from "@/features/equipment/match";
@@ -288,7 +288,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   // 需求20 第二轮：+ 菜单两级——MCP 服务 / Skill 子菜单展开态（null = 收起）。
   // v0.9.8 需求5（归需求7 补充）：extension=已装 pi 扩展子菜单。
-  const [toolSubmenu, setToolSubmenu] = useState<"mcp" | "skill" | "extension" | null>(null);
+  const [toolSubmenu, setToolSubmenu] = useState<"mcp" | "skill" | "extension" | "agent-tool" | null>(null);
   const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
   const [accessMenuOpen, setAccessMenuOpen] = useState(false);
   const [stagedMessagesBySession, setStagedMessagesBySession] = useState<Record<string, StagedMessage[]>>({});
@@ -1854,8 +1854,11 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     // v0.9.8 需求5（合并版）：已装 pi 扩展同款可引用（推荐
                     // 能推扩展，用户也得能主动点名——体验一致）。
                     const extensionTools = sessionTools.filter((t) => t.category === "extension" && injectable(t));
+                    // 需求7 补充四：自建 [[agent-tool]] 混合件（无 UI 工具型
+                    // 插件，如视频流水线）——@点名让 agent 本轮优先用。
+                    const agentToolPlugins = sessionTools.filter((t) => t.category === "agent-tool" && injectable(t));
                     const hasSelectableTools =
-                      cliTools.length + mcpTools.length + skillTools.length + extensionTools.length > 0;
+                      cliTools.length + mcpTools.length + skillTools.length + extensionTools.length + agentToolPlugins.length > 0;
                     // v0.9.1 需求8：子项图标与所属类型组一致（MCP→Server、
                     // Skill→Sparkles），CLI 插件保持 Blocks——内置服务与类型
                     // 标识视觉统一（用户裁决，原全部为 Blocks 四小方形）。
@@ -1929,6 +1932,21 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                             <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", toolSubmenu === "extension" && "rotate-180")} />
                           </button>
                           {toolSubmenu === "extension" && extensionTools.map((tool) => renderToolButton(tool, Package, "text-[var(--icon-config)]", true))}
+                        </>
+                      )}
+                      {agentToolPlugins.length > 0 && (
+                        <>
+                          <button
+                            type="button"
+                            aria-expanded={toolSubmenu === "agent-tool"}
+                            onClick={() => setToolSubmenu((cur) => (cur === "agent-tool" ? null : "agent-tool"))}
+                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60"
+                          >
+                            <Wrench className="h-4 w-4 shrink-0 text-[var(--icon-action)]" />
+                            <span className="flex-1">{t("sessions.agentToolSection", "插件工具")}</span>
+                            <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", toolSubmenu === "agent-tool" && "rotate-180")} />
+                          </button>
+                          {toolSubmenu === "agent-tool" && agentToolPlugins.map((tool) => renderToolButton(tool, Wrench, "text-[var(--icon-action)]", true))}
                         </>
                       )}
                       {/* 需求15-F10：CLI 平铺与 MCP 组均空（已装件多为 pi 扩展

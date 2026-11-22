@@ -389,7 +389,8 @@
     "equipSuggestMountHint": "Click to use",
     "extensionSection": "Extensions",
     "equipSuggestTitle": "Recommended plugins",
-    "equipSuggestInstallHint": "Click to install and use"
+    "equipSuggestInstallHint": "Click to install and use",
+    "agentToolSection": "Plugin tools"
   },
   "plugins": {
     "entryStepFace": "Business face (what · where)",
