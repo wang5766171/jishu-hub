@@ -616,9 +616,9 @@ async fn pi_rpc_connection_loop(
     // 3. Send first prompt. v0.8.0 需求1 A5：resume-fork 形态传 None——不发
     // prompt，连接停在 Idle 等待 ForkSession（历史会话静默分支，零历史污染）。
     let mut state = LoopState::Idle;
-    if let Some(first_message) = first_message {
+    if let Some(entry_original) = first_message {
         let first_message = apply_resolved_session_prompt_injection(
-            first_message,
+            entry_original.clone(),
             &session_id,
             resolved_session_prompt_injection.as_ref(),
         );
@@ -630,7 +630,17 @@ async fn pi_rpc_connection_loop(
         log::debug!("Pi RPC sent first prompt");
         // v0.9.6 需求6 F3：受理即记录待确认消息（注入后文本，与 pi 落盘
         // 内容一致；message_end(user) 时对账清除）。
-        crate::pending_messages::record(&session_id, &agent_id, &first_message);
+        // v0.9.8 需求2 D2-2 L1：改为对账记账——销掉发送入口按原文记的
+        // 防丢账（注入前缀包装使两文本不同，不销会假「未送达」残留）。
+        // legacy 键=GUI pending 临时键（入口记账键；rename 迁移时序不定，
+        // 双键都试删）。
+        crate::pending_messages::reconcile_entry_record(
+            &session_id,
+            Some(&pending_session_id),
+            &agent_id,
+            &entry_original,
+            &first_message,
+        );
         turn_watchdog = Some((
             WatchdogPhase::AwaitResponse,
             tokio::time::Instant::now() + turn_watchdog_window(WatchdogPhase::AwaitResponse),
@@ -712,6 +722,7 @@ async fn pi_rpc_connection_loop(
                         log::info!("Pi RPC loop received Prompt command (state={})", loop_state_name(&state));
                         match &mut state {
                             LoopState::Idle => {
+                                let entry_original = msg.clone();
                                 let msg = apply_resolved_session_prompt_injection(
                                     msg,
                                     &session_id,
@@ -723,7 +734,16 @@ async fn pi_rpc_connection_loop(
                                 })).await?;
                                 log::info!("Pi RPC prompt sent to Pi ({} bytes)", msg.len());
                                 // v0.9.6 需求6 F3：受理即记录（Idle 直发路径）。
-                                crate::pending_messages::record(&session_id, &agent_id, &msg);
+                                // v0.9.8 需求2 D2-2 L1：对账记账（销入口原文案，
+                                // 记落地案——同 spawn 首条）。直发场景会话已
+                                // resolve，入口记账键=当前键（无 legacy）。
+                                crate::pending_messages::reconcile_entry_record(
+                                    &session_id,
+                                    None,
+                                    &agent_id,
+                                    &entry_original,
+                                    &msg,
+                                );
                                 turn_watchdog = Some((
                                     WatchdogPhase::AwaitResponse,
                                     tokio::time::Instant::now()
@@ -1839,6 +1859,7 @@ async fn pi_rpc_connection_loop(
                             state = if let LoopState::CancelPending { pending_prompt } = &mut state {
                                 let buffered = pending_prompt.take();
                                 if let Some(msg) = buffered {
+                                    let entry_original = msg.clone();
                                     let msg = apply_resolved_session_prompt_injection(
                                         msg,
                                         &session_id,
@@ -1850,7 +1871,15 @@ async fn pi_rpc_connection_loop(
                                     })).await?;
                                     // v0.9.6 需求6 F3：settle 后重发同样记录
                                     //（缓冲期消息此前无 pending 记录）。
-                                    crate::pending_messages::record(&session_id, &agent_id, &msg);
+                                    // v0.9.8 需求2 D2-2 L1：对账记账（销入口
+                                    // 原文案，记落地案——同 Idle 直发）。
+                                    crate::pending_messages::reconcile_entry_record(
+                                        &session_id,
+                                        None,
+                                        &agent_id,
+                                        &entry_original,
+                                        &msg,
+                                    );
                                     // v0.9.6 需求6 F2：settle 后重发的 prompt 同样
                                     // 纳入分级看门狗（与 Idle 直发一致，AwaitResponse
                                     // 宽窗起）——滞留回合恢复后 pi 若再次无响应，

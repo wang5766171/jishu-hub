@@ -108,6 +108,43 @@ pub fn ack_persisted(session_id: &str, pi_text: &str) {
     });
 }
 
+/// v0.9.8 需求2 D2-2 L1（账先行）：prompt 落地对账——发送入口（chat.rs
+/// send_message）按**原文**记的防丢账，在 prompt 真正写入 pi stdin 时按
+/// **落地文本**（含会话提示注入包装——前缀包装使 pi 落盘文本 ≠ 原文）重
+/// 新记账：销掉原文案（否则 ack/dedupe 的全文匹配永远销不掉它 → 假
+/// 「未送达」永久残留），记入落地案（与 message_end ack / JSONL dedupe
+/// 的内容匹配口径一致）。无注入时两文本相同——等价幂等原地更新。
+///
+/// `entry_legacy_key`：入口记账时的会话键可能与此刻不同——新会话 spawn
+/// 场景入口按 GUI pending 临时键记账，resolve 闭包的 rename_session
+/// 迁移与本对账的相对时序不定（dev 实测 rename 在后 → 原文案仍挂在
+/// pending 键）。双键都尝试删除，两种时序全覆盖（DELETE 无匹配即 no-op）。
+pub fn reconcile_entry_record(
+    session_id: &str,
+    entry_legacy_key: Option<&str>,
+    agent_id: &str,
+    original: &str,
+    persisted: &str,
+) {
+    // 无条件删除入口案（含 original==persisted 的无注入场景——入口 ts1 与
+    // 落地 ts2 同内容并存，ack 单销一条后必剩一条假未送达；dev 实测 S1）。
+    // 删除 no-op 安全：落地前挂死（reconcile 未达）时入口案即防丢凭据。
+    for key in [Some(session_id), entry_legacy_key].into_iter().flatten() {
+        let _ = with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM pending_user_messages
+                 WHERE rowid = (
+                     SELECT rowid FROM pending_user_messages
+                     WHERE session_id = ?1 AND content = ?2
+                     ORDER BY sent_at ASC, rowid ASC LIMIT 1
+                 )",
+                rusqlite::params![key, original],
+            )
+        });
+    }
+    record(session_id, agent_id, persisted);
+}
+
 /// 会话消息加载去重：`persisted_texts` = pi JSONL 中已有用户消息全文。
 /// 已含相同内容的 pending 清除（ack 丢失兜底）；返回未落盘的（调用方
 /// 并入返回列表，重启后消息不丢）。
@@ -210,6 +247,49 @@ mod tests {
         ack_persisted("s1", "别的内容");
         assert_eq!(load("s1").unwrap().len(), 1);
         drop_session("s1");
+    }
+
+    /// v0.9.8 需求2 D2-2 L1：入口原文案 → 落地对账换落地案——
+    /// ①注入包装场景（两文本不同）：原文案被销、只剩落地案，后续 ack 按
+    /// 落地文本正常销账（不销会假「未送达」永久残留）；
+    /// ②无注入场景（两文本相同）：幂等单条；
+    /// ③键迁移时序（dev 实测）：入口账在 GUI pending 临时键、rename 迁移
+    /// 在对账之后——legacy 键删除兜住（不传则删不掉 → 假未送达残留）。
+    #[test]
+    fn reconcile_entry_record_swaps_original_for_persisted() {
+        let _g = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // ① 注入包装：入口原文 + 落地（前缀包装后）。
+        record("s-l1", "jishu-self", "帮我看看这个报错");
+        let persisted = "<tag>\nsession: s-l1\n</tag>\n\n帮我看看这个报错";
+        reconcile_entry_record("s-l1", None, "jishu-self", "帮我看看这个报错", persisted);
+        let rows = load("s-l1").unwrap();
+        assert_eq!(rows.len(), 1, "原文案已销、只剩落地案");
+        assert_eq!(rows[0].content, persisted);
+        // pi 落盘回执（落地文本）可正常销账——闭环。
+        ack_persisted("s-l1", persisted);
+        assert_eq!(load("s-l1").unwrap().len(), 0);
+        // ② 无注入：两文本相同——**无条件删除入口案**再记落地案（单条），
+        // dev 实测教训：跳过删除会使 ts1/ts2 双条并存，ack 单销后必剩一条。
+        reconcile_entry_record("s-l1", None, "jishu-self", "plain", "plain");
+        assert_eq!(load("s-l1").unwrap().len(), 1);
+        // ③ pending 键迁移时序：入口账挂 pending 键，对账按真实键+legacy 键
+        // 双删。
+        record("pending-l1c", "jishu-self", "挂起窗口的原文");
+        reconcile_entry_record(
+            "s-l1c",
+            Some("pending-l1c"),
+            "jishu-self",
+            "挂起窗口的原文",
+            "<tag>\ns: s-l1c\n</tag>\n\n挂起窗口的原文",
+        );
+        assert_eq!(load("pending-l1c").unwrap().len(), 0, "pending 键原文案已销");
+        let rows = load("s-l1c").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].content.starts_with("<tag>"), "只剩落地案");
+        drop_session("s-l1");
+        drop_session("s-l1c");
     }
 
     #[test]

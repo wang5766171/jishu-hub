@@ -145,3 +145,35 @@ export function filterInvisibleUserMessages(messages: Message[]): Message[] {
       return hasVisibleContent;
     });
 }
+
+/**
+ * v0.9.8 需求2 D2-1/D2-3：编辑重发失败回滚（纯函数，从
+ * handleEditLastUserMessage 的 catch 抽出补回归锁）。
+ *
+ * 行为规格（用户视角）：
+ * - cut >= 0（本地定位到原文）：恢复到截断点前缀 `msgs.slice(0, cut)`——
+ *   乐观追加的编辑消息从缓存与视图移除；
+ * - cut < 0（本地找不到原文，D2-3 收敛）：**不再全量恢复 msgs**（旧逻辑
+ *   会把已被后端截断删除的旧消息复活闪现）——返回 reload 信号，调用方
+ *   从后端拉权威态覆盖本地缓存；
+ * - 回填文本恒为编辑后的外发文本（outgoing），用户可改后手动重发。
+ */
+export interface EditResendRollback {
+  /** true = 本地列表不可信，调用方应从后端重载会话消息。 */
+  reload: boolean;
+  /** reload=false 时：恢复到截断点的前缀列表。 */
+  messages?: Message[];
+  /** 回填输入框的文本。 */
+  restoreText: string;
+}
+
+export function applyEditResendRollback(
+  msgs: Message[],
+  cut: number,
+  outgoing: string,
+): EditResendRollback {
+  if (cut < 0) {
+    return { reload: true, restoreText: outgoing };
+  }
+  return { reload: false, messages: msgs.slice(0, cut), restoreText: outgoing };
+}

@@ -111,6 +111,7 @@ import { useCompaction } from "@/features/chat-core/use-compaction";
 import { useMessageSearch } from "@/features/chat-core/use-message-search";
 import { ThinkingLevelSelect } from "@/components/sessions/thinking-level-select";
 import {
+  applyEditResendRollback,
   buildAssistantContentFromStreamState,
   filterInvisibleUserMessages,
   TerminalIcon,
@@ -880,6 +881,8 @@ export function ChatPage({
     // 流式态清场（流式中编辑场景——进程已被 Rust 侧回收）+ 乐观回复流。
     streamStore.drop(sid);
     streamStore.start(sid, null);
+    // v0.9.8 需求2 D2-1：回滚判定提前算好（纯函数，单测锁行为）。
+    const rollback = applyEditResendRollback(msgs, cut, outgoing);
     try {
       await invokeCommand("send_message", {
         agentId: activeId,
@@ -892,15 +895,33 @@ export function ChatPage({
       console.error("resend after edit failed:", err);
       streamStore.drop(sid);
       // v0.9.8 需求2（F1）：重发失败回滚——乐观追加的编辑消息从缓存与状态
-      // 移除（恢复到截断后的 kept），编辑文本回填输入框（停止清队回填同款
-      // 语义），用户可改后手动重发。此前不回滚：编辑文本以正常消息形态
-      // 滞留（生产事故：②「正在赶来」阶段失败后幽灵消息永久残留）。
-      setCachedSessionMessages(sid, kept);
-      setSessionMessages(kept);
-      chatInputRef.current?.restoreTexts([outgoing]);
+      // 移除，编辑文本回填输入框（停止清队回填同款语义），用户可改后手动
+      // 重发。此前不回滚：编辑文本以正常消息形态滞留（生产事故：②「正在
+      // 赶来」阶段失败后幽灵消息永久残留）。
+      // D2-3：本地找不到原文（cut<0）不再全量恢复——本地列表已不可信
+      //（后端已截断删除该消息），改从后端拉权威态覆盖本地缓存，避免
+      // 已删旧消息「复活」闪现。
+      if (rollback.reload) {
+        try {
+          const fresh = await invokeCommand<Message[]>("get_session_messages", {
+            agentId: activeId,
+            sessionId: sid,
+            encodedName: projectId,
+          });
+          const visible = filterInvisibleUserMessages(fresh ?? []);
+          setCachedSessionMessages(sid, visible);
+          setSessionMessages(visible);
+        } catch (reloadErr) {
+          console.warn("reload after edit-resend rollback failed:", reloadErr);
+        }
+      } else {
+        setCachedSessionMessages(sid, rollback.messages ?? []);
+        setSessionMessages(rollback.messages ?? []);
+      }
+      chatInputRef.current?.restoreTexts([rollback.restoreText]);
       await alertDialog({ title: t("sessions.editLastFailed", "编辑失败"), description: String(err) });
     }
-  }, [activeId, currentProject?.path, alertDialog, t]);
+  }, [activeId, currentProject?.path, alertDialog, t, projectId]);
 
   // ── 需求2（v0.9.8）：清除「未送达」消息（pending 幽灵）─────────────────
   // 编辑重发失败/投递挂死后 pending 行永等不到 ack，加载时并入列表尾部且

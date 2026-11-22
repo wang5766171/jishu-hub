@@ -492,6 +492,20 @@ pub async fn send_message(
         s.registry.require_agent(&agent_id)?;
     }
 
+    // v0.9.8 需求2 D2-2 L1（账先行）：发送入口即记 pending 防丢账——prompt
+    // 落地前（进程重拉/spawn 竞态）任何阶段挂死，重载后都有「未送达」徽标
+    // +删除出口（复用 F2 既有机制，零新 UI）。仅 pi 通道（jishu-self：
+    // pending 是 pi JSONL 落盘的兜底；ACP 通道无 message_end ack，记账会
+    // 永假未送达）。销账三层：prompt 落地时 reconcile_entry_record（原文案
+    // 换落地案，见 pi_rpc_runtime 三处调用点）/ pi 落盘 ack_persisted
+    //（FIFO 内容匹配）/ 用户手动 dismiss。同步 Err（进程表/路径等罕见
+    // 失败）留账——「未送达」事实成立，前端 F1 回滚+弹错同刻可见。
+    if agent_id == "jishu-self" {
+        if let Some(ref sid) = session_id {
+            crate::pending_messages::record(sid, &agent_id, &message);
+        }
+    }
+
     if let Some(ref sid) = session_id {
         if let Some(process) = existing_chat_process(&app, sid, &agent_id) {
             // ── 启动签名漂移检测（临时需求：模型切换不生效修复）──
