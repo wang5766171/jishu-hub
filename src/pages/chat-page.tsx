@@ -965,8 +965,18 @@ export function ChatPage({
       { name: "float", label: t("sessions.slashFloat"), available: hasSelectedSession },
       { name: "compact", label: t("sessions.slashCompact"), available: hasSelectedSession && supportsCompact },
       { name: "fork", label: t("sessions.slashFork", "创建会话分支"), available: hasSelectedSession && supportsFork && !currentStream?.isStreaming },
+      // pi 真实命令集（get_commands 动态拉取；insert 模式——选中插入
+      // /name 由用户补参，发送后 pi prompt 通道原生展开/执行）。
+      ...piSlashCommands
+        .filter((c) => c.name && c.name !== "name")
+        .map((c) => ({
+          name: c.name,
+          label: c.description || c.source,
+          available: true,
+          mode: "insert" as const,
+        })),
     ],
-    [hasSelectedSession, projectId, supportsCompact, supportsFork, currentStream?.isStreaming, t],
+    [hasSelectedSession, projectId, supportsCompact, supportsFork, currentStream?.isStreaming, t, piSlashCommands],
   );
   const handleSlashCommand = useCallback(
     (name: string) => {

@@ -43,8 +43,8 @@ const SLASH = [
 
 function type(text: string) {
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
-  setter.call(ta, text);
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+  setter?.call(ta, text);
   fireEvent.input(ta);
 }
 
