@@ -151,6 +151,7 @@ pub(crate) async fn list_sessions(
 
 #[tauri::command]
 pub(crate) async fn get_session_messages(
+    app: tauri::AppHandle,
     state: tauri::State<'_, Mutex<AppState>>,
     agent_id: String,
     session_id: String,
@@ -176,7 +177,64 @@ pub(crate) async fn get_session_messages(
             }
         }
     }
+    // v0.9.8 需求13 复测取证（窗口期停止重复渲染悬案）：读取层指纹——
+    // 区分「后端就返回了重复」与「前端自己堆叠」。与前端缓存总闸
+    // （session-cache.ts setCachedSessionMessages）同一指纹口径（user 首
+    // 个 text block 前 12 字），复现时两层对照即可锁定注入层。
+    let fp = req13_user_fingerprints(&messages);
+    let dup = fp.total > fp.uniq;
+    log::info!(
+        "[req13] 读取层 sid={} total={} user={} uniq={} dup={} fp={:?}",
+        session_id,
+        messages.len(),
+        fp.total,
+        fp.uniq,
+        dup,
+        fp.fps
+    );
+    crate::dev_log_bridge::emit_dev_log(
+        &app,
+        "info",
+        &format!(
+            "[req13] 读取层{} total={} user={} uniq={}",
+            if dup { "[!重复]" } else { "" },
+            messages.len(),
+            fp.total,
+            fp.uniq
+        ),
+        &session_id,
+        serde_json::json!({ "fps": fp.fps, "dup": dup }),
+    );
     Ok(messages)
+}
+
+/// v0.9.8 需求13：user 消息指纹（条数/去重数/前 12 字原序列表）。
+fn req13_user_fingerprints(messages: &[session::Message]) -> Req13Fingerprints {
+    let fps: Vec<String> = messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .map(|m| {
+            m.content
+                .iter()
+                .find_map(|b| match b {
+                    session::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("")
+                .chars()
+                .take(12)
+                .collect()
+        })
+        .collect();
+    let total = fps.len();
+    let uniq = fps.iter().collect::<std::collections::BTreeSet<_>>().len();
+    Req13Fingerprints { total, uniq, fps }
+}
+
+struct Req13Fingerprints {
+    total: usize,
+    uniq: usize,
+    fps: Vec<String>,
 }
 
 /// Delete a native session through the agent's session adapter
@@ -510,7 +568,54 @@ pub(crate) fn export_binary_file(path: String, base64_data: String) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::PreviewFileKind;
+    use super::{session, PreviewFileKind, Req13Fingerprints};
+
+    fn user_msg(text: &str) -> session::Message {
+        session::Message {
+            role: "user".to_string(),
+            content: vec![session::ContentBlock::Text {
+                text: text.to_string(),
+                tool_ids: Vec::new(),
+            }],
+            timestamp: None,
+            unsent: None,
+        }
+    }
+
+    fn assistant_msg() -> session::Message {
+        session::Message {
+            role: "assistant".to_string(),
+            content: vec![session::ContentBlock::Text {
+                text: "回复".to_string(),
+                tool_ids: Vec::new(),
+            }],
+            timestamp: None,
+            unsent: None,
+        }
+    }
+
+    /// v0.9.8 需求13：读取层指纹——同文本多份（total>uniq）即重复信号；
+    /// 指纹取 user 首个 text block 前 12 字（中文按字符不按字节）。
+    #[test]
+    fn req13_fingerprints_detect_duplicates() {
+        let fp: Req13Fingerprints =
+            super::req13_user_fingerprints(&[user_msg("复测窗口期停止-第1轮"), assistant_msg(), user_msg("再发验证-1"), user_msg("复测窗口期停止-第1轮-tail")]);
+        assert_eq!(fp.total, 3);
+        assert_eq!(fp.uniq, 3, "三条各不相同");
+        let dup: Req13Fingerprints = super::req13_user_fingerprints(&[
+            user_msg("同一句话"),
+            user_msg("同一句话"),
+            assistant_msg(),
+        ]);
+        assert_eq!(dup.total, 2);
+        assert_eq!(dup.uniq, 1, "同文本两份 → total>uniq 即重复");
+        assert_eq!(dup.fps, vec!["同一句话".to_string(); 2]);
+        // 无 user / 指纹截断到 12 字符。
+        let empty = super::req13_user_fingerprints(&[assistant_msg()]);
+        assert_eq!((empty.total, empty.uniq), (0, 0));
+        let long = super::req13_user_fingerprints(&[user_msg("一二三四五六七八九十一二三四五")]);
+        assert_eq!(long.fps[0].chars().count(), 12);
+    }
 
     /// v0.9.7 需求6 F3：引用校验——项目内按扩展名返回类别；越界（项目外
     /// /逃逸路径）拒绝；任务产物区放行。

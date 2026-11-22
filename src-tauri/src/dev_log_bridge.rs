@@ -42,3 +42,24 @@ pub fn dev_log_emitter(app: &tauri::AppHandle) -> DevLogEmit {
 pub fn noop_dev_log_emitter() -> DevLogEmit {
     Arc::new(|_level: &str, _message: &str, _session: &str, _data: Value| {})
 }
+
+/// 单发便捷入口（v0.9.8 需求13 复测取证）：命令层临时打点——无持久
+/// emitter 的位置（如 get_session_messages）按同一事件名/payload 格式
+/// 直发一条进日志中心。
+pub fn emit_dev_log(
+    app: &tauri::AppHandle,
+    level: &str,
+    message: &str,
+    session: &str,
+    data: Value,
+) {
+    let _ = app.emit(
+        "hub-dev-log",
+        json!({
+            "level": level,
+            "message": message,
+            "session": session,
+            "data": data,
+        }),
+    );
+}

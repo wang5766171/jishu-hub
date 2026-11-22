@@ -17,6 +17,7 @@
  */
 import type { Message } from "@/types";
 import { streamStore } from "@/hooks/use-stream-store";
+import { devLog } from "@/lib/dev-log";
 
 const sessionMessagesCache = new Map<string, Message[]>();
 
@@ -29,8 +30,37 @@ export function getCachedSessionMessages(key: string): Message[] | undefined {
   return sessionMessagesCache.get(key);
 }
 
+/** v0.9.8 需求13 复测取证：user 消息指纹（条数/去重数/前 12 字原序列表）。
+ * 与后端读取层（commands/sessions.rs req13_user_fingerprints）同口径——
+ * 两层对照即可锁定重复注入发生在哪一层。 */
+export function userFingerprints(messages: Message[]): {
+  total: number;
+  uniq: number;
+  fps: string[];
+} {
+  const fps = messages
+    .filter((m) => m.role === "user")
+    .map((m) => {
+      const block = m.content.find((b) => b.type === "text") as { text?: string } | undefined;
+      return (block?.text ?? "").slice(0, 12);
+    });
+  return { total: fps.length, uniq: new Set(fps).size, fps };
+}
+
 export function setCachedSessionMessages(key: string, messages: Message[]): void {
   sessionMessagesCache.set(key, messages);
+  // v0.9.8 需求13 复测取证：缓存总闸指纹——所有消息写入路径（本地提交/
+  // 回合收口/刷新拉取/编辑/清理）都过此函数。uniq<total = 列表内已有
+  // 同文本多份（重复渲染直接信号）；streamPending 显示写入时刻流式
+  // pendingUserMessage 是否在场——与 fp 同前缀 = 历史+流式叠加双渲染风险。
+  const fp = userFingerprints(messages);
+  const dup = fp.uniq < fp.total;
+  const streamPending = streamStore.getState(key)?.pendingUserMessage?.slice(0, 12) ?? null;
+  devLog(
+    "session",
+    `[req13] 缓存写入${dup ? "[!重复]" : ""} total=${messages.length} user=${fp.total} uniq=${fp.uniq}`,
+    { key, fps: fp.fps, dup, streamPending },
+  );
   if (sessionMessagesCache.size > CACHE_MAX_ENTRIES) {
     for (const k of Array.from(sessionMessagesCache.keys())) {
       if (sessionMessagesCache.size <= CACHE_MAX_ENTRIES) break;
