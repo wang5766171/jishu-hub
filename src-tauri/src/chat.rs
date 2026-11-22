@@ -402,7 +402,14 @@ fn compose_tool_message(
         if !(cfg.enabled && cfg.session_card) {
             String::new()
         } else {
-            let installed_curated: Vec<String> = tools.iter().map(|t| t.id().to_string()).collect();
+            // 已装判定对齐 plugin_list 真源：registry（组合件/内置 TS 件等
+            // 全量）∪ tool_plugins（TOML 工具件）——此前只传 tool_plugins，
+            // agent 目录里 session.* 组合件全被误标「未装」（用户实测暴露）。
+            let mut installed_curated: Vec<String> =
+                s.registry.list_plugins().iter().map(|p| p.id.clone()).collect();
+            for t in tools.iter() {
+                installed_curated.push(t.id().to_string());
+            }
             let installed_skillhub: Vec<String> =
                 agent::skillhub::skillhub_installed().keys().cloned().collect();
             agent::equipment_db::catalog_block(&installed_curated, &installed_skillhub, cfg.third_party)

@@ -390,7 +390,9 @@
     "imageOnlyEditHint": "Resending with new text will not carry the original image — re-attach it if needed",
     "equipSuggestByTask": "Based on a recent task",
     "equipSuggestByDraft": "Based on what you're typing",
-    "equipSuggestFallback": "For you"
+    "equipSuggestFallback": "For you",
+    "equipSuggestMountable": "Installed — quick mount",
+    "equipSuggestMountHint": "Already installed — click to mount in this chat"
   },
   "plugins": {
     "entryStepFace": "Business face (what · where)",

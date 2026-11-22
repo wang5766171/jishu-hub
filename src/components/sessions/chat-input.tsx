@@ -1478,7 +1478,10 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   return (
     <div ref={inputRootRef} className={cn("mx-auto w-full max-w-[var(--message-content-max-width)] px-4 pb-4 pt-2", containerClassName)}>
       {/* v0.9.8 需求5（合并版）：装备建议条（新对话起始态；L1/L0/入门分级，
-          未装件点击浮卡安装 + 已装未挂件 @[注入]）。 */}
+          未装件点击浮卡安装 + 已装未挂件 @[注入]——两类胶囊视觉区分：
+          安装类=实线+星级，挂载类=虚线+Plus 徽标「已装可挂载」，不再混作
+          「推荐安装」误导（用户实测：全装环境只剩挂载件时被当成只会推荐
+          需求讨论/流程规划）。 */}
       {sceneSuggest && (sceneSuggest.installItems.length > 0 || sceneSuggest.mountItems.length > 0) && (
         <div
           data-scene-suggest={sceneSuggest.origin}
@@ -1486,11 +1489,13 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         >
           <Sparkles className="h-3.5 w-3.5 shrink-0 text-[var(--icon-theme)]" />
           <span>
-            {sceneSuggest.origin === "profile"
-              ? t("sessions.equipSuggestByTask", { defaultValue: "按最近任务推荐", note: sceneSuggest.originNote ?? "" })
-              : sceneSuggest.origin === "draft"
-                ? t("sessions.equipSuggestByDraft", "按你输入的内容推荐")
-                : t("sessions.equipSuggestFallback", "为你推荐")}
+            {sceneSuggest.installItems.length === 0
+              ? t("sessions.equipSuggestMountable", "已装可快速挂载")
+              : sceneSuggest.origin === "profile"
+                ? t("sessions.equipSuggestByTask", { defaultValue: "按最近任务推荐", note: sceneSuggest.originNote ?? "" })
+                : sceneSuggest.origin === "draft"
+                  ? t("sessions.equipSuggestByDraft", "按你输入的内容推荐")
+                  : t("sessions.equipSuggestFallback", "为你推荐")}
           </span>
           {sceneSuggest.installItems.map((item) => (
             <button
@@ -1508,9 +1513,12 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
             <button
               key={item.id}
               type="button"
+              data-mount-suggest={item.id}
+              title={t("sessions.equipSuggestMountHint", "已安装——点击挂载到本会话")}
               onClick={() => insertToolToken(item.title)}
-              className="rounded-full border border-border/60 bg-background/70 px-2.5 py-0.5 text-foreground/85 transition-fast hover:border-primary/50 hover:text-foreground"
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-border/70 bg-background/70 px-2.5 py-0.5 text-foreground/75 transition-fast hover:border-primary/50 hover:text-foreground"
             >
+              <Plus className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
               {item.title}
             </button>
           ))}
