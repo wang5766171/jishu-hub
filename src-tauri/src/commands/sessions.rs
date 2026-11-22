@@ -568,6 +568,35 @@ pub(crate) fn export_binary_file(path: String, base64_data: String) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    /// v0.9.8 需求10 D10-2：产物清单——列 artifacts 目录（递归+大小+排序），
+    /// 目录不存在返回空（历史任务自然降级）。
+    #[test]
+    fn task_artifacts_list_lists_recursively() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join(".jishu-hub").join("tasks").join("t1").join("artifacts");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("report.md"), "# ok").unwrap();
+        std::fs::write(dir.join("sub").join("data.json"), "{}").unwrap();
+        let list = super::task_artifacts_list(
+            root.path().display().to_string(),
+            "t1".to_string(),
+        )
+        .unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].rel_path, "report.md");
+        assert_eq!(list[1].rel_path, "sub/data.json");
+        assert_eq!(list[0].size, 4);
+        assert!(list[0].abs_path.ends_with("report.md"));
+        // 不存在的任务 → 空（不报错）。
+        let empty = super::task_artifacts_list(
+            root.path().display().to_string(),
+            "nope".to_string(),
+        )
+        .unwrap();
+        assert!(empty.is_empty());
+    }
+
+
     use super::{session, PreviewFileKind, Req13Fingerprints};
 
     fn user_msg(text: &str) -> session::Message {
@@ -1022,4 +1051,70 @@ pub(crate) fn usage_session(
     session_id: String,
 ) -> Result<Option<crate::usage_store::SessionUsageRow>, String> {
     crate::usage_store::get_optional(&session_id)
+}
+
+/// v0.9.8 需求10 D10-2（成果卡 L1）：任务产物文件清单——列
+/// `<project>/.jishu-hub/tasks/<task_id>/artifacts/` 下全部文件（递归），
+/// 任务卡产物区数据源。目录不存在/为空返回空数组（历史任务无产物区
+/// 自然降级）；路径全部canonicalize 剥 verbatim 前缀（Windows 前缀问题
+/// 见 canonicalize_stripped 注释），reveal_in_file_manager 直接消费。
+#[derive(serde::Serialize)]
+pub(crate) struct TaskArtifactFile {
+    pub name: String,
+    /// 相对 artifacts 根的子路径（多级产物保留层级展示）。
+    pub rel_path: String,
+    pub abs_path: String,
+    pub size: u64,
+    pub modified_ms: i64,
+}
+
+#[tauri::command]
+pub(crate) fn task_artifacts_list(
+    project_root: String,
+    task_id: String,
+) -> Result<Vec<TaskArtifactFile>, String> {
+    // 与 CLI task_artifact / 预览白名单同源的任务产物区。
+    let root = crate::project::resolve_project_root_or_default(&project_root);
+    let dir = std::path::Path::new(&root).join(".jishu-hub").join("tasks").join(&task_id).join("artifacts");
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    let mut stack = vec![dir.clone()];
+    while let Some(current) = stack.pop() {
+        let entries = std::fs::read_dir(&current).map_err(|e| e.to_string())?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let rel = path
+                .strip_prefix(&dir)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let modified_ms = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            out.push(TaskArtifactFile {
+                name: path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| rel.clone()),
+                rel_path: rel,
+                abs_path: canonicalize_stripped(&path),
+                size: meta.len(),
+                modified_ms,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    Ok(out)
 }

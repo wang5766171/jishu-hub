@@ -945,9 +945,13 @@ fn record_cli_plugin_change(id: &str, action: &str) {
         "at": chrono::Utc::now().to_rfc3339(),
     }));
     let payload = serde_json::json!({ "changes": changes });
-    if let Ok(mut f) = std::fs::File::create(&marker) {
-        let _ = writeln!(f, "{payload}");
-    }
+    // v0.9.8 需求10 R10-B：原子写（tmp+rename）——修前 File::create 直写，
+    // 两个 CLI 并发启停理论互相截断（半截 JSON → 轮询解析失败变更丢失）。
+    let _ = crate::util::atomic_write(
+        &marker,
+        format!("{payload}
+").as_bytes(),
+    );
 }
 
 /// 导入 pi 扩展（7c 层三）：安全摘要输出 + 复制到 extensions/（默认不启用

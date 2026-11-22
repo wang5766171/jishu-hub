@@ -25,6 +25,8 @@ const GraphEditor = lazy(() =>
   import("@/features/task-instance/graph/graph-editor").then((m) => ({ default: m.GraphEditor })),
 );
 
+import { TaskArtifactsPanel } from "./task-artifacts-panel";
+
 type TaskGraphApi = ReturnType<typeof useTaskGraph>;
 
 export interface FlowBoardOverlayProps {
@@ -62,6 +64,9 @@ export interface FlowBoardOverlayProps {
   selectedNodeSession?: NodeSessionInfo | null;
   /** 指定执行智能体。 */
   onAssignAgent?: (nodeId: string, agentId: string, roleId: string) => Promise<void>;
+  /** v0.9.8 需求10 D10-2：任务产物区（任务实例 id + 项目根）——未提供则不渲染。 */
+  taskId?: string;
+  projectRoot?: string;
 }
 
 export function FlowBoardOverlay({
@@ -81,6 +86,8 @@ export function FlowBoardOverlay({
   defaultAgentId = "",
   selectedNodeSession = null,
   onAssignAgent,
+  taskId,
+  projectRoot,
 }: FlowBoardOverlayProps) {
   const { t } = useTranslation();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -238,6 +245,11 @@ export function FlowBoardOverlay({
                 />
               )}
             </div>
+            {/* v0.9.8 需求10 D10-2：任务产物区（文件出口从 0 到 1——列
+                artifacts 目录+资源管理器定位）。 */}
+            {taskId && projectRoot && (
+              <TaskArtifactsPanel taskId={taskId} projectRoot={projectRoot} />
+            )}
           </Suspense>
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">

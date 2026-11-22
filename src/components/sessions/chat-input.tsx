@@ -158,6 +158,8 @@ interface ChatInputProps {
   projectPath: string | null;
   /** v0.7.0 需求一：会话绑定的智能体 id（send_message 必填）。 */
   agentId: string | null;
+  /** v0.9.8 需求10 D10-3：只读会话（+菜单底部披露「动作类工具不加载」）。 */
+  readonlyMode?: boolean;
   disabled?: boolean;
   isSessionStreaming?: boolean;
   allowFiles?: boolean;
@@ -239,6 +241,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   sessionId,
   projectPath,
   agentId,
+  readonlyMode,
   showSceneSuggest = false,
   disabled = false,
   isSessionStreaming: isSessionStreamingProp = false,
@@ -1895,7 +1898,12 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     return (
                     hasSelectableTools && (
                     <div className="my-1 border-t border-border/60 pt-1">
-                      <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/70">
+                      {readonlyMode && (
+                      <p className="px-2 pb-1 text-[10px] leading-snug text-muted-foreground/80">
+                        {t("sessions.readonlyToolNote", "只读模式不加载插件动作类工具")}
+                      </p>
+                    )}
+                    <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/70">
                         {t("sessions.menuGroupAbility", "能力挂载")}
                       </div>
                       {cliTools.length > 0 && cliTools.map((tool) => renderToolButton(tool, Blocks, "text-[var(--icon-config)]"))}

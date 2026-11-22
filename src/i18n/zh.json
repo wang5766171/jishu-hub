@@ -390,7 +390,8 @@
     "extensionSection": "扩展",
     "equipSuggestTitle": "推荐插件",
     "equipSuggestInstallHint": "点击安装使用",
-    "agentToolSection": "插件工具"
+    "agentToolSection": "插件工具",
+    "readonlyToolNote": "只读模式不加载插件动作类工具"
   },
   "plugins": {
     "entryStepFace": "业务形态（做什么·在哪用）",
@@ -1464,6 +1465,12 @@
       "show": "显示步骤栏",
       "empty": "暂无流程节点",
       "mainTask": "主任务"
+    },
+    "artifacts": {
+      "title": "任务产物",
+      "empty": "暂无产物文件",
+      "open": "打开",
+      "openFolder": "打开产物文件夹"
     }
   },
   "fileViewer": {

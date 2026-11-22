@@ -2742,6 +2742,7 @@ export function ChatPage({
               sessionId={selectedSession === "new" ? null : selectedSession}
               projectPath={currentProject?.path ?? null}
               agentId={activeId}
+              readonlyMode={accessModeValue === "readonly"}
               showSceneSuggest={showStartComposer}
               stagedApiRef={stagedApiRef}
               onMessageSent={handleMessageSent}
@@ -3081,6 +3082,8 @@ export function ChatPage({
                 : null
             }
             onAssignAgent={handleBoardAssignAgent}
+            taskId={activeTaskLaunchInstance.task_id}
+            projectRoot={currentProject?.path ?? ""}
           />
         </Suspense>
       ) : null}
