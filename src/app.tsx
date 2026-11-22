@@ -1,6 +1,7 @@
 
 import "@/i18n";
 import { attachRuntimeLogBridge, hydrateDevLogForced } from "@/lib/dev-log";
+import { startMarketUpdateSignal } from "@/lib/market-update-signal";
 import { attachWindowActivityTracking } from "@/features/session-kernel/window-activity";
 import { lazy, Suspense } from "react";
 import { useInvoke, invokeCommand } from "@/hooks/use-invoke";
@@ -463,6 +464,9 @@ function AppContent() {
   // 消费——最小化/失焦时当前会话也通知）。
   useEffect(() => {
     void hydrateDevLogForced();
+    // v0.9.8 需求8 D8-1：市场目录更新红点订阅（app 主链——懒加载模块的
+    // 副作用订阅会错过启动预拉取事件）。
+    startMarketUpdateSignal();
     const detachActivity = attachWindowActivityTracking();
     let unlistenRuntime: (() => void) | null = null;
     void attachRuntimeLogBridge().then((fn) => {

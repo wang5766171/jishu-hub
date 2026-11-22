@@ -32,6 +32,7 @@ import { buildGuiAdaptDraft } from "@/components/market/gui-adapt-draft";
 import { fetchEquipConfig, fetchEquipmentTags, fetchLatestProfile, fetchWorkspaceScene, type CatalogEntry } from "@/features/equipment/api";
 import { buildCatalog, matchByProfile, matchByWorkspaceScene } from "@/features/equipment/match";
 import { kindNameOf, useEquipmentRunner } from "@/features/equipment/runner";
+import { setMarketOpen } from "@/lib/market-update-signal";
 
 interface MarketEntry {
   id: string;
@@ -586,13 +587,20 @@ export function PluginMarketPanel({
     void load();
   }, [load]);
 
-  // v0.9.8 需求8 A2：启动预拉取完成通知（piindex-updated）——市场页若开着
-  // 增量刷新列表（后台每日对齐数据面变化时用户无感更新）。
+  // v0.9.8 需求8 A2 → D8-1 改造：预拉取通知（piindex-updated）不再自动
+  // reload 打断浏览——页顶横幅提示「市场目录已更新 · 查看」，点查看才刷新；
+  // 红点信号（人在别页）由 market-update-signal 承接，此处置位市场页打开
+  // 标记。
+  const [catalogUpdated, setCatalogUpdated] = useState(false);
+  useEffect(() => {
+    setMarketOpen(true);
+    return () => setMarketOpen(false);
+  }, []);
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
     void listen("piindex-updated", () => {
-      void load();
+      setCatalogUpdated(true);
     }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
@@ -601,17 +609,18 @@ export function PluginMarketPanel({
       cancelled = true;
       unlisten?.();
     };
-  }, [load]);
+  }, []);
 
   // v0.9.8 需求8 A3：扩展目录慢载判定（8s 无数据 → 兜底提示态）。
+  // D8-2：npm 兜底已有数据（online）时不算慢载——转圈即撤。
   useEffect(() => {
-    if (!(source === "extensions" && loading && piindex === null)) {
+    if (!(source === "extensions" && loading && piindex === null && online === null)) {
       setExtSlow(false);
       return;
     }
     const timer = window.setTimeout(() => setExtSlow(true), 8000);
     return () => window.clearTimeout(timer);
-  }, [source, loading, piindex]);
+  }, [source, loading, piindex, online]);
 
   // 需求3 补充：技能详情（skillhub_detail 拉取，弹窗展示）。
   const [skillDetailOpen, setSkillDetailOpen] = useState(false);
@@ -1002,6 +1011,33 @@ export function PluginMarketPanel({
         </div>
       )}
 
+      {/* v0.9.8 需求8 D8-1：后台拉到新目录的页内横幅（替代自动 reload 打断
+          浏览）——点查看刷新列表；× 关闭不刷新（下次事件再提示）。 */}
+      {catalogUpdated && (
+        <div className="flex items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-foreground">
+          <span className="flex-1">{t("market.catalogUpdated", "市场目录已更新")}</span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 px-2 text-[11px]"
+            onClick={() => {
+              setCatalogUpdated(false);
+              void load();
+            }}
+          >
+            {t("market.catalogUpdatedView", "查看")}
+          </Button>
+          <button
+            type="button"
+            aria-label={t("market.catalogUpdatedDismiss", "关闭")}
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={() => setCatalogUpdated(false)}
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive">
           {source === "skills" ? t("market.skillNetworkError", "技能市场暂时不可用（网络）") : String(error)}
@@ -1158,13 +1194,16 @@ export function PluginMarketPanel({
       )}
 
       {/* v0.9.8 需求8 A3：扩展目录慢载兜底（无缓存+拉取中：先加载中态，
-          8s 后转「网络不佳」+重试；预拉取就位后仅首装首开可见） */}
-      {source === "extensions" && !error && piindex === null && (
+          8s 后转「网络不佳」+重试；预拉取就位后仅首装首开可见）。
+          D8-2：npm 兜底已有数据（online）时整块撤下——修前兜底出列表但
+          转圈永挂；重试钮 8s 提示出现即允许点击（修前等 20s 超时+兜底
+          全程约 40s 才可点）。 */}
+      {source === "extensions" && !error && piindex === null && online === null && (
         <div className="flex flex-col items-center gap-2 py-10 text-xs text-muted-foreground" data-ext-loading="">
           {extSlow ? (
             <>
               <span>{t("market.extSlow", "网络不佳，目录加载较慢——可稍后重试")}</span>
-              <Button size="sm" variant="outline" disabled={loading} onClick={() => void load()}>
+              <Button size="sm" variant="outline" disabled={loading && !extSlow} onClick={() => void load()}>
                 <RefreshCw className="h-3.5 w-3.5" />
                 <span className="ml-1">{t("market.retry", "重试")}</span>
               </Button>

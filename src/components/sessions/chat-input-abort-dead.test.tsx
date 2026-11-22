@@ -1,7 +1,7 @@
 // v0.9.8 需求19-D：abort_chat 返回 process_found——引擎已死时停止立即本地收口
 // （不等永不到来的 turn_complete(Aborted) 回执），修复「僵尸处理中 + 停止无效」。
 import i18n from "@/i18n";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { streamStore } from "@/hooks/use-stream-store";

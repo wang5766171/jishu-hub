@@ -66,7 +66,9 @@ fn cache() -> &'static Mutex<Option<(Instant, Vec<PiindexEntry>)>> {
 
 fn http() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
+        // v0.9.8 需求8 D8-2-3：20s→12s——缩短弱网首判等待（8s 慢载提示出现
+        // 后不久即可转入 npm 兜底，重试钮可点时机同步提前）。
+        .timeout(Duration::from_secs(12))
         .user_agent("jishu-hub")
         .build()
         .map_err(|e| e.to_string())

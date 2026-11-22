@@ -27,6 +27,7 @@ import { PluginCreateEntry } from "./plugin-create-entry";
 import { PluginMarketPanel } from "./plugin-market";
 import { marketUpdateFailures, startExtensionUpdateAll, startSkillUpdateAll, updatesPending, useMarketUpdates, type ExtensionUpdateStatus, type SkillUpdateStatus } from "./plugin-market-updates";
 import { MarketSearchBox } from "./plugin-market";
+import { isMarketUpdated, subscribeMarketUpdate } from "@/lib/market-update-signal";
 import { buildGuiAdaptDraft } from "@/components/market/gui-adapt-draft";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
 import { isPluginForm, PLUGIN_FORM_VALUES, type PluginForm } from "./plugin-wizard-utils";
@@ -787,6 +788,9 @@ export function PluginsPage({
   const [search, setSearch] = useState("");
   // v0.9.7 需求3 C2：插件中心顶部二级页签「已安装 | 插件市场」。
   const [view, setView] = useState<"installed" | "market">("installed");
+  // v0.9.8 需求8 D8-1 L2：市场目录更新红点（人在别页时预拉取到达亮起，
+  // 进入市场页即清——由 PluginMarketPanel 挂载置 marketOpen 清信号）。
+  const marketDot = useSyncExternalStore(subscribeMarketUpdate, isMarketUpdated, () => false);
   // 需求14 M4（R7）：待确认安装页内一等分区（app 级确认模态保留——本区
   // 是「插件中心能自己发现」的补充入口，轮询同一 plugin_confirm_pending）。
   const [pendingInstalls, setPendingInstalls] = useState<Array<{
@@ -1669,6 +1673,9 @@ export function PluginsPage({
           )}
         >
           {tr("market.tabMarket", "插件市场")}
+          {view !== "market" && marketDot && (
+            <span aria-label={tr("market.updatedDot", "目录有更新")} className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-red-500 align-middle" />
+          )}
         </button>
       </div>
 
