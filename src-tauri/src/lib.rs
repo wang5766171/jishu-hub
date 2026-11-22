@@ -252,6 +252,8 @@ pub fn run() {
             // 不再传 --tools，核心工具由 pi settings defaultTools 管，
             // 扩展工具由 packages 数组管（对齐 pi 原生机制）。
             agent::jishu_self::pi_tools_config::ensure_default_tools_config();
+            // 需求18：TUI jishu 命令启动自愈（幂等；缺失/死链写 shim 到 npm 全局 bin）。
+            agent::jishu_self::shim::ensure_jishu_command_shim();
             let _ = hub::migrate_v0_5_0();
             // Phase 1: 任务执行器扩展（v0.9.7 需求2 取代 conductor——去阶段化）
             task_plan::ensure_task_runner_extension();

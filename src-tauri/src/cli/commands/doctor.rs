@@ -14,7 +14,13 @@ pub fn run(
     only: Option<&str>,
     ctx: &ExecutionContext,
 ) -> Result<(), CliError> {
-    let mut checks = vec![check_hub_dir(fix)?, check_agents(), check_config()];
+    let mut checks = vec![
+        check_hub_dir(fix)?,
+        check_agents(),
+        check_config(),
+        // 需求18：TUI jishu 命令（--fix 即时重写 shim，无需等下次启动自愈）。
+        check_jishu_command(fix),
+    ];
 
     if let Some(filter) = only {
         checks.retain(|c| c.name == filter);
@@ -125,5 +131,22 @@ fn check_config() -> CheckResult {
             pass: false,
             detail: Some(format!("Cannot resolve config path: {e}")),
         },
+    }
+}
+
+
+/// 需求18：TUI `jishu` 命令检测（--fix 重写 shim 即时修复）。
+fn check_jishu_command(fix: bool) -> CheckResult {
+    if fix {
+        crate::agent::jishu_self::shim::ensure_jishu_command_shim();
+    }
+    let detail = crate::agent::jishu_self::shim::diagnose();
+    // 「正常」开头 = pass；其余（缺失/非标准位置/待自愈）= fail（--fix 后
+    // 再 diagnose 通常已翻正常；非标准 npm 位置则如实失败提示）。
+    let pass = detail.starts_with("正常");
+    CheckResult {
+        name: "tui.jishu_command",
+        pass,
+        detail: Some(detail),
     }
 }
