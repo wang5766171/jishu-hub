@@ -57,6 +57,8 @@ export interface CatalogEntry {
   /** curated 件的 kind（组合件/pi 包/官方智能体…）；第三方件 undefined。 */
   kind?: string;
   description?: string;
+  /** curated 件的场景归属（programming/office/…；工作区场景匹配用）。 */
+  scenes?: string[];
 }
 
 /** 工作区场景分析结果（顶层文件标记零推理；无定论 null）。 */

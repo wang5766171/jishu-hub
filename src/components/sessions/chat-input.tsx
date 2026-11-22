@@ -276,7 +276,8 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   // 需求20 第二轮：+ 菜单两级——MCP 服务 / Skill 子菜单展开态（null = 收起）。
-  const [toolSubmenu, setToolSubmenu] = useState<"mcp" | "skill" | null>(null);
+  // v0.9.8 需求5（归需求7 补充）：extension=已装 pi 扩展子菜单。
+  const [toolSubmenu, setToolSubmenu] = useState<"mcp" | "skill" | "extension" | null>(null);
   const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
   const [accessMenuOpen, setAccessMenuOpen] = useState(false);
   const [stagedMessagesBySession, setStagedMessagesBySession] = useState<Record<string, StagedMessage[]>>({});
@@ -523,7 +524,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({})),
           invokeCommand<string[]>("pi_package_installed_sources").catch(() => []),
           fetchLatestProfile(),
-          fetchWorkspaceScene(projectPath),
+          projectPath ? fetchWorkspaceScene(projectPath) : Promise.resolve(null),
         ]);
         if (cancelled) return;
         const installedRefs = new Set<string>();
