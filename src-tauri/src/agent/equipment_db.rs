@@ -359,13 +359,19 @@ pub fn record_install(
 /// 收录口径：curated **非 required 且未装**件（required 恒装无推荐价值；
 /// 已装不荐）+ 标签库第三方件（未装且 stars ≥3；`third_party` 配置关则
 /// 不收）。目录规模 ≤2KB：curated ~11 行 + 第三方增量。
+/// `workspace_scene`（工作区场景分析结果）非空时补一行场景提示——agent
+/// 的 profile.scene 有据可依（用户裁决：按项目定位推荐）。
 pub fn catalog_block(
     installed_curated: &[String],
     installed_skillhub: &[String],
     third_party: bool,
+    workspace_scene: Option<&str>,
 ) -> String {
     use super::internal_prompts;
     let mut lines: Vec<String> = Vec::new();
+    if let Some(scene) = workspace_scene {
+        lines.push(format!("[当前工作区场景：{scene}——按项目文件特征判定，用户大概率在做这类任务]"));
+    }
     for e in super::plugin::market::market_list_curated(None) {
         if e.required || installed_curated.iter().any(|id| id == &e.id) {
             continue;

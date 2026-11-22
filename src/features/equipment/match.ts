@@ -57,6 +57,22 @@ export function matchByTags(text: string, input: MatchInput, limit = 3): MatchHi
   return hits.sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
+/** L0.5：工作区场景匹配（零推理——代码目录推编程件；用户裁决「按项目
+ * 定位推荐」。curated scenes[] 命中 + 星级排序；无命中返回空走下一级）。 */
+export function matchByWorkspaceScene(scene: string, input: MatchInput, limit = 3): CatalogEntry[] {
+  return input.catalog
+    .filter(
+      (e) =>
+        e.ref.startsWith("curated:") &&
+        Array.isArray(e.scenes) &&
+        e.scenes.includes(scene) &&
+        !input.installedRefs.has(e.ref) &&
+        (e.stars ?? 3) >= 3,
+    )
+    .sort((a, b) => (b.stars ?? 3) - (a.stars ?? 3) || a.title.localeCompare(b.title))
+    .slice(0, limit);
+}
+
 /** L1：任务画像（keywords ×2 权重 + scene 同场景加成）→ 组合候选。 */
 export function matchByProfile(profile: TaskProfile, input: MatchInput, limit = 6): MatchHit[] {
   const kwText = profile.keywords.join(" ");
@@ -100,6 +116,7 @@ export function buildCatalog(
     required: boolean;
     tags?: string[];
     stars?: number;
+    scenes?: string[];
   }>,
   tagRows: Array<{ ref: string; title: string; tags: string[]; stars: number }>,
 ): CatalogEntry[] {
@@ -112,6 +129,7 @@ export function buildCatalog(
       stars: c.stars ?? 3,
       kind: c.kind,
       description: c.description,
+      scenes: c.scenes,
     }));
   for (const row of tagRows) {
     // curated 件不入标签库（Rust 侧已保证；此处防御性跳过防双源）。

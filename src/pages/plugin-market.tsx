@@ -29,8 +29,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { InstallGuideCard, type InstallGuideInfo } from "@/components/market/install-guide-card";
 import { buildGuiAdaptDraft } from "@/components/market/gui-adapt-draft";
 // v0.9.8 需求5（合并版）：装备推荐——共享执行器（五修）+ L1/L0 匹配 + 目录。
-import { fetchEquipConfig, fetchEquipmentTags, fetchLatestProfile, type CatalogEntry } from "@/features/equipment/api";
-import { buildCatalog, matchByProfile } from "@/features/equipment/match";
+import { fetchEquipConfig, fetchEquipmentTags, fetchLatestProfile, fetchWorkspaceScene, type CatalogEntry } from "@/features/equipment/api";
+import { buildCatalog, matchByProfile, matchByWorkspaceScene } from "@/features/equipment/match";
 import { kindNameOf, useEquipmentRunner } from "@/features/equipment/runner";
 
 interface MarketEntry {
@@ -322,7 +322,7 @@ export function PluginMarketPanel({
         setRecommendZone(null);
         return;
       }
-      const [curated, tagRows, pluginList, skillInstalled, piSources, profile] = await Promise.all([
+      const [curated, tagRows, pluginList, skillInstalled, piSources, profile, wsScene] = await Promise.all([
         invokeCommand<Array<{ id: string; kind: string; title: string; description: string; required: boolean; tags?: string[]; stars?: number }>>(
           "market_list_curated",
           { scene: null },
@@ -332,6 +332,11 @@ export function PluginMarketPanel({
         invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({})),
         invokeCommand<string[]>("pi_package_installed_sources").catch(() => []),
         fetchLatestProfile(),
+        // 工作区场景（用户裁决「按项目定位」）：市场页无项目上下文——
+        // 取最近活跃项目（编码名，Rust 端解码）做特征分析；默认空间无定论回落画像。
+        invokeCommand<string | null>("load_last_project").then((enc) =>
+          enc ? fetchWorkspaceScene(enc) : null,
+        ).catch(() => null),
       ]);
       if (cancelled) return;
       const installedRefs = new Set<string>();
@@ -342,13 +347,23 @@ export function PluginMarketPanel({
         installedRefs.add(`pi:${at > 0 ? src.slice(0, at) : src}`);
       }
       const catalog = buildCatalog(curated ?? [], tagRows);
-      const hits = profile
-        ? matchByProfile(profile, { catalog, installedRefs, officialOnly: !config.third_party }, 6)
-        : [];
+      const mInput = { catalog, installedRefs, officialOnly: !config.third_party };
+      // 优先级：工作区场景（项目特征）→ 最近任务画像。
+      const wsPicks = wsScene ? matchByWorkspaceScene(wsScene.scene, mInput, 6) : [];
+      const hits = wsPicks.length >= 2
+        ? wsPicks
+        : profile
+          ? matchByProfile(profile, mInput, 6).map((h) => h.entry)
+          : [];
       if (!cancelled) {
         setRecommendZone(
           hits.length >= 2
-            ? { note: profile?.keywords.slice(0, 3).join(" / ") ?? "", items: hits.map((h) => h.entry) }
+            ? {
+                note: wsPicks.length >= 2
+                  ? `${t("market.recommendByProject", { defaultValue: "项目特征：{basis}", basis: (wsScene?.basis ?? []).slice(0, 2).join(" / ") })}`
+                  : profile?.keywords.slice(0, 3).join(" / ") ?? "",
+                items: hits,
+              }
             : null,
         );
       }

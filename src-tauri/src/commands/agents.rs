@@ -1190,6 +1190,31 @@ pub(crate) fn equipment_tags_list() -> Result<Vec<agent::equipment_db::Equipment
     agent::equipment_db::tags_list()
 }
 
+/// 需求5（合并版）：工作区场景分析（顶层文件标记零推理；无定论 None——
+/// 前端回落画像/草稿/入门）。basis 是用户可读依据（透明可解释）。
+#[derive(serde::Serialize)]
+pub(crate) struct WorkspaceSceneView {
+    pub scene: String,
+    pub basis: Vec<String>,
+}
+
+#[tauri::command]
+pub(crate) fn workspace_scene(project_path: String) -> Result<Option<WorkspaceSceneView>, String> {
+    // 兼容编码项目名（--C--…--形态）：市场等无真实路径的调用方传
+    // load_last_project 的编码名，此处统一解码。
+    let decoded = if project_path.starts_with("--") {
+        crate::project::decode_project_path(&project_path)
+    } else {
+        project_path
+    };
+    Ok(agent::workspace_scene::detect_workspace_scene(std::path::Path::new(&decoded)).map(
+        |r| WorkspaceSceneView {
+            scene: r.scene,
+            basis: r.basis,
+        },
+    ))
+}
+
 /// 标签 upsert（懒固化/tags_hint 回写共用；空字段不覆盖已有值）。
 #[tauri::command]
 pub(crate) fn equipment_tag_upsert(

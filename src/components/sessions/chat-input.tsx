@@ -7,8 +7,8 @@ import { Button } from "@/components/ui/button";
 import {
   Zap, Blocks, Check, ChevronDown, Download, KeyRound, Loader2, MessagesSquare, Paperclip, Plus, Send, Server, Square, Sparkles, X } from "lucide-react";
 // v0.9.8 需求5（合并版）：装备建议条数据源（L1/L0/入门分级）。
-import { fetchEquipConfig, fetchEquipmentTags, fetchLatestProfile } from "@/features/equipment/api";
-import { buildCatalog, installCommandFor, matchByProfile, matchByTags, officialFallback } from "@/features/equipment/match";
+import { fetchEquipConfig, fetchEquipmentTags, fetchLatestProfile, fetchWorkspaceScene } from "@/features/equipment/api";
+import { buildCatalog, installCommandFor, matchByProfile, matchByTags, matchByWorkspaceScene, officialFallback } from "@/features/equipment/match";
 import { FilePreview } from "./file-preview";
 import { InteractionComposer } from "./interaction-composer";
 import { MessageStaging, type StagedMessage } from "./message-staging";
@@ -475,7 +475,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   // + 已装未挂件（curated 非 required ∩ sessionTools 可注入 → @[注入]）。
   // 配置闸：总开关 + input_bar 链路开关；× 关闭落 settings 持久化。
   const [sceneSuggest, setSceneSuggest] = useState<{
-    origin: "profile" | "draft" | "fallback";
+    origin: "workspace" | "profile" | "draft" | "fallback";
     originNote?: string;
     installItems: Array<{ ref: string; title: string; stars: number; kind?: string; description?: string }>;
     mountItems: Array<{ id: string; title: string }>;
@@ -504,7 +504,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           return;
         }
         // 目录合并 + 已装态（派生态现场交叉算）。
-        const [curated, tagRows, pluginList, skillInstalled, piSources, profile] = await Promise.all([
+        const [curated, tagRows, pluginList, skillInstalled, piSources, profile, wsScene] = await Promise.all([
           invokeCommand<Array<{ id: string; kind: string; title: string; description: string; required: boolean; tags?: string[]; stars?: number }>>(
             "market_list_curated",
             { scene: null },
@@ -514,6 +514,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({})),
           invokeCommand<string[]>("pi_package_installed_sources").catch(() => []),
           fetchLatestProfile(),
+          fetchWorkspaceScene(projectPath),
         ]);
         if (cancelled) return;
         const installedRefs = new Set<string>();
@@ -525,12 +526,20 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         }
         const catalog = buildCatalog(curated ?? [], tagRows);
         const input = { catalog, installedRefs, officialOnly: !config.third_party };
-        // 分级：L1 画像 → L0 草稿 → 官方入门回落。
-        let origin: "profile" | "draft" | "fallback" = "fallback";
+        // 分级（用户裁决「按项目定位」）：工作区场景（本地零推理，冷启动
+        // 即有——代码目录推编程件）→ L1 画像 → L0 草稿 → 官方入门回落。
+        let origin: "workspace" | "profile" | "draft" | "fallback" = "fallback";
         let hits = profile ? matchByProfile(profile, input, 3) : [];
         if (hits.length >= 2) {
           origin = "profile";
-        } else {
+        } else if (wsScene) {
+          const scenePicks = matchByWorkspaceScene(wsScene.scene, input, 3);
+          if (scenePicks.length > 0) {
+            origin = "workspace";
+            hits = scenePicks.map((entry) => ({ entry, score: entry.stars, hitTags: [] }));
+          }
+        }
+        if (origin === "fallback") {
           hits = matchByTags(draftSnapshot, input, 3);
           if (hits.length > 0) origin = "draft";
         }
@@ -564,7 +573,12 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         if (!cancelled) {
           setSceneSuggest({
             origin,
-            originNote: origin === "profile" ? profile?.keywords.slice(0, 3).join(" / ") : undefined,
+            originNote:
+              origin === "profile"
+                ? profile?.keywords.slice(0, 3).join(" / ")
+                : origin === "workspace"
+                  ? wsScene?.basis.slice(0, 2).join(" / ")
+                  : undefined,
             installItems,
             mountItems,
           });
@@ -580,8 +594,9 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     return () => {
       cancelled = true;
     };
-    // sessionTools 后到（会话工具清单异步装载）+ 草稿快照变化重算 L0。
-  }, [showSceneSuggest, sessionTools, draftSnapshot]);
+    // sessionTools 后到（会话工具清单异步装载）+ 草稿快照变化重算 L0
+    // + 工作区切换（projectPath）重算场景。
+  }, [showSceneSuggest, projectPath, sessionTools, draftSnapshot]);
 
   const handleDismissSceneSuggest = useCallback(() => {
     setSceneSuggest(null);
@@ -1491,11 +1506,13 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           <span>
             {sceneSuggest.installItems.length === 0
               ? t("sessions.equipSuggestMountable", "已装可快速挂载")
-              : sceneSuggest.origin === "profile"
-                ? t("sessions.equipSuggestByTask", { defaultValue: "按最近任务推荐", note: sceneSuggest.originNote ?? "" })
-                : sceneSuggest.origin === "draft"
-                  ? t("sessions.equipSuggestByDraft", "按你输入的内容推荐")
-                  : t("sessions.equipSuggestFallback", "为你推荐")}
+              : sceneSuggest.origin === "workspace"
+                ? t("sessions.equipSuggestByProject", "按当前项目推荐")
+                : sceneSuggest.origin === "profile"
+                  ? t("sessions.equipSuggestByTask", { defaultValue: "按最近任务推荐", note: sceneSuggest.originNote ?? "" })
+                  : sceneSuggest.origin === "draft"
+                    ? t("sessions.equipSuggestByDraft", "按你输入的内容推荐")
+                    : t("sessions.equipSuggestFallback", "为你推荐")}
           </span>
           {sceneSuggest.installItems.map((item) => (
             <button

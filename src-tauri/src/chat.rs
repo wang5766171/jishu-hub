@@ -383,6 +383,7 @@ fn first_visible_vision_model() -> Option<String> {
 fn compose_tool_message(
     state: &tauri::State<'_, Mutex<AppState>>,
     session_id: &str,
+    project_path: &str,
     message: String,
 ) -> String {
     // v0.9.5 重构（用户裁决）：内部提示词一律**后缀**注入——用户消息在最前，
@@ -412,7 +413,9 @@ fn compose_tool_message(
             }
             let installed_skillhub: Vec<String> =
                 agent::skillhub::skillhub_installed().keys().cloned().collect();
-            agent::equipment_db::catalog_block(&installed_curated, &installed_skillhub, cfg.third_party)
+            let ws_scene = agent::workspace_scene::detect_workspace_scene(std::path::Path::new(project_path))
+                .map(|r| r.scene);
+            agent::equipment_db::catalog_block(&installed_curated, &installed_skillhub, cfg.third_party, ws_scene.as_deref())
         }
     };
     let mut out = message;
@@ -530,7 +533,7 @@ pub async fn send_message(
                 remove_process_entries(&app, Some(pid), Some(sid))?;
             } else if let Some(acp) = process.acp.as_ref() {
                 // 工具注入（35ee638a）：早退路径同样附加会话启用工具的说明块。
-                let outgoing = compose_tool_message(&state, sid, message.clone());
+                let outgoing = compose_tool_message(&state, sid, &project_path, message.clone());
                 match acp.send_prompt(outgoing).await {
                     Ok(()) => {
                         return Ok(ChatSession {
@@ -554,7 +557,7 @@ pub async fn send_message(
 
     // 工具注入：会话启用集合非空 → 说明块前缀附加到 prompt（无头任务路径
     // 不注入——边界：工具插件是 GUI 会话能力）。
-    let message = compose_tool_message(&state, &pending_session_id, message);
+    let message = compose_tool_message(&state, &pending_session_id, &project_path, message);
 
     // v0.9.7 需求5 E5：新会话真实 id 解析回调里确保会话子目录（project_path
     // 稍后 move 进 AgentTurnRequest，先克隆）。

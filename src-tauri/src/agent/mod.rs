@@ -43,6 +43,9 @@ pub mod extensions_db;
 // 需求5（v0.9.8 合并版）：equipment.db——装备推荐四资产（第三方件标签
 // 库/任务画像/已推记忆/来源台账）；官方件档案真源在 curated.json 不落库。
 pub mod equipment_db;
+// 需求5（v0.9.8 合并版）：工作区场景分析——顶层文件标记零推理判定
+// （代码目录→programming 等；L0/L1 场景信号，冷启动即有）。
+pub mod workspace_scene;
 
 pub use capability::{AgentCapabilities, AgentHealth};
 pub use claude_code::ClaudeCodeAgent;

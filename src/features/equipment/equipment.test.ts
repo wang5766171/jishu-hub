@@ -9,6 +9,7 @@ import {
   installCommandFor,
   matchByProfile,
   matchByTags,
+  matchByWorkspaceScene,
   officialFallback,
 } from "@/features/equipment/match";
 import type { CatalogEntry, TaskProfile } from "@/features/equipment/api";
@@ -82,6 +83,25 @@ describe("L0 matchByTags（零推理本地匹配）", () => {
 
   it("文本过短（<2 字符）不匹配", () => {
     expect(matchByTags("查", input)).toHaveLength(0);
+  });
+});
+
+describe("L0.5 matchByWorkspaceScene（工作区场景匹配——按项目定位）", () => {
+  const catalog: CatalogEntry[] = [
+    { ref: "curated:task-plan", title: "流程规划", tags: ["任务拆解"], stars: 5, scenes: ["programming"] },
+    { ref: "curated:session.video-maker", title: "视频生成助手", tags: ["视频生成"], stars: 5, scenes: ["video"] },
+    { ref: "curated:other", title: "无场景件", tags: ["x"], stars: 4 },
+  ];
+
+  it("代码目录→编程件；视频目录→视频件；未装排除", () => {
+    const input = { catalog, installedRefs: new Set<string>(["curated:task-plan"]) };
+    // programming：task-plan 已装 → 空。
+    expect(matchByWorkspaceScene("programming", input, 3)).toHaveLength(0);
+    // video：video-maker 未装 → 命中。
+    const picks = matchByWorkspaceScene("video", input, 3);
+    expect(picks.map((e) => e.ref)).toEqual(["curated:session.video-maker"]);
+    // 无场景归属场景（如 content 无 curated 件）→ 空（走下一级）。
+    expect(matchByWorkspaceScene("content", input, 3)).toHaveLength(0);
   });
 });
 

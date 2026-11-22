@@ -392,7 +392,8 @@
     "equipSuggestByDraft": "按你输入的内容推荐",
     "equipSuggestFallback": "为你推荐",
     "equipSuggestMountable": "已装可快速挂载",
-    "equipSuggestMountHint": "已安装——点击挂载到本会话"
+    "equipSuggestMountHint": "已安装——点击挂载到本会话",
+    "equipSuggestByProject": "按当前项目推荐"
   },
   "plugins": {
     "entryStepFace": "业务形态（做什么·在哪用）",
@@ -1918,7 +1919,8 @@
     "extLoading": "目录加载中…",
     "recommendForYou": "为你推荐",
     "recommendByTask": "根据最近任务：{{note}}",
-    "recommendHint": "按最近任务挑选的组合"
+    "recommendHint": "按最近任务挑选的组合",
+    "recommendByProject": "项目特征：{basis}"
   },
   "onboarding": {
     "initTitle": "正在准备你的智能体",

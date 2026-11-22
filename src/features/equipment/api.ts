@@ -59,6 +59,12 @@ export interface CatalogEntry {
   description?: string;
 }
 
+/** 工作区场景分析结果（顶层文件标记零推理；无定论 null）。 */
+export interface WorkspaceScene {
+  scene: string;
+  basis: string[];
+}
+
 // ── 命令封装（薄层：失败回空/默认，不炸调用方） ──
 
 export async function fetchEquipmentTags(): Promise<EquipmentTagRow[]> {
@@ -167,4 +173,13 @@ export async function setEquipConfig(patch: Partial<EquipConfig>): Promise<void>
     marketZone: patch.market_zone ?? null,
     thirdParty: patch.third_party ?? null,
   });
+}
+
+/** 需求5（合并版）：工作区场景分析——按项目定位推荐（代码目录→编程件）。 */
+export async function fetchWorkspaceScene(projectPath: string): Promise<WorkspaceScene | null> {
+  try {
+    return (await invokeCommand<WorkspaceScene | null>("workspace_scene", { projectPath })) ?? null;
+  } catch {
+    return null;
+  }
 }

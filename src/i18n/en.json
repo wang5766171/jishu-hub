@@ -392,7 +392,8 @@
     "equipSuggestByDraft": "Based on what you're typing",
     "equipSuggestFallback": "For you",
     "equipSuggestMountable": "Installed — quick mount",
-    "equipSuggestMountHint": "Already installed — click to mount in this chat"
+    "equipSuggestMountHint": "Already installed — click to mount in this chat",
+    "equipSuggestByProject": "Based on this project"
   },
   "plugins": {
     "entryStepFace": "Business face (what · where)",
@@ -1918,7 +1919,8 @@
     "extLoading": "Loading catalog…",
     "recommendForYou": "For you",
     "recommendByTask": "Based on a recent task: {{note}}",
-    "recommendHint": "A combo picked for your recent task"
+    "recommendHint": "A combo picked for your recent task",
+    "recommendByProject": "Project signals: {basis}"
   },
   "onboarding": {
     "initTitle": "Preparing your agent",

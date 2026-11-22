@@ -629,6 +629,7 @@ pub fn run() {
             commands::agents::market_uninstall,
             // v0.9.8 需求5（合并版）：装备推荐数据面（equipment.db 四表+配置）。
             commands::agents::equipment_tags_list,
+            commands::agents::workspace_scene,
             commands::agents::equipment_tag_upsert,
             commands::agents::task_profile_latest,
             commands::agents::task_profile_upsert,
