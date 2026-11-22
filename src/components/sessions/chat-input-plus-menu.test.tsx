@@ -2,7 +2,7 @@ import i18n from "@/i18n";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ChatInput } from "./chat-input";
+import { ChatInput, extractToolTokens } from "./chat-input";
 
 const invokeCommand = vi.hoisted(() => vi.fn());
 
@@ -53,6 +53,28 @@ const sessionTools = [
     enabled: true,
     injectable: true,
     category: "cli",
+  },
+  // v0.9.8 需求5（合并版）：已装 pi 扩展条目（后端 session_tool_list 下发
+  // category=extension + keep_text）。
+  {
+    id: "npm:pi-lens",
+    display_name: "扩展·写后诊断",
+    description: "pi 扩展（能力随安装自动注入，点名后 agent 优先使用）",
+    usage: "",
+    enabled: false,
+    injectable: true,
+    category: "extension",
+    keep_text: true,
+  },
+  {
+    id: "npm:pi-web-access",
+    display_name: "扩展·联网搜索",
+    description: "pi 扩展",
+    usage: "",
+    enabled: false,
+    injectable: true,
+    category: "extension",
+    keep_text: true,
   },
 ];
 
@@ -113,7 +135,40 @@ describe("ChatInput + menu aggregation (v0.9.8 需求7)", () => {
 
   /** 需求15-F10：CLI 平铺与 MCP 组均空、仅 Skill 一项时——能力挂载组内
    *  渲染一行占位说明（此前组内只剩 Skill，用户无从得知为什么没有别的）。 */
-  it("U3: cli/mcp 均空时显示能力挂载空态占位说明", async () => {
+    it("U-EXT1: 扩展组在 + 菜单呈现（与 Skill 同款折叠子菜单）", async () => {
+    await openMenu();
+    // 组头可见；条目折叠（点开前不显示具体扩展）
+    expect(screen.getByText("Extensions")).toBeInTheDocument();
+    expect(screen.queryByText("扩展·写后诊断")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Extensions"));
+    await waitFor(() => {
+      expect(screen.getByText("扩展·写后诊断")).toBeInTheDocument();
+      expect(screen.getByText("扩展·联网搜索")).toBeInTheDocument();
+    });
+  });
+
+  it("U-EXT2: 点扩展条目注入 token；keep_text 发送保留原文+归一 id", async () => {
+    await openMenu();
+    fireEvent.click(screen.getByText("Extensions"));
+    fireEvent.click(screen.getByText("扩展·写后诊断"));
+
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textarea.value).toContain("@[扩展·写后诊断]");
+  });
+
+  it("U-EXT3: extractToolTokens——扩展 token 保留原文且归一 id；传统件剥离子集不变", () => {
+    // 导出的纯函数级验证（chat-input 单源导出）。
+    const tools = [
+      { id: "dev-god", display_name: "写后诊断" },
+      { id: "npm:pi-lens", display_name: "扩展·写后诊断", keep_text: true },
+    ];
+    const { text, toolIds } = extractToolTokens("用 @[写后诊断] 和 @[扩展·写后诊断] 查代码", tools);
+    // 传统件剥离；扩展保留原文（点名传给 agent）。
+    expect(text.replace(/  +/g, " ")).toBe("用 和 @[扩展·写后诊断] 查代码");
+    expect(toolIds).toEqual(["dev-god", "npm:pi-lens"]);
+  });
+
+it("U3: cli/mcp 均空时显示能力挂载空态占位说明", async () => {
     invokeCommand.mockImplementation((cmd: string) => {
       if (cmd === "session_tool_list")
         return Promise.resolve([

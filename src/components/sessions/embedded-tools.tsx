@@ -129,9 +129,33 @@ export function UserTextWithPills({
   toolIds: string[];
   toolNames: Record<string, string>;
 }) {
+  // v0.9.8 需求5（合并版）：扩展点名（keep_text 形态）的 `@[扩展名]` 原文
+  // 内联 pill 化——扩展无注入块，回放 tool_ids 快照不含它，点名信息就在
+  // 正文里；名字在 toolNames 映射中存在才转换（未知 @[x] 按原文）。传统
+  // 件（剥离形态）正文不含 @[名]，此分支天然不触发——展示面单源不破。
+  let textNode: import("react").ReactNode = text;
+  const knownNames = new Set(Object.values(toolNames));
+  if (text.includes("@[") && knownNames.size > 0) {
+    const parts: import("react").ReactNode[] = [];
+    const re = /@\[([^\]]+)\]/g;
+    let last = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      if (!knownNames.has(m[1])) continue;
+      if (m.index > last) parts.push(text.slice(last, m.index));
+      parts.push(<EmbeddedToolPill key={`pill-${m.index}`} name={m[1]} />);
+      last = m.index + m[0].length;
+    }
+    if (last === 0) {
+      // 无命中：保持原文本（不进 parts 分支）。
+    } else {
+      if (last < text.length) parts.push(text.slice(last));
+      textNode = parts;
+    }
+  }
   return (
     <span className="whitespace-pre-wrap break-all">
-      {text}
+      {textNode}
       <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} trailing />
     </span>
   );

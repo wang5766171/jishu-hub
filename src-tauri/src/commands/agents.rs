@@ -235,8 +235,12 @@ pub(crate) struct SessionToolInfo {
     pub injectable: bool,
     /// v0.9.0 需求20 第二轮：能力类别（+ 菜单两级分组）——mcp = [mcp] 声明
     ///（经 jishu-hub 结构化通道，注入提示块）；skill = [skill] 声明（已分发
-    /// 到 agent skill 目录，注入提示块）；cli = 传统 [tool] 用法注入。
+    /// 到 agent skill 目录，注入提示块）；cli = 传统 [tool] 用法注入；
+    /// extension = 已装 pi 扩展（v0.9.8 需求5：+ 菜单可引用/消息可点名）。
     pub category: String,
+    /// v0.9.8 需求5：@[名] 引用时是否保留消息原文（true=扩展：点名即信息，
+    /// 无 hub 侧说明块可注入；false=传统件：剥离原文并注入用法说明块）。
+    pub keep_text: bool,
 }
 
 #[tauri::command]
@@ -250,13 +254,16 @@ pub(crate) fn session_tool_list(
             .collect();
     let s = state.lock().unwrap_or_else(|e| e.into_inner());
     let tools = s.tool_plugins.lock().unwrap_or_else(|e| e.into_inner());
-    tools
+
+    // v0.9.8 需求5（合并版，用户裁决「推荐效果一致」）：已装 pi 扩展进
+    // 挂载清单（category=extension）——+ 菜单可引用、消息可 @[点名]，
+    // 与 Skill 引用同款体验。keep_text=true：@[扩展名] 保留原文不剥离
+    //（pi 扩展无 hub 侧工具说明文档可注入，点名本身就是要传给 agent 的
+    // 信息——工具可用性由 pi 原生 packages 机制保证，装了就在）。
+    let mut list = tools
         .iter()
         .filter(|p| p.enabled)
         .map(|p| {
-            // v0.9.4 需求3 补口：目录形式 skill 骨架（无 [skill] 段，能力
-            // 声明在插件目录 skills/）——描述/injectable/category 以目录源
-            // 为准，与插件中心 tool_descriptor 同口径。
             let dir_root = p
                 .source_path
                 .parent()
@@ -298,15 +305,45 @@ pub(crate) fn session_tool_list(
                 } else {
                     "cli".to_string()
                 },
+                keep_text: false,
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    if let Ok(entries) = agent::extensions_db::registry_list() {
+        for e in entries.iter().filter(|e| e.state == "active") {
+            list.push(SessionToolInfo {
+                id: e.pkg_key.clone(),
+                display_name: e.display.clone(),
+                description: "pi 扩展（能力随安装自动注入，点名后 agent 优先使用）".to_string(),
+                usage: String::new(),
+                enabled: selected.contains(&e.pkg_key),
+                injectable: true,
+                category: "extension".to_string(),
+                keep_text: true,
+            });
+        }
+    }
+    list
 }
 
 /// 设置会话启用的工具插件集合（prompt 注入依据；空集合移除条目）。
 #[tauri::command]
 pub(crate) fn session_set_tools(session_id: String, tool_ids: Vec<String>) -> Result<(), String> {
-    agent::tool_plugin::set_session_tools(&session_id, &tool_ids)
+    // v0.9.8 需求5：tool_ids 可含 pi 扩展 pkg_key（消息点名 @[扩展] 的
+    // 归一产物——pill 渲染/编辑重发走 tool_ids 快照）。扩展非 tool_plugins
+    // 注册表成员，set_session_tools 的 known 校验会拒——会话启用集记录
+    // 点名即可（compose 侧 tool_plugins 匹配自然滤掉，无说明块注入），
+    // 此处拆分放行。
+    let (extension_ids, plugin_ids): (Vec<String>, Vec<String>) = tool_ids
+        .into_iter()
+        .partition(|id| {
+            id.starts_with("npm:")
+                && agent::extensions_db::registry_list()
+                    .map(|l| l.iter().any(|e| e.pkg_key == *id && e.state == "active"))
+                    .unwrap_or(false)
+        });
+    let _ = extension_ids;
+    agent::tool_plugin::set_session_tools(&session_id, &plugin_ids)
 }
 
 /// 重扫描 manifest 目录并热重建（手工放置/删除文件后的刷新入口）。

@@ -393,7 +393,8 @@
     "equipSuggestFallback": "For you",
     "equipSuggestMountable": "Installed — quick mount",
     "equipSuggestMountHint": "Already installed — click to mount in this chat",
-    "equipSuggestByProject": "Based on this project"
+    "equipSuggestByProject": "Based on this project",
+    "extensionSection": "Extensions"
   },
   "plugins": {
     "entryStepFace": "Business face (what · where)",

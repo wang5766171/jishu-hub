@@ -5,7 +5,7 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { streamStore, useIsSessionStreaming } from "@/hooks/use-stream-store";
 import { Button } from "@/components/ui/button";
 import {
-  Zap, Blocks, Check, ChevronDown, Download, KeyRound, Loader2, MessagesSquare, Paperclip, Plus, Send, Server, Square, Sparkles, X } from "lucide-react";
+  Zap, Blocks, Check, ChevronDown, Download, KeyRound, Loader2, MessagesSquare, Package, Paperclip, Plus, Send, Server, Square, Sparkles, X } from "lucide-react";
 // v0.9.8 需求5（合并版）：装备建议条数据源（L1/L0/入门分级）。
 import { fetchEquipConfig, fetchEquipmentTags, fetchLatestProfile, fetchWorkspaceScene } from "@/features/equipment/api";
 import { buildCatalog, installCommandFor, matchByProfile, matchByTags, matchByWorkspaceScene, officialFallback } from "@/features/equipment/match";
@@ -38,8 +38,11 @@ interface SessionTool {
   enabled: boolean;
   /** M3：有 [tool] 段（可 CLI 注入）；false = 仅 pi 扩展形态。 */
   injectable?: boolean;
-  /** v0.9.0 需求20 第二轮：能力类别（cli | mcp | skill）——+ 菜单两级分组。 */
+  /** 能力类别（cli | mcp | skill | extension）——+ 菜单两级分组；
+   * extension = 已装 pi 扩展（v0.9.8 需求5：+ 菜单可引用/消息可点名）。 */
   category?: string;
+  /** @[名] 引用时保留消息原文（true=扩展：点名即信息，无说明块可注入）。 */
+  keep_text?: boolean;
 }
 
 /** v0.9.8 需求7：+ 菜单历史残留件过滤——task-requirements/task-plan 是
@@ -59,6 +62,9 @@ const TOOL_TOKEN_RE = /@\[([^\]]+)\]/g;
 export interface ToolTokenSource {
   id: string;
   display_name: string;
+  /** v0.9.8 需求5：扩展条目 true——@[名] 保留原文（点名传给 agent），
+   * 仅归一 id 进 toolIds（pill 渲染/编辑重发一致）。 */
+  keep_text?: boolean;
 }
 
 /** 解析消息中的工具 token：剥离文本并把显示名归一为插件 id
@@ -70,6 +76,9 @@ export function extractToolTokens(text: string, tools: ToolTokenSource[]): { tex
     const tool = tools.find((t) => t.display_name === name);
     if (!tool) return match;
     ids.push(tool.id);
+    // v0.9.8 需求5：扩展点名保留原文——pi 扩展无说明块可注入，@[扩展名]
+    // 本身就是要让 agent 看到的信息（工具可用性由 pi packages 机制保证）。
+    if (tool.keep_text) return match;
     return "";
   });
   TOOL_TOKEN_RE.lastIndex = 0;
@@ -1812,8 +1821,11 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     );
                     const mcpTools = sessionTools.filter((t) => t.category === "mcp" && injectable(t));
                     const skillTools = sessionTools.filter((t) => t.category === "skill" && injectable(t));
+                    // v0.9.8 需求5（合并版）：已装 pi 扩展同款可引用（推荐
+                    // 能推扩展，用户也得能主动点名——体验一致）。
+                    const extensionTools = sessionTools.filter((t) => t.category === "extension" && injectable(t));
                     const hasSelectableTools =
-                      cliTools.length + mcpTools.length + skillTools.length > 0;
+                      cliTools.length + mcpTools.length + skillTools.length + extensionTools.length > 0;
                     // v0.9.1 需求8：子项图标与所属类型组一致（MCP→Server、
                     // Skill→Sparkles），CLI 插件保持 Blocks——内置服务与类型
                     // 标识视觉统一（用户裁决，原全部为 Blocks 四小方形）。
@@ -1874,10 +1886,25 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                           {toolSubmenu === "skill" && skillTools.map((tool) => renderToolButton(tool, Sparkles, "text-[var(--icon-theme)]", true))}
                         </>
                       )}
+                      {extensionTools.length > 0 && (
+                        <>
+                          <button
+                            type="button"
+                            aria-expanded={toolSubmenu === "extension"}
+                            onClick={() => setToolSubmenu((cur) => (cur === "extension" ? null : "extension"))}
+                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground transition-fast hover:bg-accent/60"
+                          >
+                            <Package className="h-4 w-4 shrink-0 text-[var(--icon-config)]" />
+                            <span className="flex-1">{t("sessions.extensionSection", "扩展")}</span>
+                            <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", toolSubmenu === "extension" && "rotate-180")} />
+                          </button>
+                          {toolSubmenu === "extension" && extensionTools.map((tool) => renderToolButton(tool, Package, "text-[var(--icon-config)]", true))}
+                        </>
+                      )}
                       {/* 需求15-F10：CLI 平铺与 MCP 组均空（已装件多为 pi 扩展
                           形态被设计过滤）时给一行占位说明——否则组内只剩
                           Skill 一项，用户无从得知为什么没有别的。 */}
-                      {cliTools.length === 0 && mcpTools.length === 0 && (
+                      {cliTools.length === 0 && mcpTools.length === 0 && extensionTools.length === 0 && (
                         <div className="px-2.5 pb-1 pt-0.5 text-[0.7rem] leading-relaxed text-muted-foreground/60">
                           {t("sessions.abilityEmptyHint", "暂无可挂载的插件工具，可在插件市场安装")}
                         </div>
