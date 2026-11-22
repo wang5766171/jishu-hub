@@ -102,7 +102,10 @@ function renderMirrorText(text: string, tools: SessionTool[]) {
     const tool = tools.find((t) => t.display_name === name);
     if (!tool) continue; // 未匹配插件的 token 按 plain text 走（mirror 层与剥离逻辑一致）
     if (match.index > last) parts.push(text.slice(last, match.index));
-    parts.push(<EmbeddedToolPill key={`${match.index}-${name}`} name={name} />);
+    // 需求7 补充：实时预览 pill 同款按类型出图标（+ 菜单同款映射）。
+    parts.push(
+      <EmbeddedToolPill key={`${match.index}-${name}`} name={name} kind={tool?.category} />,
+    );
     last = match.index + match[0].length;
   }
   TOOL_TOKEN_RE.lastIndex = 0;

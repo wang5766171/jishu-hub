@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { UserTextWithPills, EmbeddedToolPills } from "./embedded-tools";
+import { UserTextWithPills, EmbeddedToolPill, EmbeddedToolPills } from "./embedded-tools";
 
 /**
  * v0.9.0 需求3 方案 C 契约锁定：pill 数据源为 toolIds 元数据参数，组件
@@ -66,5 +66,31 @@ describe("UserTextWithPills（M7 → v0.9.0 需求3：元数据契约）", () =>
       <EmbeddedToolPills toolIds={["unknown-x"]} toolNames={{}} />,
     );
     expect(screen.getByText("unknown-x")).toBeTruthy();
+  });
+
+  it("需求7 补充：pill 图标按类型区分（与 + 菜单同款映射）", () => {
+    const { container, rerender } = render(
+      <EmbeddedToolPill name="写后诊断" kind="skill" />,
+    );
+    expect(container.querySelector("svg.lucide-sparkles")).toBeTruthy();
+    rerender(<EmbeddedToolPill name="联网搜索" kind="extension" />);
+    expect(container.querySelector("svg.lucide-package")).toBeTruthy();
+    rerender(<EmbeddedToolPill name="文档服务" kind="mcp" />);
+    expect(container.querySelector("svg.lucide-server")).toBeTruthy();
+    // 缺省/未知 kind → Blocks（兼容既有形态）。
+    rerender(<EmbeddedToolPill name="流程规划" />);
+    expect(container.querySelector("svg.lucide-blocks")).toBeTruthy();
+  });
+
+  it("需求7 补充：EmbeddedToolPills 组随 toolCats 出对应图标", () => {
+    const { container } = render(
+      <EmbeddedToolPills
+        toolIds={["s1", "e1"]}
+        toolNames={{ s1: "技能件", e1: "扩展件" }}
+        toolCats={{ s1: "skill", e1: "extension" }}
+      />,
+    );
+    expect(container.querySelector("svg.lucide-sparkles")).toBeTruthy();
+    expect(container.querySelector("svg.lucide-package")).toBeTruthy();
   });
 });

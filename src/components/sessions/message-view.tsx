@@ -13,7 +13,7 @@ import { extractCodeText } from "./code-block-text";
 // v0.9.7 需求6 F2：产物引用链接（jishu-artifact://）——Q14：仅助手消息两处接入。
 import { jishuUrlTransform } from "@/lib/markdown-url";
 import { ArtifactLink } from "./artifact-link";
-import { EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
+import { EmbeddedToolPills, useSessionToolCats, useSessionToolNames } from "./embedded-tools";
 import { ToolGroup } from "@/components/observability/tool-call-card";
 import { resolveToolKind } from "@/components/observability/tool-call-card/types";
 import type { ToolCall } from "@/components/observability/tool-call-card";
@@ -642,6 +642,7 @@ function UserBubble({
   messageIndex,
   roleView,
   toolNames,
+  toolCats,
   onEditSubmit,
   onDismissUnsent,
 }: {
@@ -653,6 +654,8 @@ function UserBubble({
   messageIndex: number;
   roleView?: MessageRoleView | null;
   toolNames: Record<string, string>;
+  /** 需求7 补充：id→category（pill 图标按类型）。 */
+  toolCats?: Record<string, string>;
   /** 需求13：非空=本气泡是可编辑的最近用户消息（提交回调收编辑后文本+
    * 保留的工具调用 id——编辑可删/留工具）。 */
   onEditSubmit?: ((newText: string, remainingToolIds?: string[]) => void) | null;
@@ -728,6 +731,7 @@ function UserBubble({
                 <EmbeddedToolPills
                   toolIds={draftToolIds}
                   toolNames={toolNames}
+                  toolCats={toolCats}
                   onRemove={(id) => setDraftToolIds((prev) => prev.filter((x) => x !== id))}
                 />
               )}
@@ -798,7 +802,7 @@ function UserBubble({
                     currentMatch={currentOcc}
                   />
                   {toolIds.length > 0 && (
-                    <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} trailing />
+                    <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} toolCats={toolCats} trailing />
                   )}
                 </div>
               );
@@ -876,6 +880,8 @@ export const MessageView = memo(function MessageView({
   const { t } = useTranslation();
   // v0.8.1 需求7：用户消息 pill 的 id→中文名映射（按会话加载一次）。
   const toolNames = useSessionToolNames(sessionId ?? null);
+  // 需求7 补充：pill 图标按类型（UserBubble 消费，+ 菜单同款映射）。
+  const toolCats = useSessionToolCats(sessionId ?? null);
   const [localSearchQuery, setLocalSearchQuery] = useState(initialSearchQuery || "");
   const searchQuery = externalSearchQuery ?? localSearchQuery;
   const renderingQuery = useDeferredValue(searchQuery);
@@ -1064,6 +1070,7 @@ export const MessageView = memo(function MessageView({
         messageIndex={row.messageIndex}
         roleView={roleView}
         toolNames={toolNames}
+        toolCats={toolCats}
         onEditSubmit={editable}
         onDismissUnsent={
           msg.unsent && onDismissUnsent ? () => onDismissUnsent(msg) : null

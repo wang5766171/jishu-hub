@@ -7,7 +7,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { useSessionStream } from "@/hooks/use-stream-store";
 import { InlineImages, stripImagePrompt } from "./inline-image";
-import { EmbeddedToolPills, useSessionToolNames } from "./embedded-tools";
+import { EmbeddedToolPills, useSessionToolCats, useSessionToolNames } from "./embedded-tools";
 // v0.9.7 需求6 F2：产物引用链接（jishu-artifact://）——Q14：仅助手消息两处接入。
 import { jishuUrlTransform } from "@/lib/markdown-url";
 import { ArtifactLink } from "./artifact-link";
@@ -50,6 +50,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   const { t } = useTranslation();
   // v0.8.1 需求7：用户消息气泡内 pill 显示插件中文名（id→显示名映射）。
   const toolNames = useSessionToolNames(sessionId);
+  const toolCats = useSessionToolCats(sessionId);
   const displayText = state?.text ?? "";
   const thinkingText = state?.thinking ?? "";
   const errorText = state?.error ?? "";
@@ -299,6 +300,7 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
           text={resolvedUserMessage}
           toolIds={resolvedUserToolIds}
           toolNames={toolNames}
+          toolCats={toolCats}
           onEdit={
             onEditUserMessage
               ? (newText, remainingToolIds) => onEditUserMessage(resolvedUserMessage, newText, remainingToolIds)
@@ -526,7 +528,7 @@ function StepStatusIcon({ kind }: { kind: string }) {
  */
 /** 流式阶段主用户消息（v0.9.0 需求3 方案 C：pill 数据源为 toolIds 元数据——
  * compose 时前端已知、经 streamStore.pendingToolIds 传递；文本标记解析已废弃）。 */
-function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: string; toolIds: string[]; toolNames: Record<string, string>; onEdit?: ((newText: string, remainingToolIds?: string[]) => void) | null }) {
+function StreamingUserBubble({ text, toolIds, toolNames, toolCats, onEdit }: { text: string; toolIds: string[]; toolNames: Record<string, string>; toolCats?: Record<string, string>; onEdit?: ((newText: string, remainingToolIds?: string[]) => void) | null }) {
   const { t } = useTranslation();
   // 需求13：流式中原位编辑（回复过程中可编辑本条——停止回复并重发）。
   const [editing, setEditing] = useState(false);
@@ -566,6 +568,7 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
                 <EmbeddedToolPills
                   toolIds={draftToolIds}
                   toolNames={toolNames}
+                  toolCats={toolCats}
                   onRemove={(id) => setDraftToolIds((prev) => prev.filter((x) => x !== id))}
                 />
               )}
@@ -602,7 +605,7 @@ function StreamingUserBubble({ text, toolIds, toolNames, onEdit }: { text: strin
             </div>
           ) : (
             <>
-              <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} />
+              <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} toolCats={toolCats} />
               <InlineImages text={text} />
               {display}
             </>
