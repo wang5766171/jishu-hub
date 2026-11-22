@@ -589,7 +589,7 @@ function SceneStep({ onNext, onSkip }: { onNext: (scenes?: string[]) => void; on
       <div className="text-center">
         <div className="text-lg font-semibold">{t("onboarding.sceneTitle", "你主要用它做什么？")}</div>
         <div className="mt-1.5 text-sm text-muted-foreground">
-          {t("onboarding.sceneHint", "可多选——按场景给你配好推荐装备")}
+          {t("onboarding.sceneHint", "可多选——按场景给你配好推荐插件")}
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -837,7 +837,7 @@ function RecommendStep({
   return (
     <div className="flex flex-col gap-4">
       <div className="text-center">
-        <div className="text-lg font-semibold">{t("onboarding.recommendTitle", "按需配齐装备")}</div>
+        <div className="text-lg font-semibold">{t("onboarding.recommendTitle", "按需配齐插件")}</div>
         <div className="mt-1.5 text-sm text-muted-foreground">
           {t("onboarding.recommendHint", "勾选要装的（都可随时在插件市场增删）")}
         </div>

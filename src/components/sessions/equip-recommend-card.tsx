@@ -209,7 +209,7 @@ export const EquipRecommendCard = memo(function EquipRecommendCard({
   if (phase === "limited") {
     return (
       <div className="my-1 rounded-[8px] border border-border/40 bg-[var(--tool-card-bg)] px-3 py-2 text-xs text-muted-foreground" data-equip-recommend="limited">
-        {t("equip.recommendAlreadyDone", "本次会话已推荐过装备，可到插件市场查看更多")}
+        {t("equip.recommendAlreadyDone", "本次会话已推荐过插件，可到插件市场查看更多")}
       </div>
     );
   }
@@ -225,7 +225,7 @@ export const EquipRecommendCard = memo(function EquipRecommendCard({
     >
       <div className="flex items-center gap-1.5 bg-primary/10 px-3 py-2">
         <Sparkles className="h-3.5 w-3.5 text-primary" />
-        <span className="text-xs font-semibold">{t("equip.recommendTitle", "为这个任务推荐装备")}</span>
+        <span className="text-xs font-semibold">{t("equip.recommendTitle", "为这个任务推荐插件")}</span>
       </div>
       <div className="space-y-1 px-3 py-2">
         {rows.map((row) => {
@@ -301,7 +301,7 @@ export const EquipRecommendCard = memo(function EquipRecommendCard({
           </span>
         ) : (
           <span className="text-[10px] text-muted-foreground">
-            {t("equip.recommendHint", "取消勾选可跳过不需要的装备")}
+            {t("equip.recommendHint", "取消勾选可跳过不需要的插件")}
           </span>
         )}
         <span className="flex items-center gap-1.5">

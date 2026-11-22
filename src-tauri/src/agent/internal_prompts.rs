@@ -112,11 +112,13 @@ pub const PROMPT_MCP_SECTION: VersionedPrompt = VersionedPrompt {
     body: include_str!("../../resources/prompts/mcp-section.md"),
 };
 
-/// 装备目录注入块正文（需求5 合并版 v1）。占位符由
-/// equipment_db::catalog_block 填充：`{{catalog_lines}}`（逐行装备档案）。
+/// 插件目录注入块正文（需求5 合并版）。占位符由
+/// equipment_db::catalog_block 填充：`{{catalog_lines}}`（逐行插件档案）。
+/// v2（2026-11-22 用户话术裁决）：「装备」统一改「插件」（与插件中心/
+/// 插件市场词汇一致）；v1 初版。
 pub const PROMPT_EQUIP_CATALOG: VersionedPrompt = VersionedPrompt {
     id: "equip-catalog",
-    version: 1,
+    version: 2,
     body: include_str!("../../resources/prompts/equip-catalog.md"),
 };
 

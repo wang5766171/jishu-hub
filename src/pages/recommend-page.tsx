@@ -1,6 +1,6 @@
-// v0.9.8 需求5（合并版）：装备推荐设置页（管理→推荐）。
-// 六键配置 + 重置推荐记忆。文案只述功能（「在会话中为你推荐可能需要的
-// 装备」），不述过程（不出现标签匹配/算法等实现词）。
+// v0.9.8 需求5（合并版）：插件推荐设置页（管理→插件推荐）。
+// 六键配置 + 重置推荐记忆（含恢复输入框建议条——用户点 × 关闭后从此处找回）。
+// 文案只述功能，不述过程。
 
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -26,9 +26,9 @@ const TOGGLE_ROWS: Row[] = [
   {
     key: "enabled",
     labelKey: "equip.cfgEnabled",
-    labelFallback: "装备推荐",
+    labelFallback: "插件推荐",
     descKey: "equip.cfgEnabledDesc",
-    descFallback: "在会话、输入框和市场中为你推荐可能需要的装备",
+    descFallback: "在会话、输入框和市场中为你推荐可能需要的插件",
   },
   {
     key: "session_card",
@@ -42,7 +42,7 @@ const TOGGLE_ROWS: Row[] = [
     labelKey: "equip.cfgInputBar",
     labelFallback: "输入框建议",
     descKey: "equip.cfgInputBarDesc",
-    descFallback: "新对话时在输入框上方给出装备建议",
+    descFallback: "新对话时在输入框上方给出插件建议",
   },
   {
     key: "market_zone",
@@ -54,9 +54,9 @@ const TOGGLE_ROWS: Row[] = [
   {
     key: "third_party",
     labelKey: "equip.cfgThirdParty",
-    labelFallback: "包含第三方装备",
+    labelFallback: "包含第三方插件",
     descKey: "equip.cfgThirdPartyDesc",
-    descFallback: "关闭后只推荐官方装备",
+    descFallback: "关闭后只推荐官方插件",
   },
 ];
 
@@ -100,9 +100,12 @@ export function RecommendPage() {
     }
   };
 
+  // 重置 = 清「推过未装」记忆 + 恢复被 × 关闭的输入框建议条（否则用户
+  // 点过一次 × 就再也找不回建议条——唯一恢复入口收拢在此）。
   const resetMemory = async () => {
     try {
       await invokeCommand("equip_recommended_clear");
+      await invokeCommand("set_scene_suggest_dismissed", { value: false });
       setResetDone(true);
       setTimeout(() => setResetDone(false), 2000);
     } catch {
@@ -120,13 +123,13 @@ export function RecommendPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-2xl space-y-4 px-4 py-4" data-recommend-page="">
+    <div className="space-y-6 p-6" data-recommend-page="">
       <div className="flex items-center gap-2">
         <Sparkles className="h-4 w-4 text-[var(--icon-theme)]" />
-        <h2 className="text-base font-semibold">{t("equip.cfgTitle", "装备推荐")}</h2>
+        <h3 className="text-base font-semibold">{t("equip.cfgTitle", "插件推荐")}</h3>
       </div>
-      <p className="-mt-2 text-xs text-muted-foreground">
-        {t("equip.cfgSubtitle", "控制各处的装备推荐如何出现")}
+      <p className="-mt-4 text-xs text-muted-foreground">
+        {t("equip.cfgSubtitle", "控制各处的插件推荐如何出现")}
       </p>
 
       <div className="space-y-1.5">
@@ -194,7 +197,7 @@ export function RecommendPage() {
         <div className="min-w-0 text-[11px] text-muted-foreground">
           {resetDone
             ? t("equip.cfgResetDone", "已重置")
-            : t("equip.cfgResetDesc", "清除「推荐过未安装」的记录，让推荐重新出现")}
+            : t("equip.cfgResetDesc", "清除「推荐过未安装」的记录并恢复输入框建议条")}
         </div>
         <Button variant="outline" size="sm" className="h-7 shrink-0 px-2 text-[11px]" onClick={() => void resetMemory()}>
           <RotateCcw className="h-3 w-3" />

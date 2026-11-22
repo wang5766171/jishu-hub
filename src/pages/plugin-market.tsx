@@ -862,7 +862,7 @@ export function PluginMarketPanel({
       {source === "curated" && (recommendZone || bundles.length > 0) && (
         <div className="flex items-stretch gap-2 overflow-x-auto pb-0.5" data-bundle-row="">
           <span className="shrink-0 self-center text-[10px] text-muted-foreground">
-            {t("market.bundleSection", "装备推荐")}
+            {t("market.bundleSection", "插件推荐")}
           </span>
           {recommendZone && (
             <button
