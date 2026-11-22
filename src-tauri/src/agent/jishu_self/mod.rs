@@ -8,6 +8,8 @@ pub(crate) mod pi_registry;
 pub(crate) mod pi_runtime;
 pub(crate) mod pi_session;
 pub(crate) mod pi_tools_config;
+// 需求7 补充（v0.9.8）：/ 命令清单对齐 TUI——get_commands 一次性探针。
+pub(crate) mod slash_commands;
 mod probe;
 pub(crate) mod session_title;
 

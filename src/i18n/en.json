@@ -304,8 +304,6 @@
     "floatingComplete": "Task completed",
     "floatingRestore": "Restore session",
     "noTasks": "No tasks yet",
-    "slashNew": "New chat",
-    "slashTask": "Start a task",
     "slashRename": "Rename current session",
     "slashTerminal": "Open session in terminal",
     "slashFloat": "Floating window",

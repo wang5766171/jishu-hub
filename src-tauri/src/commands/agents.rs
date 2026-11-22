@@ -1227,6 +1227,13 @@ pub(crate) fn equipment_tags_list() -> Result<Vec<agent::equipment_db::Equipment
     agent::equipment_db::tags_list()
 }
 
+/// 需求7 补充（v0.9.8）：pi（TUI）真实 / 命令集（get_commands 探针拉取
+/// ——扩展/提示模板/技能三源，10 分钟缓存；builtin 子集由前端执行映射承载）。
+#[tauri::command]
+pub(crate) async fn pi_slash_commands() -> Result<Vec<agent::jishu_self::slash_commands::PiSlashCommand>, String> {
+    Ok(agent::jishu_self::slash_commands::fetch_pi_slash_commands().await)
+}
+
 /// 需求5（合并版）：工作区场景分析（顶层文件标记零推理；无定论 None——
 /// 前端回落画像/草稿/入门）。basis 是用户可读依据（透明可解释）。
 #[derive(serde::Serialize)]

@@ -929,11 +929,38 @@ export function ChatPage({
   const hasSelectedSession = Boolean(selectedSession && selectedSession !== "new");
   // v0.8.0 需求1 A5：会话分支（capability SESSION_FORK；仅 jishu-self）。
   const supportsFork = capabilities?.has("SESSION_FORK") ?? false;
+  // 需求7 补充（2026-11-22 用户裁决二轮）：/ 命令清单不 hub 写死——
+  // 动态部分直接调 pi（TUI）get_commands 拉取（扩展/提示模板/技能三源，
+  // insert 模式：插入 /name 由用户补参，pi prompt 通道原生展开/执行）；
+  // builtin 子集（名字对齐 pi slash-commands.ts）+ GUI 特有件走 hub 本地
+  // 执行。/new 与 /task 已按裁决去除（pi 的 /new 语义=pi 内建会话切换，
+  // GUI 已有侧栏专门入口）。
+  const [piSlashCommands, setPiSlashCommands] = useState<
+    Array<{ name: string; description: string; source: string }>
+  >([]);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      invokeCommand<Array<{ name: string; description: string; source: string }>>(
+        "pi_slash_commands",
+      )
+        .then((cmds) => {
+          if (!cancelled && Array.isArray(cmds)) setPiSlashCommands(cmds);
+        })
+        .catch(() => {});
+    void load();
+    // 竞态兜底：挂载期探针若失败（spawn 竞争/冷启动超时返回空），8s 后
+    // 重拉一次（探针侧 10 分钟缓存已热时秒回）。
+    const retry = setTimeout(() => void load(), 8000);
+    return () => {
+      cancelled = true;
+      clearTimeout(retry);
+    };
+  }, []);
+
   const slashCommands = useMemo(
     () => [
-      { name: "new", label: t("sessions.slashNew"), available: Boolean(projectId) },
-      { name: "task", label: t("sessions.slashTask"), available: Boolean(projectId) },
-      { name: "rename", label: t("sessions.slashRename"), available: hasSelectedSession },
+      { name: "name", label: t("sessions.slashRename"), available: hasSelectedSession },
       { name: "terminal", label: t("sessions.slashTerminal"), available: hasSelectedSession },
       { name: "float", label: t("sessions.slashFloat"), available: hasSelectedSession },
       { name: "compact", label: t("sessions.slashCompact"), available: hasSelectedSession && supportsCompact },
@@ -944,13 +971,7 @@ export function ChatPage({
   const handleSlashCommand = useCallback(
     (name: string) => {
       switch (name) {
-        case "new":
-          handleNewSession();
-          break;
-        case "task":
-          handleOpenTaskConversation();
-          break;
-        case "rename":
+        case "name": // 对齐 pi builtin 命名（/name = set session display name）
           setRenameOpen(true);
           break;
         case "terminal":
