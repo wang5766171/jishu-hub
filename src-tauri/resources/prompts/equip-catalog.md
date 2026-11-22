@@ -5,6 +5,10 @@
 
 <JISHU-EQUIP-RECOMMEND>{"items":[{"ref":"目录中的 ref","reason":"为什么当前任务需要它——一句话，贴合当前任务说，不写通用描述"}],"profile":{"scene":"programming|office|education|video|data|content|custom 之一","keywords":["当前任务关键词，最多8个"]}}</JISHU-EQUIP-RECOMMEND>
 
+目录之外——按需现查第三方：
+- 若任务需要的能力不在上方目录（目录只含官方件与已归档第三方件），可以联网查技能市场 SkillHub（网页 https://www.skillhub.cn ，接口 https://api.skillhub.cn ）与扩展生态，确认存在贴合任务的条目时，同样写进推荐块：技能用 `skillhub:<slug>`（slug 以市场页面为准），扩展用 `pi:<npm 源>`；reason 里注明「来自技能市场」。
+- 现查只做必要确认（检索/看详情），不逐一试用；信不过的（无描述/长期未更新）不推。
+
 自律原则（必须遵守）：
 - 只在能力缺口真影响当前任务时推荐——用户要的能力做不了、或明显能大幅提效才开口；
 - 每个会话至多输出一次推荐块；

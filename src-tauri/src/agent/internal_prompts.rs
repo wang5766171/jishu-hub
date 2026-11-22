@@ -114,11 +114,13 @@ pub const PROMPT_MCP_SECTION: VersionedPrompt = VersionedPrompt {
 
 /// 插件目录注入块正文（需求5 合并版）。占位符由
 /// equipment_db::catalog_block 填充：`{{catalog_lines}}`（逐行插件档案）。
-/// v2（2026-11-22 用户话术裁决）：「装备」统一改「插件」（与插件中心/
-/// 插件市场词汇一致）；v1 初版。
+/// v3（2026-11-22 用户实测追问）：目录之外**可现查第三方**（SkillHub/
+/// 扩展生态，ref 用 skillhub:\<slug\> / pi:\<源\>）——v2 只推目录内清单，
+/// agent 被框死在官方 31 件，第三方海量库永远进不了推荐（用户「未装的
+/// 扩展也可以推荐」诉求）；v2 话术装备→插件；v1 初版。
 pub const PROMPT_EQUIP_CATALOG: VersionedPrompt = VersionedPrompt {
     id: "equip-catalog",
-    version: 2,
+    version: 3,
     body: include_str!("../../resources/prompts/equip-catalog.md"),
 };
 
