@@ -59,6 +59,9 @@ test_*.rs
 test_msg.json
 test_session.jsonl
 
+# e2e 自动化测试运行结果（scripts/e2e/run.mjs 默认输出；记录归 docs）
+scripts/e2e/results/
+
 # Binaries / native artifacts
 src-tauri/bin/
 

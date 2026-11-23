@@ -68,6 +68,7 @@
     "concurrently": "^10.0.3",
     "jsdom": "^29.1.1",
     "kill-port": "^2.0.1",
+    "playwright": "1.65.1",
     "typescript": "~5.7.2",
     "vite": "^6.3.0",
     "vitest": "^4.1.8",

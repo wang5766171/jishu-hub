@@ -41,6 +41,17 @@ for (const [command, args] of steps) {
   }
 }
 
+// v0.9.8 需求20（用户裁决：测试基建提交 git、但不进安装包）——前端产物构建完先过守卫：
+// e2e 测试基建（scripts/e2e、playwright）不得混进 dist / 打包清单 / 随包资源，命中即中止打包。
+{
+  console.log("Checking e2e test infra is not bundled...");
+  const guard = spawnSync("node", ["./scripts/e2e/check-not-bundled.mjs"], { cwd: root, stdio: "inherit", shell: false });
+  if (guard.status !== 0) {
+    console.error(`[build] check-not-bundled.mjs failed (exit ${guard.status}) — aborting.`);
+    process.exit(guard.status ?? 1);
+  }
+}
+
 // For macOS/Linux Tauri externalBin support, create a dummy file to satisfy tauri_build, then overwrite it
 const rustInfo = spawnSync("rustc", ["-vV"], { encoding: "utf8" }).stdout;
 const targetTripleMatch = rustInfo.match(/host: (.+)/);
