@@ -400,10 +400,9 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
   /** 工作区是否可见输入框。 */
   const onWorkspace = () => composer().isVisible().catch(() => false);
   const backToWorkspace = async () => {
-    if (!(await onWorkspace())) {
-      await click("返回工作区");
-      await expect(composer()).toBeVisible();
-    }
+    if (await onWorkspace()) return;
+    await click("返回工作区");
+    await expect(composer()).toBeVisible();
   };
   /**
    * 残留弹层清理：屏幕上有弹层且有「取消」钮就取消（上次脚本中断常把「能力重叠」
@@ -430,8 +429,10 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
     await cancelResidualDialog();
     if (/Frontend Error/.test((await bodyText()).slice(0, 200))) {
       await page.reload({ waitUntil: "domcontentloaded" });
-      await page.waitForSelector(".chat-sidebar", { timeout: 20000 });
     }
+    // 等界面落定：输入框（工作区）或「返回工作区」（管理页）任一可见。刚 reload / 切页后输入框
+    // 要几百毫秒才渲染——只看一眼就断定「不在工作区」会去等一个不存在的按钮。
+    await expect(composer().or(page.getByRole("button", { name: "返回工作区", exact: true })).first()).toBeVisible({ timeout: 20000 });
     await backToWorkspace();
     if (project && project !== (await currentProjectName())) {
       if (project === (await sidebarProjectName()).slice(0, project.length)) return project;

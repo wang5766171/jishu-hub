@@ -33,6 +33,44 @@ const guideCount = (app) => app.page.locator("[data-install-guide]").count();
 const addedSources = async (app, baseline) => (await app.invoke("pi_package_installed_sources")).filter((s) => !baseline.includes(s));
 const cardNameOf = (btn) => btn.evaluate((el) => (el.parentElement?.parentElement?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 44));
 
+/**
+ * 卸载本轮测试装的扩展并核对回到基线——每个安装用例结束时自己调（每块自给自足：
+ * 两个安装用例共用候选池，前者装的不卸，后者就没得装），P4 只兜失败残留。
+ * 返回逐项结果；有残留则抛错。
+ */
+async function restoreInstalled(ctx) {
+  const { app, page, expect } = ctx;
+  const results = [];
+  for (const source of [...new Set(ctx.state.installed)]) {
+    if (!(await app.invoke("pi_package_installed_sources")).includes(source)) {
+      results.push({ source, 结果: "已不在已装源" });
+      continue;
+    }
+    const card = page.getByText(pkgOf(source), { exact: true }).locator("xpath=../..");
+    if (!(await card.isVisible().catch(() => false))) await app.openMarket("扩展生态");
+    await expect(card).toBeVisible({ timeout: 8000 });
+    await card.getByRole("button", { name: "卸载", exact: true }).click();
+    const dlg = page.getByRole("dialog").first();
+    if (await dlg.isVisible().catch(() => false)) {
+      const ok = dlg.getByRole("button", { name: /卸载|确认|移除|删除/ }).filter({ hasNotText: /取消/ });
+      if (await ok.first().isVisible().catch(() => false)) await ok.last().click();
+    }
+    let gone = false;
+    for (let i = 0; i < 40; i++) {
+      await app.sleep(500);
+      if (!(await app.invoke("pi_package_installed_sources")).includes(source)) {
+        gone = true;
+        break;
+      }
+    }
+    results.push({ source, 已移除: gone });
+  }
+  const extra = (await app.invoke("pi_package_installed_sources")).filter((x) => !ctx.state.baselineSources.includes(x));
+  ctx.state.installed = [];
+  if (extra.length) throw new Error("仍有测试装残留: " + JSON.stringify(extra));
+  return results;
+}
+
 /** 页面类：不需要网络。 */
 export const marketViewCases = [
   {
@@ -126,7 +164,8 @@ export const marketCases = [
         ctx.state.installedLog.push(...addedNow);
         if (outcome === "INSTALLED") {
           await ctx.shot("P1-装完引导卡");
-          return { 尝试: attempts };
+          const restored = await restoreInstalled(ctx); // 装完自己卸——不给下一个安装用例留占用
+          return { 尝试: attempts, 还原: restored };
         }
       }
       ctx.skip("候选均未装成（全部冲突 / 超时 / 失败）: " + JSON.stringify(attempts.map((a) => [a.候选.slice(0, 24), a.结果])));
@@ -217,7 +256,8 @@ export const marketCases = [
         ctx.state.installedLog.push(...addedNow);
         if (outcome === "INSTALLED") {
           await ctx.shot("C3-键盘装完");
-          return { 分段: legs, 尝试: attempts, 全程鼠标点击: 0 };
+          const restored = await restoreInstalled(ctx); // 同 P1：装完自己卸
+          return { 分段: legs, 尝试: attempts, 还原: restored, 全程鼠标点击: 0 };
         }
       }
       ctx.skip("键盘路径候选均未装成: " + JSON.stringify(attempts));
@@ -225,41 +265,16 @@ export const marketCases = [
   },
   {
     id: "P4",
-    name: "还原：卸载本轮测试装的扩展",
-    feature: "副作用还原",
-    steps: "对本轮登记的每个已装源：定位其卡片 → 点「卸载」→ 等已装源消失 → 核对回到基线",
+    name: "还原：清掉失败残留的测试扩展",
+    feature: "副作用还原（兜底）",
+    steps: "若本轮还有安装用例失败中途留下的测试扩展：逐个卸载并核对回到基线",
     expect: "已装源回到本轮开始时的清单",
     needs: "none",
     cleanup: true,
     run: async (ctx) => {
-      const { app, page } = ctx;
-      if (!ctx.state.installed.length) ctx.skip("本轮没有安装扩展，无需还原");
-      await app.openMarket("扩展生态");
-      const results = [];
-      for (const source of [...new Set(ctx.state.installed)]) {
-        if (!(await app.invoke("pi_package_installed_sources")).includes(source)) {
-          results.push({ source, 结果: "已不在已装源" });
-          continue;
-        }
-        const card = page.getByText(pkgOf(source), { exact: true }).locator("xpath=../..");
-        await expect(card).toBeVisible({ timeout: 8000 });
-        await card.getByRole("button", { name: "卸载", exact: true }).click();
-        const dlg = page.getByRole("dialog").first();
-        if (await dlg.isVisible().catch(() => false)) {
-          const ok = dlg.getByRole("button", { name: /卸载|确认|移除|删除/ }).filter({ hasNotText: /取消/ });
-          if (await ok.first().isVisible().catch(() => false)) await ok.last().click();
-        }
-        let gone = false;
-        for (let i = 0; i < 40; i++) {
-          await app.sleep(500);
-          if (!(await app.invoke("pi_package_installed_sources")).includes(source)) { gone = true; break; }
-        }
-        results.push({ source, 已移除: gone });
-      }
-      const extra = (await app.invoke("pi_package_installed_sources")).filter((s) => !ctx.state.baselineSources.includes(s));
-      ctx.state.installed = [];
-      if (extra.length) throw new Error("仍有测试装残留: " + JSON.stringify(extra));
-      return results;
+      if (!ctx.state.installed.length) ctx.skip("本轮没有残留的测试扩展（安装用例都已自行卸载）");
+      await ctx.app.openMarket("扩展生态");
+      return restoreInstalled(ctx);
     },
   },
 ];

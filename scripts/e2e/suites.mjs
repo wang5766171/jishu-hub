@@ -2,7 +2,7 @@
  * 场景包（suites）：把积木按「依赖」组合，供 run.mjs --suite 选择。
  *   smoke        不需要模型与网络——驱动能力 + 输入区菜单 + 导航 + 市场页面
  *   conversation 需要可用模型——会在当前项目新建测试会话（附件用例仅 Windows）
- *   market       需要联网——真实安装一个扩展并在结束时卸载（冲突卡一律取消）
+ *   market       需要联网——真实安装扩展（每个安装用例装完即卸；冲突卡一律取消；末条兜失败残留）
  *   full         以上全部
  */
 import { driverCases } from "./blocks/driver.mjs";
@@ -19,6 +19,6 @@ const smoke = [...driverCases, ...composerCases, ...navigationCases, ...marketVi
 export const SUITES = {
   smoke: { name: "基础冒烟", desc: "不需要模型与网络", cases: smoke },
   conversation: { name: "对话", desc: "需要可用模型；在当前项目新建测试会话", cases: conversationCases },
-  market: { name: "市场安装", desc: "需要联网；真实安装扩展并在结束时卸载", cases: orderedMarket },
+  market: { name: "市场安装", desc: "需要联网；真实安装扩展，装完即卸", cases: orderedMarket },
   full: { name: "全量", desc: "以上全部", cases: [...smoke, ...conversationCases, ...orderedMarket] },
 };
