@@ -84,7 +84,9 @@ export const marketViewCases = [
       const { app, page } = ctx;
       await app.openMarket("精选");
       const card = page.locator('[data-bundle-card="programming"]');
-      if (!(await card.isVisible().catch(() => false))) ctx.skip("精选页没有编程套装卡");
+      if (!(await card.first().waitFor({ state: "visible", timeout: 15000 }).then(() => true, () => false))) {
+        ctx.skip("精选页没有编程套装卡");
+      }
       await app.click("编程");
       const on = await card.getAttribute("class");
       const offBtn = (await page.getByRole("button", { name: "办公", exact: true }).count()) ? "办公" : "全部";
@@ -109,7 +111,9 @@ export const marketViewCases = [
       const { app, page } = ctx;
       await app.openMarket("精选");
       const card = page.locator('[data-bundle-card="programming"]');
-      if (!(await card.isVisible().catch(() => false))) ctx.skip("精选页没有编程套装卡");
+      if (!(await card.first().waitFor({ state: "visible", timeout: 15000 }).then(() => true, () => false))) {
+        ctx.skip("精选页没有编程套装卡");
+      }
       await card.click();
       const dialog = page.getByRole("dialog");
       await expect(dialog).toBeVisible();
@@ -146,7 +150,7 @@ export const marketCases = [
         const name = await cardNameOf(installs.nth(k));
         const guideBefore = await guideCount(app);
         await installs.nth(k).click();
-        const deadline = Date.now() + (k < 2 ? 90000 : 60000);
+        const deadline = Date.now() + 90000; // 每个候选最多等 90 秒（同一候选时快时慢，取决于网络）
         let outcome = "TIMEOUT";
         let confirmText = "";
         while (Date.now() < deadline) {
@@ -228,7 +232,7 @@ export const marketCases = [
         if (!info) { attempts.push({ 候选序: k + 1, 结果: "NO_MORE_INSTALL" }); break; }
         const guideBefore = await guideCount(app);
         await page.keyboard.press("Enter");
-        const deadline = Date.now() + (k < 2 ? 90000 : 60000);
+        const deadline = Date.now() + 90000; // 每个候选最多等 90 秒（同一候选时快时慢，取决于网络）
         let outcome = "TIMEOUT";
         while (Date.now() < deadline) {
           const dlg = page.getByRole("dialog").first();
