@@ -254,7 +254,16 @@ pub(crate) fn session_tool_list(
             .collect();
     let s = state.lock().unwrap_or_else(|e| e.into_inner());
     let tools = s.tool_plugins.lock().unwrap_or_else(|e| e.into_inner());
+    session_tool_entries(&tools, &selected)
+}
 
+/// 会话挂载清单（session_tool_list 命令体；v0.9.8 评审修复轮 R1-5：发送
+/// 入口的工具引用解析 [`resolve_tool_refs`] 同源复用——「显示名 → 工具 id」
+/// 的归一口径只此一份）。
+fn session_tool_entries(
+    tools: &[agent::tool_plugin::ToolPlugin],
+    selected: &std::collections::HashSet<String>,
+) -> Vec<SessionToolInfo> {
     // v0.9.8 需求5（合并版，用户裁决「推荐效果一致」）：已装 pi 扩展进
     // 挂载清单（category=extension）——+ 菜单可引用、消息可 @[点名]，
     // 与 Skill 引用同款体验。keep_text=true：@[扩展名] 保留原文不剥离
@@ -324,9 +333,59 @@ pub(crate) fn session_tool_list(
         }
     }
     // 需求7 补充四：混合件 [[agent-tool]] 进挂载清单（插件级聚合）。
-    list.extend(agent_tool_session_entries(&selected));
+    list.extend(agent_tool_session_entries(selected));
 
     list
+}
+
+/// 内联工具引用 `@[显示名]`（v0.8.1 需求7；与前端 TOOL_TOKEN_RE 同式）。
+fn tool_ref_names(message: &str) -> impl Iterator<Item = &str> {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"@\[([^\]]+)\]").expect("valid tool ref regex"));
+    re.captures_iter(message)
+        .map(|cap| cap.get(1).map(|m| m.as_str()).unwrap_or(""))
+}
+
+/// 解析一条消息点名的工具（纯函数）：`@[显示名]` 归一为工具 id（清单里
+/// 首个同名者；未匹配的引用原样保留在文本里，不产生 id）。
+///
+/// v0.9.8 评审修复轮 R1-5：路线甲下「本条消息带哪些工具」**完全由消息
+/// 文本里的 `@[名]` 决定**——所以它是文本的纯函数，放在所有用户消息出口
+/// 的必经点（send_message）解析，任何出口（手动发送 / 回合结束自动发送 /
+/// 停止后重发 / 引导补发）都不可能再绕过。此前只有手动发送的出口解析并
+/// 写入会话工具集，其余出口直接发原文：文本里带着 `@[工具B]`，B 的说明
+/// 块却不注入（注入的仍是上一条消息的工具集）。
+pub(crate) fn resolve_tool_refs(message: &str, entries: &[SessionToolInfo]) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for name in tool_ref_names(message) {
+        if let Some(tool) = entries.iter().find(|e| e.display_name == name) {
+            if !ids.contains(&tool.id) {
+                ids.push(tool.id.clone());
+            }
+        }
+    }
+    ids
+}
+
+/// 发送入口确定并写入「本条消息的工具集」（send_message 在组装消息前
+/// 调用——见 [`resolve_tool_refs`]）。
+///
+/// `explicit`：出口显式声明的工具集（编辑重发——文本之外还带着「编辑态
+/// 保留的工具」这一意图）；None = 按消息文本解析。
+pub(crate) fn apply_turn_tool_set(
+    state: &Mutex<AppState>,
+    session_id: &str,
+    message: &str,
+    explicit: Option<Vec<String>>,
+) {
+    let tool_ids = explicit.unwrap_or_else(|| {
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
+        let tools = s.tool_plugins.lock().unwrap_or_else(|e| e.into_inner());
+        resolve_tool_refs(message, &session_tool_entries(&tools, &Default::default()))
+    });
+    if let Err(e) = session_set_tools(session_id.to_string(), tool_ids) {
+        log::warn!("[send_message] 写入会话工具集失败（本条消息工具不注入）: {e}");
+    }
 }
 
 /// 需求7 补充四（用户裁决 2026-11-22「自己加的无 UI 工具插件如何引用」）：
@@ -2241,6 +2300,39 @@ pub(crate) async fn pi_package_uninstall_online(source: String) -> Result<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tool(id: &str, display_name: &str) -> SessionToolInfo {
+        SessionToolInfo {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            description: String::new(),
+            usage: String::new(),
+            enabled: false,
+            injectable: true,
+            category: "cli".to_string(),
+            keep_text: false,
+        }
+    }
+
+    /// v0.9.8 评审修复轮 R1-5：发送入口统一解析工具引用——`@[显示名]`
+    /// 归一为工具 id（按出现顺序，重复只算一次）；未匹配的引用不产生 id；
+    /// 没有引用 = 本条不带工具（所见即所得）。
+    #[test]
+    fn resolve_tool_refs_matches_display_names_in_order() {
+        let entries = [tool("tool-a", "甲工具"), tool("npm:ext-b", "乙扩展")];
+        assert_eq!(
+            resolve_tool_refs("请用 @[甲工具] 和 @[乙扩展]", &entries),
+            vec!["tool-a".to_string(), "npm:ext-b".to_string()]
+        );
+        assert_eq!(
+            resolve_tool_refs("@[甲工具] 再 @[甲工具] 还有 @[不存在的]", &entries),
+            vec!["tool-a".to_string()]
+        );
+        assert_eq!(
+            resolve_tool_refs("这条消息没有引用", &entries),
+            Vec::<String>::new()
+        );
+    }
 
     /// 评审追加：卸载源归一——npm:/git: 原样透传（npm 带版本取包名），
     /// 裸包名 npm 兜底（历史前端传 {name}）。

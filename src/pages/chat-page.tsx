@@ -855,22 +855,18 @@ export function ChatPage({
       console.warn("session_tool_list before edit resend failed:", err);
     }
     // 收版反馈（2026-11-13 用户裁决「编辑的时候能编辑工具」）：编辑态删除/
-    // 保留工具调用——重发前把会话工具集覆写为保留集（send 侧按此注入），
-    // 本地提交的 pill 元数据同步。评审 P1-15：覆写语义不变，token 派生 id
-    // 并入同一次覆写（与发送链「token 追加」一致）；无 token 时写集与原
-    // 逻辑完全一致。
+    // 保留工具调用——重发时把「保留的工具集」作为本条消息的工具集交给
+    // 发送入口（send_message 按此写入会话工具集并注入），本地提交的 pill
+    // 元数据同步。评审 P1-15：token 派生 id 并入同一次覆写（与发送链
+    // 「token 追加」一致）。
+    // v0.9.8 评审修复轮 R1-5：不再由这里直接写会话工具集——工具集统一在
+    // 发送入口确定；编辑重发把文本之外的意图（编辑态保留的工具）显式
+    // 传给 send_message（toolIds），没传则按消息文本解析。
     const keptToolIds = remainingToolIds !== undefined ? remainingToolIds : editedToolIds;
     const finalToolIds =
       keptToolIds || tokenToolIds.length > 0
         ? [...new Set([...(keptToolIds ?? []), ...tokenToolIds])]
         : undefined;
-    if (remainingToolIds !== undefined || tokenToolIds.length > 0) {
-      try {
-        await invokeCommand("session_set_tools", { sessionId: sid, toolIds: finalToolIds ?? [] });
-      } catch (err) {
-        console.warn("session_set_tools after edit failed:", err);
-      }
-    }
     const updated = [...kept, {
       role: "user" as const,
       content: [{ type: "text" as const, text: outgoing, tool_ids: finalToolIds }],
@@ -890,6 +886,7 @@ export function ChatPage({
         sessionId: sid,
         message: outgoing,
         modelOverride: null,
+        ...(finalToolIds !== undefined ? { toolIds: finalToolIds } : {}),
       });
     } catch (err) {
       console.error("resend after edit failed:", err);
