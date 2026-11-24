@@ -47,7 +47,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::ChildStdin;
 use tokio::sync::Mutex as TokioMutex;
 
-use crate::acp_runtime::{tauri_event_emitter, AcpCommand, AcpControl, AcpEventEmit};
+use crate::acp_runtime::{tauri_event_emitter, AcpCommand, AcpControl, AcpEventEmit, PromptPayload};
 use crate::agent::normalized::{
     interaction_requests_from_tool_call, InteractionDeliveryHint, InteractionOption,
     InteractionOrigin, InteractionTransport, NormalizedEvent, TurnEndReason, UsageStats,
@@ -70,7 +70,7 @@ pub fn spawn_pi_rpc_session(
     child: tokio::process::Child,
     _project_path: String,
     _requested_session_id: Option<String>,
-    first_message: Option<String>,
+    first_message: Option<PromptPayload>,
     resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
@@ -107,7 +107,7 @@ pub fn spawn_pi_rpc_session_with_emitter(
     agent_id: String,
     pending_session_id: String,
     child: tokio::process::Child,
-    first_message: Option<String>,
+    first_message: Option<PromptPayload>,
     resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
     on_finish: impl FnOnce() + Send + 'static,
     on_session_resolved: impl Fn(&str) + Send + Sync + 'static,
@@ -136,7 +136,7 @@ fn spawn_pi_rpc_session_inner(
     agent_id: String,
     pending_session_id: String,
     mut child: tokio::process::Child,
-    first_message: Option<String>,
+    first_message: Option<PromptPayload>,
     resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
     thinking_pref: Option<String>,
     auto_compaction_pref: Option<bool>,
@@ -328,7 +328,11 @@ fn spawn_pi_rpc_session_inner(
 enum LoopState {
     Idle,
     Prompting,
-    CancelPending { pending_prompt: Option<String> },
+    /// `pending_prompt`：引擎取消善期缓冲的后继 prompt——消息与其防丢账
+    /// 身份同体（R1-1），settle 后一并送达/结算。
+    CancelPending {
+        pending_prompt: Option<PromptPayload>,
+    },
 }
 
 /// v0.9.6 需求6 F2：回合分级看门狗相位。
@@ -421,7 +425,7 @@ async fn pi_rpc_connection_loop(
     acp_session_id: Arc<std::sync::Mutex<Option<String>>>,
     stdout: tokio::process::ChildStdout,
     mut command_rx: tokio::sync::mpsc::Receiver<AcpCommand>,
-    first_message: Option<String>,
+    first_message: Option<PromptPayload>,
     resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
     thinking_pref: Option<String>,
     auto_compaction_pref: Option<bool>,
@@ -429,6 +433,12 @@ async fn pi_rpc_connection_loop(
     on_session_resolved: &(dyn Fn(&str) + Send + Sync),
     child_pid: Option<u32>,
 ) -> Result<(), String> {
+    // v0.9.8 评审修复轮 R1-1：首条 prompt 携带的防丢账身份（与消息同体
+    // 传入——prompt 真正写入 stdin 时按它结算入口账）。
+    let (first_message, first_entries) = match first_message {
+        Some(payload) => (Some(payload.message), payload.pending_entries),
+        None => (None, Vec::new()),
+    };
     // 1. stdout reader sub-task
     let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel(64);
     tokio::spawn(stdout_reader(stdout, stdout_tx));
@@ -616,9 +626,9 @@ async fn pi_rpc_connection_loop(
     // 3. Send first prompt. v0.8.0 需求1 A5：resume-fork 形态传 None——不发
     // prompt，连接停在 Idle 等待 ForkSession（历史会话静默分支，零历史污染）。
     let mut state = LoopState::Idle;
-    if let Some(entry_original) = first_message {
+    if let Some(entry_message) = first_message {
         let first_message = apply_resolved_session_prompt_injection(
-            entry_original.clone(),
+            entry_message,
             &session_id,
             resolved_session_prompt_injection.as_ref(),
         );
@@ -628,17 +638,14 @@ async fn pi_rpc_connection_loop(
         )
         .await?;
         log::debug!("Pi RPC sent first prompt");
-        // v0.9.6 需求6 F3：受理即记录待确认消息（注入后文本，与 pi 落盘
-        // 内容一致；message_end(user) 时对账清除）。
-        // v0.9.8 需求2 D2-2 L1：改为对账记账——销掉发送入口按原文记的
-        // 防丢账（注入前缀包装使两文本不同，不销会假「未送达」残留）。
-        // legacy 键=GUI pending 临时键（入口记账键；rename 迁移时序不定，
-        // 双键都试删）。
-        crate::pending_messages::reconcile_entry_record(
+        // v0.9.6 需求6 F3 / v0.9.8 评审修复轮 R1-1：prompt 已写入 pi stdin
+        // ——按身份把发送入口记的防丢账结算为落地账（内容 = 实际发给 pi 的
+        // 文本，与 message_end(user) 落盘回执的内容匹配口径一致）。身份随
+        // 首条消息带来，与会话键的迁移时序无关。
+        crate::pending_messages::confirm_entries(
+            &first_entries,
             &session_id,
-            Some(&pending_session_id),
             &agent_id,
-            &entry_original,
             &first_message,
         );
         turn_watchdog = Some((
@@ -718,11 +725,12 @@ async fn pi_rpc_connection_loop(
         let exit = tokio::select! {
             cmd = cmd_future => {
                 match cmd {
-                    Some(AcpCommand::Prompt(msg)) => {
+                    Some(AcpCommand::Prompt(prompt)) => {
                         log::info!("Pi RPC loop received Prompt command (state={})", loop_state_name(&state));
+                        let msg = prompt.message;
+                        let pending_entries = prompt.pending_entries;
                         match &mut state {
                             LoopState::Idle => {
-                                let entry_original = msg.clone();
                                 let msg = apply_resolved_session_prompt_injection(
                                     msg,
                                     &session_id,
@@ -733,15 +741,12 @@ async fn pi_rpc_connection_loop(
                                     "message": msg
                                 })).await?;
                                 log::info!("Pi RPC prompt sent to Pi ({} bytes)", msg.len());
-                                // v0.9.6 需求6 F3：受理即记录（Idle 直发路径）。
-                                // v0.9.8 需求2 D2-2 L1：对账记账（销入口原文案，
-                                // 记落地案——同 spawn 首条）。直发场景会话已
-                                // resolve，入口记账键=当前键（无 legacy）。
-                                crate::pending_messages::reconcile_entry_record(
+                                // v0.9.6 需求6 F3 / R1-1：落地即按身份结算
+                                // 入口账（同 spawn 首条）。
+                                crate::pending_messages::confirm_entries(
+                                    &pending_entries,
                                     &session_id,
-                                    None,
                                     &agent_id,
-                                    &entry_original,
                                     &msg,
                                 );
                                 turn_watchdog = Some((
@@ -793,7 +798,7 @@ async fn pi_rpc_connection_loop(
                                 cancel_settle_at =
                                     Some(tokio::time::Instant::now() + CANCEL_SETTLE_TIMEOUT);
                                 state = LoopState::CancelPending {
-                                    pending_prompt: Some(msg),
+                                    pending_prompt: Some(PromptPayload { message: msg, pending_entries }),
                                 };
                                 devlog(
                                     "warn",
@@ -814,11 +819,16 @@ async fn pi_rpc_connection_loop(
                                             "warn",
                                             "CancelPending 态已缓冲一条，新消息拼接保留（不覆盖丢弃）",
                                             &session_id,
-                                            json!({ "prevBytes": prev.len(), "newBytes": msg.len() }),
+                                            json!({ "prevBytes": prev.message.len(), "newBytes": msg.len() }),
                                         );
-                                        format!("{prev}\n{msg}")
+                                        PromptPayload {
+                                            message: format!("{}\n{}", prev.message, msg),
+                                            // 多条缓冲消息拼成一条 prompt 发出：各自的
+                                            // 入口账身份一并带上，落地时结算为一条落地账。
+                                            pending_entries: [prev.pending_entries, pending_entries].concat(),
+                                        }
                                     }
-                                    None => msg,
+                                    None => PromptPayload { message: msg, pending_entries },
                                 });
                                 devlog(
                                     "warn",
@@ -1858,10 +1868,9 @@ async fn pi_rpc_connection_loop(
                             let mut resent_buffered = false;
                             state = if let LoopState::CancelPending { pending_prompt } = &mut state {
                                 let buffered = pending_prompt.take();
-                                if let Some(msg) = buffered {
-                                    let entry_original = msg.clone();
+                                if let Some(payload) = buffered {
                                     let msg = apply_resolved_session_prompt_injection(
-                                        msg,
+                                        payload.message,
                                         &session_id,
                                         resolved_session_prompt_injection.as_ref(),
                                     );
@@ -1869,15 +1878,12 @@ async fn pi_rpc_connection_loop(
                                         "type": "prompt",
                                         "message": msg
                                     })).await?;
-                                    // v0.9.6 需求6 F3：settle 后重发同样记录
-                                    //（缓冲期消息此前无 pending 记录）。
-                                    // v0.9.8 需求2 D2-2 L1：对账记账（销入口
-                                    // 原文案，记落地案——同 Idle 直发）。
-                                    crate::pending_messages::reconcile_entry_record(
+                                    // v0.9.6 需求6 F3 / R1-1：缓冲消息送达，
+                                    // 按身份结算其入口账（同 Idle 直发）。
+                                    crate::pending_messages::confirm_entries(
+                                        &payload.pending_entries,
                                         &session_id,
-                                        None,
                                         &agent_id,
-                                        &entry_original,
                                         &msg,
                                     );
                                     // v0.9.6 需求6 F2：settle 后重发的 prompt 同样
@@ -3271,7 +3277,7 @@ rl.on('line', (line) => {
             "jishu-self".to_string(),
             "pending-stale-test".to_string(),
             child,
-            Some("hello".to_string()),
+            Some("hello".to_string().into()),
             None,
             None,
             None,
@@ -3338,5 +3344,108 @@ rl.on('line', (line) => {
         control.shutdown().await;
         let _ = std::fs::remove_file(&out_path);
         crate::pending_messages::drop_session("pending-stale-test");
+    }
+
+    /// v0.9.8 评审修复轮 R1-1（假引擎端到端）：带注入的消息从发送入口到
+    /// 引擎回报「用户消息已落盘」，账本清空、不留幽灵。
+    /// 修前：入口按用户原文记账，引擎侧按「原文 + 注入块」的文本去找这笔账
+    /// 销账——两段文本永不相等，原文账永远销不掉，重开会话即多出一条
+    /// 「未送达」。现在入口账带身份到引擎侧，落地时按身份改写。
+    #[tokio::test]
+    async fn entry_ledger_settles_by_identity_through_engine_persist_receipt() {
+        let node_ok = tokio::process::Command::new("node")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !node_ok {
+            eprintln!("node 不可用，跳过假 pi 账本回归测试");
+            return;
+        }
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        // 发送入口：按用户原文记账，拿到这笔账的身份。
+        let entry_key = "pending-ledger-e2e";
+        let entry = crate::pending_messages::record(
+            entry_key,
+            "jishu-self",
+            "帮我看看这个报错 @[jishu CLI 工具]",
+        )
+        .expect("入口账身份");
+        // 入口原文 ≠ 引擎侧实际发出的文本（追加工具说明块 + 会话注入）。
+        let persisted = String::from(
+            "<jishu-session>ledger-e2e</jishu-session>\n\n帮我看看这个报错 @[jishu CLI 工具]\n\n<jishu-tools>…</jishu-tools>",
+        );
+
+        // 注意：脚本内禁用反斜杠转义（同上）；pi 收到 prompt 即把它作为
+        // 用户消息落盘并回报 message_end(role=user)。
+        let script = r#"
+const NL = String.fromCharCode(10);
+const rl = require('readline').createInterface({ input: process.stdin });
+const send = (obj) => process.stdout.write(JSON.stringify(obj) + NL);
+rl.on('line', (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.type === 'get_state') {
+    send({ type: 'response', command: 'get_state', success: true, data: { sessionId: 'fake-ledger-session', model: { contextWindow: 200000 }, thinkingLevel: 'high', autoCompactionEnabled: true } });
+  } else if (msg.type === 'prompt') {
+    send({ type: 'response', command: 'prompt', success: true, data: { disposition: 'started' } });
+    send({ type: 'agent_start' });
+    send({ type: 'message_start', message: { role: 'user', content: [] } });
+    send({ type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: msg.message }] } });
+    send({ type: 'agent_end' });
+  }
+});
+"#;
+        let child = tokio::process::Command::new("node")
+            .arg("-e")
+            .arg(script)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn fake pi");
+        let emit: crate::acp_runtime::AcpEventEmit = std::sync::Arc::new(|_events, _sid| {});
+        let control = super::spawn_pi_rpc_session_inner(
+            emit,
+            super::noop_dev_log_emitter(),
+            "jishu-self".to_string(),
+            entry_key.to_string(),
+            child,
+            Some(PromptPayload {
+                message: persisted.clone(),
+                pending_entries: vec![entry],
+            }),
+            None,
+            None,
+            None,
+            || {},
+            |_sid: &str| {},
+        );
+
+        // 引擎回报落盘 → 账本清空（10s 上限；修前此处恒剩一条原文幽灵）。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let unsent = [
+                crate::pending_messages::dedupe_against("fake-ledger-session", &[]),
+                crate::pending_messages::dedupe_against(entry_key, &[]),
+            ]
+            .concat();
+            if unsent.is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "引擎已回报落盘，账本仍有未送达残留：{unsent:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        control.shutdown().await;
+        crate::pending_messages::drop_session("fake-ledger-session");
+        crate::pending_messages::drop_session(entry_key);
     }
 }

@@ -24,6 +24,10 @@ pub struct AgentTurnRequest {
     /// v0.9.5 需求2：模型覆盖 (provider, model)——透传 ChatRequest
     /// （jishu-self 的 --provider/--model）；None 用全局 active。
     pub model_override: Option<(String, String)>,
+    /// v0.9.8 评审修复轮 R1-1：发送入口防丢账的身份——随请求带到引擎侧，
+    /// prompt 真正落地时按它结算入口账（仅声明「落盘回执可对账」能力的
+    /// 通道消费）。
+    pub pending_entry: Option<crate::pending_messages::PendingEntryRef>,
 }
 
 /// hub 上下文环境变量（v0.8.1 需求8 P1）：GUI 会话 spawn 智能体进程时
@@ -95,6 +99,8 @@ pub struct PreparedAcpTurn {
     pub command: AcpCommandSpec,
     pub transport: TransportSurface,
     pub resolved_session_prompt_injection: Option<ResolvedSessionPromptInjection>,
+    /// 随请求带来的防丢账身份（见 [`AgentTurnRequest::pending_entry`]）。
+    pub pending_entry: Option<crate::pending_messages::PendingEntryRef>,
 }
 
 pub struct GuiTurnHandle {
@@ -264,6 +270,7 @@ pub fn prepare_gui_turn(
                 project_path: request.project_path,
                 gui_session_id,
                 native_session_id,
+                pending_entry: request.pending_entry,
                 message: request.message,
                 command,
                 transport,
@@ -504,6 +511,9 @@ where
         }
     }
 
+    // 首条 prompt 的防丢账身份随消息一起交给通道（仅 PiRpc 落地结算）。
+    let first_pending_entries: Vec<crate::pending_messages::PendingEntryRef> =
+        turn.pending_entry.into_iter().collect();
     // Dispatch to the transport's runtime:
     // - PiRpc         → Pi native `--mode rpc` protocol (JSON-line).
     // - CodexAppServer → codex `app-server` (newline-delimited JSON-RPC, turn model).
@@ -516,7 +526,10 @@ where
             child,
             turn.project_path,
             turn.native_session_id,
-            first_message,
+            first_message.map(|message| crate::acp_runtime::PromptPayload {
+                message,
+                pending_entries: first_pending_entries,
+            }),
             turn.resolved_session_prompt_injection,
             on_finish,
             on_session_resolved,
@@ -1224,6 +1237,7 @@ mod signature_tests {
             },
             transport: TransportSurface::PiRpc,
             resolved_session_prompt_injection: None,
+            pending_entry: None,
         })
     }
 

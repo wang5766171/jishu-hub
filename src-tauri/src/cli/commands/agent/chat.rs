@@ -72,6 +72,7 @@ fn send(
             message: msg,
             timeout_secs: 600,
             model_override: None,
+            pending_entry: None,
         },
         None,
     )

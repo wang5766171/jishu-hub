@@ -40,6 +40,12 @@ bitflags::bitflags! {
         /// preconnect 池经 registry 查此位决定接管/补池对象，不再硬编码
         /// agent id）。仅限 RPC transport 可池化暖启的 agent 声明。
         const PRECONNECTABLE = 1 << 35;
+        /// 用户消息由通道自己落盘，并把「已落盘」回报给 hub（pi 通道的
+        /// `message_end(role=user)`）——hub 侧的发送防丢账因此**可对账**：
+        /// 入口记账、落盘回执销账。v0.9.8 评审修复轮 R1-2：取代 send_message
+        /// 里按智能体名字判断「是否记账」的硬分支（DEVELOP_READ §7）。无落盘
+        /// 回执的通道（ACP）不声明——记账会永假「未送达」。
+        const PERSISTED_RECEIPT = 1 << 36;
 
         const CONFIG_GLOBAL        = 1 << 40;
         const CONFIG_PROJECT       = 1 << 41;

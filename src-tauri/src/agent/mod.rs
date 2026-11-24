@@ -721,6 +721,32 @@ mod tests {
         assert!(registry.require_agent("no-such-agent").is_err());
     }
 
+    /// v0.9.8 评审修复轮 R1-2：丢消息保护按**能力位**生效，不按智能体名字
+    /// 分支——仅「用户消息自己落盘并回报落盘事实」的通道声明（pi 通道）；
+    /// ACP 通道无落盘回执，记账会永假「未送达」，不声明。
+    #[test]
+    fn persisted_receipt_capability_declared_only_by_pi_channel() {
+        let registry = AgentRegistry::new();
+        assert!(
+            registry
+                .require_agent("jishu-self")
+                .unwrap()
+                .capabilities()
+                .contains(AgentCapabilities::PERSISTED_RECEIPT),
+            "pi 通道应声明落盘回执"
+        );
+        for id in ["claude-code", "codex", "opencode"] {
+            assert!(
+                !registry
+                    .require_agent(id)
+                    .unwrap()
+                    .capabilities()
+                    .contains(AgentCapabilities::PERSISTED_RECEIPT),
+                "{id} 无落盘回执，不应声明"
+            );
+        }
+    }
+
     #[test]
     fn agent_status_serializes_capabilities_as_decimal_string() {
         let status = AgentStatus {

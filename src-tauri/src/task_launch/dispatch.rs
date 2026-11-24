@@ -88,7 +88,7 @@ pub fn conductor_dispatch_to_node(
                 if steering {
                     let _ = control.steer(content).await;
                 } else {
-                    let _ = control.send_prompt(content).await;
+                    let _ = control.send_prompt(content.into()).await;
                 }
             });
             Ok(DispatchToNodeResult {
@@ -122,6 +122,7 @@ pub fn conductor_dispatch_to_node(
                     Some(sid),
                     content,
                     None, // v0.9.5 需求2 B-4：节点模型声明接入后此处传节点声明值
+                    None, // 工具集按消息文本解析（评审修复轮 R1-5）
                 )
                 .await
                 {

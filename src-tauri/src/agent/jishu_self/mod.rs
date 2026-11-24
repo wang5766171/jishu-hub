@@ -774,6 +774,9 @@ impl AgentManifest for JishuSelfAgent {
             | AgentCapabilities::CONTEXT_COMPACT
             // v0.7.4 需求3 M2：任务工作模式（任务图编排会话）。
             | AgentCapabilities::TASK_MODE
+            // v0.9.8 评审修复轮 R1-2：用户消息落盘可对账（发送防丢账按此
+            // 能力位生效，不再按 agent id 分支）。
+            | AgentCapabilities::PERSISTED_RECEIPT
             // 评审 P2-⑤ 用户裁决：预连接池接管/补池对象改按能力位判定
             // （preconnect 经 registry 查此位，替代 agent id 硬编码分支）。
             | AgentCapabilities::PRECONNECTABLE

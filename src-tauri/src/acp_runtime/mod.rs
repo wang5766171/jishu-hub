@@ -28,9 +28,27 @@ use crate::cli_runtime::AgentStreamChunk;
 // Public types
 // ---------------------------------------------------------------------------
 
+/// 一条待发送的用户 prompt（[`AcpCommand::Prompt`] 的载荷）。
+#[derive(Clone)]
+pub struct PromptPayload {
+    pub message: String,
+    /// 发送入口防丢账的身份（v0.9.8 评审修复轮 R1-1）：声明「落盘回执可
+    /// 对账」能力的通道在 prompt 真正落地时按它结算入口账；其余通道忽略。
+    pub pending_entries: Vec<crate::pending_messages::PendingEntryRef>,
+}
+
+impl From<String> for PromptPayload {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            pending_entries: Vec::new(),
+        }
+    }
+}
+
 /// Commands sent to the persistent ACP connection task.
 pub enum AcpCommand {
-    Prompt(String),
+    Prompt(PromptPayload),
     /// Steer (mid-turn text injection). Pi RPC: sends {"type":"steer","message":...}.
     /// ACP: sends a follow_up prompt after the current turn.
     Steer(String),
@@ -104,9 +122,9 @@ pub struct AcpControl {
 }
 
 impl AcpControl {
-    pub async fn send_prompt(&self, message: String) -> Result<(), String> {
+    pub async fn send_prompt(&self, payload: PromptPayload) -> Result<(), String> {
         self.tx
-            .send(AcpCommand::Prompt(message))
+            .send(AcpCommand::Prompt(payload))
             .await
             .map_err(|_| "ACP connection closed".to_string())
     }
@@ -651,7 +669,8 @@ async fn acp_connection_loop(
             // Command branch
             cmd = cmd_future => {
                 match cmd {
-                    Some(AcpCommand::Prompt(msg)) => {
+                    Some(AcpCommand::Prompt(prompt)) => {
+                        let msg = prompt.message;
                         log::info!("ACP loop received Prompt command, current state={}", match &state {
                             LoopState::Idle => "Idle",
                             LoopState::Prompting { .. } => "Prompting",

@@ -840,28 +840,31 @@ async fn handle_command(
     usage_cell: &UsageCell,
 ) -> Result<bool, String> {
     match cmd {
-        Some(AcpCommand::Prompt(msg)) => match state {
-            LoopState::Idle { .. } => {
-                // Fire turn/start; the turn id is captured when the response
-                // (or a turn/started notification) arrives in the stdout pump,
-                // and turn/completed flips state back to Idle.
-                writer
-                    .request(
-                        "turn/start",
-                        json!({
-                            "threadId": thread_id,
-                            "input": [{ "type": "text", "text": msg }]
-                        }),
-                    )
-                    .await?;
-                *state = LoopState::Prompting {
-                    active_turn_id: None,
-                };
+        Some(AcpCommand::Prompt(prompt)) => {
+            let msg = prompt.message;
+            match state {
+                LoopState::Idle { .. } => {
+                    // Fire turn/start; the turn id is captured when the response
+                    // (or a turn/started notification) arrives in the stdout pump,
+                    // and turn/completed flips state back to Idle.
+                    writer
+                        .request(
+                            "turn/start",
+                            json!({
+                                "threadId": thread_id,
+                                "input": [{ "type": "text", "text": msg }]
+                            }),
+                        )
+                        .await?;
+                    *state = LoopState::Prompting {
+                        active_turn_id: None,
+                    };
+                }
+                LoopState::Prompting { .. } | LoopState::CancelPending => {
+                    log::warn!("codex turn/start ignored: a turn is already in progress");
+                }
             }
-            LoopState::Prompting { .. } | LoopState::CancelPending => {
-                log::warn!("codex turn/start ignored: a turn is already in progress");
-            }
-        },
+        }
         Some(AcpCommand::Steer(msg)) => {
             let active_turn_id = active_turn_of(state);
             if let Some(turn_id) = active_turn_id {

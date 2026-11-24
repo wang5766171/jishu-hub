@@ -149,6 +149,7 @@ fn build_spec(
         message: String::new(),
         timeout_secs: 0,
         model_override: None,
+        pending_entry: None,
     };
     let prepared = agent_runtime::prepare_gui_turn(registry, request).ok()?;
     let agent_runtime::PreparedGuiTurn::Acp(acp) = &prepared else {
@@ -502,6 +503,7 @@ mod tests {
             },
             transport: crate::agent::TransportSurface::PiRpc,
             resolved_session_prompt_injection: None,
+            pending_entry: None,
         }
     }
 

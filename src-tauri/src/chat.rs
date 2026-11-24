@@ -455,6 +455,10 @@ pub async fn send_message(
     session_id: Option<String>,
     message: String,
     model_override: Option<(String, String)>,
+    // 本条消息的工具集（v0.9.8 评审修复轮 R1-5）。None = 按消息文本里的
+    // `@[名]` 引用解析（所有出口的默认）；编辑重发显式传入（文本之外还
+    // 带着「编辑态保留的工具」这一意图）。
+    tool_ids: Option<Vec<String>>,
 ) -> Result<ChatSession, String> {
     // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间；正常路径不受影响）。
     let project_path = crate::project::resolve_project_root_or_default(&project_path);
@@ -485,26 +489,37 @@ pub async fn send_message(
 
     // v0.7.0 需求一：agent_id 由前端按会话作用域传入，不再从全局 active 读取。
     // 校验 agent_id 合法性（require_agent 返回错误时提前失败）。
-    {
+    // v0.9.8 评审修复轮 R1-2：丢消息保护按**能力位**生效，不按智能体名字
+    // 分支（DEVELOP_READ §7）。PERSISTED_RECEIPT = 该通道会把用户消息落盘
+    // 并回报落盘事实，hub 侧的防丢账因此可对账；ACP 通道无落盘回执，记账
+    // 会永假「未送达」，故不声明、不记账。
+    let tracks_delivery = {
         let s = state
             .lock()
             .map_err(|_| "App state lock poisoned".to_string())?;
-        s.registry.require_agent(&agent_id)?;
-    }
+        s.registry
+            .require_agent(&agent_id)?
+            .capabilities()
+            .contains(agent::AgentCapabilities::PERSISTED_RECEIPT)
+    };
 
     // v0.9.8 需求2 D2-2 L1（账先行）：发送入口即记 pending 防丢账——prompt
     // 落地前（进程重拉/spawn 竞态）任何阶段挂死，重载后都有「未送达」徽标
-    // +删除出口（复用 F2 既有机制，零新 UI）。仅 pi 通道（jishu-self：
-    // pending 是 pi JSONL 落盘的兜底；ACP 通道无 message_end ack，记账会
-    // 永假未送达）。销账三层：prompt 落地时 reconcile_entry_record（原文案
-    // 换落地案，见 pi_rpc_runtime 三处调用点）/ pi 落盘 ack_persisted
-    //（FIFO 内容匹配）/ 用户手动 dismiss。同步 Err（进程表/路径等罕见
-    // 失败）留账——「未送达」事实成立，前端 F1 回滚+弹错同刻可见。
-    if agent_id == "jishu-self" {
-        if let Some(ref sid) = session_id {
-            crate::pending_messages::record(sid, &agent_id, &message);
-        }
-    }
+    // +删除出口（复用 F2 既有机制，零新 UI）。
+    // 评审修复轮 R1-1：记账得到这笔账的**身份**，随发送请求带到引擎侧；
+    // prompt 真正写入引擎时按身份把入口账结算为落地账（见
+    // pending_messages::confirm_entries）。销账三层：prompt 落地时按身份
+    // 结算 / 引擎落盘回执 ack_persisted（内容匹配）/ 用户手动 dismiss。
+    // 同步 Err（进程表/路径等罕见失败）留账——「未送达」事实成立。
+    let pending_entry = if tracks_delivery {
+        session_id
+            .as_ref()
+            .and_then(|sid| crate::pending_messages::record(sid, &agent_id, &message))
+    } else {
+        None
+    };
+    let pending_entries: Vec<crate::pending_messages::PendingEntryRef> =
+        pending_entry.into_iter().collect();
 
     if let Some(ref sid) = session_id {
         if let Some(process) = existing_chat_process(&app, sid, &agent_id) {
@@ -547,8 +562,21 @@ pub async fn send_message(
                 remove_process_entries(&app, Some(pid), Some(sid))?;
             } else if let Some(acp) = process.acp.as_ref() {
                 // 工具注入（35ee638a）：早退路径同样附加会话启用工具的说明块。
+                // R1-5：先确定本条消息的工具集（所有出口同此一处）。
+                crate::commands::agents::apply_turn_tool_set(
+                    &state,
+                    sid,
+                    &message,
+                    tool_ids.clone(),
+                );
                 let outgoing = compose_tool_message(&state, sid, &project_path, message.clone());
-                match acp.send_prompt(outgoing).await {
+                match acp
+                    .send_prompt(crate::acp_runtime::PromptPayload {
+                        message: outgoing,
+                        pending_entries: pending_entries.clone(),
+                    })
+                    .await
+                {
                     Ok(()) => {
                         return Ok(ChatSession {
                             agent_id,
@@ -569,8 +597,12 @@ pub async fn send_message(
         .clone()
         .unwrap_or_else(|| format!("pending-{}", uuid::Uuid::new_v4()));
 
-    // 工具注入：会话启用集合非空 → 说明块前缀附加到 prompt（无头任务路径
+    // 工具注入：会话启用集合非空 → 说明块后缀附加到 prompt（无头任务路径
     // 不注入——边界：工具插件是 GUI 会话能力）。
+    // R1-5：先确定本条消息的工具集——「本条带哪些工具」由消息文本决定，
+    // 在这个所有出口的必经点解析，自动发送/停止后重发等出口不再各发各的
+    // 原文。
+    crate::commands::agents::apply_turn_tool_set(&state, &pending_session_id, &message, tool_ids);
     let message = compose_tool_message(&state, &pending_session_id, &project_path, message);
 
     // v0.9.7 需求5 E5：新会话真实 id 解析回调里确保会话子目录（project_path
@@ -590,6 +622,7 @@ pub async fn send_message(
                 message,
                 timeout_secs: 0,
                 model_override,
+                pending_entry,
             },
         )?
     };
@@ -694,6 +727,7 @@ fn current_spawn_signature(
             // v0.9.7 需求14：签名基准含会话锁定模型——会话切模型后，空闲
             // 发送的漂移检测才能触发按新模型重拉进程。
             model_override: crate::session_models::get_session_model(session_id),
+            pending_entry: None,
         },
     )
     .ok()?;
@@ -1125,6 +1159,7 @@ async fn spawn_resume_session_process(
                 message: String::new(),
                 timeout_secs: 0,
                 model_override: None,
+                pending_entry: None,
             },
         )?
     };
