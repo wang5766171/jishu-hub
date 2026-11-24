@@ -8,6 +8,22 @@
  */
 import { expect } from "../lib-pw.mjs";
 
+/**
+ * 给输入框挂一个附件：真人路径（系统剪贴板放文件 + Ctrl+V）优先；系统剪贴板被别的
+ * 进程占着放不进去时，回落到合成粘贴事件（非可信事件，但走应用同一条粘贴处理链），
+ * 并在结果里如实写明走的是哪条路。返回 { attached, via, ... }。
+ */
+async function attachFile(ctx) {
+  const file = ctx.fixture("demo-chart.png");
+  try {
+    return { ...(await ctx.app.attachByClipboard(file)), via: "系统剪贴板 + Ctrl+V" };
+  } catch (e) {
+    if (!/剪贴板|Clipboard|CLIXML/.test(String(e?.message || e))) throw e;
+    const attached = await ctx.app.attachByPasteEvent(file, { name: "demo-chart.png" });
+    return { attached, clipboardRestored: true, via: "合成粘贴事件（系统剪贴板此刻不可用）" };
+  }
+}
+
 /** 新建一个测试会话（记数，供运行报告披露副作用）。 */
 async function beginConversation(ctx) {
   await ctx.app.ensureWorkspace();
@@ -67,8 +83,10 @@ export const conversationCases = [
     needs: "model",
     run: async (ctx) => {
       const { app } = ctx;
-      await startTurn(ctx, "请从 1 数到 400，每个数字单独一行，其他什么都不要说。");
-      // 必须等 id 解析：解析完成前暂存的消息会丢失（产品缺陷，docs/v0.9.8/测试/issues/04）
+      // 任务要足够长：本用例要求「暂存时回合还在进行」——数到 400 在模型快时 8 秒就结束，
+      // 等 id 解析后再暂存就已经晚了（消息被直接发送，暂存区为空）。
+      await startTurn(ctx, "请从 1 数到 1500，每个数字单独一行，其他什么都不要说。");
+      // 先等 id 解析：本用例只验证拖拽调序（变量单一）；「解析完成前暂存」由 fixround 场景包的 F2 验证
       await app.waitSessionResolved(15000);
       await app.sleep(1200);
       await app.send("第一条暂存：只回复「一」");
@@ -103,9 +121,10 @@ export const conversationCases = [
       if (process.platform !== "win32") ctx.skip("附件真人路径仅 Windows");
       if (ctx.state.modelOk === false) ctx.skip("模型不可用（本轮已判定）");
       await beginConversation(ctx);
-      const att = await app.attachByClipboard(ctx.fixture("demo-chart.png"));
+      const att = await attachFile(ctx);
+      if (!att.via.startsWith("系统剪贴板")) ctx.state.clipboardFallback = (ctx.state.clipboardFallback || 0) + 1;
       ctx.state.clipboard.push(att);
-      if (!att.attached) ctx.skip("附件未挂上（当前智能体可能不支持附件，或系统剪贴板不可用）");
+      if (!att.attached) ctx.skip("附件未挂上（当前智能体可能不支持附件）");
       await ctx.shot("C2-附件挂上");
       await app.type("这张图里有几根柱子？只回答数字。", { append: true });
       await app.composer().press("Enter");
@@ -120,7 +139,7 @@ export const conversationCases = [
       const truth = await ctx.truth(ctx.since);
       if (!truth?.users.some((u) => u.includes("这张图里有几根柱子"))) throw new Error("落盘真值里没有这条消息");
       await ctx.shot("C2-图片消息");
-      return { 附件挂上ms: att.ms, 剪贴板已还原: att.clipboardRestored, 回合ms: turn.ms, 页面图片数: imgs };
+      return { 挂载方式: att.via, 剪贴板已还原: att.clipboardRestored, 回合ms: turn.ms, 页面图片数: imgs };
     },
   },
   {
@@ -167,7 +186,8 @@ export const conversationCases = [
       await app.dismiss();
       if (ctx.state.modelOk === false) ctx.skip(`已挂载「${picked}」；模型不可用，发送段跳过`);
       if (process.platform === "win32") {
-        const att = await app.attachByClipboard(ctx.fixture("demo-chart.png"));
+        const att = await attachFile(ctx);
+        if (!att.via.startsWith("系统剪贴板")) ctx.state.clipboardFallback = (ctx.state.clipboardFallback || 0) + 1;
         ctx.state.clipboard.push(att); // 挂不上不阻断：附件已由 C2 单独验证
       }
       await app.type("请用刚才挂载的工具告诉我你能做什么，一句话即可。", { append: true });

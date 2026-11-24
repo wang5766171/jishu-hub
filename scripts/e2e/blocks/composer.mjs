@@ -95,23 +95,28 @@ export const composerCases = [
     id: "C4c",
     name: "权限下拉（切只读再切回）",
     feature: "输入区访问权限下拉（需求10 只读披露）",
-    steps: "点访问权限 → 选只读模式 → 触发钮文案变为只读 → 再点开选回完全访问",
-    expect: "两向切换后触发钮文案正确，终态为完全访问",
+    steps: "读当前档位 → 点访问权限 → 选另一档 → 触发钮文案变为该档 → 再点开选回原档",
+    expect: "两向切换后触发钮文案正确，终态回到运行前的档位（不假设、也不改动用户原有设置）",
     needs: "none",
     run: async (ctx) => {
       const { app, page, expect } = ctx;
       await app.ensureWorkspace();
       await app.closeGuideCards();
+      // 当前档位是用户环境的既有状态（可能本来就停在只读）——先读出来，结束时切回去。
+      const trigger = page.locator('button[title="访问权限"]');
+      const initial = (await trigger.textContent()).trim();
+      const other = initial.startsWith("只读") ? "完全访问" : "只读模式";
       await app.clickTitle("访问权限");
-      const ro = page.getByText("只读模式", { exact: true });
-      await expect(ro).toBeVisible();
+      // 菜单项与触发钮文字相同（当前档位就是这一档时）：排除触发钮内部再找
+      const menuItem = (label) => page.locator(`:text-is('${label}'):not([title='访问权限'] *)`);
+      await expect(menuItem(other)).toBeVisible();
       await ctx.shot("C4c-权限菜单");
-      await ro.click();
-      await expect(page.getByRole("button", { name: /^只读模式/ })).toBeVisible();
+      await menuItem(other).click();
+      await expect(page.getByRole("button", { name: new RegExp("^" + other) })).toBeVisible();
       await app.clickTitle("访问权限");
-      await page.getByText("完全访问", { exact: true }).click();
-      await expect(page.getByRole("button", { name: /^完全访问/ })).toBeVisible();
-      return { 终态: "完全访问（已还原）" };
+      await menuItem(initial).click();
+      await expect(page.getByRole("button", { name: new RegExp("^" + initial) })).toBeVisible();
+      return { 运行前: initial, 切到: other, 终态: initial + "（已还原）" };
     },
   },
 ];

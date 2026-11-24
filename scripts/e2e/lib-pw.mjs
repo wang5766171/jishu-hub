@@ -83,6 +83,10 @@ export function readSessionUsers(shortId, sinceMs = 0) {
   const clean = (t) => t.split("<JISHU")[0].split("<!--JISHU")[0].trim();
   const users = [];
   const assistants = [];
+  // v0.9.8 评审修复轮：以下两项不剥离注入块 / 不丢空消息——验证「注入了什么」
+  //（工具说明块是否带上）与「谁在谁之后」（重发的消息后面有没有回复）时用。
+  const rawUsers = [];
+  const sequence = [];
   for (const line of fs.readFileSync(hits[0], "utf8").split("\n")) {
     if (!line.trim()) continue;
     let o;
@@ -95,6 +99,9 @@ export function readSessionUsers(shortId, sinceMs = 0) {
     if (m.role !== "user" && m.role !== "assistant") continue;
     const c = m.content;
     const texts = typeof c === "string" ? [c] : (c || []).filter((b) => b && b.type === "text").map((b) => b.text || "");
+    const raw = texts.join("\n");
+    if (m.role === "user") rawUsers.push(raw);
+    sequence.push({ role: m.role, text: clean(raw).replace(/\n+/g, " ").slice(0, 40) });
     for (let t of texts) {
       t = clean(t).replace(/\n+/g, " ");
       if (!t) continue;
@@ -102,7 +109,7 @@ export function readSessionUsers(shortId, sinceMs = 0) {
       else assistants.push(t.slice(0, 120));
     }
   }
-  return { file: path.basename(hits[0]), users, assistants };
+  return { file: path.basename(hits[0]), users, assistants, rawUsers, sequence };
 }
 
 /** 步骤记录器：结论同时进 console 与结果文件（后台运行时 stdout 缓冲会产出空日志假象）。 */
@@ -315,7 +322,7 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
       if (!idEl) return null;
       return { id: (idEl.textContent || "").trim(), title: (idEl.previousElementSibling?.textContent || "").trim() };
     });
-  // 会话头短 id 元素原文（新会话解析前显示 pending-）
+  // 会话头短 id 元素原文（新会话解析前显示 pending-；需求21 用例据此记录暂存发生的时刻）
   const headerIdText = () =>
     page.evaluate(() => {
       const el = [...document.querySelectorAll("span.font-mono")].find((e) => {
@@ -326,8 +333,8 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
     });
   /**
    * 等新会话的真实 id 解析完成（会话头不再是 pending-）。
-   * ⚠ 解析完成前暂存的消息会丢失（产品缺陷，docs/v0.9.8/测试/issues/04）——
-   *   测暂存/拖拽调序前必须等这一步。
+   * 解析完成前暂存的消息会随 id 解析搬到真实键（v0.9.8 需求21 修复；修前会丢失，
+   * 见 docs/v0.9.8/测试/issues/04）。
    */
   const waitSessionResolved = async (timeoutMs = 15000) => {
     const deadline = Date.now() + timeoutMs;
@@ -411,15 +418,25 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
    * 返回被关闭的弹层文本，无弹层返回 null。
    */
   const cancelResidualDialog = async () => {
-    const dlg = page.getByRole("dialog").first();
-    if (!(await dlg.isVisible().catch(() => false))) return null;
-    const text = (await dlg.textContent()).replace(/\s+/g, " ").slice(0, 160);
-    const cancel = dlg.getByRole("button", { name: /^取消/ });
-    if (await cancel.isVisible().catch(() => false)) {
-      await cancel.click();
-      await expect(dlg).toBeHidden();
+    let lastText = null;
+    // 弹层可能叠着（上一用例中途失败常留一个）：逐个关，最多 3 层
+    for (let layer = 0; layer < 3; layer++) {
+      const dlg = page.getByRole("dialog").first();
+      if (!(await dlg.isVisible().catch(() => false))) break;
+      const text = (await dlg.textContent()).replace(/\s+/g, " ").slice(0, 160);
+      const cancel = dlg.getByRole("button", { name: /^取消/ });
+      // 没有取消钮的弹层（套装详情等）点关闭钮——模态开着时背景按钮点不到，后续用例会全部落空
+      const close = dlg.getByRole("button", { name: /^(Close|关闭)$/ });
+      if (await cancel.isVisible().catch(() => false)) await cancel.click();
+      else if (await close.first().isVisible().catch(() => false)) await close.first().click();
+      else {
+        await page.keyboard.press("Escape").catch(() => {});
+      }
+      await expect(dlg).toBeHidden({ timeout: 5000 }).catch(() => {});
+      lastText = text;
+      if (await dlg.isVisible().catch(() => false)) break; // 关不掉就停手，交给用例自己报错
     }
-    return text;
+    return lastText;
   };
   /**
    * 导航前置（每个用例开头必调）：清残留弹层 → 回到工作区 →（给了项目名且当前不符时）
@@ -441,12 +458,25 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
     await expect(composer()).toBeVisible();
     return currentProjectName();
   };
-  /** 新对话（断言输入框为空），返回会话头（发出首条消息前为 null）。 */
+  /** 新对话（断言输入框为空），返回会话头（发出首条消息前为 null）。
+   * 新对话页会恢复上次没发出去的草稿（产品行为）——上一条用例中途失败时可能把半截
+   * 输入留在这里。测试需要干净起点：有残留就清空并如实返回，不让它混进本用例的消息。
+   */
   const newConversation = async () => {
     await click("新对话");
     await expect(composer()).toBeVisible();
+    await clearComposerLeftover();
     await expect(composer()).toHaveValue("");
     return sessionHeader();
+  };
+  /** 清掉输入框里残留的半截输入（输入框可见且非空时）；返回被清掉的内容，没有返回 ""。 */
+  const clearComposerLeftover = async () => {
+    const box = composer();
+    if (!(await box.isVisible().catch(() => false))) return "";
+    const value = await box.inputValue().catch(() => "");
+    if (!value) return "";
+    await box.fill("").catch(() => {});
+    return value;
   };
   /**
    * 关闭输入区弹层。+ 菜单 / 智能体菜单 / 权限菜单是自定义实现（无 Esc 处理），靠
@@ -715,12 +745,14 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
     pinnedProjectLabels,
     listSessionTitles,
     sessionHeader,
+    headerIdText,
     waitSessionResolved,
     openSession,
     switchProject,
     cancelResidualDialog,
     ensureWorkspace,
     newConversation,
+    clearComposerLeftover,
     dismiss,
     plusMenu,
     agentSwitchTitle,

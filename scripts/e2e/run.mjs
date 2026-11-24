@@ -6,6 +6,7 @@
  *   node scripts/e2e/run.mjs --suite smoke                  基础冒烟（不需要模型与网络）
  *   node scripts/e2e/run.mjs --suite conversation           对话（需要可用模型；会新建测试会话）
  *   node scripts/e2e/run.mjs --suite market                 市场安装（需要联网；装一个扩展并卸载）
+ *   node scripts/e2e/run.mjs --suite fixround               评审修复轮（需要模型；F7 另需联网，真装冲突扩展选「停用并安装」）
  *   node scripts/e2e/run.mjs --suite full                   全量
  *   可选：--project <项目名>   在指定项目里跑（默认：应用当前所在项目）
  *         --out <目录>        结果输出目录（默认 scripts/e2e/results/<时间戳>/，已 gitignore）
@@ -49,7 +50,7 @@ function parseArgs(argv) {
   return out;
 }
 
-const USAGE = `用法：node scripts/e2e/run.mjs --suite <smoke|conversation|market|full> [--project 名] [--out 目录] [--only I1,I3]
+const USAGE = `用法：node scripts/e2e/run.mjs --suite <smoke|conversation|market|fixround|full> [--project 名] [--out 目录] [--only I1,I3]
        node scripts/e2e/run.mjs --suite <名> --list        列出用例
        node scripts/e2e/run.mjs --suite <名> --checklist   输出四字段用例清单（markdown）
 场景包：${Object.entries(SUITES)
@@ -119,7 +120,10 @@ function renderLog(meta, results) {
   lines.push(`- 新建测试会话：${se.sessionsCreated} 个（留在当前项目，未删除）`);
   const clip = se.clipboard.length ? se.clipboard.map((c) => (c.clipboardRestored ? "已还原" : "未还原")).join("，") : "未占用";
   lines.push(`- 系统剪贴板：${clip}`);
-  lines.push(`- 测试安装的扩展：${se.installedTotal ? `${se.installedTotal} 个，${se.installedLeft ? "有残留（见 P4）" : "已全部卸载"}` : "无"}`);
+  if (se.clipboardFallback) lines.push(`- ⚠ 有 ${se.clipboardFallback} 个附件用例没走成「系统剪贴板 + Ctrl+V」，回落到了合成粘贴事件（系统剪贴板当时被别的进程占用）`);
+  lines.push(`- 测试安装的扩展：${se.installedTotal ? `${se.installedTotal} 个，${se.installedLeft ? "有残留（见还原用例）" : "已全部卸载"}` : "无"}`);
+  if (se.curatedInstalledLeft) lines.push(`- ⚠ 本轮装卸的精选件仍有 ${se.curatedInstalledLeft} 个未卸载（见还原用例 FX2）`);
+  if (meta.suiteName === "fixround") lines.push("- F7 会真装一个冲突扩展并选「停用并安装」（临时停用与它撞名的已装扩展）；用例内卸载即自动恢复，登记簿若仍有冲突停用记录说明还原未完成");
   lines.push(`- 界面语言：${se.langRestored ? "临时切换后已还原" : "未改动"}`);
   lines.push(`- 其它：切会话/切项目会清对应会话或项目的未读标记（产品行为：查看即已读）`);
   return lines.join("\n") + "\n";
@@ -167,7 +171,15 @@ async function main() {
   }
   const page = app.page;
 
-  const state = { installed: [], installedLog: [], modelOk: null, baselineSources: [], sessionsCreated: 0, clipboard: [] };
+  const state = {
+    installed: [],
+    installedLog: [],
+    curatedTarget: {}, // 评审修复轮 F6 动过的精选件：id → 目标安装态（还原用例 FX2 按此调回）
+    modelOk: null,
+    baselineSources: [],
+    sessionsCreated: 0,
+    clipboard: [],
+  };
   const ctx = {
     app,
     page,
@@ -211,7 +223,26 @@ async function main() {
         row.skipped = e.message;
       } else {
         row.ok = false;
-        row.error = String(e?.message || e).slice(0, 800);
+        row.error = String(e?.message || e).slice(0, 1800);
+        // 失败现场：一张截图 + 一行界面状态——事后复现往往复现不出来，现场只有这一次
+        try {
+          await app.shot(path.join(out, "screenshots", `${c.id}-失败现场.png`));
+          row.scene = await page.evaluate(() => {
+            const ta = [...document.querySelectorAll("textarea")].find((t) => t.getBoundingClientRect().height > 0);
+            const dialogs = [...document.querySelectorAll('[role="dialog"]')].filter((d) => d.getBoundingClientRect().height > 0);
+            return {
+              输入框可用: ta ? !ta.disabled && !ta.readOnly : null,
+              输入框内容: ta ? ta.value.slice(0, 30) : null,
+              停止钮: !!document.querySelector('button[title="停止"]:not([disabled])'),
+              开着的弹层数: dialogs.length,
+              开着的弹层: dialogs.map((d) => (d.textContent || "").replace(/\s+/g, " ").trim().slice(0, 40)),
+              在管理页: !!document.querySelector('button[title="返回工作区"]') || (document.body.textContent || "").includes("返回工作区"),
+            };
+          }).catch(() => null);
+          log(`  失败现场：${path.join("screenshots", `${c.id}-失败现场.png`)}｜${JSON.stringify(row.scene)}`);
+        } catch {
+          /* 现场留存失败不影响失败结论 */
+        }
       }
     } finally {
       clearTimeout(timer);
@@ -260,7 +291,10 @@ async function main() {
       const verdict = !row.ok ? "❌ 失败" : row.skipped ? "⏭ 跳过" : "✅ 通过";
       const note = !row.ok ? row.error : row.skipped ? row.skipped : "";
       log(`  ${verdict}  ${row.ms}ms${note ? " ｜ " + String(note).slice(0, 300) : ""}`);
+      // 现场复位：失败的用例常把弹层、输入框里的半截内容留在屏幕上，下个用例一开头就落空
       await app.cancelResidualDialog().catch(() => {});
+      const leftover = await app.clearComposerLeftover().catch(() => "");
+      if (leftover) log(`  （已清掉上一用例留在输入框的内容：${leftover.slice(0, 40)}）`);
     }
   } catch (e) {
     log(`运行中止：${e?.message || e}`);
@@ -285,6 +319,8 @@ async function main() {
   sideEffects.clipboard = state.clipboard;
   sideEffects.installedTotal = state.installedLog.length;
   sideEffects.installedLeft = state.installed.filter((s) => !state.baselineSources.includes(s)).length;
+  sideEffects.curatedInstalledLeft = Object.keys(state.curatedTarget || {}).length;
+  sideEffects.clipboardFallback = state.clipboardFallback || 0;
   meta.sideEffects = sideEffects;
 
   fs.writeFileSync(path.join(out, "result.json"), JSON.stringify({ ...meta, results, log: logLines }, null, 2));
