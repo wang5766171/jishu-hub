@@ -56,6 +56,7 @@ import type {
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
 import { RenameTaskSessionDialog } from "@/components/sessions/rename-task-session-dialog";
 import { ChatInput, extractToolTokens, type ChatInputHandle, type StagedGuideApi } from "@/components/sessions/chat-input";
+import { dispatchLocalSlashCommand } from "@/components/sessions/slash-command";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { clearImageCache, InlineImages, stripImagePrompt } from "@/components/sessions/inline-image";
 // 会话二级树（T3）：侧边栏任务会话区
@@ -235,22 +236,39 @@ export function ChatPage({
   const supportsCompact = capabilities?.has("CONTEXT_COMPACT") ?? false;
   const compaction = useCompaction(activeId, supportsCompact);
   const { compacting, autoCompaction: autoCompactionPref } = compaction;
-  const handleCompactSession = useCallback(async () => {
-    devLog("ipc", "手动压缩会话（compact_chat）", { session: selectedSessionRef.current });
+  // 需求7 补充轮（2026-11-24）：两个入口共用——水位圆环里的「立即压缩」按钮，
+  // 以及输入框发送 `/compact [补充要求]`（行为一致：点击/发送即执行，任务
+  // 进行中也可执行）。
+  const handleCompactSession = useCallback(async (instructions: string | null = null) => {
+    devLog("ipc", "手动压缩会话（compact_chat）", {
+      session: selectedSessionRef.current,
+      customInstructions: instructions,
+    });
     const sessionId = selectedSessionRef.current;
-    if (!sessionId || sessionId === "new" || compacting) return;
+    if (!sessionId || sessionId === "new") return;
+    if (compacting) {
+      // 按钮在压缩进行中是禁用态；输入 /compact 发送没有这个禁用态，给出
+      // 提示而不是静默忽略。
+      void alertDialog({
+        title: t("sessions.compactRunning"),
+        description: t("sessions.compactAlreadyRunning"),
+      });
+      return;
+    }
     try {
       // v0.9.6 需求2：传 agentId/projectPath——无活跃进程的历史会话由后端
       // 先静默连接（resume）再压缩（「先连接会话再压缩」）。
-      await compaction.runCompact(sessionId, null, {
+      // 需求7 补充轮：instructions = `/compact` 后面的补充要求，作为摘要指令
+      // 交给引擎。
+      await compaction.runCompact(sessionId, instructions, {
         agentId: activeId,
         projectPath: currentProject?.path ?? null,
       });
     } catch (err) {
       console.error("Compact failed:", err);
-      void alertDialog({ title: "压缩失败", description: String(err) });
+      void alertDialog({ title: t("sessions.compactFailed"), description: String(err) });
     }
-  }, [compacting, alertDialog, compaction, activeId, currentProject]);
+  }, [compacting, alertDialog, compaction, activeId, currentProject, t]);
   const handleAutoCompactionChange = useCallback(async (enabled: boolean) => {
     if (!activeId) return;
     try {
@@ -949,10 +967,12 @@ export function ChatPage({
   const supportsFork = capabilities?.has("SESSION_FORK") ?? false;
   // 需求7 补充（2026-11-22 用户裁决二轮）：/ 命令清单不 hub 写死——
   // 动态部分直接调 pi（TUI）get_commands 拉取（扩展/提示模板/技能三源，
-  // insert 模式：插入 /name 由用户补参，pi prompt 通道原生展开/执行）；
-  // builtin 子集（名字对齐 pi slash-commands.ts）+ GUI 特有件走 hub 本地
-  // 执行。/new 与 /task 已按裁决去除（pi 的 /new 语义=pi 内建会话切换，
-  // GUI 已有侧栏专门入口）。
+  // 发送后 pi prompt 通道原生展开/执行）；builtin 子集（名字对齐 pi
+  // slash-commands.ts）+ GUI 特有件（local）由 hub 本地执行。/new 与 /task
+  // 已按裁决去除（pi 的 /new 语义=pi 内建会话切换，GUI 已有侧栏专门入口）。
+  // 需求7 补充轮（2026-11-24 用户裁决「应该点了之后只是落到输入框，只有点击
+  // 发送才发送」）：面板里的命令一律选中只填入输入框；hub 内建命令的执行
+  // 时机从「选中」改到「发送」（见 chat-input 的 handleSend）。
   const [piSlashCommands, setPiSlashCommands] = useState<
     Array<{ name: string; description: string; source: string }>
   >([]);
@@ -978,45 +998,59 @@ export function ChatPage({
 
   const slashCommands = useMemo(
     () => [
-      { name: "name", label: t("sessions.slashRename"), available: hasSelectedSession },
-      { name: "terminal", label: t("sessions.slashTerminal"), available: hasSelectedSession },
-      { name: "float", label: t("sessions.slashFloat"), available: hasSelectedSession },
-      { name: "compact", label: t("sessions.slashCompact"), available: hasSelectedSession && supportsCompact },
-      { name: "fork", label: t("sessions.slashFork", "创建会话分支"), available: hasSelectedSession && supportsFork && !currentStream?.isStreaming },
-      // pi 真实命令集（get_commands 动态拉取；insert 模式——选中插入
-      // /name 由用户补参，发送后 pi prompt 通道原生展开/执行）。
+      // hub 内建命令：发送时由 hub 本地执行（pi 的 prompt 通道只执行扩展
+      // 命令，不执行这些内建命令）。
+      { name: "name", label: t("sessions.slashRename"), available: hasSelectedSession, local: true },
+      { name: "terminal", label: t("sessions.slashTerminal"), available: hasSelectedSession, local: true },
+      { name: "float", label: t("sessions.slashFloat"), available: hasSelectedSession, local: true },
+      { name: "compact", label: t("sessions.slashCompact"), available: hasSelectedSession && supportsCompact, local: true },
+      { name: "fork", label: t("sessions.slashFork", "创建会话分支"), available: hasSelectedSession && supportsFork && !currentStream?.isStreaming, local: true },
+      // pi 真实命令集（get_commands 动态拉取）：发送后 pi prompt 通道原生
+      // 展开/执行。
       ...piSlashCommands
         .filter((c) => c.name && c.name !== "name")
         .map((c) => ({
           name: c.name,
           label: c.description || c.source,
           available: true,
-          mode: "insert" as const,
         })),
     ],
-    [hasSelectedSession, projectId, supportsCompact, supportsFork, currentStream?.isStreaming, t, piSlashCommands],
+    [hasSelectedSession, supportsCompact, supportsFork, currentStream?.isStreaming, t, piSlashCommands],
   );
+  // hub 内建命令的执行——发送时由 chat-input 调用（名字 + 参数）。
   const handleSlashCommand = useCallback(
-    (name: string) => {
-      switch (name) {
-        case "name": // 对齐 pi builtin 命名（/name = set session display name）
-          setRenameOpen(true);
-          break;
-        case "terminal":
-          if (selectedSession) void handleResumeSession(selectedSession);
-          break;
-        case "float":
-          if (selectedSession) handleFloatSession(selectedSession);
-          break;
-        case "compact":
-          void handleCompactSession();
-          break;
-        case "fork":
-          if (selectedSession) void handleForkSession(selectedSession);
-          break;
+    async (name: string, args: string) => {
+      if (!hasSelectedSession || !selectedSession) {
+        void alertDialog({
+          title: t("sessions.slashCommandTitle"),
+          description: t("sessions.slashNeedSession"),
+        });
+        return;
       }
+      await dispatchLocalSlashCommand(name, args, {
+        rename: async (newName) => {
+          if (newName === null) {
+            setRenameOpen(true);
+            return;
+          }
+          try {
+            await invokeCommand("rename_session", { sessionId: selectedSession, name: newName });
+            refetchNames(true).catch(console.error);
+          } catch (err) {
+            console.error("Rename via /name failed:", err);
+            void alertDialog({ title: t("sessions.renameTitle"), description: String(err) });
+          }
+        },
+        // handleResumeSession / handleFloatSession 定义在本处之后：闭包按运行
+        // 时取值，无 TDZ（同此前的写法，故不进依赖数组）。
+        openTerminal: () => handleResumeSession(selectedSession),
+        float: () => handleFloatSession(selectedSession),
+        compact: (instructions) => handleCompactSession(instructions),
+        fork: () => handleForkSession(selectedSession),
+      });
     },
-    [selectedSession, handleCompactSession, handleForkSession],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hasSelectedSession, selectedSession, handleCompactSession, handleForkSession, alertDialog, t, refetchNames],
   );
 
   const workModeOptions = useMemo(() => [

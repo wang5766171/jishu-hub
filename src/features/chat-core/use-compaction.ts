@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { invokeCommand, useInvoke } from "@/hooks/use-invoke";
 import { streamStore } from "@/hooks/use-stream-store";
 
@@ -26,6 +26,9 @@ export function useCompaction(
   enabled: boolean,
 ): UseCompaction {
   const [compacting, setCompacting] = useState(false);
+  // 同步重入闸：state 要到下一次渲染才对闭包可见——连点、连按两次回车会穿过
+  // 闭包里的 compacting 判断发出两个压缩请求（第二个到达引擎会中止第一个）。
+  const compactingRef = useRef(false);
   const { data: autoCompaction } = useInvoke<boolean | null>(
     enabled && agentId ? "get_agent_auto_compaction" : "",
     enabled && agentId ? { agentId } : undefined,
@@ -41,7 +44,8 @@ export function useCompaction(
       instructions?: string | null,
       extra?: { agentId?: string | null; projectPath?: string | null },
     ) => {
-      if (!sessionId || sessionId === "new" || compacting) return;
+      if (!sessionId || sessionId === "new" || compactingRef.current) return;
+      compactingRef.current = true;
       setCompacting(true);
       // v0.9.6 需求1 完善修复①：乐观压缩分隔线——无进程的历史会话点击
       // 「立即压缩」后要静默 spawn 连接（可达 30s+），此前这段时间会话窗
@@ -82,10 +86,11 @@ export function useCompaction(
         }
         throw err;
       } finally {
+        compactingRef.current = false;
         setCompacting(false);
       }
     },
-    [compacting],
+    [],
   );
 
   const setAuto = useCallback(

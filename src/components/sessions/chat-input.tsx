@@ -28,6 +28,7 @@ import type {
 import { cn } from "@/lib/utils";
 import { EmbeddedToolPill } from "./embedded-tools";
 import { detectAtToken } from "./at-file";
+import { findLocalSlashCommand, type SlashCommandInfo } from "./slash-command";
 
 /** 会话工具插件条目（v0.8.1 需求7，后端 session_tool_list）。 */
 interface SessionTool {
@@ -173,18 +174,14 @@ interface ChatInputProps {
   initialDraft?: string;
   /** 输入历史的作用域（项目维度；空则禁用历史导航）。 */
   historyScope?: string | null;
-  /** 斜杠命令清单（A2）：行首 `/` 触发，available=false 的命令不显示。 */
-  /** 需求7 补充：mode=insert（pi 动态命令）——面板选中后插入 `/name `
-   * 到输入框由用户补参再发送（pi prompt 通道原生路由扩展命令/模板展开），
-   * 不清空草稿不回调；缺省 run=hub 本地执行（builtin 子集/GUI 特有）。 */
-  slashCommands?: Array<{
-    name: string;
-    label: string;
-    available: boolean;
-    mode?: "run" | "insert";
-  }>;
-  /** 斜杠命令执行回调：命令面板选中后调用，输入框自动清空。 */
-  onSlashCommand?: (name: string) => void;
+  /** 斜杠命令清单（A2）：行首 `/` 触发，available=false 的命令不显示。
+   * 需求7 补充（2026-11-24 用户裁决「应该点了之后只是落到输入框，只有点击
+   * 发送才发送」）：面板里的命令一律选中只填入 `/name `，不执行。点发送时
+   * local（hub 内建命令）本地执行，其余发给智能体。 */
+  slashCommands?: readonly SlashCommandInfo[];
+  /** hub 内建命令的执行回调——**发送时**调用（名字、参数），输入框已清空。
+   * 与是否正在输出无关：任务进行中也立即执行。 */
+  onSlashCommand?: (name: string, args: string) => void | Promise<void>;
   /** 渲染在发送按钮左侧同一行的控件（v0.7.3 需求2：模型选择器+水位圆环）。 */
   trailingControls?: ReactNode;
   onDraftChange?: (value: string) => void;
@@ -389,28 +386,21 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
 
   const commitSlash = useCallback(
     (name: string) => {
-      // 需求7 补充：pi 动态命令（insert）——替换行首 "/filter" 为 "/name "
-      // 保留其余草稿，用户补参后正常发送（pi 端 prompt 原生展开/执行）。
-      const entry = slashCommands?.find((c) => c.name === name);
-      if (entry?.mode === "insert") {
-        closeSuggestions();
-        const token = `/${name} `;
-        setMessage((prev) => {
-          // 截掉行首 "/" + 当前过滤串，替换为 "/name "（保留其余草稿）。
-          const next = slashFilter !== null && prev.startsWith("/")
-            ? prev.slice(0, Math.max(0, prev.length - slashFilter.length - 1)) + token
-            : prev + token;
-          onDraftChange?.(next);
-          return next;
-        });
-        return;
-      }
+      // 需求7 补充（2026-11-24 用户裁决）：面板选中**只填入** `/name `，由用户
+      // 补参后点发送——hub 内建命令在发送时本地执行，pi 动态命令发送后由 pi
+      // 原生展开/执行。此前 hub 内建命令是「一选中就清空输入框并执行」。
       closeSuggestions();
-      setMessage("");
-      onDraftChange?.("");
-      onSlashCommand?.(name);
+      const token = `/${name} `;
+      setMessage((prev) => {
+        // 截掉行首 "/" + 当前过滤串，替换为 "/name "（保留其余草稿）。
+        const next = slashFilter !== null && prev.startsWith("/")
+          ? prev.slice(0, Math.max(0, prev.length - slashFilter.length - 1)) + token
+          : prev + token;
+        onDraftChange?.(next);
+        return next;
+      });
     },
-    [closeSuggestions, onDraftChange, onSlashCommand, slashCommands, slashFilter],
+    [closeSuggestions, onDraftChange, slashFilter],
   );
 
   const commitFile = useCallback(
@@ -1231,6 +1221,18 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   const handleSend = async () => {
     if (!projectPath || disabled) return;
     if (!message.trim() && files.length === 0) return;
+
+    // 需求7 补充（2026-11-24 用户裁决）：hub 内建命令（如 /compact）在发送时
+    // 本地执行——不发给智能体，也不进暂存区：任务进行中同样立即执行，与水位
+    // 圆环里「立即压缩」按钮的行为一致（压缩会先中止当前任务，这是引擎的行为）。
+    const localCommand = findLocalSlashCommand(message, slashCommands);
+    if (localCommand) {
+      setMessage("");
+      onDraftChange?.("");
+      setFiles([]);
+      await onSlashCommand?.(localCommand.name, localCommand.args);
+      return;
+    }
 
     // If the agent is currently streaming, stage the message instead of
     // interrupting the output. The user can then click "Guide" on the
