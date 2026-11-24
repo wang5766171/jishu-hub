@@ -23,6 +23,9 @@ export interface StreamToolUse {
    * 尝试的卡全部被重试取代；渲染层 status 归 success + 「已重试」徽标，
    * 错误输出保留可展开）。 */
   retriedSuccess?: boolean;
+  /** v0.9.8 评审修复轮 R1-3：翻绿来源 = auto_retry 整体重做（区别于「其后
+   * 同名调用成功」的逐张重算）。带此标记的翻绿不参与重算撤回。 */
+  retriedByAutoRetry?: boolean;
 }
 
 export interface StepInfo {
@@ -222,6 +225,21 @@ class StreamStore {
     return this.aliases.get(sid) ?? sid;
   }
 
+  /**
+   * v0.9.8 需求21：一个对话的**全部身份键**（规范键、传入的 id 本身、指向它的所有别名）。
+   * 同一个对话在生命周期里会换 id（临时键 → 真实 id），按会话键分区的状态可能落在其中
+   * 任意一个键下——需要「这个对话的东西」时按身份取全集，不靠某个键碰巧一致。
+   */
+  identityKeys(sid: string | null | undefined): string[] {
+    if (!sid) return [];
+    const key = this.canonical(sid);
+    const keys = [key, sid];
+    for (const [other, target] of this.aliases) {
+      if (target === key) keys.push(other);
+    }
+    return [...new Set(keys)];
+  }
+
   /** Begin tracking a session that we just sent a message to. */
   start(canonicalId: string, pendingUserMessage: string | null, pendingToolIds: string[] = []): void {
     devLog("store", "start", { id: canonicalId, pending: pendingUserMessage?.slice(0, 40) ?? null });
@@ -364,7 +382,9 @@ class StreamStore {
           // 关联字段，auto_retry 重做的是整个模型调用，失败尝试的卡整体被
           // 取代——翻转全部当前 error 态工具（错误输出保留在卡内，历史不删）。
           tools = tools.map((tool) =>
-            tool.isError && !tool.retriedSuccess ? { ...tool, retriedSuccess: true } : tool,
+            tool.isError && !tool.retriedByAutoRetry
+              ? { ...tool, retriedSuccess: true, retriedByAutoRetry: true }
+              : tool,
           );
         }
       }
@@ -406,17 +426,19 @@ class StreamStore {
       // 阶段很多红框」）。紧档规则与回放共用 computeRetriedSuccessFlags
       //（两侧口径单一实现，防双标）。auto_retry success 全翻机制并存
       //（pi 机制级重试重做整次调用，语义不同层）。
+      // v0.9.8 评审修复轮 R1-3：「已重试成功」是调用序列的**派生结果**，
+      // 每次从当前序列完整重算——可翻可撤（重跑最终失败时旧失败卡回到
+      // 失败态，与回放一致）。此前只写不撤，且把「还在运行」折算成成功
+      // 喂给判定函数：重跑尚未出结果失败卡就提前翻绿，之后也不翻回。
       {
         const flags = computeRetriedSuccessFlags(
-          tools.map((tool) => ({ id: tool.id, name: tool.name, isError: Boolean(tool.isError) })),
+          tools.map((tool) => ({ id: tool.id, name: tool.name, isError: tool.isError })),
         );
-        if (flags.size > 0) {
-          tools = tools.map((tool) =>
-            tool.isError && flags.has(tool.id) && !tool.retriedSuccess
-              ? { ...tool, retriedSuccess: true }
-              : tool,
-          );
-        }
+        tools = tools.map((tool) => {
+          if (tool.isError !== true || tool.retriedByAutoRetry) return tool;
+          const retriedSuccess = flags.has(tool.id);
+          return retriedSuccess === !!tool.retriedSuccess ? tool : { ...tool, retriedSuccess };
+        });
       }
       if (!content.some((block) => block.type === "tool_result" && block.tool_use_id === data.call_id)) {
         // 需求12 二轮：details 随块透传（待办面板等消费方实时取快照）。

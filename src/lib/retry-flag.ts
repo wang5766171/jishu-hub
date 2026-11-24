@@ -13,7 +13,11 @@
 export interface RetryFlagCall {
   id: string;
   name: string;
-  isError: boolean;
+  /** true = 失败；false = 成功；undefined = **尚无结果**（直播中还在运行）。
+   * v0.9.8 评审修复轮 R1-3：运行中不算成功——「之后第一张同名调用 success
+   * 才翻」里的 success 必须是已出结果的成功。此前直播侧把它折算成 false
+   * 喂进来，重跑还在执行时失败卡就提前翻绿。 */
+  isError: boolean | undefined;
 }
 
 export function computeRetriedSuccessFlags(calls: RetryFlagCall[]): Set<string> {
@@ -27,9 +31,11 @@ export function computeRetriedSuccessFlags(calls: RetryFlagCall[]): Set<string> 
     lastSeen.set(calls[i].name, i);
   }
   for (let i = 0; i < calls.length; i++) {
-    if (!calls[i].isError) continue;
+    if (calls[i].isError !== true) continue;
     const j = nextIdx[i];
-    if (j > i && !calls[j].isError) flags.add(calls[i].id);
+    // 紧档：其后第一张同名调用必须**已出结果且成功**。那张还在运行时
+    // 结果未知——不翻（等它出结果后重算：成功则翻、失败则不翻）。
+    if (j > i && calls[j].isError === false) flags.add(calls[i].id);
   }
   return flags;
 }

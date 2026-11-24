@@ -347,3 +347,55 @@ describe("v0.9.8 需求19-B：drop 保留 alias（pi 死亡终局事件必达）
     expect(ids).not.toContain(realId);
   });
 });
+
+describe("v0.9.8 评审修复轮 R1-3：直播重试翻绿是派生态（每次重算）", () => {
+  const SID = "session-retry-live";
+  const start = (callId: string) =>
+    chunk({ kind: "tool_use_start", call_id: callId, tool: "bash", input: {} });
+  const result = (callId: string, isError: boolean) =>
+    chunk({ kind: "tool_use_result", call_id: callId, output: isError ? "boom" : "ok", is_error: isError });
+
+  it("重跑还在运行时旧失败卡不翻绿；重跑失败仍不翻", () => {
+    streamStore.drop(SID);
+    streamStore.start(SID, "run");
+    streamStore.push(SID, start("c1"));
+    streamStore.push(SID, result("c1", true));
+    streamStore.push(SID, start("c2")); // 同名重跑，尚无结果
+    // 别的工具出结果触发重算（修前：运行中的 c2 被折算成成功 → c1 提前翻绿）。
+    streamStore.push(SID, chunk({ kind: "tool_use_start", call_id: "r1", tool: "Read", input: {} }));
+    streamStore.push(SID, result("r1", false));
+    expect(streamStore.getState(SID)!.tools.find((t) => t.id === "c1")!.retriedSuccess).toBeFalsy();
+    // 重跑最终失败——c1 依旧不翻（修前此刻已是翻绿且不回红）。
+    streamStore.push(SID, result("c2", true));
+    expect(streamStore.getState(SID)!.tools.find((t) => t.id === "c1")!.retriedSuccess).toBeFalsy();
+    streamStore.drop(SID);
+  });
+
+  it("重跑成功才翻绿", () => {
+    streamStore.drop(SID);
+    streamStore.start(SID, "run");
+    streamStore.push(SID, start("c1"));
+    streamStore.push(SID, result("c1", true));
+    streamStore.push(SID, start("c2"));
+    streamStore.push(SID, result("c2", false));
+    expect(streamStore.getState(SID)!.tools.find((t) => t.id === "c1")!.retriedSuccess).toBe(true);
+    streamStore.drop(SID);
+  });
+
+  it("auto_retry 来源的翻绿不参与逐张重算（后续工具结果不会把它撤回）", () => {
+    streamStore.drop(SID);
+    streamStore.start(SID, "run");
+    streamStore.push(SID, start("c1"));
+    streamStore.push(SID, result("c1", true));
+    streamStore.push(SID, chunk({
+      kind: "auto_retry_status", active: false, attempt: 2, max_attempts: 5, delay_ms: 0,
+      error_message: "", success: true,
+    }));
+    streamStore.push(SID, chunk({ kind: "tool_use_start", call_id: "r1", tool: "Read", input: {} }));
+    streamStore.push(SID, result("r1", false));
+    const tool = streamStore.getState(SID)!.tools.find((t) => t.id === "c1")!;
+    expect(tool.retriedSuccess).toBe(true);
+    expect(tool.retriedByAutoRetry).toBe(true);
+    streamStore.drop(SID);
+  });
+});
