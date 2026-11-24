@@ -151,6 +151,10 @@ export interface StagedGuideApi {
   /** Roll back a failed auto-send for `sessionKey`: un-claim the ids and put
    *  the messages back into that session's staging UI so the user can retry. */
   restore(sessionKey: string, messages: StagedMessage[]): void;
+  /** v0.9.8 需求21：会话 id 解析后（临时键 → 真实 id）把该对话的待发送区
+   *  整体搬到新键（保序；「已领取」标记随条目走，exactly-once 不因换键
+   *  失效）。与引导队列的 `moveKey` 在同一事件点调用。 */
+  moveKey(from: string, to: string): void;
 }
 
 interface ChatInputProps {
@@ -842,6 +846,24 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         // 失败回滚与「发一条放回剩余」都不被打乱；期间新暂存的排其后）。
         setStagedMessagesForSession(sessionKey, (prev) => [...messages, ...prev]);
       },
+      moveKey: (from: string, to: string) => {
+        if (from === to) return;
+        const claimed = claimedIdsForSession(from);
+        setStagedMessagesBySession((prev) => {
+          const moving = prev[from];
+          if (!moving || moving.length === 0) return prev;
+          const rest = { ...prev };
+          delete rest[from];
+          rest[to] = [...(rest[to] ?? []), ...moving];
+          return rest;
+        });
+        // 已领取标记随条目搬到新键（同一条消息不会因换键被再领一次）。
+        if (claimed.size > 0) {
+          const target = claimedIdsForSession(to);
+          for (const id of claimed) target.add(id);
+          claimed.clear();
+        }
+      },
     };
   }, [claimedIdsForSession, setStagedMessagesForSession, stagedApiRef]);
 
@@ -1064,10 +1086,32 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
 
   /** M5 → v0.9.0 需求3 方案 C：发送/引导共用的消息组装（单源）。用户裁决保持
    * workbuddy 形态：本条消息里的 @[token] 集合 = 本条工具集（所见即所得，空
-   * token = 本条不带工具，覆盖写入会话集合）。消息文本不再嵌 [JISHU-TOOLS]
-   * 标记——工具快照以 toolIds 返回值显式传递（流式渲染/引导占位用），回放
-   * 由后端从注入块派生（extract_tool_snapshot）。任何新增的用户消息出口
-   * 必须走这里（§16.8 组装单源）。 */
+   * token = 本条不带工具）。消息文本不再嵌 [JISHU-TOOLS] 标记——工具快照
+   * 以 toolIds 返回值显式传递（流式渲染/引导占位用），回放由后端从注入块
+   * 派生（extract_tool_snapshot）。 */
+  // v0.9.8 评审修复轮 R1-5：这里只负责**算出本条消息的工具引用**（流式
+  // 渲染 pill、引导占位用）并同步 + 菜单勾选态。「把工具集写进会话」不再
+  // 由各个出口各自做——「本条带哪些工具」完全由消息文本决定，后端
+  // send_message 入口统一解析写入（所有用户消息出口的必经点）；回合结束
+  // 自动发送、停止后重发等出口此前绕过这里直接发原文，消息里点名的
+  // 工具说明不注入。
+  const composeOutgoing = useCallback(
+    (rawText: string): { message: string; sessionKey: string; toolIds: string[] } => {
+      const sessionKey = nextPendingId();
+      const hasTokens = TOOL_TOKEN_RE.test(rawText);
+      TOOL_TOKEN_RE.lastIndex = 0;
+      if (!hasTokens && !sessionTools.some((t) => t.enabled)) {
+        return { message: rawText, sessionKey, toolIds: [] };
+      }
+      const { text: strippedText, toolIds } = extractToolTokens(rawText, sessionTools);
+      setSessionTools((prev) =>
+        prev.map((t) => ({ ...t, enabled: toolIds.includes(t.id) })),
+      );
+      return { message: strippedText, sessionKey, toolIds };
+    },
+    [nextPendingId, sessionTools],
+  );
+
   // v0.9.4 需求8 补充（用户实测：steer 带附件/图片丢失）：附件上传管线
   // 提取共用——普通发送与引导暂存（steering）同源。返回文件标记行
   //（批次/路径引用，模型经 Read 工具查看），空数组表示无附件。
@@ -1109,30 +1153,6 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       return allFileLines;
     },
     [projectPath, sessionId],
-  );
-
-  const composeOutgoing = useCallback(
-    async (rawText: string): Promise<{ message: string; sessionKey: string; toolIds: string[] }> => {
-      const sessionKey = nextPendingId();
-      const hasTokens = TOOL_TOKEN_RE.test(rawText);
-      TOOL_TOKEN_RE.lastIndex = 0;
-      if (!hasTokens && !sessionTools.some((t) => t.enabled)) {
-        return { message: rawText, sessionKey, toolIds: [] };
-      }
-      const { text: strippedText, toolIds } = extractToolTokens(rawText, sessionTools);
-      try {
-        await invokeCommand("session_set_tools", { sessionId: sessionKey, toolIds });
-        setSessionTools((prev) =>
-          prev.map((t) => ({ ...t, enabled: toolIds.includes(t.id) })),
-        );
-      } catch (err) {
-        // 写入失败不阻塞发送（消息照发，仅本条不注入）；用户可从控制台
-        // 警告与「工具没生效」的现象回溯——阻塞会导致普通消息也发不出。
-        console.warn("Failed to sync session tools:", err);
-      }
-      return { message: strippedText, sessionKey, toolIds };
-    },
-    [nextPendingId, sessionTools],
   );
 
   const sendPreparedMessage = async (
@@ -1259,7 +1279,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       //   新会话为 pending-<ts>，续聊为真实 id）——修前用 activeSessionId
       //   （流式引用，非流式恒 null）导致写入全部落到暂存键、注入永不命中。
       const pendingId = nextPendingId();
-      const composed = await composeOutgoing(fullMessage);
+      const composed = composeOutgoing(fullMessage);
       fullMessage = composed.message;
       // 输入历史记录用户原始输入（A6）：发送即入列，与附件组装后的内容无关
       pushInputHistory(historyScope, message);
@@ -1303,7 +1323,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       // M5：引导路径与普通发送共用同一工具管线——剥 @[token]、归一 id、
       // 写消息头标记（回放 pill）、并集写入会话集（注入生效）。修前引导
       // 完全绕过：token 原文进 prompt、无 pill、无注入。
-      const { message, sessionKey, toolIds } = await composeOutgoing(rawContent);
+      const { message, sessionKey, toolIds } = composeOutgoing(rawContent);
       // v0.9.4 需求8 补充：引导消息附加暂存附件的标记行（与普通发送同通道
       // ——文件落盘 + Read 引用）。上传未完成时在此兜底等待（guide loading
       // 态已覆盖等待期）。

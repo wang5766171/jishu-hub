@@ -44,6 +44,7 @@ import {
 } from "./session-cache";
 import { emitSessionSignal } from "../signals";
 import { steerCoordinator, type SteerQueueItem } from "./steer-coordinator";
+import { isSupersededAbort } from "./turn-ownership";
 import { devLog } from "@/lib/dev-log";
 
 /** v0.9.4 需求6 v2：AI 标题生成前端触发一次守卫（会话 id 维度，进程内）。 */
@@ -368,6 +369,11 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           if (queuedSteers.length > 0) {
             steerCoordinator.moveKey(cid, realId);
           }
+          // v0.9.8 需求21：待发送区随会话 id 解析搬家——与引导队列同点、
+          // 同判定（只有「同一对话换 id」才搬，切换会话天然不受影响）。
+          // 不搬：暂存在临时键下的消息在界面切到真实 id 时读成空列表而
+          // 消失，回合结束的自动投递也领不到——消息无声丢失。
+          deps.stagedApiRef.current?.moveKey(cid, realId);
           // 占位从队列派生（SteerCoordinator），moveKey 已同步——无需换键。
           // Migrate launch-injection marker: if the pending id was already
           // injected with launch instruction, the real id is too (same session).
@@ -513,6 +519,57 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             // （F3）兜底，用户点停止即可；旧实现不认回合，5s 内重发的新
             // 回合会被误收口（评审 P1），故整体移除。
             continue; // 空转完成：不发 turn-complete 信号（见上方信号块注释）
+          }
+          // v0.9.8 评审修复轮 R1-4：这个中止回执属于**已被取代的旧回合**
+          // （用户点停止后立刻重发：旧回合已本地提交、终结者迟到；新回合的
+          // 流挂在同一个键上）。当前流不是它的收口对象——不提交、不移除、
+          // 不清新回合的引导、不发完成通知；只结算旧回合遗留。判定见
+          // turn-ownership（纯函数，单测锁行为）。
+          if (
+            isSupersededAbort(
+              chunk.data.reason,
+              state?.turnToken ?? null,
+              [
+                deps.abortLocalCommitRef.current.get(finalKey),
+                deps.abortLocalCommitRef.current.get(cid),
+              ],
+              state,
+            )
+          ) {
+            const currentTurnToken = state?.turnToken ?? null;
+            for (const key of [finalKey, cid]) {
+              if (deps.abortLocalCommitRef.current.get(key) !== currentTurnToken) {
+                deps.abortLocalCommitRef.current.delete(key);
+              }
+            }
+            // 旧回合的引导残留：引擎已作废其队列，本该重发；但新回合已在途
+            //（消息已发出/缓冲中），此刻另发一条会把它取消。退回待发送区，
+            // 新回合结束后按序自动发送——不丢、不取消新回合。
+            const leftover = [
+              ...steerCoordinator.takeResend(finalKey),
+              ...steerCoordinator.takeResend(cid),
+            ];
+            for (const key of new Set([finalKey, cid])) {
+              leftover.push(...steerCoordinator.queueOf(key));
+            }
+            for (const key of new Set([finalKey, cid])) {
+              steerCoordinator.resetAborted(key);
+            }
+            if (leftover.length > 0 && deps.stagedApiRef.current) {
+              deps.stagedApiRef.current.restore(
+                finalKey,
+                leftover.map((item) => ({
+                  id: crypto.randomUUID(),
+                  content: item.text,
+                  files: [],
+                  context: item.context,
+                })),
+              );
+            }
+            devLog("pipeline", "迟到的中止回执：属于已被取代的旧回合，不动当前流", {
+              session: cid, finalKey, guidesBackToStaging: leftover.length,
+            });
+            continue;
           }
           emitTurnCompleteSignal();
           const isNewSessionStream =
@@ -1015,8 +1072,20 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // A's staged guide. Claiming is gated only on deps.stagedApiRef existing
           // (the ChatInput must be mounted) and !followUpExpected; the viewed
           // session is irrelevant.
+          //
+          // v0.9.8 需求21：按**对话身份**领取，不靠键碰巧一致。暂存区按「界面当时的会话键」
+          // 分区，同一个对话的身份会从临时键换成真实 id——此前只按 finalKey 领：新对话一建立
+          // 就点停止再重发时，消息暂存在临时键下，而回合结束事件已带着真实 id 到达，两个键
+          // 对不上，领取落空，这条消息就永远留在待发送区不被投递。现在把这个对话的全部
+          // 身份键（解析后的键、事件携带的键、临时键）下的一次性都取出来，仍按入队顺序
+          // 逐条发送。
           if (!followUpExpected && deps.stagedApiRef.current) {
-            const claimed = deps.stagedApiRef.current.claimAll(finalKey);
+            const identityKeys = streamStore.identityKeys(finalKey);
+            if (cid && !identityKeys.includes(cid)) identityKeys.push(cid);
+            let claimed: ReturnType<StagedGuideApi["claimAll"]> = [];
+            for (const key of identityKeys) {
+              claimed = claimed.concat(deps.stagedApiRef.current.claimAll(key));
+            }
             if (claimed.length > 0) {
               const first = claimed[0];
               const rest = claimed.slice(1);
