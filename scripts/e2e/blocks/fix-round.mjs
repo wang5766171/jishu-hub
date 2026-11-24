@@ -39,7 +39,7 @@ async function finishTurn(ctx, budget = 240000) {
 }
 
 /** 加号菜单里选一个**有说明块可注入**的工具（cli/skill/mcp），返回其显示名。 */
-async function pickInjectableTool(ctx) {
+export async function pickInjectableTool(ctx) {
   const { app } = ctx;
   const BAD = /^(附件|Skill|MCP|扩展|插件工具|输入素材|能力挂载)$/;
   await app.clickTitle("添加上下文");
@@ -77,7 +77,7 @@ async function pickInjectableTool(ctx) {
  * 页面重载后回到指定会话：用侧栏搜索缩到该会话的行（全文搜索；会话标题可能已被
  * 自动改写，不能按标题找），逐行点开并校验会话头短 id。搜索词取消息正文片段。
  */
-async function reloadIntoSession(ctx, { shortId, keyword }) {
+export async function reloadIntoSession(ctx, { shortId, keyword }) {
   const { app, page } = ctx;
   await page.reload({ waitUntil: "domcontentloaded" });
   const back = page.getByRole("button", { name: "返回工作区", exact: true });

@@ -124,6 +124,7 @@ function renderLog(meta, results) {
   lines.push(`- 测试安装的扩展：${se.installedTotal ? `${se.installedTotal} 个，${se.installedLeft ? "有残留（见还原用例）" : "已全部卸载"}` : "无"}`);
   if (se.curatedInstalledLeft) lines.push(`- ⚠ 本轮装卸的精选件仍有 ${se.curatedInstalledLeft} 个未卸载（见还原用例 FX2）`);
   if (meta.suiteName === "fixround") lines.push("- F7 会真装一个冲突扩展并选「停用并安装」（临时停用与它撞名的已装扩展）；用例内卸载即自动恢复，登记簿若仍有冲突停用记录说明还原未完成");
+  if (meta.suiteName === "斜杠命令与压缩") lines.push("- 本场景包向每个测试会话发送两条各约 9 万字符的「接口清单」消息（让会话大到可压缩），占用模型用量；这些会话留在当前项目里，标题较长");
   lines.push(`- 界面语言：${se.langRestored ? "临时切换后已还原" : "未改动"}`);
   lines.push(`- 其它：切会话/切项目会清对应会话或项目的未读标记（产品行为：查看即已读）`);
   return lines.join("\n") + "\n";

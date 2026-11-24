@@ -664,12 +664,21 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
     await page.keyboard.press("Control+V");
     // 剪贴板在「挂上判定完成之后」才还原——后端要读剪贴板里的文件路径。
     const attached = await waitAttached(ph0, timeoutMs);
+    // 清空剪贴板用 .NET 的 Clipboard.Clear——Windows PowerShell 5.1 没有 Clear-Clipboard
+    // 这个命令（2026-11-24 实录：剪贴板原本没有文字时还原走到它，命令不存在，演示图
+    // 文件留在了用户的剪贴板上）。剪贴板可能被别的进程短暂占用，还原失败重试，最多 3 次。
     const restore = async () => {
       if (saved === null) return false;
-      if (saved === "") return (await runPowerShell("Clear-Clipboard"), true);
-      return (await runPowerShell(`Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${saved}')))`), true);
+      const command = saved === ""
+        ? "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()"
+        : `Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${saved}')))`;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (await runPowerShell(command).then(() => true, () => false)) return true;
+        await sleep(600);
+      }
+      return false;
     };
-    const clipboardRestored = await restore().catch(() => false);
+    const clipboardRestored = await restore();
     return { attached, ms: Date.now() - t0, clipboardRestored, placeholder: await composerPlaceholder() };
   };
   /**
