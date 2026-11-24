@@ -192,6 +192,10 @@ pub async fn market_install(id: &str) -> Result<String, String> {
             Ok(format!("{id} installed"))
         }
         "pi-package" => {
+            // v0.9.8 评审修复轮 R1-0：重装内置扩展包 = 让它重新生效，同启用
+            // 守卫（被替代且替代者还在时装回去即工具撞名）。先于一切盘面
+            // 动作核对，不留半装态。
+            super::ensure_not_replaced_by_conflict(id)?;
             materialize_agent_toml(id)?;
             forget_plugin_disabled(id);
             // npm 包安装走 pi 侧钉版命令（失败回滚 toml——包不在时闸门
@@ -262,7 +266,7 @@ fn agent_toml_source(id: &str) -> Option<&'static str> {
         .map(|(_, t)| t)
 }
 
-fn materialize_agent_toml(id: &str) -> Result<(), String> {
+pub(crate) fn materialize_agent_toml(id: &str) -> Result<(), String> {
     let toml =
         agent_toml_source(id).ok_or_else(|| format!("builtin manifest not found for {id}"))?;
     let dir = crate::agent::manifest::manifest_dir();

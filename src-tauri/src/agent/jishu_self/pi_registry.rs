@@ -129,20 +129,30 @@ pub(crate) fn load_overrides() -> Vec<PiOverrideEntry> {
         .collect()
 }
 
-/// 停用一个扩展：移注册（pi 域）+ 登记簿 disabled + 级联停用适配件。
-/// 幂等（已停用则仅补台账面）。返回被级联停用的插件（提示用）。
+/// 停用一个扩展：登记簿 disabled（+ 级联停用适配件与启停闸门）+ 移注册
+/// （pi 域）。幂等（已停用则仅补台账面）。返回被级联停用的插件（提示用）。
+///
+/// v0.9.8 评审修复轮 R1-0——顺序即正确性：
+/// ① 登记簿：这是「停用」这个决定的记录；同一步经级联把该扩展的**启停
+///    闸门**（内置 pi 扩展包对应的 hub 插件）置停用——闸门是注册同步的
+///    源头，不落这里，下一次同步就会把停用的包补回；
+/// ② 移注册：让当前连接即刻不再装载本包。
+/// 任一步失败即返回、不做半途补救：②未成时本包仍在注册表，调用方的
+/// 终验探针会检出并整体回滚。
 pub(crate) fn disable_extension(
     source: &str,
     display: &str,
     replaced_by: &str,
 ) -> Result<Vec<String>, String> {
     let pkg_dir = package_dir_of(source).ok_or("仅支持 npm: 源停用")?;
+    let _ = crate::agent::extensions_db::ensure_schema();
+    let cascaded =
+        crate::agent::extensions_db::set_extension_disabled(source, display, replaced_by)?;
     mutate_packages(
         |s| package_dir_of(s).as_deref() != Some(pkg_dir.as_str()),
         Vec::new(),
     )?;
-    let _ = crate::agent::extensions_db::ensure_schema();
-    crate::agent::extensions_db::set_extension_disabled(source, display, replaced_by)
+    Ok(cascaded)
 }
 
 /// 恢复一个被停用的扩展：注册加回（pi 域）+ 登记簿 active + 级联精确
@@ -276,6 +286,111 @@ mod tests {
         std::env::remove_var("JISHU_HUB_HOME");
         std::env::remove_var("JISHU_PI_SETTINGS");
         std::env::remove_var("JISHU_EXTENSIONS_DB");
+    }
+
+    /// v0.9.8 评审修复轮 R1-0 测试夹具：内置「联网搜索」已安装且启用，
+    /// 注册表里它和一个与它工具撞名的替代者并存。返回 pi settings 路径
+    /// （tempdir 由调用方持有）。
+    fn conflict_fixture(tmp: &std::path::Path) -> PathBuf {
+        std::env::set_var("JISHU_HUB_HOME", tmp);
+        std::env::set_var("JISHU_EXTENSIONS_DB", tmp.join("ext.db"));
+        let pi_settings = tmp.join("pi-settings.json");
+        std::fs::write(
+            &pi_settings,
+            r#"{"packages": ["npm:pi-web-access@0.32.0", "npm:@juicesharp/rpiv-web-tools@1.0.0"]}"#,
+        )
+        .unwrap();
+        std::env::set_var("JISHU_PI_SETTINGS", &pi_settings);
+        crate::agent::plugin::market::materialize_agent_toml("pi-web-access").unwrap();
+        pi_settings
+    }
+
+    fn clear_conflict_fixture() {
+        std::env::remove_var("JISHU_HUB_HOME");
+        std::env::remove_var("JISHU_PI_SETTINGS");
+        std::env::remove_var("JISHU_EXTENSIONS_DB");
+    }
+
+    fn web_access_gate_disabled() -> bool {
+        crate::agent::plugin::load_plugin_config()
+            .disabled
+            .iter()
+            .any(|x| x == "pi-web-access")
+    }
+
+    /// v0.9.8 评审修复轮 R1-0（评审 P0）：用户确认「停用并安装」后——
+    /// ① 注册表摘除该包、停用落到启停闸门（注册同步的源头）；
+    /// ② **生产同步的决策逻辑不把它补回**（修前：同步按「插件仍启用」
+    ///    把 npm:pi-web-access@… 重新写回 → 工具撞名 → 引擎启动即退出）；
+    /// ③ 扩展清单如实显示停用；
+    /// ④ 手动启用被拒绝并指明解除办法；
+    /// ⑤ 替代者卸载 → 注册回来、闸门精确反启。
+    #[test]
+    fn disable_extension_closes_gate_and_sync_never_restores() {
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        conflict_fixture(tmp.path());
+        assert!(!web_access_gate_disabled(), "前置：联网搜索启用");
+
+        disable_extension(
+            "npm:pi-web-access@0.32.0",
+            "联网搜索",
+            "npm:@juicesharp/rpiv-web-tools@1.0.0",
+        )
+        .unwrap();
+        assert!(!registered_packages()
+            .iter()
+            .any(|p| p.contains("pi-web-access")));
+        assert!(web_access_gate_disabled(), "① 停用落到启停闸门");
+        let synced = crate::agent::plugin::planned_packages(&registered_packages());
+        assert!(
+            !synced.iter().any(|p| p.contains("pi-web-access")),
+            "② 同步不得补回停用的扩展：{synced:?}"
+        );
+        let entry = crate::agent::extensions_db::registry_list()
+            .unwrap()
+            .into_iter()
+            .find(|e| e.pkg_key == "npm:pi-web-access")
+            .expect("登记簿在册");
+        assert_eq!(entry.state, "disabled", "③ 清单如实显示停用");
+
+        let err = crate::agent::plugin::set_plugin_enabled("pi-web-access", true)
+            .expect_err("④ 被替代的内置扩展不得手动启用");
+        assert!(err.contains("替代") && err.contains("卸载"), "{err}");
+        assert!(web_access_gate_disabled());
+
+        let restored = restore_replaced_by("npm:@juicesharp/rpiv-web-tools@1.0.0");
+        assert_eq!(restored.len(), 1);
+        assert!(!web_access_gate_disabled(), "⑤ 闸门精确反启");
+        let synced = crate::agent::plugin::planned_packages(&registered_packages());
+        assert!(synced.iter().any(|p| p.contains("pi-web-access")));
+        clear_conflict_fixture();
+    }
+
+    /// R1-0：替代者已不在注册表 = 这段替代关系事实上已解除 → 允许启用，
+    /// 登记簿里的过期关系随启用清除。
+    #[test]
+    fn enable_allowed_once_replacer_is_gone() {
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let pi_settings = conflict_fixture(tmp.path());
+        disable_extension(
+            "npm:pi-web-access@0.32.0",
+            "联网搜索",
+            "npm:@juicesharp/rpiv-web-tools@1.0.0",
+        )
+        .unwrap();
+        // 替代者离开了注册表（不是经 hub 卸载——恢复钩子没有跑）。
+        std::fs::write(&pi_settings, r#"{"packages": []}"#).unwrap();
+
+        crate::agent::plugin::set_plugin_enabled("pi-web-access", true).unwrap();
+        assert!(!web_access_gate_disabled());
+        assert!(load_overrides().is_empty(), "过期的替代关系随启用清除");
+        clear_conflict_fixture();
     }
 
     /// 包目录名/展示名映射（数据驱动 builtin.json）。

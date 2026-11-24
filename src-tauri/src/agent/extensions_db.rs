@@ -245,7 +245,8 @@ pub struct DisabledEntry {
     pub replaced_by: String,
 }
 
-fn disabled_entry_by_pkg(pkg_key: &str) -> Result<Option<DisabledEntry>, String> {
+/// 按 pkg_key 取停用条目（冲突替代关系；启用守卫消费）。
+pub(crate) fn disabled_entry_by_pkg(pkg_key: &str) -> Result<Option<DisabledEntry>, String> {
     with_conn(|conn| {
         let mut stmt = conn.prepare(
             "SELECT source, builtin, display, replaced_by FROM extensions
@@ -282,6 +283,17 @@ pub fn disabled_entries() -> Result<Vec<DisabledEntry>, String> {
     })
 }
 
+/// 扩展展示名（登记簿在册者；用于守卫提示点名替代者）。
+pub(crate) fn display_of_pkg(pkg_key: &str) -> Option<String> {
+    with_conn(|conn| {
+        let mut stmt = conn.prepare("SELECT display FROM extensions WHERE pkg_key = ?1")?;
+        let mut rows = stmt.query_map([pkg_key], |row| row.get::<_, String>(0))?;
+        Ok(rows.next().transpose()?)
+    })
+    .ok()
+    .flatten()
+}
+
 /// 被停者自身被卸载：清行（含级联行）。
 pub fn forget_extension(pkg_key: &str) -> Result<(), String> {
     with_conn(|conn| {
@@ -307,17 +319,42 @@ pub fn cascade_disable_adapters(pkg_key: &str) -> Vec<String> {
     }
 }
 
+/// 级联写入插件启停态：适配件走带守卫的入口；内置 pi 扩展包的启停闸门
+/// 走内部写入（v0.9.8 评审修复轮 R1-0——闸门是用户在确认卡上明确选择的
+/// 冲突处置对象，不受「默认安装集不可禁用」约束，也不能被启用冲突守卫
+/// 挡住：恢复时登记簿已先回到启用态）。
+fn set_plugin_enabled_for_extension(plugin_id: &str, enabled: bool) -> Result<(), String> {
+    if crate::agent::plugin::is_pi_package_plugin(plugin_id) {
+        crate::agent::plugin::apply_plugin_enabled(plugin_id, enabled).map(|_| ())
+    } else {
+        crate::agent::plugin::set_plugin_enabled(plugin_id, enabled).map(|_| ())
+    }
+}
+
 /// 级联停用：停用依赖 pkg_key 的全部**当前启用中**的适配件并记台账
 /// （用户此前已手动停的不重复记——恢复时不动它们）。
+///
+/// v0.9.8 评审修复轮 R1-0：内置 pi 扩展包的**启停闸门插件**与其适配件
+/// 同列——扩展停用，决定「注册同步是否保留该包」的源头必须一并停用
+/// （否则下次同步把停用的包补回 → 工具撞名 → 引擎启动即退出）。闸门走
+/// 同一本级联台账：恢复时精确反启；用户此前已手动停用的不记台账、恢复
+/// 时不动（用户意志优先）。
 fn cascade_disable(pkg_key: &str) -> Result<Vec<String>, String> {
-    let plugins = adapters_of_pkg(pkg_key)?;
+    let mut plugins = adapters_of_pkg(pkg_key)?;
+    if let Some(gate) =
+        crate::agent::plugin::pi_package_plugin_id(pkg_key.trim_start_matches("npm:"))
+    {
+        if !plugins.iter().any(|p| p == gate) {
+            plugins.push(gate.to_string());
+        }
+    }
     let disabled_now = crate::agent::plugin::load_plugin_config().disabled;
     let mut cascaded = Vec::new();
     for plugin_id in plugins {
         if disabled_now.contains(&plugin_id) {
             continue; // 用户已手动停——不记台账，恢复时不碰。
         }
-        match crate::agent::plugin::set_plugin_enabled(&plugin_id, false) {
+        match set_plugin_enabled_for_extension(&plugin_id, false) {
             Ok(_) => {
                 with_conn(|conn| {
                     conn.execute(
@@ -362,7 +399,7 @@ fn cascade_restore(pkg_key: &str) -> Vec<String> {
             });
             continue;
         }
-        match crate::agent::plugin::set_plugin_enabled(&plugin_id, true) {
+        match set_plugin_enabled_for_extension(&plugin_id, true) {
             Ok(_) => {
                 let _ = with_conn(|conn| {
                     conn.execute(
@@ -463,6 +500,25 @@ pub struct AdapterView {
     pub cascade_disabled: bool,
 }
 
+/// 扩展的生效态（视图用，v0.9.8 评审修复轮 R1-0）：内置 pi 扩展包已安装
+/// 时取自其启停闸门——那才是决定注册同步是否保留该包的源头，登记簿不再
+/// 为这类包单独维护一份可能走样的启停态（用户在插件中心停用它，扩展
+/// 清单如实显示停用）。其余扩展（用户装的 / 未安装的内置包）用登记簿
+/// 自己的状态。
+fn effective_state(pkg_key: &str, registry_state: String, disabled_plugins: &[String]) -> String {
+    let dir = pkg_key.trim_start_matches("npm:");
+    match crate::agent::plugin::pi_package_plugin_id(dir) {
+        Some(id) if crate::agent::plugin::plugin_installed(id) => {
+            if disabled_plugins.iter().any(|d| d == id) {
+                "disabled".to_string()
+            } else {
+                "active".to_string()
+            }
+        }
+        _ => registry_state,
+    }
+}
+
 /// 全量扩展清单（含 adapters 反查）——已装页「扩展包」tab 与市场已装卡消费。
 pub fn registry_list() -> Result<Vec<ExtensionEntryView>, String> {
     let disabled_now = crate::agent::plugin::load_plugin_config().disabled;
@@ -526,10 +582,10 @@ pub fn registry_list() -> Result<Vec<ExtensionEntryView>, String> {
         };
         out.push(ExtensionEntryView {
             source,
+            state: effective_state(&pkg_key, state, &disabled_now),
             pkg_key,
             display,
             builtin,
-            state,
             replaced_by,
             gui_verdict,
             verdict_note: note,
@@ -554,6 +610,7 @@ pub struct DepView {
 }
 
 pub fn plugin_deps() -> Result<Vec<PluginDepView>, String> {
+    let disabled_plugins = crate::agent::plugin::load_plugin_config().disabled;
     let rows: Vec<(String, String)> = with_conn(|conn| {
         let mut stmt =
             conn.prepare("SELECT plugin_id, pkg_key FROM plugin_adaptations ORDER BY plugin_id")?;
@@ -575,7 +632,11 @@ pub fn plugin_deps() -> Result<Vec<PluginDepView>, String> {
                 })
             })?;
             Ok(rows.next().transpose()?)
-        })?;
+        })?
+        .map(|dep| DepView {
+            state: effective_state(&pkg_key, dep.state, &disabled_plugins),
+            ..dep
+        });
         if let Some(dep) = dep {
             by_plugin.entry(plugin_id).or_default().push(dep);
         } else {
@@ -770,6 +831,17 @@ mod tests {
         .unwrap();
         let cascaded = cascade_disable_adapters("npm:pi-x");
         assert_eq!(cascaded, vec!["session.usage".to_string()]);
+        // v0.9.8 评审修复轮 R1-0：用户装的非内置扩展（不在插件↔包映射里）
+        // 停用，不触碰任何启停闸门。
+        for (gate, _) in crate::agent::plugin::PI_PACKAGE_PLUGIN_MAP {
+            assert!(
+                !crate::agent::plugin::load_plugin_config()
+                    .disabled
+                    .iter()
+                    .any(|x| x == gate),
+                "{gate} 不应被联动停用"
+            );
+        }
         assert!(crate::agent::plugin::load_plugin_config()
             .disabled
             .iter()
@@ -780,29 +852,102 @@ mod tests {
     }
 
     /// 停用/恢复闭环 + 台账视图 + forget。
+    /// v0.9.8 评审修复轮 R1-0：内置 pi 扩展包没有适配件时，停用仍级联其
+    /// **启停闸门**（注册同步的源头）；恢复时精确反启。
     #[test]
     fn disable_active_roundtrip() {
         let guard = crate::agent::manifest::env_test_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", home.path());
         let _tmp = test_db(&guard);
         ensure_schema().unwrap();
         sync_registry_face(&[], &["npm:pi-web-access@0.32.0".to_string()], None).unwrap();
-        // 停用（无适配件场景：级联空）。
+        // 停用（无适配件场景）：级联只含启停闸门。
         let cascaded = set_extension_disabled(
             "npm:pi-web-access@0.32.0",
             "联网搜索",
             "npm:@juicesharp/rpiv-web-tools",
         )
         .unwrap();
-        assert!(cascaded.is_empty());
+        assert_eq!(cascaded, vec!["pi-web-access".to_string()]);
+        assert!(crate::agent::plugin::load_plugin_config()
+            .disabled
+            .iter()
+            .any(|x| x == "pi-web-access"));
         let entries = disabled_entries().unwrap();
         assert_eq!(entries.len(), 1);
-        // 恢复。
-        let (entry, _) = set_extension_active("npm:pi-web-access").unwrap();
+        // 恢复：闸门精确反启。
+        let (entry, restored) = set_extension_active("npm:pi-web-access").unwrap();
         assert_eq!(entry.unwrap().display, "联网搜索");
+        assert_eq!(restored, vec!["pi-web-access".to_string()]);
+        assert!(!crate::agent::plugin::load_plugin_config()
+            .disabled
+            .iter()
+            .any(|x| x == "pi-web-access"));
         assert!(disabled_entries().unwrap().is_empty());
         std::env::remove_var("JISHU_EXTENSIONS_DB");
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// v0.9.8 评审修复轮 R1-0：已安装的内置 pi 扩展包，其生效态与启停闸门
+    /// 同源——用户在插件中心停用它，扩展清单与依赖视图如实显示停用
+    /// （修前清单仍显示启用，两处状态各说各话）。
+    #[test]
+    fn registry_state_follows_gate_for_installed_builtin_package() {
+        let guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        std::env::set_var("JISHU_EXTENSIONS_DB", tmp.path().join("ext.db"));
+        let pi = tmp.path().join("pi.json");
+        std::fs::write(&pi, r#"{"packages": ["npm:pi-lens@4.3.0"]}"#).unwrap();
+        std::env::set_var("JISHU_PI_SETTINGS", &pi);
+        crate::agent::plugin::market::materialize_agent_toml("pi-lens").unwrap();
+        ensure_schema().unwrap();
+        sync_registry_face(&[], &["npm:pi-lens@4.3.0".to_string()], None).unwrap();
+        rebuild_adaptations(&[(
+            "session.usage".to_string(),
+            vec![("npm:pi-lens".to_string(), None)],
+        )])
+        .unwrap();
+        let state_of = || {
+            registry_list()
+                .unwrap()
+                .into_iter()
+                .find(|e| e.pkg_key == "npm:pi-lens")
+                .expect("登记簿在册")
+                .state
+        };
+        let dep_state = || {
+            plugin_deps()
+                .unwrap()
+                .into_iter()
+                .find(|d| d.plugin_id == "session.usage")
+                .expect("依赖视图在册")
+                .deps[0]
+                .state
+                .clone()
+        };
+        assert_eq!(state_of(), "active");
+        assert_eq!(dep_state(), "active");
+
+        // 用户在插件中心停用它。
+        crate::agent::plugin::set_plugin_enabled("pi-lens", false).unwrap();
+        assert_eq!(state_of(), "disabled");
+        assert_eq!(dep_state(), "disabled");
+
+        // 启用回来。
+        crate::agent::plugin::set_plugin_enabled("pi-lens", true).unwrap();
+        assert_eq!(state_of(), "active");
+        assert_eq!(dep_state(), "active");
+
+        std::env::remove_var("JISHU_HUB_HOME");
+        std::env::remove_var("JISHU_PI_SETTINGS");
+        std::env::remove_var("JISHU_EXTENSIONS_DB");
+        drop(guard);
     }
 
     /// 关系重建：全量重算 + deps 视图 + adapted 派生。

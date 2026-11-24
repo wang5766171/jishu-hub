@@ -181,6 +181,30 @@ pub const PI_PACKAGE_PLUGIN_MAP: &[(&str, &str)] = &[
     ("pi-web-access", "pi-web-access"),
 ];
 
+/// v0.9.8 评审修复轮 R1-0：包名 → 其启停闸门插件 id。内置 pi 扩展包同时
+/// 是一个 hub 插件，这个插件的启停态就是「该扩展是否生效」的**源头**——
+/// 注册同步（[`sync_pi_packages_with_plugins`]）据此决定保留还是摘除该包
+/// 的注册。此前「停用并安装」只改了登记簿和注册表、没改这里，下次同步便
+/// 按仍启用把停用的包补了回来。
+pub fn pi_package_plugin_id(package_name: &str) -> Option<&'static str> {
+    PI_PACKAGE_PLUGIN_MAP
+        .iter()
+        .find(|(_, pkg)| *pkg == package_name)
+        .map(|(id, _)| *id)
+}
+
+/// 插件是否已安装（盘面有 manifest）——与注册同步的启用判据同源。
+pub(crate) fn plugin_installed(id: &str) -> bool {
+    super::manifest::manifest_dir()
+        .join(format!("{id}.toml"))
+        .is_file()
+}
+
+/// `id` 是否为内置 pi 扩展包的启停闸门插件。
+pub fn is_pi_package_plugin(id: &str) -> bool {
+    PI_PACKAGE_PLUGIN_MAP.iter().any(|(pid, _)| *pid == id)
+}
+
 /// packages 条目与包名匹配（`npm:<name>` 精确或 `npm:<name>@<ver>` 前缀）。
 fn package_entry_matches(entry: &str, name: &str) -> bool {
     entry == format!("npm:{name}") || entry.starts_with(&format!("npm:{name}@"))
@@ -254,9 +278,7 @@ pub fn sync_pi_packages_with_plugins() {
                 .collect()
         })
         .unwrap_or_default();
-    let disabled = load_plugin_config().disabled;
-    let enabled_packages = pi_package_enabled_states(&super::manifest::manifest_dir(), &disabled);
-    let next = plan_packages_sync(&existing, &enabled_packages);
+    let next = planned_packages(&existing);
     if next == existing {
         return;
     }
@@ -269,6 +291,15 @@ pub fn sync_pi_packages_with_plugins() {
             log::warn!("[plugin] pi settings.json 原子写失败: {e}");
         }
     }
+}
+
+/// 注册同步的**全部决策**（纯读）：按当前插件启停态与盘面算出注册表应有
+/// 的样子。[`sync_pi_packages_with_plugins`] 照此写盘；测试直接调它——
+/// 验证的就是生产同步走的那段逻辑（R1-0：停用的内置扩展不在这里补回）。
+pub(crate) fn planned_packages(existing: &[String]) -> Vec<String> {
+    let disabled = load_plugin_config().disabled;
+    let enabled_packages = pi_package_enabled_states(&super::manifest::manifest_dir(), &disabled);
+    plan_packages_sync(existing, &enabled_packages)
 }
 
 /// MCP 解析器启用态（注入门控，mcp_inject::sync_hub_mcp_entries）：
@@ -538,7 +569,21 @@ pub fn set_plugin_enabled(id: &str, enabled: bool) -> Result<PluginConfig, Strin
         if let Some(value) = composed_manifest_value(id) {
             validate_composed_guards(id, &value)?;
         }
+        // v0.9.8 评审修复轮 R1-0：启用即占工具名——被冲突替代而停用的内置
+        // 扩展，替代者还在时不得启用（两个工具撞名的包同时装载 = 引擎启动
+        // 即退出）。与上方组合守卫同一纪律：启用时复查冲突，fail loud。
+        ensure_not_replaced_by_conflict(id)?;
     }
+    apply_plugin_enabled(id, enabled)
+}
+
+/// 写插件启停态并落盘（入口守卫通过后的共同落点）。
+///
+/// 内置 pi 扩展包的「停用/恢复」也写这里（经登记簿级联，见
+/// `extensions_db::cascade_disable`）——那是决定注册表内容的源头。该场景
+/// 是用户在确认卡上明确选择的冲突处置，不受「默认安装集不可禁用」约束，
+/// 故不经入口守卫；登记簿此时已是停用/启用态，事实与闸门一致。
+pub(crate) fn apply_plugin_enabled(id: &str, enabled: bool) -> Result<PluginConfig, String> {
     let mut config = load_plugin_config();
     if enabled {
         config.disabled.retain(|x| x != id);
@@ -552,6 +597,51 @@ pub fn set_plugin_enabled(id: &str, enabled: bool) -> Result<PluginConfig, Strin
     // 下次会话启动时对齐——验收 6-3 语义）。
     materialize_agent_tools();
     Ok(config)
+}
+
+/// 启用冲突守卫（v0.9.8 评审修复轮 R1-0）：启用一个内置 pi 扩展包插件
+/// 之前，核对它在扩展登记簿里的冲突替代关系。
+///
+/// - 被替代而停用、**替代者仍在 pi 注册表** → 拒绝。启用它 = 让两个工具
+///   撞名的包同时注册，下次引擎启动即退出（全线对话失败）。错误指明解除
+///   办法：卸载替代者（卸载时自动恢复本扩展）。
+/// - 被替代但替代者已不在注册表 → 这段替代关系事实上已解除：清掉登记簿
+///   里的过期关系（回到启用态、级联恢复其适配件），照常启用。
+pub(crate) fn ensure_not_replaced_by_conflict(id: &str) -> Result<(), String> {
+    let Some(package) = PI_PACKAGE_PLUGIN_MAP
+        .iter()
+        .find(|(pid, _)| *pid == id)
+        .map(|(_, pkg)| *pkg)
+    else {
+        return Ok(());
+    };
+    let pkg_key = format!("npm:{package}");
+    let entry = crate::agent::extensions_db::disabled_entry_by_pkg(&pkg_key).map_err(|e| {
+        format!(
+            "无法核对「{}」的冲突替代关系，暂不能启用：{e}",
+            plugin_display_name(id)
+        )
+    })?;
+    let Some(entry) = entry else {
+        return Ok(());
+    };
+    let key_of = |source: &str| {
+        crate::agent::extensions_db::pkg_key_of(source).unwrap_or_else(|| source.to_string())
+    };
+    let replacer_key = key_of(&entry.replaced_by);
+    let replacer_live = crate::agent::jishu_self::pi_registry::registered_packages()
+        .iter()
+        .any(|source| key_of(source) == replacer_key);
+    if replacer_live {
+        let replacer = crate::agent::extensions_db::display_of_pkg(&replacer_key)
+            .unwrap_or_else(|| replacer_key.trim_start_matches("npm:").to_string());
+        return Err(format!(
+            "插件「{}」已被「{replacer}」替代而停用，两者同时启用会因工具重名无法启动。如需启用，请先在扩展生态中卸载「{replacer}」",
+            plugin_display_name(id)
+        ));
+    }
+    crate::agent::extensions_db::set_extension_active(&pkg_key)?;
+    Ok(())
 }
 
 /// id 冲突检查（内置 + agents/ + plugins/ 全量已装）。GUI/CLI 各安装通道
