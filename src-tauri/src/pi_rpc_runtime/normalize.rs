@@ -238,6 +238,38 @@ pub(crate) fn normalize_pi_agent_event(
                     .map(str::to_string),
             }]
         }
+        // v0.9.8 需求7 补充轮：摘要生成的重试（压缩、分支摘要的模型调用失败后
+        // 重试）与主轮重试同一呈现——复用 auto_retry_status，界面显示
+        // 「第 N/M 次重试（原因）」。
+        // - scheduled：进行态（次数 / 上限 / 延迟 / 原因）。
+        // - finished：清除进行态。该事件不带成败，成败由随后的 compaction_end
+        //   呈现；这里 success=false 且不带 final_error——前端只清横幅，不记
+        //   失败、不翻工具卡。
+        "summarization_retry_scheduled" => vec![NormalizedEvent::AutoRetryStatus {
+            active: true,
+            attempt: event.get("attempt").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            max_attempts: event
+                .get("maxAttempts")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+            delay_ms: event.get("delayMs").and_then(|v| v.as_u64()).unwrap_or(0),
+            error_message: event
+                .get("errorMessage")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            success: false,
+            final_error: None,
+        }],
+        "summarization_retry_finished" => vec![NormalizedEvent::AutoRetryStatus {
+            active: false,
+            attempt: 0,
+            max_attempts: 0,
+            delay_ms: 0,
+            error_message: String::new(),
+            success: false,
+            final_error: None,
+        }],
         "compaction_start" | "compaction_end" => {
             let active = event_type == "compaction_start";
             let reason = event

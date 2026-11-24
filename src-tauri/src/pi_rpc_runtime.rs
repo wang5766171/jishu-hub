@@ -47,7 +47,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::ChildStdin;
 use tokio::sync::Mutex as TokioMutex;
 
-use crate::acp_runtime::{tauri_event_emitter, AcpCommand, AcpControl, AcpEventEmit, PromptPayload};
+use crate::acp_runtime::{
+    tauri_event_emitter, AcpCommand, AcpControl, AcpEventEmit, PromptPayload,
+};
 use crate::agent::normalized::{
     interaction_requests_from_tool_call, InteractionDeliveryHint, InteractionOption,
     InteractionOrigin, InteractionTransport, NormalizedEvent, TurnEndReason, UsageStats,
@@ -380,6 +382,18 @@ fn watchdog_phase_on_event(_phase: WatchdogPhase, _event_type: &str) -> Option<W
     None // 调用点据此解除看门狗（见事件处理处）
 }
 
+/// v0.9.8 需求7 补充轮：空闲回收判定——状态 Idle、引擎没有在压缩、且本轮到期
+/// 的正是空闲期限。压缩期间引擎静默（摘要生成可持续数分钟），状态虽是 Idle
+/// 但不是空闲：不回收。
+fn idle_reap_due(
+    is_idle: bool,
+    in_compaction: bool,
+    idle_deadline: tokio::time::Instant,
+    next_deadline: tokio::time::Instant,
+) -> bool {
+    is_idle && !in_compaction && idle_deadline <= next_deadline
+}
+
 /// CancelPending（abort 后）收尾 watchdog——pi 滞留时 agent_settled 永不到
 ///（停止不了的兜底）——超时杀进程终结流。
 const CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -620,7 +634,14 @@ async fn pi_rpc_connection_loop(
     // - cancel_settle_at：abort 进入 CancelPending 后 15s 未 agent_settled
     //   的判定线——杀进程终结（pi 滞留时 turn_end(Aborted) 永不到）。
     let mut turn_watchdog: Option<(WatchdogPhase, tokio::time::Instant)> = None;
+    // v0.9.8 需求7 补充轮：压缩是否进行中以**引擎的** compaction_start /
+    // compaction_end 事件为准（压缩不是回合，期间 state 恒为 Idle）。停止命令
+    // 与空闲回收都读这一个事实：压缩中的停止必须送达引擎（pi 的 abort 含取消
+    // 压缩），压缩中不得按空闲回收进程。
     let mut in_compaction = false;
+    // 最近一次 compaction_end 是否为被取消（引擎事件自带 aborted 字段）。用户
+    // 点停止取消压缩不是失败——compact 响应到达时据此把结果归为「已取消」。
+    let mut compaction_aborted = false;
     let mut cancel_settle_at: Option<tokio::time::Instant> = None;
 
     // 3. Send first prompt. v0.8.0 需求1 A5：resume-fork 形态传 None——不发
@@ -866,12 +887,19 @@ async fn pi_rpc_connection_loop(
                         // 需求1 A3：手动压缩。Pi 压缩期间排队消息、完成后经
                         // compact 响应回填结果（见 stdout 分支）。
                         let mut payload = json!({ "type": "compact" });
+                        let has_instructions = instructions.is_some();
                         if let Some(instr) = instructions {
                             payload["customInstructions"] = json!(instr);
                         }
                         send_pi_command(&stdin_arc, &payload).await?;
                         pending_compact = Some(response);
                         log::info!("Pi RPC compact requested");
+                        devlog(
+                            "info",
+                            "压缩请求已发给引擎（等待引擎的完成、取消或失败）",
+                            &session_id,
+                            json!({ "custom_instructions": has_instructions }),
+                        );
                         false
                     }
                     Some(AcpCommand::SetAutoCompaction {
@@ -961,7 +989,29 @@ async fn pi_rpc_connection_loop(
                                     usage: None,
                                 });
                             }
-                            LoopState::Idle => {}
+                            LoopState::Idle => {
+                                // v0.9.8 需求7 补充轮：Idle 且引擎正在压缩（纯压缩——
+                                // 压缩不是回合，hub 状态就是 Idle）→ 停止必须送达
+                                // 引擎（pi 的 abort 含取消压缩），随后引擎发
+                                // compaction_end(aborted) 收口。此前此分支什么都不
+                                // 做：压缩中点「停止」被丢弃，引擎继续压缩到自然
+                                // 结束。
+                                if in_compaction {
+                                    let _ = send_pi_command(&stdin_arc, &json!({
+                                        "type": "abort"
+                                    }))
+                                    .await;
+                                    log::info!(
+                                        "Pi RPC cancel sent during compaction (session {session_id})"
+                                    );
+                                    devlog(
+                                        "info",
+                                        "停止：上下文压缩进行中，已向引擎发出取消",
+                                        &session_id,
+                                        json!({}),
+                                    );
+                                }
+                            }
                         }
                         false
                     }
@@ -1266,12 +1316,18 @@ async fn pi_rpc_connection_loop(
                                     "compact" => {
                                         // 需求1 A3：压缩完成/失败——回填 IPC（不进
                                         // 通用 error 分支，避免误发 TurnComplete）。
+                                        // v0.9.8 需求7 补充轮：用户点停止取消的压缩
+                                        // 不是失败——按「已取消」正常返回（引擎的
+                                        // compact 响应不带这个区分，取紧邻其前的
+                                        // compaction_end 事件里的 aborted）。
                                         if let Some(tx) = pending_compact.take() {
                                             let result = if success {
                                                 Ok(msg
                                                     .get("data")
                                                     .cloned()
                                                     .unwrap_or(serde_json::Value::Null))
+                                            } else if compaction_aborted {
+                                                Ok(serde_json::json!({ "cancelled": true }))
                                             } else {
                                                 Err(msg
                                                     .get("error")
@@ -1675,9 +1731,38 @@ async fn pi_rpc_connection_loop(
                         // v0.9.6 需求6 F2：任何 pi 事件到达 = pi 活着——刷新回合
                         // 看门狗（按相位重算窗口，不再「到达即解除」）；compaction
                         // 括号事件切换宽窄窗；回合生命周期事件把相位升到 InTurn。
+                        // v0.9.8 需求7 补充轮：两个事件进日志中心作取证锚点——压缩
+                        // 何时开始 / 结束、是否被取消，此前只有引擎事件到达而日志
+                        // 中心无从对表。
                         match event_type {
-                            "compaction_start" => in_compaction = true,
-                            "compaction_end" => in_compaction = false,
+                            "compaction_start" => {
+                                in_compaction = true;
+                                compaction_aborted = false;
+                                devlog(
+                                    "info",
+                                    "上下文压缩开始（引擎事件）",
+                                    &session_id,
+                                    json!({
+                                        "reason": msg.get("reason").and_then(|v| v.as_str()).unwrap_or(""),
+                                    }),
+                                );
+                            }
+                            "compaction_end" => {
+                                in_compaction = false;
+                                compaction_aborted = msg
+                                    .get("aborted")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+                                devlog(
+                                    "info",
+                                    "上下文压缩结束（引擎事件）",
+                                    &session_id,
+                                    json!({
+                                        "aborted": compaction_aborted,
+                                        "failed": msg.get("errorMessage").map(|v| !v.is_null()),
+                                    }),
+                                );
+                            }
                             _ => {}
                         }
                         if let Some((phase, _)) = turn_watchdog {
@@ -1974,7 +2059,22 @@ async fn pi_rpc_connection_loop(
                     flush_buf(&emit, &session_id, &mut buf);
                     last_flush = std::time::Instant::now();
                 }
-                if matches!(state, LoopState::Idle) && idle_deadline <= next_deadline {
+                // v0.9.8 需求7 补充轮：空闲期限到期但引擎在压缩——不是空闲，不回收
+                // （循环下一轮重新起算空闲期限）。
+                if matches!(state, LoopState::Idle)
+                    && idle_deadline <= next_deadline
+                    && in_compaction
+                {
+                    log::info!(
+                        "Pi RPC idle deadline reached while compacting — keeping session {session_id}"
+                    );
+                    false
+                } else if idle_reap_due(
+                    matches!(state, LoopState::Idle),
+                    in_compaction,
+                    idle_deadline,
+                    next_deadline,
+                ) {
                     log::info!(
                         "Pi RPC idle timeout ({}s), shutting down session {}",
                         IDLE_TIMEOUT.as_secs(),
@@ -2773,6 +2873,55 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         ));
     }
 
+    /// v0.9.8 需求7 补充轮 UC-11：引擎的摘要生成重试（压缩期间摘要调用失败后
+    /// 重试）归一为既有的重试状态——界面显示「第 N/M 次重试（原因）」；重试
+    /// 结束只清横幅、不带失败原因（成败由随后的 compaction_end 呈现）。
+    #[test]
+    fn summarization_retry_events_normalize_to_retry_status() {
+        let scheduled = normalize_pi_agent_event(
+            &serde_json::json!({
+                "type": "summarization_retry_scheduled",
+                "attempt": 2, "maxAttempts": 3, "delayMs": 4000,
+                "errorMessage": "529 overloaded"
+            }),
+            None,
+            &mut Vec::new(),
+        );
+        assert!(matches!(
+            scheduled.as_slice(),
+            [NormalizedEvent::AutoRetryStatus {
+                active: true, attempt: 2, max_attempts: 3, delay_ms: 4000,
+                ref error_message, success: false, final_error: None
+            }] if error_message.as_str() == "529 overloaded"
+        ));
+
+        let finished = normalize_pi_agent_event(
+            &serde_json::json!({ "type": "summarization_retry_finished" }),
+            None,
+            &mut Vec::new(),
+        );
+        assert!(matches!(
+            finished.as_slice(),
+            [NormalizedEvent::AutoRetryStatus {
+                active: false,
+                success: false,
+                final_error: None,
+                ..
+            }]
+        ));
+
+        // 重试开始事件不产生界面事件（横幅已在 scheduled 时显示）。
+        assert!(normalize_pi_agent_event(
+            &serde_json::json!({
+                "type": "summarization_retry_attempt_start",
+                "source": "compaction", "reason": "manual"
+            }),
+            None,
+            &mut Vec::new(),
+        )
+        .is_empty());
+    }
+
     use super::*;
 
     #[test]
@@ -3188,6 +3337,30 @@ Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a c
         }
     }
 
+    /// v0.9.8 需求7 补充轮 UC-10：空闲回收判定——引擎在压缩时不回收（压缩期间
+    /// 引擎静默、状态是 Idle，但不是空闲）。
+    #[test]
+    fn idle_reap_skipped_while_compacting() {
+        use super::*;
+        let now = tokio::time::Instant::now();
+        assert!(
+            idle_reap_due(true, false, now, now),
+            "空闲且空闲期限到期 → 回收"
+        );
+        assert!(
+            !idle_reap_due(true, true, now, now),
+            "空闲期限到期但引擎在压缩 → 不回收"
+        );
+        assert!(
+            !idle_reap_due(false, false, now, now),
+            "回合进行中 → 不回收"
+        );
+        assert!(
+            !idle_reap_due(true, false, now + std::time::Duration::from_secs(1), now),
+            "到期的不是空闲期限 → 不回收"
+        );
+    }
+
     /// v0.9.8 需求1（生产事故回归，用例 A1/A2）：陈旧交互提交被拒不退出
     /// 连接循环 + 并行交互各自登记可答。假 pi（node -e）收到 prompt 后发出
     /// 两个 extension_ui_request；测试先提交陈旧 id（应报错且循环存活——
@@ -3447,5 +3620,211 @@ rl.on('line', (line) => {
         control.shutdown().await;
         crate::pending_messages::drop_session("fake-ledger-session");
         crate::pending_messages::drop_session(entry_key);
+    }
+
+    async fn node_available() -> bool {
+        tokio::process::Command::new("node")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    async fn wait_for_event(
+        seen: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        want: &str,
+        what: &str,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if seen.lock().unwrap().iter().any(|s| s == want) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "hub 未收到 {what}：{:?}",
+                seen.lock().unwrap().clone()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// v0.9.8 需求7 补充轮 UC-8/UC-9：假引擎的压缩流程（node -e）。
+    /// - mode = "ok"：收到 compact → 发 compaction_start → 发成功的
+    ///   compaction_end → 回成功响应；
+    /// - mode = "fail"：发带 errorMessage 的 compaction_end → 回错误响应；
+    /// - mode = "cancel"：发 compaction_start 后等 hub 的 abort → 发
+    ///   compaction_end(aborted) → 回错误响应。
+    ///
+    /// cancel = true：hub 收到 compaction_start 后发停止命令。
+    /// 返回（compact 的结果、假引擎收到的全部命令行、hub 归一化后的事件）。
+    async fn run_fake_compaction(
+        mode: &'static str,
+        cancel: bool,
+    ) -> (
+        Result<serde_json::Value, String>,
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        let out_path = std::env::temp_dir().join(format!(
+            "fake_pi_out_{}_compact_{mode}.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&out_path);
+        // 注意：脚本内禁用反斜杠转义（同上）。
+        let script = r#"
+const NL = String.fromCharCode(10);
+const fs = require('fs');
+const rl = require('readline').createInterface({ input: process.stdin });
+const send = (obj) => process.stdout.write(JSON.stringify(obj) + NL);
+const out = process.env.FAKE_PI_OUT;
+const mode = process.env.FAKE_PI_MODE;
+const log = (s) => fs.appendFileSync(out, s + NL);
+let compactId = null;
+rl.on('line', (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.type === 'get_state') {
+    send({ type: 'response', command: 'get_state', success: true, data: { sessionId: 'fake-compact-session', model: { contextWindow: 200000 }, thinkingLevel: 'high', autoCompactionEnabled: true } });
+  } else if (msg.type === 'compact') {
+    log('RECV ' + line);
+    compactId = msg.id;
+    if (mode === 'fail') {
+      send({ type: 'compaction_end', reason: 'manual', result: null, aborted: false, willRetry: false, errorMessage: 'Compaction failed: provider 500' });
+      send({ type: 'response', id: msg.id, command: 'compact', success: false, error: 'Compaction failed: provider 500' });
+      return;
+    }
+    send({ type: 'compaction_start', reason: 'manual' });
+    if (mode === 'ok') {
+      send({ type: 'compaction_end', reason: 'manual', result: { summary: 's', firstKeptEntryId: 'k', tokensBefore: 10, estimatedTokensAfter: 5 }, aborted: false, willRetry: false });
+      send({ type: 'response', id: msg.id, command: 'compact', success: true, data: { summary: 's', firstKeptEntryId: 'k', tokensBefore: 10, estimatedTokensAfter: 5 } });
+    }
+  } else if (msg.type === 'abort') {
+    log('RECV ' + line);
+    if (mode === 'cancel') {
+      send({ type: 'compaction_end', reason: 'manual', result: null, aborted: true, willRetry: false });
+      send({ type: 'response', id: compactId, command: 'compact', success: false, error: 'Compaction cancelled' });
+    }
+  }
+});
+"#;
+        let child = tokio::process::Command::new("node")
+            .arg("-e")
+            .arg(script)
+            .env("FAKE_PI_OUT", out_path.to_string_lossy().to_string())
+            .env("FAKE_PI_MODE", mode)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn fake pi");
+
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_clone = seen.clone();
+        let emit: crate::acp_runtime::AcpEventEmit = std::sync::Arc::new(
+            move |events: &[crate::agent::normalized::NormalizedEvent], _sid: &str| {
+                let mut guard = seen_clone.lock().unwrap();
+                for event in events {
+                    let tag = match event {
+                        crate::agent::normalized::NormalizedEvent::PhaseDivider {
+                            title, ..
+                        } => {
+                            format!("divider:{title}")
+                        }
+                        crate::agent::normalized::NormalizedEvent::CompactionStatus {
+                            active,
+                            ..
+                        } => format!("status:{active}"),
+                        crate::agent::normalized::NormalizedEvent::Error { message, .. } => {
+                            format!("error:{message}")
+                        }
+                        _ => continue,
+                    };
+                    guard.push(tag);
+                }
+            },
+        );
+        let control = super::spawn_pi_rpc_session_inner(
+            emit,
+            super::noop_dev_log_emitter(),
+            "jishu-self".to_string(),
+            format!("compact-{mode}-test"),
+            child,
+            None,
+            None,
+            None,
+            None,
+            || {},
+            |_sid: &str| {},
+        );
+        let control_for_compact = control.clone();
+        let compact_task = tokio::spawn(async move { control_for_compact.compact(None).await });
+
+        if cancel {
+            wait_for_event(&seen, "status:true", "compaction_start").await;
+            control.send_cancel().await;
+        }
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), compact_task)
+            .await
+            .expect("compact 未在 10 秒内返回（停止没有送达引擎时即卡在这里）")
+            .expect("compact 任务异常退出");
+        let engine_in = std::fs::read_to_string(&out_path).unwrap_or_default();
+        control.shutdown().await;
+        let _ = std::fs::remove_file(&out_path);
+        (result, engine_in, seen)
+    }
+
+    /// v0.9.8 需求7 补充轮 UC-8 + UC-9（取消）：纯压缩期间（hub 状态是 Idle）
+    /// 点停止 → hub 把 abort 送给引擎；引擎回 compaction_end(aborted) 后，compact
+    /// 以「已取消」正常返回。
+    /// 修前：Idle 分支丢弃停止命令——引擎收不到 abort，compact 永不返回。
+    #[tokio::test]
+    async fn cancel_during_compaction_reaches_engine_and_settles_as_cancelled() {
+        if !node_available().await {
+            eprintln!("node 不可用，跳过假 pi 压缩回归测试");
+            return;
+        }
+        let (result, engine_in, seen) = run_fake_compaction("cancel", true).await;
+        assert!(
+            engine_in
+                .lines()
+                .any(|l| l.starts_with("RECV ") && l.contains(r#""type":"abort""#)),
+            "引擎应收到停止命令：{engine_in}"
+        );
+        let result = result.expect("用户取消的压缩不是失败");
+        assert_eq!(result, serde_json::json!({ "cancelled": true }));
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            seen.contains(&"divider:上下文压缩已取消".to_string()),
+            "{seen:?}"
+        );
+    }
+
+    /// v0.9.8 需求7 补充轮 UC-9（成功 / 失败）：结果口径不变——成功返回引擎的
+    /// 结果对象，失败返回错误消息（此时引擎的 compaction_end 未被中止）。
+    #[tokio::test]
+    async fn compact_success_and_failure_keep_their_outcomes() {
+        if !node_available().await {
+            eprintln!("node 不可用，跳过假 pi 压缩回归测试");
+            return;
+        }
+        let (result, _, seen) = run_fake_compaction("ok", false).await;
+        assert_eq!(result.expect("成功")["summary"], serde_json::json!("s"));
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            seen.contains(&"divider:上下文已压缩".to_string()),
+            "{seen:?}"
+        );
+
+        let (result, _, seen) = run_fake_compaction("fail", false).await;
+        let err = result.expect_err("失败的压缩返回错误");
+        assert!(err.contains("provider 500"), "{err}");
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            seen.contains(&"divider:上下文压缩失败".to_string()),
+            "{seen:?}"
+        );
     }
 }

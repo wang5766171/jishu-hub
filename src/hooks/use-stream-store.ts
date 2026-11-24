@@ -119,6 +119,10 @@ export interface SessionStreamState {
   /** v0.9.1 需求14：重试耗尽的最终失败（end success=false + finalError）——
    * 保留至下一轮开始（emptyState 重置），页面显性展示最终失败原因。 */
   retryFailed: { attempt: number; finalError: string } | null;
+  /** v0.9.8 需求7 补充轮：压缩开始时刻（毫秒时间戳）——「上下文压缩中…」分隔
+   *  线到达时记下，终态标题（已压缩/已取消/失败）到达时清零；界面据此显示
+   *  已用时间。不在压缩中为 null。 */
+  compactionStartedAt: number | null;
   /** v0.9.5 需求2 测试期修复（会话 01a0ed19 实证）：回合令牌——每次 start()
    *  铸造新值（模块级递增），push 逐字段重建时透传。停止幂等的判别依据：
    *  abortLocalCommitRef 记录「已本地提交的回合令牌」，同令牌（同回合）
@@ -154,6 +158,7 @@ function emptyState(
     interactionSplits: [],
     autoRetry: null,
     retryFailed: null,
+    compactionStartedAt: null,
     turnToken: nextTurnToken++,
   };
 }
@@ -324,7 +329,7 @@ class StreamStore {
     const key = this.canonical(sid);
     const prev = this.sessions.get(key) ?? emptyState(key, null);
 
-    let { content, text, thinking, error, tools, resolvedId, steps, steerSplits, steerTexts, interactionSplits, autoRetry, retryFailed } = prev;
+    let { content, text, thinking, error, tools, resolvedId, steps, steerSplits, steerTexts, interactionSplits, autoRetry, retryFailed, compactionStartedAt } = prev;
     let { hasReceivedEvent: hasEvent, sessionResolved } = prev;
     const pendingToolIds = prev.pendingToolIds;
     const { pendingUserMessage, abortKey, isStreaming, turnToken } = prev;
@@ -528,6 +533,21 @@ class StreamStore {
             break;
           }
         }
+        // v0.9.8 需求7 补充轮：压缩用时——进行态标题到达时起算（同一次压缩的
+        // 后续进行态标题沿用首次时刻；终态之后再来进行态 = 新的一次压缩，重新
+        // 起算），终态标题到达时清零。
+        const terminal = COMPACTION_TERMINAL_TITLES.has(data.title ?? "");
+        if (terminal) {
+          compactionStartedAt = null;
+        } else {
+          const prevBlock = compactionIdx >= 0 ? content[compactionIdx] : null;
+          const continuesRunning =
+            prevBlock?.type === "phase_divider" && prevBlock.title !== undefined
+            && !COMPACTION_TERMINAL_TITLES.has(prevBlock.title);
+          if (!continuesRunning || compactionStartedAt === null) {
+            compactionStartedAt = Date.now();
+          }
+        }
         if (compactionIdx >= 0) {
           const next = [...content];
           next[compactionIdx] = { type: "phase_divider" as const, phase: data.phase, title: data.title };
@@ -600,6 +620,7 @@ class StreamStore {
       interactionSplits,
       autoRetry,
       retryFailed,
+      compactionStartedAt,
       turnToken,
     });
     this.scheduleFlush();

@@ -1011,6 +1011,9 @@ fn agent_supports_compact(app: &AppHandle, agent_id: &str) -> Result<bool, Strin
 /// Manually compact the session context (v0.7.4 需求1 A3). Capability-gated
 /// (CONTEXT_COMPACT); resolves when compaction finishes.
 ///
+/// 返回口径（v0.9.8 需求7 补充轮）：成功 = 引擎的结果对象；被用户取消 =
+/// `{"cancelled": true}`（正常返回，不是失败）；失败 = 错误消息。
+///
 /// v0.9.6 需求2：历史会话（无活跃进程：重启后/闲置回收后）不再报
 /// "No active ACP session found"——先静默拉起仅 resume 的进程（与 fork
 /// 同款兜底，「先连接会话再压缩」），连接完成后再压缩。
@@ -1042,15 +1045,11 @@ pub async fn compact_agent_session(
     if !agent_supports_compact(&app, &agent_id)? {
         return Err("Context compaction is not supported by this agent".to_string());
     }
-    // v0.9.6 需求2：大上下文压缩可达 2 分钟+（summarize 长调用），超时上限
-    // 放宽到 180s（fork 的 45s 不够用）。超时只是 IPC 放弃等待——压缩在
-    // 智能体侧继续，compaction_end 事件仍走事件链路刷新 UI。
-    tokio::time::timeout(
-        std::time::Duration::from_secs(180),
-        acp.compact(instructions),
-    )
-    .await
-    .map_err(|_| "压缩超时（3 分钟无完成回执）——压缩可能仍在后台进行，请稍后查看会话".to_string())?
+    // v0.9.8 需求7 补充轮：不再设时限（v0.9.6 需求2 曾设 180 秒）。压缩何时
+    // 结束的事实源头是智能体——它的 compact 响应只在成功、被取消或失败时
+    // 到达。写死上限会让界面在引擎仍在压缩时报「压缩失败」并放开「压缩中」
+    // 状态（实测 80 万 token 级上下文叠加服务端过载，压缩超过 3 分钟）。
+    acp.compact(instructions).await
 }
 
 /// Fork the live session at its current end (v0.8.0 需求1 A5). The Pi RPC

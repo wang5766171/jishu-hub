@@ -12,6 +12,7 @@ import type { MutableRefObject, Dispatch, SetStateAction } from "react";
 import type { TFunction } from "i18next";
 import type { AgentEventPayload, Session } from "@/types";
 import { streamStore } from "@/hooks/use-stream-store";
+import { invokeCommand } from "@/hooks/use-invoke";
 import { startAgentEventPipeline } from "./event-pipeline";
 import { getCachedSessionMessages, setCachedSessionMessages } from "./session-cache";
 
@@ -228,5 +229,78 @@ describe("v0.9.4 需求13：手动压缩流终结", () => {
     // 进行中 divider 仍正常起流（既有行为不回归）
     emit(dividerChunk("上下文压缩中…"));
     expect(streamStore.getState("s1")).not.toBeNull();
+  });
+
+  // ── v0.9.8 需求7 补充轮：压缩结束 = 引擎空闲 → 自动发出暂存消息 ──
+  const STAGED_CTX = { projectPath: "D:/x", agentId: "jishu-self" };
+  const compactionStatus = (active: boolean) => ({
+    agent_id: "jishu-self",
+    session_id: "s1",
+    data: { kind: "compaction_status", active, reason: "manual" },
+  });
+
+  it("UC-13 压缩结束：暂存区有两条 → 自动发出队首一条，其余放回暂存区", async () => {
+    const staged = [
+      { id: "st-1", content: "继续", files: [], context: STAGED_CTX },
+      { id: "st-2", content: "再看一下接口设计", files: [], context: STAGED_CTX },
+    ];
+    const claimAll = vi.fn(() => staged);
+    const restore = vi.fn();
+    deps.stagedApiRef.current = { claimAll, restore, moveKey: vi.fn() } as never;
+
+    emit(dividerChunk("上下文压缩中…"));
+    emit(dividerChunk("上下文已压缩"));
+    emit(compactionStatus(false));
+
+    await vi.waitFor(() => {
+      expect(invokeCommand).toHaveBeenCalledWith(
+        "send_message",
+        expect.objectContaining({ sessionId: "s1", message: "继续", agentId: "jishu-self" }),
+      );
+    });
+    expect(restore).toHaveBeenCalledWith("s1", [staged[1]]);
+    // 压缩流已终结；为这条消息的回复起了新流（等引擎回话）
+    expect(streamStore.getState("s1")?.isStreaming).toBe(true);
+    expect(streamStore.getState("s1")?.pendingUserMessage).toBeNull();
+  });
+
+  it("UC-14 压缩进行中不领取暂存（开始、进行态分隔线替换都不领取）", () => {
+    const claimAll = vi.fn(() => []);
+    deps.stagedApiRef.current = { claimAll, restore: vi.fn(), moveKey: vi.fn() } as never;
+
+    emit(dividerChunk("上下文压缩中…"));
+    emit(compactionStatus(true));
+    emit(dividerChunk("上下文压缩中…"));
+    expect(claimAll).not.toHaveBeenCalled();
+    expect(invokeCommand).not.toHaveBeenCalledWith("send_message", expect.anything());
+  });
+
+  it("UC-14 压缩被用户取消同样算引擎空闲：暂存消息照常发出", async () => {
+    const claimAll = vi.fn(() => [{ id: "st-1", content: "继续", files: [], context: STAGED_CTX }]);
+    deps.stagedApiRef.current = { claimAll, restore: vi.fn(), moveKey: vi.fn() } as never;
+
+    emit(dividerChunk("上下文压缩中…"));
+    emit(dividerChunk("上下文压缩已取消"));
+    emit(compactionStatus(false));
+
+    await vi.waitFor(() => {
+      expect(invokeCommand).toHaveBeenCalledWith(
+        "send_message",
+        expect.objectContaining({ sessionId: "s1", message: "继续" }),
+      );
+    });
+  });
+
+  it("UC-14 混合流（压缩期间用户已发出消息）：压缩结束不领取暂存——留给回合结束", () => {
+    const claimAll = vi.fn(() => []);
+    deps.stagedApiRef.current = { claimAll, restore: vi.fn(), moveKey: vi.fn() } as never;
+
+    streamStore.start("s1", "用户问题");
+    emit(dividerChunk("上下文压缩中…"));
+    emit(dividerChunk("上下文已压缩"));
+    emit({ ...compactionStatus(false), data: { kind: "compaction_status", active: false, reason: "threshold" } });
+
+    expect(claimAll).not.toHaveBeenCalled();
+    expect(streamStore.getState("s1")?.pendingUserMessage).toBe("用户问题");
   });
 });

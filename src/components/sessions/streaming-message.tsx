@@ -19,6 +19,7 @@ import { InteractionBlockWithRenderers } from "./interaction-card";
 import { devLog } from "@/lib/dev-log";
 import { dedupeInteractionItems, isInteractionToolName, isInteractionToolUseBlock } from "@/lib/interaction-tools";
 import { PhaseDivider, ThinkingBlock } from "./conversation-content";
+import { CompactionElapsed } from "./compaction-elapsed";
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS_COMPLETE = [rehypeHighlight];
@@ -404,13 +405,20 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
                             );
                           }
                           if (item.block.type === "phase_divider") {
+                            // v0.9.8 需求7 补充轮：压缩进行中，在分隔线下方显示已用时间。
+                            const elapsed =
+                              item.block.phase === "compaction" && state?.compactionStartedAt != null
+                                ? state.compactionStartedAt
+                                : null;
                             // v0.9.3 需求10 B1：行级咨询插件接管（未命中回退内置）。
                             return (
-                              <PhaseDividerWithRenderers
-                                key={`divider-${i}-${idx}`}
-                                phase={item.block.phase}
-                                title={item.block.title}
-                              />
+                              <Fragment key={`divider-${i}-${idx}`}>
+                                <PhaseDividerWithRenderers
+                                  phase={item.block.phase}
+                                  title={item.block.title}
+                                />
+                                {elapsed !== null && <CompactionElapsed startedAt={elapsed} />}
+                              </Fragment>
                             );
                           }
                           return null;

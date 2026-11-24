@@ -99,6 +99,109 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
   const toolProgressThrottle = new Map<string, number>();
   // v0.9.4 需求12：thinking 聚合观测表（think-<cid> → start/last）
   const thinkingAggRef = new Map<string, { start: number; last: number }>();
+  // v0.9.8 需求7 补充轮：引擎空闲的统一出口——回合结束（turn_complete）与
+  // 上下文压缩结束（纯压缩流终结）都走到这里：把这个对话暂存区里的下一条
+  // 消息发出去。此前只有回合结束会发；压缩不发 turn_complete，压缩期间
+  // 暂存的消息就一直留在待发送区。
+  //
+  // Route 2 (orthogonal to manual guide): when the turn ends, auto-send
+  // any messages the user staged but did NOT manually guide. claimAll
+  // (finalKey) synchronously marks them sent for THIS session, so a
+  // manual click racing this moment (or a re-click) is blocked by the
+  // shared claimed-id set — each staged guide is delivered exactly once.
+  // Gated on !followUpExpected so it never competes with a manual
+  // steer's follow-up turn (that turn fires its own turn_complete,
+  // which re-evaluates).
+  // （这个 gating 在回合结束的调用点；压缩结束没有手动引导的后续回合，直接调。）
+  //
+  // 需求11 #2（2026-11-11 用户实测回归）：**逐条发送**——回合完成只发
+  // 队首一条，剩余原序放回待发送区（restore un-claim），下一回合的
+  // turn_complete 再发下一条；多条不再 join("\n") 合并一口气发出。
+  // 顺序即待发送区顺序（含 #3 拖拽调序）。
+  //
+  // Targets the session whose turn just completed (finalKey), NOT the
+  // currently-viewed session. Staging state is partitioned by session
+  // (stagedMessagesBySession), so a background session's turn_complete
+  // claims only its own staged guides — never another conversation's.
+  // This fixes the case where the user staged a guide in session A,
+  // switched to B, and A's completion (while viewing B) must still send
+  // A's staged guide. Claiming is gated only on deps.stagedApiRef existing
+  // (the ChatInput must be mounted) and !followUpExpected; the viewed
+  // session is irrelevant.
+  //
+  // v0.9.8 需求21：按**对话身份**领取，不靠键碰巧一致。暂存区按「界面当时的会话键」
+  // 分区，同一个对话的身份会从临时键换成真实 id——此前只按 finalKey 领：新对话一建立
+  // 就点停止再重发时，消息暂存在临时键下，而回合结束事件已带着真实 id 到达，两个键
+  // 对不上，领取落空，这条消息就永远留在待发送区不被投递。现在把这个对话的全部
+  // 身份键（解析后的键、事件携带的键、临时键）下的一次性都取出来，仍按入队顺序
+  // 逐条发送。
+  const deliverNextStagedGuide = (cid: string, finalKey: string, trigger: "turn_complete" | "compaction_end"): void => {
+    if (!deps.stagedApiRef.current) return;
+    const identityKeys = streamStore.identityKeys(finalKey);
+    if (cid && !identityKeys.includes(cid)) identityKeys.push(cid);
+    let claimed: ReturnType<StagedGuideApi["claimAll"]> = [];
+    for (const key of identityKeys) {
+      claimed = claimed.concat(deps.stagedApiRef.current.claimAll(key));
+    }
+    if (claimed.length > 0) {
+      devLog("pipeline", "自动发送暂存消息（引擎空闲）", {
+        session: finalKey,
+        trigger,
+        claimed: claimed.length,
+      });
+      const first = claimed[0];
+      const rest = claimed.slice(1);
+      if (rest.length > 0) {
+        deps.stagedApiRef.current.restore(finalKey, rest);
+      }
+      // v0.9.4 需求8 补充：暂存附件标记行随自动发送附加（与手动引导
+      // 同通道——文件落盘 + Read 引用）。逐条化后只带本条自己的附件。
+      let fileBlock = "";
+      if (first.fileLines && first.fileLines.length > 0) {
+        fileBlock = "\n" + "\n" + "<!--JISHU_HUB_IMAGES_BEGIN-->" + "\n" + "[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]" + "\n" + first.fileLines.join("\n") + "\n" + "<!--JISHU_HUB_IMAGES_END-->";
+      }
+      const merged = first.content + fileBlock;
+      // Start WITHOUT pendingUserMessage: send_message delivers the
+      // message to the backend (JSONL), so the reply's turn_complete
+      // must NOT re-commit it (would duplicate). Commit it into the
+      // cache ourselves here, exactly once.
+      streamStore.start(finalKey, null);
+      if (cid !== finalKey) streamStore.alias(finalKey, cid);
+      deps.pendingReplyStartedAtRef.current.set(finalKey, Date.now());
+      const autoBase =
+        getCachedSessionMessages(finalKey)
+        ?? getCachedSessionMessages(cid)
+        ?? [];
+      const autoUpdated = [...autoBase, {
+        role: "user" as const,
+        content: [{ type: "text" as const, text: merged }],
+        timestamp: Date.now(),
+      }];
+      setCachedSessionMessages(finalKey, autoUpdated);
+      if (cid !== finalKey) setCachedSessionMessages(cid, autoUpdated);
+      if (deps.selectedSessionRef.current === cid || deps.selectedSessionRef.current === finalKey) {
+        deps.setSessionMessages(autoUpdated);
+      }
+      // v0.9.8 需求3：按暂存条目自带的会话发送上下文投递（入队时
+      // 捕获——面单写地址；跟会话走，与界面停留项目无关）。
+      const restore = deps.stagedApiRef.current.restore.bind(deps.stagedApiRef.current);
+      void (async () => {
+        try {
+          await invokeCommand("send_message", {
+            agentId: first.context.agentId,
+            projectPath: first.context.projectPath,
+            sessionId: finalKey,
+            message: merged,
+          });
+        } catch (err) {
+          console.error("Auto-send of staged guides failed:", err);
+          streamStore.drop(finalKey);
+          restore(finalKey, [first, ...rest]);
+        }
+      })();
+    }
+  };
+
   listen<AgentEventPayload>("agent-event", (event) => {
       const payload = event.payload;
       const chunks = Array.isArray(payload) ? payload : [payload];
@@ -291,6 +394,8 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               }
               streamStore.drop(finalKey);
               devLog("pipeline", "压缩结束：终结纯压缩流（divider 已提交缓存）", { session: finalKey });
+              // v0.9.8 需求7 补充轮：压缩结束 = 引擎空闲 → 发出压缩期间暂存的消息。
+              deliverNextStagedGuide(cid, finalKey, "compaction_end");
             }
           }
           continue;
@@ -1049,96 +1154,10 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             })();
           }
 
-          // Route 2 (orthogonal to manual guide): when the turn ends, auto-send
-          // any messages the user staged but did NOT manually guide. claimAll
-          // (finalKey) synchronously marks them sent for THIS session, so a
-          // manual click racing this moment (or a re-click) is blocked by the
-          // shared claimed-id set — each staged guide is delivered exactly once.
-          // Gated on !followUpExpected so it never competes with a manual
-          // steer's follow-up turn (that turn fires its own turn_complete,
-          // which re-evaluates).
-          //
-          // 需求11 #2（2026-11-11 用户实测回归）：**逐条发送**——回合完成只发
-          // 队首一条，剩余原序放回待发送区（restore un-claim），下一回合的
-          // turn_complete 再发下一条；多条不再 join("\n") 合并一口气发出。
-          // 顺序即待发送区顺序（含 #3 拖拽调序）。
-          //
-          // Targets the session whose turn just completed (finalKey), NOT the
-          // currently-viewed session. Staging state is partitioned by session
-          // (stagedMessagesBySession), so a background session's turn_complete
-          // claims only its own staged guides — never another conversation's.
-          // This fixes the case where the user staged a guide in session A,
-          // switched to B, and A's completion (while viewing B) must still send
-          // A's staged guide. Claiming is gated only on deps.stagedApiRef existing
-          // (the ChatInput must be mounted) and !followUpExpected; the viewed
-          // session is irrelevant.
-          //
-          // v0.9.8 需求21：按**对话身份**领取，不靠键碰巧一致。暂存区按「界面当时的会话键」
-          // 分区，同一个对话的身份会从临时键换成真实 id——此前只按 finalKey 领：新对话一建立
-          // 就点停止再重发时，消息暂存在临时键下，而回合结束事件已带着真实 id 到达，两个键
-          // 对不上，领取落空，这条消息就永远留在待发送区不被投递。现在把这个对话的全部
-          // 身份键（解析后的键、事件携带的键、临时键）下的一次性都取出来，仍按入队顺序
-          // 逐条发送。
-          if (!followUpExpected && deps.stagedApiRef.current) {
-            const identityKeys = streamStore.identityKeys(finalKey);
-            if (cid && !identityKeys.includes(cid)) identityKeys.push(cid);
-            let claimed: ReturnType<StagedGuideApi["claimAll"]> = [];
-            for (const key of identityKeys) {
-              claimed = claimed.concat(deps.stagedApiRef.current.claimAll(key));
-            }
-            if (claimed.length > 0) {
-              const first = claimed[0];
-              const rest = claimed.slice(1);
-              if (rest.length > 0) {
-                deps.stagedApiRef.current.restore(finalKey, rest);
-              }
-              // v0.9.4 需求8 补充：暂存附件标记行随自动发送附加（与手动引导
-              // 同通道——文件落盘 + Read 引用）。逐条化后只带本条自己的附件。
-              let fileBlock = "";
-              if (first.fileLines && first.fileLines.length > 0) {
-                fileBlock = "\n" + "\n" + "<!--JISHU_HUB_IMAGES_BEGIN-->" + "\n" + "[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]" + "\n" + first.fileLines.join("\n") + "\n" + "<!--JISHU_HUB_IMAGES_END-->";
-              }
-              const merged = first.content + fileBlock;
-              // Start WITHOUT pendingUserMessage: send_message delivers the
-              // message to the backend (JSONL), so the reply's turn_complete
-              // must NOT re-commit it (would duplicate). Commit it into the
-              // cache ourselves here, exactly once.
-              streamStore.start(finalKey, null);
-              if (cid !== finalKey) streamStore.alias(finalKey, cid);
-              deps.pendingReplyStartedAtRef.current.set(finalKey, Date.now());
-              const autoBase =
-                getCachedSessionMessages(finalKey)
-                ?? getCachedSessionMessages(cid)
-                ?? [];
-              const autoUpdated = [...autoBase, {
-                role: "user" as const,
-                content: [{ type: "text" as const, text: merged }],
-                timestamp: Date.now(),
-              }];
-              setCachedSessionMessages(finalKey, autoUpdated);
-              if (cid !== finalKey) setCachedSessionMessages(cid, autoUpdated);
-              if (deps.selectedSessionRef.current === cid || deps.selectedSessionRef.current === finalKey) {
-                deps.setSessionMessages(autoUpdated);
-              }
-              // v0.9.8 需求3：按暂存条目自带的会话发送上下文投递（入队时
-              // 捕获——面单写地址；跟会话走，与界面停留项目无关）。
-              const restore = deps.stagedApiRef.current.restore.bind(deps.stagedApiRef.current);
-              void (async () => {
-                try {
-                  await invokeCommand("send_message", {
-                    agentId: first.context.agentId,
-                    projectPath: first.context.projectPath,
-                    sessionId: finalKey,
-                    message: merged,
-                  });
-                } catch (err) {
-                  console.error("Auto-send of staged guides failed:", err);
-                  streamStore.drop(finalKey);
-                  restore(finalKey, [first, ...rest]);
-                }
-              })();
-            }
-          }
+          // Route 2：回合结束自动发送暂存消息（见 deliverNextStagedGuide；
+          // 与手动引导正交——手动引导的后续回合自己会触发 turn_complete
+          // 再评估，故 followUpExpected 时不在这里发）。
+          if (!followUpExpected) deliverNextStagedGuide(cid, finalKey, "turn_complete");
 
           if (isNewSessionStream) {
             deps.newSessionStreamIdsRef.current.delete(cid);
