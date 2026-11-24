@@ -313,7 +313,14 @@ export function PluginMarketPanel({
   // 入门套装横滑）。执行器抽离共享 hook（五修：取消令牌/重试保历史/失败
   // 原因/安全行/类型名）。
   const bundleRunner = useEquipmentRunner();
-  const [recommendZone, setRecommendZone] = useState<{ note: string; items: CatalogEntry[] } | null>(null);
+  // v0.9.8 评审修复轮 R1-6：byWorkspace/basis 记录推荐来源（项目特征命中）
+  // 与原始特征文字——弹层描述据此选整句，不把「项目特征：…」套进别的句式。
+  const [recommendZone, setRecommendZone] = useState<{
+    note: string;
+    byWorkspace: boolean;
+    basis: string;
+    items: CatalogEntry[];
+  } | null>(null);
   useEffect(() => {
     if (source !== "curated") return;
     let cancelled = false;
@@ -361,8 +368,12 @@ export function PluginMarketPanel({
           hits.length >= 2
             ? {
                 note: wsPicks.length >= 2
-                  ? `${t("market.recommendByProject", { defaultValue: "项目特征：{basis}", basis: (wsScene?.basis ?? []).slice(0, 2).join(" / ") })}`
+                  ? t("market.recommendByProject", { defaultValue: "项目特征：{{basis}}", basis: (wsScene?.basis ?? []).slice(0, 2).join(" / ") })
                   : profile?.keywords.slice(0, 3).join(" / ") ?? "",
+                // v0.9.8 评审修复轮 R1-6：推荐来源显式区分——项目特征与最近
+                // 任务各用各的整句，不再把「项目特征：…」套进「根据最近任务」。
+                byWorkspace: wsPicks.length >= 2,
+                basis: (wsScene?.basis ?? []).slice(0, 2).join(" / "),
                 items: hits,
               }
             : null,
@@ -897,9 +908,11 @@ export function PluginMarketPanel({
                   id: "bundle-dynamic",
                   scene: "custom",
                   title: t("market.recommendForYou", "为你推荐"),
-                  description: recommendZone.note
-                    ? t("market.recommendByTask", { defaultValue: "根据最近任务：{{note}}", note: recommendZone.note })
-                    : t("market.recommendHint", "按最近任务挑选的组合"),
+                  description: !recommendZone.note
+                    ? t("market.recommendHint", "按最近任务挑选的组合")
+                    : recommendZone.byWorkspace
+                      ? t("market.recommendByProjectTask", { defaultValue: "根据项目特征：{{basis}}", basis: recommendZone.basis })
+                      : t("market.recommendByTask", { defaultValue: "根据最近任务：{{note}}", note: recommendZone.note }),
                   items: recommendZone.items.map((e) => ({ ref: e.ref, required: false })),
                   dynamicNote: recommendZone.note,
                 });
@@ -1465,7 +1478,7 @@ export function PluginMarketPanel({
                                       title: dispName,
                                       kind: "extension",
                                       description:
-                                        t("market.guideExtensionDesc", "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件") +
+                                        t("market.guideExtensionDesc", "具备后台能力，装后经 GUI 适配生成界面插件") +
                                         (stopped ? `\n${t("market.conflictStopped", { defaultValue: "已停用：{{items}}（卸载本扩展时自动恢复）", items: stopped })}` : ""),
                                       packageName: source,
                                       guiAdaptable: !gs.providedBy && !gs.noneeded,
@@ -1477,7 +1490,7 @@ export function PluginMarketPanel({
                                     setGuideCard({
                                       title: dispName,
                                       kind: "extension",
-                                      description: t("market.guideExtensionDesc", "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件"),
+                                      description: t("market.guideExtensionDesc", "具备后台能力，装后经 GUI 适配生成界面插件"),
                                       packageName: source,
                                       guiAdaptable: !gs.providedBy && !gs.noneeded,
                                       providedBy: gs.providedBy,
@@ -1593,7 +1606,7 @@ export function PluginMarketPanel({
                               setGuideCard({
                                 title: pkg.name,
                                 kind: "extension",
-                                description: pkg.description || t("market.guideExtensionDesc", "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件"),
+                                description: pkg.description || t("market.guideExtensionDesc", "具备后台能力，装后经 GUI 适配生成界面插件"),
                                 packageName: "npm:" + pkg.name + "@" + pkg.version,
                                 guiAdaptable: !gs.providedBy && !gs.noneeded,
                                 providedBy: gs.providedBy,
@@ -1842,6 +1855,11 @@ export function PluginMarketPanel({
           // 进行中单项任其完成，不留半装态）。
           if (!o && !bundleRunner.running) {
             setBundleOpen(null);
+            // v0.9.8 评审修复轮 R1-7：运行结果属于弹层的**这一次打开**——关闭
+            // 即结束本轮（结果清空）。此前结果一直留着：装完一个套装关掉
+            // 再打开任何套装，页脚停在上次的汇总、没有安装入口，「重试失败
+            // 项」重试的还是上一个套装的东西。
+            bundleRunner.reset();
           }
         }}
       >

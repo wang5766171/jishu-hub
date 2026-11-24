@@ -41,22 +41,33 @@ export interface RunnerResult {
   retryFailed: () => void;
   /** 完成回调（全量落定：成功/失败汇总后触发一次）。 */
   setOnDone: (cb: (() => void) | null) => void;
+  /** v0.9.8 评审修复轮 R1-7：结束本次运行——结果清空，回到未开始态。一次
+   *  运行的结果只属于消费方的一次使用（如弹层的一次打开）；关闭时调用，
+   *  下次打开是全新一轮。 */
+  reset: () => void;
 }
 
 export function useEquipmentRunner(): RunnerResult {
   const [statuses, setStatuses] = useState<RunStatus[]>([]);
   const [running, setRunning] = useState(false);
-  // 取消令牌：自增即作废旧运行（弹层关闭/显式取消）。
+  // 取消令牌：自增即作废旧运行（循环不再发起后续项；进行中单项的结果
+  // 仍落回 statuses）。
   const runToken = useRef(0);
+  // 运行代际：reset 时自增——此前启动的运行**不得再写入任何状态**（与
+  // 取消令牌分开：取消保留进行中项的结果，重置丢弃旧运行的一切）。
+  const generation = useRef(0);
   const itemsRef = useRef<RunnerItem[]>([]);
   const onDoneRef = useRef<(() => void) | null>(null);
 
   const execute = useCallback(async (items: RunnerItem[], base: RunStatus[]) => {
     const token = ++runToken.current;
+    const generationAtStart = generation.current;
     itemsRef.current = items;
     // merge 语义：base 是既有历史（重试时=成功 ✓ 保留），新 ref 从 pending 起。
     let current = base;
     const apply = (fn: (rows: RunStatus[]) => RunStatus[]) => {
+      // 已被 reset：这次运行的结果不再属于任何一次使用，丢弃。
+      if (generation.current !== generationAtStart) return;
       current = fn(current);
       setStatuses(current);
     };
@@ -119,9 +130,16 @@ export function useEquipmentRunner(): RunnerResult {
     onDoneRef.current = cb;
   }, []);
 
+  const reset = useCallback(() => {
+    generation.current += 1;
+    runToken.current += 1;
+    setRunning(false);
+    setStatuses([]);
+  }, []);
+
   const hasSkill = statuses.some((s) => s.ref.startsWith("skillhub:"));
 
-  return { statuses, running, hasSkill, run, cancel, retryFailed, setOnDone };
+  return { statuses, running, hasSkill, run, cancel, retryFailed, setOnDone, reset };
 }
 
 /** ⑤：类型名精确映射（curated kind → 用户语言；skillhub/pi 前缀判定）。

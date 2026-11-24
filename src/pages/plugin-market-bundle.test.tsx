@@ -10,6 +10,12 @@ vi.mock("@/hooks/use-invoke", () => ({
   invokeCommand,
 }));
 
+// v0.9.8 评审修复轮 R1：本文件渲染真实组件，事件模块不 mock 则组件挂载期
+// 的 listen 直接抛 unhandled rejection（评审 P2 测试域）。
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
+
 vi.mock("@/components/ui/confirm-dialog", () => ({
   useConfirmDialog: () => ({
     confirm: async () => true,
@@ -161,6 +167,8 @@ describe("场景套装一键安装（需求5）", () => {
         ]);
       if (cmd === "skillhub_list") return Promise.resolve({ skills: [], total: 0 });
       if (cmd === "skillhub_installed") return Promise.resolve({});
+      // 评审修复轮 R1：mock 形状补齐（返回值须可迭代，同真实命令）。
+      if (cmd === "pi_package_installed_sources") return Promise.resolve([]);
       if (cmd === "equip_config_get")
         return Promise.resolve({
           enabled: true, session_card: true, session_limit: 1,
@@ -243,5 +251,142 @@ describe("场景套装一键安装（需求5）", () => {
       l.textContent?.includes("件乙"),
     ) as HTMLElement;
     expect(installedRow.className).toContain("opacity-55");
+  });
+});
+
+/** v0.9.8 评审修复轮 R1：推荐文案（R1-6）、套装弹层重开（R1-7）、引导卡文案（R1-8）。 */
+describe("评审修复轮 R1：市场推荐与套装弹层", () => {
+  const curatedProgramming = [
+    { id: "item-a", kind: "agent", title: "件甲", description: "d", category: "c", scenes: ["programming"], required: false },
+    { id: "item-b", kind: "agent", title: "件乙", description: "d", category: "c", scenes: ["programming"], required: false },
+  ];
+  const BUNDLE_A = {
+    id: "bundle-a", scene: "programming", title: "套装甲", description: "甲",
+    items: [{ ref: "curated:item-a", required: true }],
+  };
+  const BUNDLE_B = {
+    id: "bundle-b", scene: "office", title: "套装乙", description: "乙",
+    items: [{ ref: "curated:item-b", required: true }],
+  };
+
+  const setup = (overrides: Record<string, unknown>) => {
+    invokeCommand.mockReset();
+    invokeCommand.mockImplementation((cmd: string) => {
+      if (cmd in overrides) return Promise.resolve(overrides[cmd]);
+      switch (cmd) {
+        case "plugin_list":
+          return Promise.resolve({ plugins: [] });
+        case "market_list_curated":
+          return Promise.resolve(curatedProgramming);
+        case "market_list_bundles":
+          return Promise.resolve([BUNDLE_A, BUNDLE_B]);
+        case "market_install":
+          return Promise.resolve("installed");
+        case "skillhub_installed":
+          return Promise.resolve({});
+        case "pi_package_catalog":
+        case "pi_package_installed_sources":
+        case "piindex_search":
+          return Promise.resolve([]);
+        case "skillhub_list":
+          return Promise.resolve({ skills: [], total: 0 });
+        case "equip_config_get":
+          return Promise.resolve({
+            enabled: true, session_card: true, session_limit: 1,
+            input_bar: true, market_zone: true, third_party: true,
+          });
+        case "equipment_tags_list":
+          return Promise.resolve([]);
+        case "task_profile_latest":
+          return Promise.resolve(null);
+        case "load_last_project":
+          return Promise.resolve(null);
+        default:
+          return Promise.resolve({});
+      }
+    });
+  };
+
+  const dialogButtons = () =>
+    [...document.querySelectorAll("[data-bundle-dialog] button")].map((b) => b.textContent ?? "");
+  const dialogText = () => document.querySelector("[data-bundle-dialog]")?.textContent ?? "";
+
+  beforeAll(async () => {
+    await i18n.changeLanguage("zh");
+  });
+
+  it("U7-1 项目特征命中：推荐卡与弹层描述是实际特征文字，不露占位符、不套「根据最近任务」", async () => {
+    setup({
+      load_last_project: "enc-project",
+      workspace_scene: { scene: "programming", basis: ["代码仓库", "package.json"] },
+    });
+    render(<PluginMarketPanel onChanged={() => {}} />);
+    const card = await waitFor(() => {
+      const el = document.querySelector('[data-bundle-card="dynamic"]') as HTMLElement | null;
+      if (!el) throw new Error("推荐卡未渲染");
+      return el;
+    });
+    expect(card.textContent).toContain("项目特征：代码仓库 / package.json");
+    expect(card.textContent).not.toContain("{basis}");
+
+    fireEvent.click(card);
+    await waitFor(() => {
+      expect(document.querySelector("[data-bundle-dialog]")).toBeTruthy();
+    });
+    const dialogText = document.querySelector("[data-bundle-dialog]")!.textContent ?? "";
+    expect(dialogText).toContain("根据项目特征：代码仓库 / package.json");
+    expect(dialogText).not.toContain("根据最近任务");
+    expect(dialogText).not.toContain("{basis}");
+  });
+
+  it("U8-1 套装装完关掉再开另一个：是全新一轮——有安装入口，不停在上次汇总", async () => {
+    setup({});
+    render(<PluginMarketPanel onChanged={() => {}} />);
+    await waitFor(() => {
+      expect(document.querySelectorAll("[data-bundle-card]").length).toBe(2);
+    });
+    const cards = [...document.querySelectorAll("[data-bundle-card]")];
+    fireEvent.click(cards[0]);
+    await waitFor(() => {
+      expect(document.querySelector("[data-bundle-dialog]")?.textContent).toContain("套装甲");
+    });
+    const installBtn = [...document.querySelectorAll("[data-bundle-dialog] button")].find((b) =>
+      b.textContent?.includes("安装选中项"),
+    )!;
+    expect(installBtn).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(installBtn);
+    });
+    await waitFor(() => {
+      expect(dialogText()).toContain("安装完成：成功 1 项");
+    });
+
+    // 关闭弹层（运行已结束）。
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "Escape" });
+    });
+    await waitFor(() => {
+      expect(document.querySelector("[data-bundle-dialog]")).toBeNull();
+    });
+
+    // 再打开另一个套装。
+    fireEvent.click([...document.querySelectorAll("[data-bundle-card]")][1]);
+    await waitFor(() => {
+      expect(document.querySelector("[data-bundle-dialog]")?.textContent).toContain("套装乙");
+    });
+    expect(dialogButtons().some((t) => t.includes("安装选中项"))).toBe(true);
+    expect(dialogText()).not.toContain("安装完成");
+    expect(dialogText()).not.toContain("重试失败项");
+  });
+
+  it("U9-1 装后引导卡文案不含引擎代号", async () => {
+    const zh = (await import("@/i18n/zh.json")).default as { market: Record<string, string> };
+    const en = (await import("@/i18n/en.json")).default as { market: Record<string, string> };
+    for (const desc of [zh.market.guideExtensionDesc, en.market.guideExtensionDesc]) {
+      expect(desc).toBeTruthy();
+      expect(desc).not.toMatch(/\bpi\b/i);
+    }
+    // 卡片上已有类别徽标「扩展」（guideKindExtension）——描述不再以类别词开头重复一遍
+    expect(zh.market.guideExtensionDesc.startsWith("扩展")).toBe(false);
   });
 });

@@ -1851,7 +1851,7 @@
     "guideNeedConfig": "Needs config: API Key — click to configure",
     "guideFirstUse": "First use",
     "guideGuiAdapt": "GUI adapt — generate a UI plugin for this extension",
-    "guideExtensionDesc": "pi extension — background capability; generate a UI plugin via GUI adapt",
+    "guideExtensionDesc": "Background capability; generate a UI plugin via GUI adapt",
     "bundleSection": "Plugin picks",
     "bundleItems": "{{n}} items",
     "bundleRequired": "Required",
@@ -1928,7 +1928,8 @@
     "recommendForYou": "For you",
     "recommendByTask": "Based on a recent task: {{note}}",
     "recommendHint": "A combo picked for your recent task",
-    "recommendByProject": "Project signals: {basis}"
+    "recommendByProject": "Project signals: {{basis}}",
+    "recommendByProjectTask": "Based on your project: {{basis}}"
   },
   "onboarding": {
     "initTitle": "Preparing your agent",

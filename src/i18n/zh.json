@@ -1851,7 +1851,7 @@
     "guideNeedConfig": "需要配置：API Key——点击前往配置",
     "guideFirstUse": "首次使用",
     "guideGuiAdapt": "GUI 适配——为这个扩展生成界面插件",
-    "guideExtensionDesc": "pi 扩展——具备后台能力，装后经 GUI 适配生成界面插件",
+    "guideExtensionDesc": "具备后台能力，装后经 GUI 适配生成界面插件",
     "bundleSection": "插件推荐",
     "bundleItems": "{{n}} 项",
     "bundleRequired": "必备",
@@ -1928,7 +1928,8 @@
     "recommendForYou": "为你推荐",
     "recommendByTask": "根据最近任务：{{note}}",
     "recommendHint": "按最近任务挑选的组合",
-    "recommendByProject": "项目特征：{basis}"
+    "recommendByProject": "项目特征：{{basis}}",
+    "recommendByProjectTask": "根据项目特征：{{basis}}"
   },
   "onboarding": {
     "initTitle": "正在准备你的智能体",
