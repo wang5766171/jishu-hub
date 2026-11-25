@@ -17,16 +17,43 @@ let visible = true;
 let focused = true;
 let attached = false;
 
+// v0.9.8 需求24：激活态变化的订阅（焦点 / 可见性任一变化时通知，当前态用
+// isAppWindowActive 读）。「用户回到窗口」这件事此前只有事件管线在同步读取，
+// 没有「变化时通知」的口子。
+type ActivityListener = () => void;
+const listeners = new Set<ActivityListener>();
+
+function notifyActivityChanged(): void {
+  for (const fn of listeners) {
+    try {
+      fn();
+    } catch (error) {
+      console.warn("window activity listener failed:", error);
+    }
+  }
+}
+
+/** 订阅激活态变化；返回取消订阅函数。 */
+export function subscribeWindowActivity(fn: ActivityListener): () => void {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
+}
+
 function onVisibilityChange(): void {
   visible = document.visibilityState === "visible";
+  notifyActivityChanged();
 }
 
 function onFocus(): void {
   focused = true;
+  notifyActivityChanged();
 }
 
 function onBlur(): void {
   focused = false;
+  notifyActivityChanged();
 }
 
 /** 挂载窗口激活跟踪（app 根部调用一次；返回清理函数便于测试）。 */

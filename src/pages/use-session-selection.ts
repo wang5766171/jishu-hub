@@ -18,7 +18,6 @@ import {
   getCachedSessionMessages,
   setCachedSessionMessages,
 } from "@/features/session-kernel/kernel/session-cache";
-import { clearUnread } from "@/features/session-kernel/session-unread";
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { filterInvisibleUserMessages } from "./chat-page-utils";
 import type { Message, Project, Session } from "@/types";
@@ -185,9 +184,9 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
       scrollMemory.current.set(selectedSessionRef.current, atBottom ? "bottom" : el.scrollTop);
     }
     const isFirstVisit = !visitedSessions.current.has(sessionId);
-    // v0.9.6 需求4 补充⑨：打开会话=已读——清绿/红未读标记（所有选中路径
-    // 汇聚点：列表点击/标签导航/通知跳转）。
-    clearUnread(sessionId);
+    // v0.9.6 需求4 补充⑨「打开会话 = 已读」不在这里做了：清未读跟着选中态走
+    //（useUnreadClearedOnView，v0.9.8 需求24）——任务会话的打开不经过这个函数，
+    // 写在这里任务行的绿点点开后清不掉。
     setSelectedSession(sessionId);
     selectedSessionRef.current = sessionId;
     // Live steer placeholders keep their per-session keys（渲染按

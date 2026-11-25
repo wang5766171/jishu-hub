@@ -102,6 +102,7 @@ import { useSessionSelection } from "./use-session-selection";
 import { useChatScroll } from "./use-chat-scroll";
 import { useTaskSessionLoad } from "./use-task-session-load";
 import { commitEnterSession, useSearchLens, type SearchLensInput } from "./use-search-lens";
+import { useUnreadClearedOnView } from "@/features/session-kernel/session-unread";
 import { useTaskExecutionStage } from "./use-task-execution-stage";
 import { useTaskSessionRouting } from "./use-task-session-routing";
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
@@ -297,6 +298,10 @@ export function ChatPage({
 
   // selectedSession: null or real backend UUID — never fake IDs
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
+  // v0.9.8 需求24：正在查看的会话 = 已读。挂在选中态上而不是各条「打开会话」的路径上——
+  // 任务会话的打开（openTaskSession）直接改选中态、不经 handleSelectSession，此前它的
+  // 未读没人清：点开任务行时绿点只是因为这一行正被选中而不显示，切走又出现。
+  useUnreadClearedOnView(selectedSession);
   // 输入历史/草稿作用域（A6）：草稿按 项目+会话 维度，历史按项目维度。
   const draftSessionKey = projectId ? `${projectId}:${selectedSession ?? "new"}` : null;
   const [sessionMessages, setSessionMessages] = useState<Message[]>([]);
