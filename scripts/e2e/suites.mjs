@@ -10,6 +10,8 @@
  *   search       v0.9.8 需求23 搜索体验优化与补充轮——SE-1~SE-3、SE-7、SE-8、SE-11 不需要模型；
  *                SE-4~SE-6、SE-9、SE-10、SE-12 需要可用模型（新建一个带独一无二关键词的测试会话，
  *                往里发四条短消息，留在项目里）
+ *   unread       v0.9.8 需求24 任务会话的绿点点击后无法消除——UN-1 任务会话 / UN-2 普通会话回归；
+ *                需要可用模型（在会话里发一条慢消息，回合结束前切走，造出一笔未读）
  *   full         smoke + conversation + market
  */
 import { driverCases } from "./blocks/driver.mjs";
@@ -20,6 +22,7 @@ import { conversationCases } from "./blocks/conversation.mjs";
 import { fixRoundCases, fixRoundCleanupCases, fixRoundReloadCases, fixRoundViewCases } from "./blocks/fix-round.mjs";
 import { compactCases } from "./blocks/compact.mjs";
 import { searchCases } from "./blocks/search.mjs";
+import { unreadCases } from "./blocks/unread.mjs";
 
 // 安装类执行顺序：纯键盘安装在前（候选靠前的留给它），鼠标安装在后，还原最后
 const orderedMarket = [...marketCases].sort((a, b) => Number(b.id === "C3") - Number(a.id === "C3") || Number(a.cleanup) - Number(b.cleanup));
@@ -47,6 +50,11 @@ export const SUITES = {
     name: "搜索体验",
     desc: "v0.9.8 需求23 搜索体验优化与补充轮：SE-1~SE-3、SE-7、SE-8、SE-11 不需要模型；SE-4~SE-6、SE-9、SE-10、SE-12 需要可用模型（新建一个带独一无二关键词的测试会话，往里发四条短消息，留在项目里）",
     cases: searchCases,
+  },
+  unread: {
+    name: "未读标记",
+    desc: "v0.9.8 需求24：行首绿点 / 红点（没看过的回合结果）点开后不再出现——UN-1 任务会话、UN-2 普通会话回归；需要可用模型（发一条慢消息并在回合结束前切走，造出未读；会话留在项目里）",
+    cases: unreadCases,
   },
   full: { name: "全量", desc: "以上全部", cases: [...smoke, ...conversationCases, ...orderedMarket] },
 };
