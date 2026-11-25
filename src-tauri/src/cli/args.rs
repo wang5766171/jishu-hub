@@ -114,39 +114,39 @@ pub enum Commands {
         action: AcpAction,
     },
 
-    /// Manage plugins (v0.8.1 需求4：add/list/remove/enable/disable).
+    /// Manage plugins (add/list/remove/enable/disable).
     Plugins {
         #[command(subcommand)]
         action: PluginAction,
     },
 
-    /// Extension registry (v0.9.8 需求4 D4-8/D4-7)：登记簿查询与 GUI 适配
-    /// 价值判定落档——agent 在会话中经本通道直写判定结果，GUI 即时可见。
+    /// Extension registry: list entries and record GUI-adaptation verdicts.
     Extensions {
         #[command(subcommand)]
         action: ExtensionAction,
     },
 
-    /// Tool-plugin CLI artifacts (v0.8.1 需求10：lock-requirement/commit-plan).
+    /// Task artifacts for tool plugins (lock-requirement/commit-plan).
     #[command(name = "task-artifact")]
     TaskArtifact {
         #[command(subcommand)]
         action: TaskArtifactAction,
     },
 
-    /// Project memory KV (v0.8.1 需求8 P1：跨 agent 共享的项目记忆).
+    /// Project memory shared across agents (key-value store).
     Memory {
         #[command(subcommand)]
         action: MemoryAction,
     },
 
-    /// hub MCP 聚合 server 与四家注入（v0.9.0 需求1：serve/inject/remove/status）.
+    /// Hub MCP aggregation server and agent config injection
+    /// (serve/inject/remove/status).
     Mcp {
         #[command(subcommand)]
         action: McpAction,
     },
 
-    /// Skill 分发服务（v0.9.0 需求20：deploy/remove/status）.
+    /// Skill distribution to agent skill dirs (deploy/remove/status).
     Skill {
         #[command(subcommand)]
         action: SkillAction,
@@ -405,22 +405,23 @@ pub enum AcpAction {
     List,
 }
 
-// ── Plugins（v0.8.1 需求4）────────────────────────────────────────────────────
+// ── Plugins & extensions（v0.8.1 需求4 / v0.9.8 需求4 D4-8/D4-7）──────────────
+// 帮助文案（`///` 文档注释）是给用户看的：只写功能是什么，统一英文；出处与
+// 内部编号留在普通 `//` 注释里。
 
-/// 需求4 D4-8/D4-7（v0.9.8）：extensions 子命令动作。
 #[derive(Subcommand, Debug)]
 pub enum ExtensionAction {
-    /// List the extension registry（含 builtin/状态/适配关系/判定）。
+    /// List the extension registry (builtin flag, state, adapters, verdicts).
     List,
 
-    /// Record the GUI-adaptation verdict for an extension（agent 第 0 步
-    /// 判定落档通道：noneeded=纯底层工具无需界面；pending=重置为未判定）。
+    /// Record the GUI-adaptation verdict for an extension ("noneeded" = a
+    /// low-level tool that needs no UI; "pending" = reset to undecided).
     Verdict {
-        /// 无版本关系键（如 npm:pi-smart-fetch）。
+        /// Version-independent package key (e.g. npm:pi-smart-fetch).
         pkg_key: String,
-        /// pending | noneeded。
+        /// "pending" or "noneeded".
         verdict: String,
-        /// 一句话判定依据（可选）。
+        /// One-line reason (optional).
         #[arg(long = "note")]
         note: Option<String>,
     },
@@ -428,9 +429,9 @@ pub enum ExtensionAction {
 
 #[derive(Subcommand, Debug)]
 pub enum PluginAction {
+    // agent 创建插件前可经此查全部开放能力，与 jishu-plugin-authoring 技能的
+    // API.md 单源同文（二十三轮，用户裁决的说明机制）。
     /// Print the plugin API reference (open capabilities for component code).
-    /// 二十三轮（用户裁决）：说明机制——agent 创建插件前可经 CLI 查全部开放
-    /// 能力（与 jishu-plugin-authoring 技能的 API.md 单源同文）。
     Api,
 
     /// Install a plugin from a local TOML manifest file (validated on install).
@@ -441,7 +442,6 @@ pub enum PluginAction {
 
     /// Install a hybrid plugin from a local directory (plugin.toml +
     /// component.js; installed disabled, GUI confirmation card enables it).
-    /// 需求25 P2：混合插件目录包安装（组合式清单 + 自定义代码组件）。
     #[command(name = "add-hybrid")]
     AddHybrid {
         /// Path to the plugin directory (holding plugin.toml + component.js).
@@ -449,14 +449,12 @@ pub enum PluginAction {
     },
 
     /// Print the full manifest (TOML) of an installed plugin.
-    /// 页面/CLI 能力一致（v0.9.0 需求22）：GUI plugin_get 的 CLI 面。
     Get {
         /// Plugin identifier.
         id: String,
     },
 
     /// Overwrite-update an installed plugin from a TOML file (id must match).
-    /// 页面/CLI 能力一致（v0.9.0 需求22）：GUI plugin_update 的 CLI 面。
     Update {
         /// Plugin identifier (must equal the manifest's info.id).
         id: String,
@@ -468,8 +466,6 @@ pub enum PluginAction {
     /// Edit an installed plugin in place: targeted field assignment
     /// (--field section.key=value) or open the manifest location in the
     /// file manager (--open; apply changes afterwards via update).
-    /// 需求14 M4（R9）：edit 缺口收窄——update 已是覆盖式编辑，此处补
-    /// 定点字段编辑与打开所在位置。
     Edit {
         /// Plugin identifier.
         id: String,
@@ -510,7 +506,6 @@ pub enum PluginAction {
     /// installing: basic structural checks locally + full validation via the
     /// running hub's TS validators (same implementation as the GUI wizard;
     /// falls back to basic-only with a warning when the hub is not running).
-    /// v0.9.5 需求1（原需求26）1c：命令面净增的唯一新命令。
     Validate {
         /// Path to the plugin directory (holding plugin.toml [+ component.js])
         /// or a single plugin.toml file.
@@ -519,7 +514,6 @@ pub enum PluginAction {
 
     /// Import a pi extension (.ts) into the agent extensions dir (disabled
     /// by default; enable via the hub GUI card or pi_extension_enable).
-    /// v0.9.5 需求1（原需求26）7c 层三：agent/高级用户路径。
     #[command(name = "import-extension")]
     ImportExtension {
         /// Path to the extension .ts file.
@@ -656,4 +650,80 @@ pub enum SkillAction {
 
     /// Show skill resolver state, targets, and deployed list.
     Status,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// 形如 `v0.8.1` 的版本标记。
+    fn has_version_tag(text: &str) -> bool {
+        let chars: Vec<char> = text.chars().collect();
+        chars.windows(2).enumerate().any(|(i, w)| {
+            w[0] == 'v' && w[1].is_ascii_digit() && {
+                let mut dots = 0;
+                for c in chars[i + 1..].iter().take(12) {
+                    if *c == '.' {
+                        dots += 1;
+                    } else if !c.is_ascii_digit() {
+                        break;
+                    }
+                }
+                dots >= 2
+            }
+        })
+    }
+
+    fn is_internal_note(text: &str) -> bool {
+        text.contains("需求")
+            || has_version_tag(text)
+            || text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+    }
+
+    /// 帮助文案是给用户看的：不得夹带内部开发备注（需求编号、版本号），
+    /// 也不得中英夹杂——命令行帮助统一用英文。遍历全部子命令与参数的
+    /// about / help，防止再把 `///` 注释里的内部说明带进 `--help`。
+    #[test]
+    fn help_text_carries_no_internal_notes() {
+        fn collect(cmd: &clap::Command, path: &mut Vec<String>, bad: &mut Vec<String>) {
+            let where_ = if path.is_empty() {
+                "(root)".to_string()
+            } else {
+                path.join(" ")
+            };
+            for text in [cmd.get_about(), cmd.get_long_about()]
+                .into_iter()
+                .flatten()
+                .map(|t| t.to_string())
+            {
+                if is_internal_note(&text) {
+                    bad.push(format!("{where_} — about: {text}"));
+                }
+            }
+            for arg in cmd.get_arguments() {
+                for (kind, text) in [("help", arg.get_help()), ("long_help", arg.get_long_help())] {
+                    if let Some(t) = text {
+                        let t = t.to_string();
+                        if is_internal_note(&t) {
+                            bad.push(format!("{where_} --{} {kind}: {t}", arg.get_id()));
+                        }
+                    }
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                path.push(sub.get_name().to_string());
+                collect(sub, path, bad);
+                path.pop();
+            }
+        }
+
+        let mut bad = Vec::new();
+        collect(&Cli::command(), &mut Vec::new(), &mut bad);
+        assert!(
+            bad.is_empty(),
+            "帮助文案里有内部备注或中文：\n{}",
+            bad.join("\n")
+        );
+    }
 }
