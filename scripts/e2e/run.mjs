@@ -7,6 +7,8 @@
  *   node scripts/e2e/run.mjs --suite conversation           对话（需要可用模型；会新建测试会话）
  *   node scripts/e2e/run.mjs --suite market                 市场安装（需要联网；装一个扩展并卸载）
  *   node scripts/e2e/run.mjs --suite fixround               评审修复轮（需要模型；F7 另需联网，真装冲突扩展选「停用并安装」）
+ *   node scripts/e2e/run.mjs --suite compact                斜杠命令与上下文压缩（需要模型；会往测试会话发很长的消息）
+ *   node scripts/e2e/run.mjs --suite search                 搜索体验（SE-1~SE-3、SE-7、SE-8、SE-11 不需要模型；其余需要可用模型）
  *   node scripts/e2e/run.mjs --suite full                   全量
  *   可选：--project <项目名>   在指定项目里跑（默认：应用当前所在项目）
  *         --out <目录>        结果输出目录（默认 scripts/e2e/results/<时间戳>/，已 gitignore）
@@ -50,7 +52,7 @@ function parseArgs(argv) {
   return out;
 }
 
-const USAGE = `用法：node scripts/e2e/run.mjs --suite <smoke|conversation|market|fixround|full> [--project 名] [--out 目录] [--only I1,I3]
+const USAGE = `用法：node scripts/e2e/run.mjs --suite <smoke|conversation|market|fixround|compact|search|full> [--project 名] [--out 目录] [--only I1,I3]
        node scripts/e2e/run.mjs --suite <名> --list        列出用例
        node scripts/e2e/run.mjs --suite <名> --checklist   输出四字段用例清单（markdown）
 场景包：${Object.entries(SUITES)
