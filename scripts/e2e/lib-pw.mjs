@@ -525,6 +525,175 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
     return { cleared };
   };
 
+  // ── 任务会话行 ──
+  /** 侧栏「任务会话」分组（分组头按钮的父容器）里的任务行。 */
+  const taskRows = () =>
+    sidebar().getByRole("button", { name: /任务会话/ }).locator("xpath=..").locator("button").filter({ hasNotText: "任务会话" });
+  /** 当前项目的任务实例（按侧栏项目名对上项目路径；对不上时退到「最近项目」）。 */
+  const taskRecords = async () => {
+    const name = await currentProjectName();
+    const projects = await invoke("scan_projects").catch(() => []);
+    const hit = (projects || []).find((p) => p.name === name);
+    const root = hit ? hit.path : await invoke("load_last_project").catch(() => null);
+    if (!root) return [];
+    const items = await invoke("task_launch_list_sessions", { projectRoot: root }).catch(() => []);
+    return Array.isArray(items) ? items : [];
+  };
+  /**
+   * 点任务行并校验落点：会话头的短号必须是这个任务的会话。
+   *（短号只有 8 位，相近时间建的会话可能重复——需要更强的落点保证时再核对会话内容。）
+   */
+  const openTaskRow = async (row, task) => {
+    await row.click();
+    const deadline = Date.now() + 10000;
+    let head = null;
+    while (Date.now() < deadline) {
+      head = await sessionHeader();
+      if (head?.id && task.task_session_id?.startsWith(head.id)) return head;
+      await sleep(200);
+    }
+    throw new Error(
+      `点任务行后落点不对：会话头 ${head ? `${head.id}「${head.title}」` : "(没有会话头)"}，期望会话 ${(task.task_session_id || "(无)").slice(0, 8)}「${task.title}」`,
+    );
+  };
+  /**
+   * 会话行行首状态：streaming（蓝色呼吸，回合进行中）/ done（绿：有完成结果未读）/
+   * failed（红：有失败结果未读）/ idle（空占位）。任务行与常规会话行同一种标记。
+   */
+  const rowState = async (row) => {
+    if (await row.locator("span.rounded-full.animate-pulse").first().isVisible().catch(() => false)) return "streaming";
+    if (!(await row.locator("span.rounded-full.bg-emerald-500, span.rounded-full.bg-red-500").first().isVisible().catch(() => false))) {
+      return "idle";
+    }
+    return (await row.locator("span.rounded-full.bg-red-500").first().isVisible().catch(() => false)) ? "failed" : "done";
+  };
+
+  /** 等会话行进入给定状态之一；超时返回最后看到的状态。 */
+  const waitRowState = async (row, wanted, timeout) => {
+    const deadline = Date.now() + timeout;
+    let last = "idle";
+    while (Date.now() < deadline) {
+      last = await rowState(row);
+      if (wanted.includes(last)) return last;
+      await sleep(700);
+    }
+    return last;
+  };
+
+  // ── 带任务图的任务（「节点会话」类用例自己造数，不靠模型规划）──
+  /** 当前项目在项目列表里的记录（按侧栏项目名对上；对不上返回 null）。 */
+  const projectInfo = async () => {
+    const name = await currentProjectName();
+    const projects = await invoke("scan_projects").catch(() => []);
+    return (projects || []).find((p) => p.name === name) ?? null;
+  };
+
+  /**
+   * 会话头上的 8 位短号对应的完整会话 id。相近时间建的会话短号会重复（只取第一个匹配）——
+   * 调用方判断落到哪个会话要靠内容，不能只比短号。
+   */
+  const sessionFullId = async (shortId, encodedName) => {
+    const sessions = await invoke("list_sessions", { agentId: "jishu-self", encodedName }).catch(() => []);
+    return (sessions || []).find((s) => s.id.startsWith(shortId))?.id ?? null;
+  };
+
+  /**
+   * 造一个带任务图的任务：建图 → 加几个「派发给智能体」的节点（前后依赖，依次执行）→ 启动执行
+   * → 用这张图建任务实例。节点执行时各自产生一个子会话，任务看板上就能点进去看。
+   * 图、任务实例、节点会话都留在项目里。返回 { taskId, graphId, runId, projectRoot, encodedName }。
+   * nodes: [{ nodeId, title, prompt }]
+   */
+  const createGraphTask = async ({ title, nodes }) => {
+    const project = await projectInfo();
+    if (!project) throw new Error("认不出当前项目，没法建任务图");
+    const projectRoot = project.path;
+    const created = await invoke("orchestrator_create_graph", {
+      input: { title, goal: title, project_root: projectRoot, owner: "e2e" },
+    });
+    const graph = Array.isArray(created) ? created[0] : created.graph;
+    const revision = Array.isArray(created) ? created[1] : created.revision;
+    const noTools = {
+      approval_policy: "never",
+      permission_scope: { can_read_files: false, can_write_files: false, can_run_commands: false, can_access_network: false, can_deploy: false },
+    };
+    const commands = nodes.map((n, i) => ({
+      op: "add_node",
+      command_id: `cmd-node-${i}`,
+      node: {
+        node_id: n.nodeId,
+        parent_id: "goal",
+        title: n.title,
+        description: n.title,
+        node_kind: "executable",
+        input_contract: { description: null, artifacts: [], schema: null },
+        output_contract: { description: n.title, artifacts: [], schema: null },
+        role_requirement: { role_id: "implementer", responsibility: n.title, required_capabilities: [], preferred_capabilities: [] },
+        capability_requirements: [],
+        agent_assignment_constraint: null,
+        policy: noTools,
+        metadata: {},
+        executable_payload: { type: "dispatch", role_id: "implementer", prompt: n.prompt, project: null, session: null },
+        loop_config: null,
+        approval_gate_config: null,
+      },
+    }));
+    for (let i = 1; i < nodes.length; i++) {
+      commands.push({
+        op: "add_edge",
+        command_id: `cmd-edge-${i}`,
+        edge: { edge_id: `edge-${i}`, source_node_id: nodes[i - 1].nodeId, target_node_id: nodes[i].nodeId, kind: "control_dependency" },
+      });
+    }
+    const applied = await invoke("orchestrator_apply_commands", {
+      graphId: graph.graph_id,
+      expectedRevisionId: revision.revision_id,
+      commands,
+      author: "e2e",
+    });
+    const revisionId = applied?.revision?.revision_id ?? applied?.revision_id;
+    const run = await invoke("orchestrator_start_run", { graphId: graph.graph_id, revisionId });
+    const instance = await invoke("task_launch_create_from_existing_graph", {
+      projectRoot,
+      graphId: graph.graph_id,
+      title,
+      skillId: "jishu-task-runner",
+    });
+    return { taskId: instance.task_id, graphId: graph.graph_id, runId: run.run_id, projectRoot, encodedName: project.encoded_name };
+  };
+
+  /**
+   * 等一次执行里所有节点都跑完。返回 [{ nodeId, status, sessionId, agentId }]；超时返回当时的状态。
+   * sessionId 是这个节点那一轮执行产生的子会话。
+   */
+  const waitGraphRun = async (runId, timeout = 240000) => {
+    const done = new Set(["succeeded", "failed", "cancelled", "canceled", "skipped"]);
+    const deadline = Date.now() + timeout;
+    let runs = [];
+    while (Date.now() < deadline) {
+      runs = await invoke("orchestrator_get_node_runs", { runId }).catch(() => []);
+      if (Array.isArray(runs) && runs.length > 0 && runs.every((r) => done.has(String(r.status).toLowerCase()))) break;
+      await sleep(2000);
+    }
+    const out = [];
+    for (const r of Array.isArray(runs) ? runs : []) {
+      const attemptCount = r.attempt_count ?? 0;
+      // attempt 编号从 0 开始，最新一次 = attempt_count - 1
+      const attempt =
+        attemptCount > 0
+          ? await invoke("orchestrator_get_attempt", { nodeRunId: r.node_run_id, attemptNumber: attemptCount - 1 }).catch(() => null)
+          : null;
+      out.push({ nodeId: r.node_id, status: r.status, sessionId: attempt?.session_id ?? null, agentId: attempt?.agent_assignment?.agent_id ?? null });
+    }
+    return out;
+  };
+
+  /** 把一个会话挂成任务的主会话（任务工作台一打开显示的就是它）。 */
+  const attachTaskMainSession = async ({ taskId, sessionId, title }) => {
+    const project = await projectInfo();
+    if (!project) throw new Error("认不出当前项目，没法挂主会话");
+    return invoke("task_launch_mark_session", { projectRoot: project.path, taskId, sessionId, skillId: "jishu-task-runner", title });
+  };
+
   // ── 会话区 ──
   /** 当前可见的输入框（出现多个即 strict 报错——如同时开着消息编辑框）。 */
   const composer = () => page.locator("textarea").filter({ visible: true });
@@ -767,6 +936,16 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
     agentSwitchTitle,
     closeGuideCards,
     openMarket,
+    taskRows,
+    taskRecords,
+    openTaskRow,
+    rowState,
+    waitRowState,
+    projectInfo,
+    sessionFullId,
+    createGraphTask,
+    waitGraphRun,
+    attachTaskMainSession,
     composer,
     type,
     send,

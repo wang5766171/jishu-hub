@@ -10,6 +10,7 @@
  *   node scripts/e2e/run.mjs --suite compact                斜杠命令与上下文压缩（需要模型；会往测试会话发很长的消息）
  *   node scripts/e2e/run.mjs --suite search                 搜索体验（SE-1~SE-3、SE-7、SE-8、SE-11 不需要模型；其余需要可用模型）
  *   node scripts/e2e/run.mjs --suite unread                 未读标记（需要模型；发一条慢消息并在回合结束前切走）
+ *   node scripts/e2e/run.mjs --suite tasksession            任务会话：滚动位置 + 切节点（需要模型；任务会话与普通会话走同一个打开函数）
  *   node scripts/e2e/run.mjs --suite full                   全量
  *   可选：--project <项目名>   在指定项目里跑（默认：应用当前所在项目）
  *         --out <目录>        结果输出目录（默认 scripts/e2e/results/<时间戳>/，已 gitignore）
@@ -53,7 +54,7 @@ function parseArgs(argv) {
   return out;
 }
 
-const USAGE = `用法：node scripts/e2e/run.mjs --suite <smoke|conversation|market|fixround|compact|search|unread|full> [--project 名] [--out 目录] [--only I1,I3]
+const USAGE = `用法：node scripts/e2e/run.mjs --suite <smoke|conversation|market|fixround|compact|search|unread|tasksession|full> [--project 名] [--out 目录] [--only I1,I3]
        node scripts/e2e/run.mjs --suite <名> --list        列出用例
        node scripts/e2e/run.mjs --suite <名> --checklist   输出四字段用例清单（markdown）
 场景包：${Object.entries(SUITES)

@@ -15,62 +15,15 @@ import { expect } from "../lib-pw.mjs";
 const SLOW_MESSAGE = "不要调用任何工具。请从 1 数到 600，每行一个数字，只输出数字。";
 
 const stopBtn = (page) => page.locator('button[title="停止"]:not([disabled])').first();
-const unreadDot = (row) => row.locator("span.rounded-full.bg-emerald-500, span.rounded-full.bg-red-500").first();
-const streamingDot = (row) => row.locator("span.rounded-full.animate-pulse").first();
 
-/** 侧栏「任务会话」分组（分组头按钮的父容器）里的任务行。 */
-const taskRows = (app) =>
-  app.sidebar().getByRole("button", { name: /任务会话/ }).locator("xpath=..").locator("button").filter({ hasNotText: "任务会话" });
 /** 常规会话行（标题带完整标题提示的那一类；任务会话的行不在此列）。 */
 const regularRows = (app) => app.sidebar().locator("button.flex-col.items-start").filter({ has: app.page.locator("span.truncate[title]") });
 const titleOf = (row) => row.locator("span.truncate").first().textContent().then((s) => (s || "").trim());
 
-/** 行首状态：streaming（蓝色呼吸）/ done（绿：有完成结果未读）/ failed（红）/ idle（空占位）。 */
-const rowState = async (row) => {
-  if (await streamingDot(row).isVisible().catch(() => false)) return "streaming";
-  if (!(await unreadDot(row).isVisible().catch(() => false))) return "idle";
-  return (await row.locator("span.rounded-full.bg-red-500").first().isVisible().catch(() => false)) ? "failed" : "done";
-};
 const isUnread = (state) => state === "done" || state === "failed";
 
-/** 等行进入给定状态之一；超时返回最后看到的状态。 */
-const waitRowState = async (row, wanted, timeout) => {
-  const deadline = Date.now() + timeout;
-  let last = "idle";
-  while (Date.now() < deadline) {
-    last = await rowState(row);
-    if (wanted.includes(last)) return last;
-    await new Promise((r) => setTimeout(r, 700));
-  }
-  return last;
-};
 
-/** 当前项目的任务实例（按侧栏项目名对上项目路径）。 */
-const taskRecords = async (app) => {
-  const name = await app.currentProjectName();
-  const projects = await app.invoke("scan_projects").catch(() => []);
-  const hit = (projects || []).find((p) => p.name === name);
-  const root = hit ? hit.path : await app.invoke("load_last_project").catch(() => null);
-  if (!root) return [];
-  const items = await app.invoke("task_launch_list_sessions", { projectRoot: root }).catch(() => []);
-  return Array.isArray(items) ? items : [];
-};
 
-/** 点任务行并校验落点：会话头的短号必须是这个任务的会话。 */
-const openTaskRow = async (ctx, row, task) => {
-  const { app, page } = ctx;
-  await row.click();
-  const deadline = Date.now() + 10000;
-  let head = null;
-  while (Date.now() < deadline) {
-    head = await app.sessionHeader();
-    if (head?.id && task.task_session_id?.startsWith(head.id)) return head;
-    await page.waitForTimeout(200);
-  }
-  throw new Error(
-    `点任务行后落点不对：会话头 ${head ? `${head.id}「${head.title}」` : "(没有会话头)"}，期望会话 ${(task.task_session_id || "(无)").slice(0, 8)}「${task.title}」`,
-  );
-};
 
 /**
  * 在当前会话里发一条慢消息，回合结束前点「新对话」切走。
@@ -83,7 +36,7 @@ const sendAndLeave = async (ctx, text, row) => {
   const started = await stopBtn(page).waitFor({ state: "visible", timeout: 20000 }).then(() => true, () => false);
   if (!started) return { started: false, stateAfterLeave: null };
   await app.newConversation();
-  return { started: true, stateAfterLeave: await rowState(row) };
+  return { started: true, stateAfterLeave: await app.rowState(row) };
 };
 
 /** 各步耗时（毫秒）——如实记录，卡在哪一步一眼可见。 */
@@ -116,23 +69,23 @@ const createTask = async (ctx) => {
   const turn = await app.waitTurn({ budgetMs: 180000, settleMs: 4000 });
   if (!turn.done) throw new Error("建任务的回合没有在时限内结束");
   await app.waitIdle(3000, 120000);
-  await taskRows(app).first().waitFor({ state: "visible", timeout: 30000 });
+  await app.taskRows().first().waitFor({ state: "visible", timeout: 30000 });
 };
 
 /** 开始时任务列表里已经带绿点 / 红点的行：逐个点开再切走，必须不再出现。返回处理了几行。 */
 const clearStaleTaskDots = async (ctx, records) => {
   const { app } = ctx;
-  const total = await taskRows(app).count();
+  const total = await app.taskRows().count();
   const dotted = [];
   for (let i = 0; i < total; i++) {
-    const state = await rowState(taskRows(app).nth(i));
-    if (isUnread(state)) dotted.push(await titleOf(taskRows(app).nth(i)));
+    const state = await app.rowState(app.taskRows().nth(i));
+    if (isUnread(state)) dotted.push(await titleOf(app.taskRows().nth(i)));
   }
   for (const title of dotted) {
-    const row = taskRows(app).filter({ hasText: title }).first();
-    await openTaskRow(ctx, row, records.find((r) => r.title === title) ?? { title, task_session_id: "" });
+    const row = app.taskRows().filter({ hasText: title }).first();
+    await app.openTaskRow(row, records.find((r) => r.title === title) ?? { title, task_session_id: "" });
     await app.newConversation();
-    const state = await rowState(row);
+    const state = await app.rowState(row);
     if (isUnread(state)) throw new Error(`带${state === "done" ? "绿" : "红"}点的任务「${title}」点开又切走后还在`);
   }
   return dotted.length;
@@ -165,9 +118,9 @@ export const unreadCases = [
       await app.ensureWorkspace();
       await app.closeGuideCards();
       timing.mark("准备");
-      let records = await taskRecords(app);
-      if (!(await taskRows(app).count())) await createTask(ctx);
-      records = await taskRecords(app);
+      let records = await app.taskRecords();
+      if (!(await app.taskRows().count())) await createTask(ctx);
+      records = await app.taskRecords();
       timing.mark("读任务列表");
       const task = records.find((r) => r.task_session_id);
       if (!task) ctx.skip("当前项目的任务都没有关联会话，没法在里面发消息");
@@ -175,8 +128,8 @@ export const unreadCases = [
       const staleCleared = await clearStaleTaskDots(ctx, records);
       timing.mark("处理已有的绿点");
 
-      const row = taskRows(app).filter({ hasText: task.title }).first();
-      await openTaskRow(ctx, row, task);
+      const row = app.taskRows().filter({ hasText: task.title }).first();
+      await app.openTaskRow(row, task);
       const sent = await sendAndLeave(ctx, SLOW_MESSAGE, row);
       timing.mark("发消息并切走");
       if (!sent.started) ctx.skip("模型不可用：消息发出后 20 秒内回合未启动");
@@ -184,16 +137,16 @@ export const unreadCases = [
         ctx.skip(`切走那一刻回合已经不在进行（行状态 ${sent.stateAfterLeave}）——造不出「后台完成」的未读，请把 SLOW_MESSAGE 加长`);
       }
       // 后台回合结束：任务行先蓝后绿
-      const state = await waitRowState(row, ["done", "failed"], 180000);
+      const state = await app.waitRowState(row, ["done", "failed"], 180000);
       timing.mark("等后台回合结束");
       if (!isUnread(state)) ctx.skip(`回合没有在后台留下未读（最后看到的行状态是 ${state}）`);
       await ctx.shot("UN1-任务行出现未读点");
 
-      await openTaskRow(ctx, row, task);
+      await app.openTaskRow(row, task);
       await app.newConversation();
       await expect(row).toBeVisible();
       await page.waitForTimeout(800);
-      const after = await rowState(row);
+      const after = await app.rowState(row);
       timing.mark("点开再切走");
       if (isUnread(after)) throw new Error(`任务行点开又切走后${after === "done" ? "绿" : "红"}点还在`);
       await ctx.shot("UN1-点开切走后");

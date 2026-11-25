@@ -12,6 +12,8 @@
  *                往里发四条短消息，留在项目里）
  *   unread       v0.9.8 需求24 任务会话的绿点点击后无法消除——UN-1 任务会话 / UN-2 普通会话回归；
  *                需要可用模型（在会话里发一条慢消息，回合结束前切走，造出一笔未读）
+ *   tasksession  v0.9.8 需求24 续 任务会话与普通会话统一成一套——TS-1~TS-3 任务会话的滚动位置
+ *                （在底部离开 / 翻上去离开 / 后台来了新回复）、TS-4 切节点；都要模型（TS-4 会造一个带任务图的任务）
  *   full         smoke + conversation + market
  */
 import { driverCases } from "./blocks/driver.mjs";
@@ -23,6 +25,7 @@ import { fixRoundCases, fixRoundCleanupCases, fixRoundReloadCases, fixRoundViewC
 import { compactCases } from "./blocks/compact.mjs";
 import { searchCases } from "./blocks/search.mjs";
 import { unreadCases } from "./blocks/unread.mjs";
+import { taskSessionCases } from "./blocks/task-session.mjs";
 
 // 安装类执行顺序：纯键盘安装在前（候选靠前的留给它），鼠标安装在后，还原最后
 const orderedMarket = [...marketCases].sort((a, b) => Number(b.id === "C3") - Number(a.id === "C3") || Number(a.cleanup) - Number(b.cleanup));
@@ -55,6 +58,11 @@ export const SUITES = {
     name: "未读标记",
     desc: "v0.9.8 需求24：行首绿点 / 红点（没看过的回合结果）点开后不再出现——UN-1 任务会话、UN-2 普通会话回归；需要可用模型（发一条慢消息并在回合结束前切走，造出未读；会话留在项目里）",
     cases: unreadCases,
+  },
+  tasksession: {
+    name: "任务会话",
+    desc: "v0.9.8 需求24 续：任务会话与普通会话走同一个打开函数——TS-1 在底部离开回来还在底部、TS-2 翻上去离开回来停在原处、TS-3 在底部离开且后台来了新回复回来停在最底部、TS-4 切节点（自己造一个带任务图的任务）；都要模型",
+    cases: taskSessionCases,
   },
   full: { name: "全量", desc: "以上全部", cases: [...smoke, ...conversationCases, ...orderedMarket] },
 };
