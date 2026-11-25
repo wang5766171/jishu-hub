@@ -32,6 +32,15 @@ function mount() {
   const size = { scrollHeight: 1000, clientHeight: 500 };
   Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => size.scrollHeight });
   Object.defineProperty(el, "clientHeight", { configurable: true, get: () => size.clientHeight });
+  // jsdom 给 scrollTop 赋值不会压到可滚动范围内；浏览器会——按浏览器的规矩来
+  let top = 0;
+  Object.defineProperty(el, "scrollTop", {
+    configurable: true,
+    get: () => top,
+    set: (v: number) => {
+      top = Math.max(0, Math.min(v, size.scrollHeight - size.clientHeight));
+    },
+  });
   const searchLensInputRef: { current: SearchLensInput } = {
     current: { query: "", selectedSession: "s1", hitSessionIds: new Set() },
   };
@@ -55,14 +64,14 @@ function mount() {
     result.current.scrollAction.current = { type: "bottom" };
     rerender({ messages: [message] });
   };
-  return { el, size, searchLensInputRef, result, openAtBottom };
+  return { el, size, searchLensInputRef, result, openAtBottom, rerender };
 }
 
 describe("useChatScroll · 贴底跟随与搜索态", () => {
   it("非搜索态：「到底」指令滚到底并启动贴底跟随——视图离开底部后被拉回", () => {
     const { el, result, openAtBottom } = mount();
     openAtBottom();
-    expect(el.scrollTop).toBe(1000);
+    expect(el.scrollTop).toBe(500); // 到底 = 可滚动范围的末端（1000 - 500）
     // 贴底跟随在跑：内容变高后的下一帧把视图拉回新的底部
     runFrames();
     act(() => {
@@ -77,7 +86,7 @@ describe("useChatScroll · 贴底跟随与搜索态", () => {
     const { el, searchLensInputRef, openAtBottom } = mount();
     searchLensInputRef.current.query = "关键词";
     openAtBottom();
-    expect(el.scrollTop).toBe(1000);
+    expect(el.scrollTop).toBe(500); // 到底 = 可滚动范围的末端
     // 消费这一次排的帧里没有「跟随」帧：跑完一轮没有新帧（跟随帧每轮会再排一帧）
     runFrames();
     expect(frames).toHaveLength(0);
@@ -111,5 +120,35 @@ describe("useChatScroll · 贴底跟随与搜索态", () => {
       result.current.disarmScroll();
     });
     expect(el.style.visibility).toBe("");
+  });
+});
+
+describe("useChatScroll · 恢复位置首帧被压低（v0.9.8 需求24 续）", () => {
+  /** 打开一个有滚动记忆的会话：首帧内容还没撑到最终高度，最多只能滚到 280。 */
+  const openClamped = () => {
+    const h = mount();
+    h.size.scrollHeight = 780;
+    h.result.current.scrollAction.current = { type: "restore", top: 300 };
+    h.rerender({ messages: [message] });
+    expect(h.el.scrollTop).toBe(280);
+    return h;
+  };
+
+  it("只被压低十几像素：内容长出来后也放回原位——S24-U15", () => {
+    const h = openClamped();
+    h.size.scrollHeight = 1000;
+    runFrames();
+    runFrames();
+    expect(h.el.scrollTop).toBe(300);
+    expect(h.el.style.visibility).toBe("");
+  });
+
+  it("等布局的这几帧里用户自己滚了：停手，不再把视图拽回去——S24-U15", () => {
+    const h = openClamped();
+    h.size.scrollHeight = 1000;
+    h.el.scrollTop = 100;
+    runFrames();
+    runFrames();
+    expect(h.el.scrollTop).toBe(100);
   });
 });

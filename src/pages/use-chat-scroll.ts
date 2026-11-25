@@ -14,7 +14,8 @@
  *
  * 隐式执行序警示（fix22 教训，迁移时保留原序）：scrollAction 消费 →
  * 消息加载 → 节点会话轮询回填。本 hook 只拥有滚动域；指令的「写入方」
- * （use-session-selection / 任务会话加载）仍经 scrollAction ref 外部投递，
+ * （use-session-selection——打开任何会话都走它，v0.9.8 需求24 续）仍经 scrollAction ref
+ * 外部投递，
  * 投递时应同步调 armScroll()（遮蔽启动）。
  *
  * v0.9.8 需求23：搜索态（搜索词非空）下不启动贴底跟随——消息列表只显示命中行、
@@ -166,15 +167,28 @@ export function useChatScroll({
       // 时代的高度，窗口化后 scrollHeight 偏小会被 clamp 到底——检测到
       // clamp 即 bump expandSignal 扩全窗，下一帧重设原位置。
       const maxTop = el.scrollHeight - el.clientHeight;
-      if (action.top > maxTop + 50) {
-        setMessageExpandSignal((n) => n + 1);
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            const el2 = messageAreaRef.current;
-            if (el2) el2.scrollTop = Math.min(action.top, el2.scrollHeight - el2.clientHeight);
+      // v0.9.8 需求24 续：被压低就不分大小。首帧内容还没撑到最终高度时，恢复的位置会被
+      // 浏览器悄悄压低十几个像素，之后内容长出来也不动（实测切走再回来差 14 像素）。
+      // 压低超过 50 像素的多半是目标在渲染窗口之外——额外扩全窗一次。
+      if (action.top > maxTop + 50) setMessageExpandSignal((n) => n + 1);
+      if (action.top > maxTop) {
+        // 等布局稳定再放回原位；内容还在长就逐帧再试（最多约半秒）。用户已经动过就停手。
+        let lastSet = el.scrollTop;
+        let tries = 0;
+        const place = () => {
+          const el2 = messageAreaRef.current;
+          if (!el2) return;
+          if (Math.abs(el2.scrollTop - lastSet) > 1) {
             disarmIfArmed();
-          });
-        });
+            return;
+          }
+          const top = Math.min(action.top, el2.scrollHeight - el2.clientHeight);
+          el2.scrollTop = top;
+          lastSet = top;
+          if (top < action.top - 1 && tries++ < 30) requestAnimationFrame(place);
+          else disarmIfArmed();
+        };
+        requestAnimationFrame(() => requestAnimationFrame(place));
       } else {
         disarmIfArmed();
       }

@@ -6,6 +6,12 @@
  * 职责边界：任务态 state 仍在 chat-page（读写面横跨发送链/流式管线/JSX），
  * 本钩子收拢**动作与派生**——所有"点哪里、切到哪个会话、面板给插件什么数据"
  * 的规则在这里；页面经 deps 注入 state/ref/邻接动作，消费返回的处理器与 ctx。
+ *
+ * v0.9.8 需求24 续（用户裁决「任务会话的逻辑改成和普通会话一致」）：打开任务主会话、
+ * 打开节点会话、取消节点回到主会话，都交给普通会话那个打开函数
+ *（handleSelectSession，带「保留任务上下文」）——记离开位置、收起预览、读消息、
+ * 刷新用量、定位不再有第二套实现。本钩子只负责任务态，以及「切到节点占位」这种
+ * 没有会话可打开的过渡。
  */
 import { useCallback, useMemo, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { useTranslation } from "react-i18next";
@@ -22,6 +28,7 @@ import type {
 import { logTaskPhaseDebug } from "@/features/task-instance/task-phase-debug";
 import { orderExecutableNodes } from "./chat-page-layout";
 import type { TaskLaunchPhase } from "./chat-page-utils";
+import type { SelectSessionOptions } from "./use-session-selection";
 
 /** 任务图切片（面板 ctx 派生所需的最小面）。 */
 export interface RoutingTaskGraphSlice {
@@ -61,6 +68,12 @@ export interface TaskSessionRoutingDeps {
   nodeSessionMap: Record<string, { session_id: string | null; agent_id: string | null }>;
   // ── 邻接动作 ──
   closeSessionSidebar: () => void;
+  /** 切换会话时收起右侧文件预览（与「新对话」「打开会话」同一动作）。 */
+  closeViewer: () => void;
+  /** 打开会话的函数（见 use-session-selection）——任务主会话、节点会话都交给它。 */
+  handleSelectSessionRef: RefObject<(sessionId: string, options?: SelectSessionOptions) => void>;
+  /** 离开当前会话时记滚动位置（切到节点占位前调用——占位不是会话，不走打开函数）。 */
+  noteLeavingSession: () => void;
   setSelectedSession: (v: string | null) => void;
   selectedSessionRef: RefObject<string | null>;
   setSessionMessages: Dispatch<SetStateAction<Message[]>>;
@@ -102,6 +115,9 @@ export function useTaskSessionRouting(deps: TaskSessionRoutingDeps) {
     taskGraph,
     nodeSessionMap,
     closeSessionSidebar,
+    closeViewer,
+    handleSelectSessionRef,
+    noteLeavingSession,
     setSelectedSession,
     selectedSessionRef,
     setSessionMessages,
@@ -128,6 +144,7 @@ export function useTaskSessionRouting(deps: TaskSessionRoutingDeps) {
     activeTaskInstanceIdRef.current = null;
     activeTaskRequirementFileRef.current = null;
     lastKnownStatusRef.current = null;
+    closeViewer();
     closeSessionSidebar();
     setSelectedSession("new");
     selectedSessionRef.current = "new";
@@ -175,6 +192,7 @@ export function useTaskSessionRouting(deps: TaskSessionRoutingDeps) {
     activeTaskInstanceIdRef.current = null;
     activeTaskRequirementFileRef.current = null;
     lastKnownStatusRef.current = null;
+    closeViewer();
     closeSessionSidebar();
     setSelectedSession("new");
     selectedSessionRef.current = "new";
@@ -217,10 +235,16 @@ export function useTaskSessionRouting(deps: TaskSessionRoutingDeps) {
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
     taskLaunchOpenRef.current = false;
-    // 单对话流：主区指向任务主会话；节点视图经 handleTaskSelectNode 切换。
-    setSelectedSession(taskSession.task_session_id ?? null);
-    selectedSessionRef.current = taskSession.task_session_id ?? null;
     setTaskSelectedNodeId(null);
+    // 单对话流：主区指向任务主会话；节点视图经 handleTaskSelectNode 切换。
+    // 会话交给普通会话那个打开函数（带「保留任务上下文」）：收起预览、记离开位置、
+    // 读消息、刷新用量、定位都与打开普通会话完全相同。
+    if (taskSession.task_session_id) {
+      handleSelectSessionRef.current(taskSession.task_session_id, { keepTaskContext: true });
+    } else {
+      setSelectedSession(null);
+      selectedSessionRef.current = null;
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskModeActive]);
 
@@ -233,15 +257,22 @@ export function useTaskSessionRouting(deps: TaskSessionRoutingDeps) {
     }
     setTaskSelectedNodeId(nodeId);
     if (!nodeId) {
-      // 取消节点选择：清空节点会话 agent_id，主区恢复阶段会话
+      // 取消节点选择：清空节点会话 agent_id，主区回到任务主会话——也走打开函数
+      //（它会记下离开的节点会话的滚动位置）。
       setTaskNodeSessionAgentId(null);
       const sess = activeTaskLaunchInstance?.task_session_id ?? null;
-      setSelectedSession(sess);
-      selectedSessionRef.current = sess;
+      if (sess) {
+        handleSelectSessionRef.current(sess, { keepTaskContext: true });
+      } else {
+        setSelectedSession(null);
+        selectedSessionRef.current = null;
+      }
     } else {
       // v0.7.0 需求二-问题3：选中节点立即切到 pending-node 占位，清空上一个节点的
       // 会话残留。session_id 回填后由 handleTaskNodeSessionChange 更新为真实节点会话。
       // 此前不立即清空，导致新节点 session_id 回填前主区仍显示上一个节点的会话内容。
+      // 占位不是会话、不走打开函数——离开位置在这里记（与打开函数同一套写法）。
+      noteLeavingSession();
       setTaskNodeSessionAgentId(null);
       setSelectedSession("pending-node");
       selectedSessionRef.current = "pending-node";
@@ -254,8 +285,9 @@ export function useTaskSessionRouting(deps: TaskSessionRoutingDeps) {
   const handleTaskNodeSessionChange = useCallback(
     (info: { session_id: string | null; agent_id: string | null } | null) => {
       if (info && info.session_id) {
-        setSelectedSession(info.session_id);
-        selectedSessionRef.current = info.session_id;
+        // 节点会话也走打开函数（带「保留任务上下文 + 节点会话」）。同一个会话重复回填
+        //（任务图刷新）时打开函数自己会短路，不会收起预览、不会重新定位。
+        handleSelectSessionRef.current(info.session_id, { keepTaskContext: true, node: true });
       } else if (info) {
         // 节点已运行但 session_id 未回填（attempt 存在但 Pi RPC SessionResolved 未到）
         setSelectedSession("pending-node");

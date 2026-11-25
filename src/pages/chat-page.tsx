@@ -4,8 +4,8 @@
 // 移动，tsc/vitest/cargo 全绿）：
 //   簇A 滚动系统 → use-chat-scroll.ts（218 行：scrollAction 指令消费/
 //     贴底跟随/clamp 扩窗/滚动 rAF 节流/活动轮次/横杠跳转）
-//   簇B 任务/节点会话加载 → use-task-session-load.ts（166 行：缓存先行/
-//     节点 agent_id 重读/空载重试/入口定位/scrollMemory 落盘）
+//   簇B 节点会话补读 → use-node-session-reload.ts（打开任务会话 / 节点会话与打开
+//     普通会话走 use-session-selection 同一个函数，这里只剩数据晚到时的重读）
 //   簇C 任务执行段 → use-task-execution-stage.ts（363 行：方案卡数据与
 //     确认启动/子任务卡数据/失败节点干预/执行段滚动）
 // 历史拆分（更早）：kernel/event-pipeline、kernel/data-hub、kernel/
@@ -98,9 +98,9 @@ import { shouldRenderGlobalChatInput } from "./chat-page-layout";
 import { useTaskInstanceSync } from "./use-task-instance-sync";
 import { useAccessMode } from "./use-access-mode";
 import { ChatSidebar } from "./chat-sidebar";
-import { useSessionSelection } from "./use-session-selection";
+import { useSessionSelection, type ReloadSessionMessages } from "./use-session-selection";
 import { useChatScroll } from "./use-chat-scroll";
-import { useTaskSessionLoad } from "./use-task-session-load";
+import { useNodeSessionReload } from "./use-node-session-reload";
 import { commitEnterSession, useSearchLens, type SearchLensInput } from "./use-search-lens";
 import { useUnreadClearedOnView } from "@/features/session-kernel/session-unread";
 import { useTaskExecutionStage } from "./use-task-execution-stage";
@@ -478,9 +478,13 @@ export function ChatPage({
     messageExpandSignal,
     handleScrollToBottom,
   } = useChatScroll({ messageAreaRef, sessionMessages, selectedSession, searchLensInputRef });
-  // ── 簇B 任务/节点会话加载（同上迁出 use-task-session-load）──
+  // ── 簇B 节点会话补读（use-node-session-reload）——打开任务主会话、节点会话与打开普通
+  // 会话走同一个函数（use-session-selection，v0.9.8 需求24 续），这里只剩节点会话
+  // 「数据晚到」时的重读 ──
   const streamTextStarted = (currentStream?.text?.length ?? 0) > 0;
-  useTaskSessionLoad({
+  // 读消息的实现由 useSessionSelection 填；ref 建在这里是因为补读钩子挂在它之前。
+  const reloadSessionMessagesRef = useRef<ReloadSessionMessages>(() => Promise.resolve([]));
+  useNodeSessionReload({
     taskModeActive,
     selectedSession,
     projectId,
@@ -488,13 +492,7 @@ export function ChatPage({
     taskNodeSessionAgentId,
     activeId,
     streamTextStarted,
-    messageAreaRef,
-    scrollMemory,
-    sessionMessagesRef,
-    setSessionMessages,
-    isInSearchLens,
-    landsOnSearchHit,
-    jumpToSearchHit,
+    reloadSessionMessagesRef,
   });
   // v0.8.0 需求6：正在输出的会话集合（含后台会话）。驱动会话列表行的加载动效；
   // 快照仅在集合成员变化时更新，流式内容增量不会引起列表重渲染。
@@ -672,6 +670,7 @@ export function ChatPage({
     setOptimisticSessions,
     handleSelectSession,
     handleSelectSessionRef,
+    noteLeavingSession,
     prepareTaskLaunchMessage,
     handleMessageSent,
     handleSessionResolved,
@@ -703,6 +702,7 @@ export function ChatPage({
     setActiveTaskRequirementFile,
     setTaskSelectedNodeId,
     setTaskNodeSessionAgentId,
+    reloadSessionMessagesRef,
     // v0.9.8 需求23：搜索态（见 use-search-lens）
     isInSearchLens,
     landsOnSearchHit,
@@ -1281,7 +1281,7 @@ export function ChatPage({
     };
   }, []);
 
-  // ── 簇B 任务/节点会话加载：已迁 use-task-session-load ──
+  // ── 簇B 节点会话补读：已迁 use-node-session-reload（任务会话的打开并入了上面的打开函数）──
 
   const handleNewSession = async () => {
     if (!projectId) return;
@@ -1743,6 +1743,9 @@ export function ChatPage({
     taskGraph,
     nodeSessionMap: taskInstanceState.nodeSessionMap,
     closeSessionSidebar,
+    closeViewer,
+    handleSelectSessionRef,
+    noteLeavingSession,
     setSelectedSession,
     selectedSessionRef,
     setSessionMessages,
