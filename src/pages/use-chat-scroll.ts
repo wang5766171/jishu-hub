@@ -16,11 +16,15 @@
  * 消息加载 → 节点会话轮询回填。本 hook 只拥有滚动域；指令的「写入方」
  * （use-session-selection / 任务会话加载）仍经 scrollAction ref 外部投递，
  * 投递时应同步调 armScroll()（遮蔽启动）。
+ *
+ * v0.9.8 需求23：搜索态（搜索词非空）下不启动贴底跟随——消息列表只显示命中行、
+ * 由搜索导航定位，跟随会每帧把视图拉回列表底部。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { buildTurnSummaries } from "@/components/sessions/turn-rail";
 import { devLog } from "@/lib/dev-log";
 import type { Message } from "@/types";
+import type { SearchLensInput } from "./use-search-lens";
 
 export interface ChatScrollHandle {
   /** 滚动指令（外部写入：bottom / restore；本 hook 消费后置 null）。 */
@@ -28,6 +32,10 @@ export interface ChatScrollHandle {
   /** 需求9 补充3：武装滚动遮蔽（写入方投递指令时调用——定位完成前内容
    *  visibility:hidden，消费/超时后恢复；消除「顶部→中部→底部」多帧闪）。 */
   armScroll: () => void;
+  /** 解除滚动遮蔽（定位由别处完成的打开路径——搜索跳转——定位后调用）。 */
+  disarmScroll: () => void;
+  /** 停止贴底跟随（进入搜索态时调用）。 */
+  stopBottomFollow: () => void;
   /** 离底判定 ref（事件管线/任务 run 增长贴底判定共用，非 React 闭包读）。 */
   isAwayFromBottomRef: RefObject<boolean>;
   /** 离底 state（JSX 消费：滚动到底按钮显隐）。 */
@@ -48,10 +56,13 @@ export function useChatScroll({
   messageAreaRef,
   sessionMessages,
   selectedSession,
+  searchLensInputRef,
 }: {
   messageAreaRef: RefObject<HTMLDivElement | null>;
   sessionMessages: Message[];
   selectedSession: string | null;
+  /** 搜索态输入（见 use-search-lens）。渲染期间由页面写入；本 hook 只在消费指令时读搜索词。 */
+  searchLensInputRef: RefObject<SearchLensInput>;
 }): ChatScrollHandle {
   const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
   const [activeTurnIndex, setActiveTurnIndex] = useState(0);
@@ -94,6 +105,15 @@ export function useChatScroll({
     }, 800);
   }, [messageAreaRef, disarmScroll]);
 
+  /** 停止贴底跟随：正在跑的跟随帧作废，之后内容变高不再把视图拉回底部。 */
+  const stopBottomFollow = useCallback(() => {
+    bottomFollowRef.current = false;
+    if (bottomFollowTimerRef.current !== null) {
+      cancelAnimationFrame(bottomFollowTimerRef.current);
+      bottomFollowTimerRef.current = null;
+    }
+  }, []);
+
   useLayoutEffect(() => {
     if (!scrollAction.current || !messageAreaRef.current) return;
     // v0.9.2 测试期修复：消息未加载时消费滚动指令 → scrollHeight=0 → 定位到
@@ -107,10 +127,15 @@ export function useChatScroll({
     // 解除会在「半高 clamp → 全高 → rAF 拉底」间露出 1-2 帧中部位置闪。
     const armed = scrollArmedRef.current;
     const disarmIfArmed = () => { if (armed) disarmScroll(); };
-    bottomFollowRef.current = action.type === "bottom";
+    // v0.9.8 需求23：搜索态下不启动贴底跟随（列表由搜索导航定位）——照常滚到底，只是不跟随。
+    bottomFollowRef.current = action.type === "bottom" && !searchLensInputRef.current.query.trim();
     devLog("session", "scrollAction 消费", { type: action.type, top: action.type === "restore" ? action.top : undefined });
     if (action.type === "bottom") {
       messageAreaRef.current.scrollTop = messageAreaRef.current.scrollHeight;
+      if (!bottomFollowRef.current) {
+        disarmIfArmed();
+        return;
+      }
       // v0.9.6 需求11：贴底跟随由消费点直接启动——原独立 effect 挂在
       // [selectedSession] 上，而消息异步晚于 selectedSession 到达：轮询
       // effect 执行时 bottomFollowRef 尚为 false 直接 return「死亡」。
@@ -294,6 +319,8 @@ export function useChatScroll({
   return {
     scrollAction,
     armScroll,
+    disarmScroll,
+    stopBottomFollow,
     isAwayFromBottomRef,
     isAwayFromBottom,
     activeTurnIndex,

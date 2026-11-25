@@ -62,6 +62,7 @@ function makeDeps() {
     sessionsRef: { current: null } as MutableRefObject<Session[] | null>,
     stagedApiRef: { current: null },
     supportsSteerRef: { current: true } as MutableRefObject<boolean>,
+    syncSessionListMessagesRef: { current: null },
     taskLaunchOpenRef: { current: false },
     taskLaunchPhaseRef: { current: null },
     visitedSessions: { current: new Set<string>() },

@@ -73,6 +73,11 @@ export interface AgentEventPipelineDeps {
   sessionsRef: MutableRefObject<Session[] | null>;
   stagedApiRef: MutableRefObject<StagedGuideApi | null>;
   supportsSteerRef: MutableRefObject<boolean>;
+  /**
+   * v0.9.8 需求23：把这个会话在会话列表里的消息换成给定的一份。侧栏搜索与摘要读的是列表，
+   * 而列表只在读取时从磁盘读一次——回合结束时同步，列表里这一项才跟正文是同一份消息。
+   */
+  syncSessionListMessagesRef: MutableRefObject<((sessionId: string, messages: Message[]) => void) | null>;
   taskLaunchOpenRef: MutableRefObject<boolean>;
   taskLaunchPhaseRef: MutableRefObject<TaskLaunchPhase>;
   /** 需求9 #4 补：任务首条 goal（prepareTaskLaunchMessage 捕获，建实例即写标题）。 */
@@ -956,6 +961,11 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           const updated = [...baseMessages, ...newMessages];
           setCachedSessionMessages(finalKey, updated);
           if (cid !== finalKey) setCachedSessionMessages(cid, updated);
+          // v0.9.8 需求23：会话列表里这个会话的消息换成这一份（与正文、缓存是同一个数组）。
+          // 侧栏搜索与摘要读的是列表，而列表只在读取时从磁盘读一次（此后只有新会话第一轮
+          // 结束才重读）：同一个会话第二轮起再聊的内容侧栏搜不到，徽标数停在旧的一份上，
+          // 和正文的黄底数对不上。不重读整个列表——重读要把项目里每个会话文件全量解析。
+          deps.syncSessionListMessagesRef.current?.(finalKey, updated);
 
           // Persist interaction blocks to JSONL (best-effort). The session's
           // `path` field is the JSONL file location for existing sessions; new
@@ -1162,7 +1172,11 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           if (isNewSessionStream) {
             deps.newSessionStreamIdsRef.current.delete(cid);
             deps.newSessionStreamIdsRef.current.delete(finalKey);
-            deps.refetchSessionsRef.current?.(true).catch(console.error);
+            // 新会话在列表里还没有这一项，上面的同步落空——重读列表把它加进来；
+            // 重读完成后这一项以正文那一份为准（重读读到的是磁盘上的文件）。
+            deps.refetchSessionsRef.current?.(true)
+              .then(() => deps.syncSessionListMessagesRef.current?.(finalKey, updated))
+              .catch(console.error);
           }
 
         }

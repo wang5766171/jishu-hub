@@ -1,12 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type Dispatch, type SetStateAction } from "react";
 
 interface UseInvokeResult<T> {
   data: T | null;
   loading: boolean;
   error: string | null;
   refetch: (silent?: boolean) => Promise<T>;
-  setData: (data: T | null) => void;
+  /** 与 useState 的 setter 同一个类型：可以给值，也可以给「按上一份算下一份」的函数。 */
+  setData: Dispatch<SetStateAction<T | null>>;
 }
 
 /** 需求9 补充2 续（2026-11-10）：keepStale——args 变化（如切项目）时保留旧

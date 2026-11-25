@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, ChevronDown, ChevronRight, MessageCircleQuestion } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -54,11 +54,15 @@ export const InteractionCard = memo(function InteractionCard({
   const { t } = useTranslation();
   const [open, setOpen] = useState(defaultOpen);
   // v0.9.5 需求5 T3 排查：每张卡的实际渲染（items 数 / 展开态 / 渲染链）。
-  devLog("session", "ia-card", {
-    items: items.length,
-    open: defaultOpen,
-    source: renderSource ?? "builtin",
-  });
+  // 日志在提交之后写：渲染期间写日志会同步刷新日志面板，把正在进行的低优先级渲染
+  // （如搜索词延迟生效）打断重来——v0.9.8 需求23 实测逐帧空转、搜索永远不生效。
+  useEffect(() => {
+    devLog("session", "ia-card", {
+      items: items.length,
+      open: defaultOpen,
+      source: renderSource ?? "builtin",
+    });
+  }, [items.length, defaultOpen, renderSource]);
   const itemsToRender = useMemo(
     () =>
       dedupeInteractionItems(items).map((item) => ({

@@ -33,6 +33,9 @@ export function useTaskSessionLoad({
   scrollMemory,
   sessionMessagesRef,
   setSessionMessages,
+  isInSearchLens,
+  landsOnSearchHit,
+  jumpToSearchHit,
 }: {
   taskModeActive: boolean;
   selectedSession: string | null;
@@ -46,6 +49,11 @@ export function useTaskSessionLoad({
   scrollMemory: RefObject<Map<string, number | "bottom">>;
   sessionMessagesRef: RefObject<Message[]>;
   setSessionMessages: (messages: Message[]) => void;
+  /** v0.9.8 需求23：搜索态（见 use-search-lens）——有命中的会话打开时落到命中处；
+   * 搜索态下离开会话不记滚动位置。三个函数引用稳定。 */
+  isInSearchLens: (sessionId: string) => boolean;
+  landsOnSearchHit: (sessionId: string) => boolean;
+  jumpToSearchHit: (sessionId: string) => void;
 }): void {
   // 入口标记：entry key（sid#nodeId）变化 = 新入口需定位；同一入口的流式
   // 重载不重复定位；消息未非空时定位保持待定。
@@ -88,6 +96,12 @@ export function useTaskSessionLoad({
     const positionIfPending = () => {
       if (taskScrollPendingRef.current !== entryKey) return;
       taskScrollPendingRef.current = null;
+      // v0.9.8 需求23：搜索态下打开有命中的会话——落到第一处命中（与常规会话
+      // 同一条路）。与 setSessionMessages 在同一批更新里，消息视图当帧定位。
+      if (landsOnSearchHit(selectedSession)) {
+        jumpToSearchHit(selectedSession);
+        return;
+      }
       const saved = scrollMemory.current.get(selectedSession);
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -152,9 +166,12 @@ export function useTaskSessionLoad({
       // 此前从未保存 scrollMemory。占位/空消息不落盘（避免把 0 写进记忆）。
       // 读 sessionMessagesRef（每渲染同步）：cleanup 闭包里的 state 是入口
       // 时的快照，异步加载完成后并不更新。
+      // v0.9.8 需求23：搜索态下该会话只显示命中行，像素位置在完整列表里没有
+      // 意义——不记（保留它进入搜索前的位置）。
       if (
         selectedSession !== "pending-node" &&
         selectedSession !== "new" &&
+        !isInSearchLens(selectedSession) &&
         messageAreaRef.current &&
         sessionMessagesRef.current.length > 0
       ) {

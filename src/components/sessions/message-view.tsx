@@ -1,4 +1,4 @@
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { devLog } from "@/lib/dev-log";
@@ -9,6 +9,8 @@ import rehypeHighlight from "rehype-highlight";
 import { Check, Copy, Bot, Pencil, Trash2 } from "lucide-react";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
+import { blockSearchText, countMatches, searchRegExp } from "@/lib/session-search-text";
+import { SearchHighlightRegistry, centerInScroller, findMatchRanges, rectOfMatch, scrollTopToCenter, supportsTextHighlight } from "./search-highlight";
 import { extractCodeText } from "./code-block-text";
 // v0.9.7 需求6 F2：产物引用链接（jishu-artifact://）——Q14：仅助手消息两处接入。
 import { jishuUrlTransform } from "@/lib/markdown-url";
@@ -31,7 +33,7 @@ import {
 } from "./equip-recommend-card";
 // v0.9.2 需求1 P1：行/轮次语义迁移至会话内核统一视图模型（单一权威，
 // 导航轨等轮次消费方读同一份，消除双实现契约对齐负担）。
-import { buildSessionRows, isUserToolResultOnlyMessage, type SessionRowModel } from "@/features/session-kernel/view-model";
+import { buildSearchDisplayItems, buildSessionRows, isUserToolResultOnlyMessage, type SearchDisplayItem, type SearchGapPosition, type SessionRowModel } from "@/features/session-kernel/view-model";
 // v0.9.5 需求4 P2：轮级三段式（已工作折叠 + 正文 + 文件改动概览）。
 import { buildTurnSegments } from "@/features/session-kernel/view-model/build-turn-segments";
 import { TurnGroupView } from "@/features/session-kernel/shell/turn-group-view";
@@ -54,6 +56,131 @@ const ROW_STYLE: React.CSSProperties = {
   containIntrinsicSize: "auto 200px",
 };
 
+// v0.9.8 需求23：会话内搜索——渲染后标黄 + 只显示命中消息。
+//
+// `active` 为真时（正在搜索且浏览器支持文字高亮接口），文字块照常渲染成
+// Markdown，由 SearchHighlightArea 在渲染好的页面上登记命中范围并上色；
+// 为假时文字块回落到原先的「源码切分加 <mark>」方式（高亮接口不可用的环境）。
+type SearchHighlightContextValue = {
+  registry: SearchHighlightRegistry;
+  active: boolean;
+  query: string;
+  /** 文字块 → 该块第一处命中的全局序号（`${消息下标}-${块下标}`）。 */
+  offsets: Map<string, number>;
+  /** 含命中的文字块（`${消息下标}-${块下标}`）——只有这些块需要到页面上找命中。 */
+  hitBlocks: Set<string>;
+};
+const SearchHighlightContext = createContext<SearchHighlightContextValue>({
+  registry: new SearchHighlightRegistry(),
+  active: false,
+  query: "",
+  offsets: new Map(),
+  hitBlocks: new Set(),
+});
+
+/**
+ * 「高亮接口是否生效」单独一份：文字块只读这一项。上面那份带搜索词，搜索词每变
+ * 一次订阅它的组件都会重渲染——长会话里就是每敲一个字把所有行重新渲染一遍。
+ */
+const SearchHighlightModeContext = createContext(false);
+
+/** 「上一处 / 下一处」切换时传给文字块的固定值：高亮接口生效时当前命中靠登记处上色，文字块不必重渲染。 */
+const NO_CURRENT_MATCH = -1;
+
+/**
+ * 高亮接口生效时，行的渲染结果不依赖搜索词（命中在渲染后登记上色）。给行的搜索
+ * 属性用这份固定值，搜索词变化时已显示的行才能跳过重渲染。
+ */
+const EMPTY_OFFSETS: Map<string, number> = new Map();
+const EMPTY_ITEMS: RenderItem[] = [];
+
+/** v0.9.8 需求23：搜索跳转信号（页面 → 消息视图）：目标会话 + 递增序号。 */
+export type SearchJump = { sessionId: string | null; nonce: number };
+
+/**
+ * v0.9.8 需求23：搜索态下记住「视口顶上是哪条消息行、离视口顶多远」。搜索态
+ * 只显示命中行，退出时上下的消息重新补进来——按这个把那条行放回屏幕原处，
+ * 正在看的内容不动。停在底部时记「底部」。
+ */
+type LensAnchor = { kind: "bottom" } | { kind: "row"; messageIndex: number; offset: number };
+
+/**
+ * 让指定的行按真实高度参与布局后再量。
+ *
+ * 消息行用了 content-visibility: auto——浏览器还没决定渲染的行不排版，高度是占位值
+ * （contain-intrinsic-size 的 auto 200px），渲染后才变成真实高度。刚补进列表的行，
+ * 在布局副作用里量的就是占位高度：按它补的滚动位置，等浏览器把行渲染出来就偏了
+ * （开发实例实测偏 88 像素）。这里先强制排版再量；量完恢复，浏览器会记住这次量到的
+ * 真实尺寸，之后跳过排版时用的也是真实高度。
+ */
+function withRenderedRows<T>(rowEls: HTMLElement[], measure: () => T): T {
+  // 记下原来的行内值再改：量完要还原成原值（置空会把 content-visibility: auto 删掉，
+  // 这一行此后不再被浏览器跳过排版）
+  const previous = rowEls.map((el) => el.style.getPropertyValue("content-visibility"));
+  for (const el of rowEls) el.style.setProperty("content-visibility", "visible");
+  try {
+    return measure();
+  } finally {
+    rowEls.forEach((el, i) => {
+      if (previous[i]) el.style.setProperty("content-visibility", previous[i]);
+      else el.style.removeProperty("content-visibility");
+    });
+  }
+}
+
+/**
+ * 随后几帧继续对齐一个滚动位置（align 返回「还要滚多少」）。
+ * 视口边缘的行会被浏览器陆续渲染、高度还会变，刚放好的位置可能被顶偏一点，这里跟着补。
+ * 滚动位置一旦被别处改动（用户滚动、其他定位）就停——不跟用户抢滚动。
+ */
+function holdScrollForFrames(container: HTMLElement, align: () => number, frames = 4): void {
+  if (typeof requestAnimationFrame !== "function") return;
+  let expected = container.scrollTop;
+  let left = frames;
+  const tick = () => {
+    if (Math.abs(container.scrollTop - expected) > 1) return;
+    container.scrollTop += align();
+    expected = container.scrollTop;
+    if (--left > 0) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+const GAP_LABEL_KEYS: Record<SearchGapPosition, "sessions.searchGapBefore" | "sessions.searchGap" | "sessions.searchGapAfter"> = {
+  before: "sessions.searchGapBefore",
+  middle: "sessions.searchGap",
+  after: "sessions.searchGapAfter",
+};
+
+/**
+ * 包住一块渲染好的正文：挂载、内容或关键词变化时重算这一块的命中范围并登记，
+ * 卸载时注销。高亮接口不生效时就是一个普通的容器。
+ *
+ * 登记放在布局阶段（useLayoutEffect）：打开命中会话的当帧定位（见 MessageView
+ * 里的 searchJump）要读到这些范围，得赶在那一帧绘制之前。
+ */
+function SearchHighlightArea({ blockKey, text, children }: { blockKey: string; text: string; children: React.ReactNode }) {
+  const { registry, active, query, offsets, hitBlocks } = useContext(SearchHighlightContext);
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!active || !el) return;
+    // 搜索词每变一次，所有已挂载的文字块都会走到这里；长会话里绝大多数块不含
+    // 关键词——按计数用的同一份可见文字先筛一遍，不含的块不扫页面。
+    if (!hitBlocks.has(blockKey)) {
+      registry.removeBlock(blockKey);
+      return;
+    }
+    registry.setBlock(blockKey, offsets.get(blockKey) ?? 0, findMatchRanges(el, query));
+    return () => registry.removeBlock(blockKey);
+  }, [active, query, offsets, hitBlocks, registry, blockKey, text]);
+  return (
+    <div ref={ref} className="overflow-hidden">
+      {children}
+    </div>
+  );
+}
+
 interface MessageViewProps {
   messages: Message[];
   /** v0.8.1 需求7：会话 id——用户消息 pill 的 id→中文名映射按会话加载。 */
@@ -62,6 +189,14 @@ interface MessageViewProps {
   searchQuery?: string;
   searchNavigation?: MessageSearchNavigation | null;
   onSearchStatusChange?: (status: MessageSearchStatus) => void;
+  /**
+   * v0.9.8 需求23：搜索跳转信号——打开一个在当前搜索词下有命中的会话时由页面
+   * 发出（目标会话 + 递增序号，只在定位完成前存在）。视图在当帧把第一处命中
+   * 放到视口正中，不等「上一处/下一处」那条 120ms 后平滑滚动的路。
+   */
+  searchJump?: SearchJump | null;
+  /** 搜索跳转已完成（或本视图没有可定位的命中）——页面据此解除滚动遮蔽。 */
+  onSearchJumpDone?: () => void;
   flat?: boolean;
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
   /** v0.9.4 性能优化：跳转扩窗信号（nonce 递增 → 渲染窗口扩至全量）——
@@ -176,21 +311,28 @@ const TextBlock = memo(function TextBlock({
   matchOffset?: number;
   currentMatch?: number;
 }) {
+  // v0.9.8 需求23：文字高亮接口生效时正文照常渲染（表格、代码高亮都在），命中
+  // 由外层 SearchHighlightArea 在渲染结果上上色；这里的 query 只用于回落方式
+  //（接口不可用时把正文退回源码、按关键词切分加 <mark>）。
+  // 只读「是否生效」这一项（单独的上下文，不随搜索词变化）——读带搜索词的那份，
+  // 每换一次搜索词所有文字块都会重渲染。
+  const highlightActive = useContext(SearchHighlightModeContext);
+  const plainQuery = highlightActive ? "" : query;
   if (dark) {
     const display = stripImagePrompt(text);
     // v0.8.1 需求7（28f37e8e 形态）：用户文本块内联渲染（span 而非 div），
     // 使其可与插件 pill 在同一行内共处——pill 只是内联视觉元素，不占独立行。
     return (
       <span className="whitespace-pre-wrap break-all" style={{ fontSize: "var(--font-size-prose)" }}>
-        {query ? highlightText(display, query, matchOffset ?? 0, currentMatch ?? -1) : display}
+        {plainQuery ? highlightText(display, plainQuery, matchOffset ?? 0, currentMatch ?? -1) : display}
       </span>
     );
   }
 
-  if (query.trim()) {
+  if (plainQuery.trim()) {
     return (
       <div className="markdown-prose overflow-hidden whitespace-pre-wrap break-words text-sm">
-        {highlightText(text, query, matchOffset ?? 0, currentMatch ?? -1)}
+        {highlightText(text, plainQuery, matchOffset ?? 0, currentMatch ?? -1)}
       </div>
     );
   }
@@ -213,7 +355,7 @@ const TextBlock = memo(function TextBlock({
                 remarkPlugins={REMARK_PLUGINS}
                 rehypePlugins={REHYPE_PLUGINS}
                 urlTransform={jishuUrlTransform}
-                components={{ pre: MarkdownPreWithRenderers, a: ArtifactLink }}
+                components={MARKDOWN_COMPONENTS}
               >
                 {seg.content}
               </ReactMarkdown>
@@ -237,7 +379,7 @@ const TextBlock = memo(function TextBlock({
         remarkPlugins={REMARK_PLUGINS}
         rehypePlugins={REHYPE_PLUGINS}
         urlTransform={jishuUrlTransform}
-        components={{ pre: MarkdownPreWithRenderers, a: ArtifactLink }}
+        components={MARKDOWN_COMPONENTS}
       >
         {text}
       </ReactMarkdown>
@@ -252,36 +394,50 @@ const TextBlock = memo(function TextBlock({
 function MarkdownPreWithRenderers({ children }: { children?: React.ReactNode }) {
   const renderers = useBlockRenderers();
   const child = Array.isArray(children) ? children[0] : children;
-  if (renderers.length > 0 && child && typeof child === "object" && "props" in child) {
-    const codeProps = (child as { props?: { className?: string; children?: unknown } }).props;
-    const language = /language-([\w-]+)/.exec(codeProps?.className ?? "")?.[1] ?? "";
-    const code = extractCodeText(codeProps?.children as React.ReactNode);
-    if (language && code) {
-      const renderer = matchBlockRenderer(renderers, language, code);
-      if (renderer) {
-        const Renderer = renderer.Component;
-        // 需求14 M1（K5）：接管可见性——右上角轻角标（hover 提亮，title 全称），
-        // 「谁接管了这块」一眼可辨（含遮蔽内置的场合）。
-        const source = renderer as { pluginId?: string; pluginLabel?: string };
-        if (source.pluginId) {
-          return (
-            <div className="relative">
-              <span
-                className="pointer-events-none absolute -top-0.5 right-1 z-10 rounded bg-background/70 px-1 text-[9px] leading-4 text-muted-foreground/50"
-                title={`由插件渲染：${source.pluginLabel ?? source.pluginId}（${source.pluginId}）`}
-              >
-                ⚙ {source.pluginLabel ?? source.pluginId}
-              </span>
-              <Renderer code={code} language={language} />
-            </div>
-          );
-        }
-        return <Renderer code={code} language={language} />;
-      }
+  const codeProps =
+    child && typeof child === "object" && "props" in child
+      ? (child as { props?: { className?: string; children?: unknown } }).props
+      : undefined;
+  const language = /language-([\w-]+)/.exec(codeProps?.className ?? "")?.[1] ?? "";
+  const code = extractCodeText(codeProps?.children as React.ReactNode);
+  const renderer = renderers.length > 0 && language && code ? matchBlockRenderer(renderers, language, code) : null;
+  // 需求14：遮蔽命中观测——哪个插件接管了哪个语言的代码块。
+  // 日志在提交之后写：渲染期间写日志会同步刷新日志面板，把正在进行的低优先级渲染
+  // （如搜索词延迟生效）打断重来——v0.9.8 需求23 实测逐帧空转、搜索永远不生效。
+  const pluginId = renderer ? (renderer as { pluginId?: string }).pluginId : undefined;
+  const hitLanguage = language.toLowerCase();
+  useEffect(() => {
+    if (!renderer) return;
+    devLog("capability", `block-renderer hit: ${hitLanguage} → ${pluginId ?? "unknown"}`, {
+      language: hitLanguage,
+      pluginId,
+    });
+  });
+  if (renderer) {
+    const Renderer = renderer.Component;
+    // 需求14 M1（K5）：接管可见性——右上角轻角标（hover 提亮，title 全称），
+    // 「谁接管了这块」一眼可辨（含遮蔽内置的场合）。
+    if (pluginId) {
+      const source = renderer as { pluginId?: string; pluginLabel?: string };
+      return (
+        <div className="relative">
+          <span
+            className="pointer-events-none absolute -top-0.5 right-1 z-10 rounded bg-background/70 px-1 text-[9px] leading-4 text-muted-foreground/50"
+            title={`由插件渲染：${source.pluginLabel ?? source.pluginId}（${source.pluginId}）`}
+          >
+            ⚙ {source.pluginLabel ?? source.pluginId}
+          </span>
+          <Renderer code={code} language={language} />
+        </div>
+      );
     }
+    return <Renderer code={code} language={language} />;
   }
   return <pre>{children}</pre>;
 }
+
+/** Markdown 的组件映射是固定值——每次渲染新建对象会让 Markdown 组件白白重渲染。 */
+const MARKDOWN_COMPONENTS = { pre: MarkdownPreWithRenderers, a: ArtifactLink };
 
 function extractMessageText(msg: Message): string {
   return msg.content
@@ -336,6 +492,17 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+/**
+ * v0.9.5 需求5 T3 排查：单块渲染点。日志在提交之后写：渲染期间写日志会同步
+ * 刷新日志面板，把正在进行的低优先级渲染（如搜索词延迟生效）打断重来。
+ */
+function LoggedInteractionBlock({ block }: { block: Extract<ContentBlock, { type: "interaction" }> }) {
+  useEffect(() => {
+    devLog("session", "ia-render:block", { prompt: block.prompt.slice(0, 24) });
+  }, [block]);
+  return <InteractionBlockWithRenderers items={[interactionBlockToItem(block)]} origin={block.origin} />;
+}
+
 function renderBlock(
   block: ContentBlock,
   query: string,
@@ -349,11 +516,7 @@ function renderBlock(
     case "thinking":
       return <ThinkingBlock block={block} />;
     case "interaction":
-      // v0.9.5 需求5 T3 排查：单块渲染点
-      devLog("session", "ia-render:block", { prompt: block.prompt.slice(0, 24) });
-      return (
-        <InteractionBlockWithRenderers items={[interactionBlockToItem(block)]} origin={block.origin} />
-      );
+      return <LoggedInteractionBlock block={block} />;
     case "phase_divider":
       return <PhaseDividerBlockWithRenderers phase={block.phase} title={block.title} />;
     default:
@@ -547,7 +710,7 @@ function rowKey(row: RenderRow, messages: Message[]): string {
   return `assistant-${row.startIndex}-${row.endIndex}-${row.messageIndices.length}-${text.length}-${text.slice(0, 16)}`;
 }
 
-function AssistantBubble({
+function AssistantBubbleImpl({
   items,
   copyText,
   renderingQuery,
@@ -561,6 +724,16 @@ function AssistantBubble({
   currentOcc: number;
 }) {
   const { t } = useTranslation();
+  // v0.9.5 需求5 T3 排查：assistant 组渲染点（带间距修复的分支）。
+  // 日志在提交之后写：渲染期间写日志会同步刷新日志面板，把正在进行的低优先级渲染
+  // （如搜索词延迟生效）打断重来——v0.9.8 需求23 实测逐帧空转、搜索永远不生效。
+  useEffect(() => {
+    for (const item of items) {
+      if (item.kind === "interaction") {
+        devLog("session", "ia-render:assistant-group", { items: item.items.length, blockIndex: item.blockIndex });
+      }
+    }
+  }, [items]);
 
   // v0.9.5 需求4 P2：三段式重组（工作项折叠 + 正文 + 文件概览）。
   const segments = buildTurnSegments(items);
@@ -575,11 +748,6 @@ function AssistantBubble({
         }
 
         if (item.kind === "interaction") {
-          // v0.9.5 需求5 T3 排查：assistant 组渲染点（带间距修复的分支）
-          devLog("session", "ia-render:assistant-group", {
-            items: item.items.length,
-            blockIndex: item.blockIndex,
-          });
           return (
             <div
               key={`interaction-${item.messageIndex}-${item.blockIndex}`}
@@ -591,15 +759,29 @@ function AssistantBubble({
         }
 
         const offsetKey = `${item.messageIndex}-${item.blockIndex}`;
+        const rendered = renderBlock(
+          item.block,
+          renderingQuery,
+          false,
+          searchOffsets.get(offsetKey) ?? 0,
+          currentOcc,
+        );
+        // v0.9.8 需求23：文字块包进 SearchHighlightArea——命中在渲染结果上上色；
+        // 思考块、问答卡、阶段分隔线不参与搜索，保持普通容器。
+        if (item.block.type === "text") {
+          return (
+            <SearchHighlightArea
+              key={`b-${item.messageIndex}-${item.blockIndex}`}
+              blockKey={offsetKey}
+              text={item.block.text}
+            >
+              {rendered}
+            </SearchHighlightArea>
+          );
+        }
         return (
           <div key={`b-${item.messageIndex}-${item.blockIndex}`} className="overflow-hidden">
-            {renderBlock(
-              item.block,
-              renderingQuery,
-              false,
-              searchOffsets.get(offsetKey) ?? 0,
-              currentOcc,
-            )}
+            {rendered}
           </div>
         );
       });
@@ -627,7 +809,7 @@ function AssistantBubble({
 }
 
 
-function UserBubble({
+function UserBubbleImpl({
   msg,
   items,
   renderingQuery,
@@ -657,6 +839,16 @@ function UserBubble({
   onDismissUnsent?: (() => void) | null;
 }) {
   const { t } = useTranslation();
+  // v0.9.5 需求5 T3 排查：user 组渲染点（带间距修复的分支）。
+  // 日志在提交之后写：渲染期间写日志会同步刷新日志面板，把正在进行的低优先级渲染
+  // （如搜索词延迟生效）打断重来——v0.9.8 需求23 实测逐帧空转、搜索永远不生效。
+  useEffect(() => {
+    for (const item of items) {
+      if (item.kind === "interaction") {
+        devLog("session", "ia-render:user-group", { items: item.items.length, blockIndex: item.blockIndex });
+      }
+    }
+  }, [items]);
   // 需求13：原位编辑态（zcode 式——气泡内容替换为编辑框，Enter 确认/Esc 取消）。
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -764,11 +956,6 @@ function UserBubble({
             }
 
             if (item.kind === "interaction") {
-              // v0.9.5 需求5 T3 排查：user 组渲染点（带间距修复的分支）
-              devLog("session", "ia-render:user-group", {
-                items: item.items.length,
-                blockIndex: item.blockIndex,
-              });
               return (
                 <div
                   key={`interaction-${item.messageIndex}-${item.blockIndex}`}
@@ -789,40 +976,51 @@ function UserBubble({
             if (item.block.type === "text" && item.block === firstTextBlock) {
               // v0.9.8 需求9 路线甲：正文含可内联 @[名] 字样（新消息——用户
               // 填入位置随文本持久）→ UserTextWithPills 就地内联（trailing
-              // 排重内置）；无字样（历史剥离消息）→ 原 TextBlock+尾随路径
-              //（保留搜索高亮——含字样路径为排版一致暂不参与搜索高亮，
-              // 用户消息内命中工具名旁属边缘场景，取舍如实记录）。
+              // 排重内置）；无字样（历史剥离消息）→ 原 TextBlock+尾随路径。
+              // v0.9.8 需求23：两条路径都包进 SearchHighlightArea——命中在渲染
+              // 结果上上色，含字样路径同样参与（回落到源码切分时含字样路径仍
+              // 不参与，属已知取舍）。
               if (hasKnownToolToken(displayText, toolNames)) {
                 return (
-                  <div key={`b-${item.blockIndex}`} className="overflow-hidden">
+                  <SearchHighlightArea key={`b-${item.blockIndex}`} blockKey={offsetKey} text={displayText}>
                     <UserTextWithPills text={displayText} toolIds={toolIds} toolNames={toolNames} toolCats={toolCats} />
-                  </div>
+                  </SearchHighlightArea>
                 );
               }
               return (
-                <div key={`b-${item.blockIndex}`} className="overflow-hidden">
-                  <TextBlock
-                    text={displayText}
-                    query={renderingQuery}
-                    dark
-                    matchOffset={searchOffsets.get(offsetKey) ?? 0}
-                    currentMatch={currentOcc}
-                  />
+                <Fragment key={`b-${item.blockIndex}`}>
+                  <SearchHighlightArea blockKey={offsetKey} text={displayText}>
+                    <TextBlock
+                      text={displayText}
+                      query={renderingQuery}
+                      dark
+                      matchOffset={searchOffsets.get(offsetKey) ?? 0}
+                      currentMatch={currentOcc}
+                    />
+                  </SearchHighlightArea>
                   {toolIds.length > 0 && (
                     <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} toolCats={toolCats} trailing />
                   )}
-                </div>
+                </Fragment>
+              );
+            }
+            const rendered = renderBlock(
+              item.block,
+              renderingQuery,
+              true,
+              searchOffsets.get(offsetKey) ?? 0,
+              currentOcc,
+            );
+            if (item.block.type === "text") {
+              return (
+                <SearchHighlightArea key={`b-${item.blockIndex}`} blockKey={offsetKey} text={item.block.text}>
+                  {rendered}
+                </SearchHighlightArea>
               );
             }
             return (
               <div key={`b-${item.blockIndex}`} className="overflow-hidden">
-                {renderBlock(
-                  item.block,
-                  renderingQuery,
-                  true,
-                  searchOffsets.get(offsetKey) ?? 0,
-                  currentOcc,
-                )}
+                {rendered}
               </div>
             );
           })}
@@ -872,6 +1070,13 @@ function UserBubble({
   );
 }
 
+// v0.9.8 需求23：气泡按属性跳过重渲染——搜索词变化时，渲染结果不依赖搜索词的行不再
+// 重渲染（Markdown 不重新解析）。此前两个气泡每次父级重渲染都整体重渲染。
+const AssistantBubble = memo(AssistantBubbleImpl);
+AssistantBubble.displayName = "AssistantBubble";
+const UserBubble = memo(UserBubbleImpl);
+UserBubble.displayName = "UserBubble";
+
 export const MessageView = memo(function MessageView({
   messages,
   sessionId,
@@ -879,6 +1084,8 @@ export const MessageView = memo(function MessageView({
   searchQuery: externalSearchQuery,
   searchNavigation,
   onSearchStatusChange,
+  searchJump,
+  onSearchJumpDone,
   flat,
   scrollContainerRef,
   roleResolver,
@@ -902,26 +1109,46 @@ export const MessageView = memo(function MessageView({
     }
   }, [externalSearchQuery, initialSearchQuery]);
 
+  // v0.9.8 需求23：搜索文本 = 用户看得见的文字（用户消息剥掉内部注入块，助手
+  // 消息去掉 Markdown 语法符号），与侧栏搜索、气泡显示同一出处。
   const searchState = useMemo(() => {
-    if (!renderingQuery.trim()) return { total: 0, offsets: new Map<string, number>(), matchToMessage: [] as number[] };
-    const escaped = renderingQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(escaped, "gi");
+    if (!renderingQuery.trim()) {
+      return { total: 0, offsets: new Map<string, number>(), hitBlocks: new Set<string>(), matchToMessage: [] as number[] };
+    }
+    const regex = searchRegExp(renderingQuery);
     const offsets = new Map<string, number>();
+    const hitBlocks = new Set<string>();
     const matchToMessage: number[] = [];
     let total = 0;
 
     messages.forEach((msg, mi) => {
       msg.content.forEach((block, bi) => {
         if (block.type !== "text") return;
-        offsets.set(`${mi}-${bi}`, total);
-        const count = block.text.match(regex)?.length ?? 0;
+        const key = `${mi}-${bi}`;
+        offsets.set(key, total);
+        const count = countMatches(blockSearchText(block, msg.role), regex);
+        if (count > 0) hitBlocks.add(key);
         for (let i = 0; i < count; i++) matchToMessage.push(mi);
         total += count;
       });
     });
 
-    return { total, offsets, matchToMessage };
+    return { total, offsets, hitBlocks, matchToMessage };
   }, [messages, renderingQuery]);
+
+  // v0.9.8 需求23：渲染后标黄（命中范围登记处）+ 搜索态只显示命中消息。
+  const isSearching = renderingQuery.trim().length > 0;
+  // 需求23 补充轮：搜索词已经清空、列表还没展开的那一帧（延迟生效的搜索词慢一拍）不再记
+  //「视口顶上是哪条行」——这时页面上可能已经是另一个会话（「进入会话」同时切会话、退出搜索），
+  // 记下的行对新会话没有意义。
+  const lensHolds = isSearching && searchQuery.trim().length > 0;
+  const highlightRegistry = useMemo(() => new SearchHighlightRegistry(), []);
+  const highlightActive = useMemo(() => isSearching && supportsTextHighlight(), [isSearching]);
+  const hitMessages = useMemo(() => {
+    const hits = new Set<number>();
+    for (const messageIndex of searchState.matchToMessage) hits.add(messageIndex);
+    return hits;
+  }, [searchState]);
 
   const resultMap = useMemo(() => {
     const map = new Map<string, { output: string; details?: Record<string, unknown> }>();
@@ -957,7 +1184,7 @@ export const MessageView = memo(function MessageView({
   // v0.9.4 需求7 测试期性能优化（用户实测：长会话来回切换卡顿）：渲染窗口
   // 化——默认只渲染最近 WINDOW 行（消息构建含 ReactMarkdown 全量解析与
   // 代码高亮，数百条全量渲染是切换卡顿主因），顶部「加载更早」扩窗。
-  // 搜索激活（renderingQuery 非空）或外部跳转信号（expandNonce）自动全窗。
+  // 外部跳转信号（expandNonce）自动全窗；搜索态不走窗口，只显示命中行。
   const RENDER_WINDOW_ROWS = 120;
   const [windowRows, setWindowRows] = useState(RENDER_WINDOW_ROWS);
   useEffect(() => {
@@ -971,12 +1198,28 @@ export const MessageView = memo(function MessageView({
     lastExpandSignalRef.current = signal;
     setWindowRows(rows.length);
   }, [expandSignal, rows.length]);
-  const effectiveWindow = renderingQuery.trim() ? rows.length : windowRows;
+  // 搜索态不再整窗渲染：只显示含命中的行（见 searchItems），渲染量与命中数
+  // 成正比、与会话长度无关（v0.9.8 需求23）；窗口只管常态。
+  const effectiveWindow = windowRows;
   const visibleRows = useMemo(
     () => (rows.length > effectiveWindow ? rows.slice(rows.length - effectiveWindow) : rows),
     [rows, effectiveWindow],
   );
   const hiddenCount = rows.length - visibleRows.length;
+  const searchItems = useMemo<SearchDisplayItem<RenderRow>[]>(
+    () => (isSearching ? buildSearchDisplayItems(rows, hitMessages) : []),
+    [isSearching, rows, hitMessages],
+  );
+  const highlightContext = useMemo<SearchHighlightContextValue>(
+    () => ({
+      registry: highlightRegistry,
+      active: highlightActive,
+      query: renderingQuery,
+      offsets: searchState.offsets,
+      hitBlocks: searchState.hitBlocks,
+    }),
+    [highlightRegistry, highlightActive, renderingQuery, searchState.offsets, searchState.hitBlocks],
+  );
   const [currentOcc, setCurrentOcc] = useState(0);
   const [scrollTrigger, setScrollTrigger] = useState(0);
 
@@ -1009,6 +1252,150 @@ export const MessageView = memo(function MessageView({
     onSearchStatusChange?.({ current: currentOcc + 1, total: searchState.total });
   }, [currentOcc, onSearchStatusChange, renderingQuery, searchState.total]);
 
+  // 当前命中交给登记处上色（渲染后标黄）——文字块不必为「上一处 / 下一处」重渲染。
+  useEffect(() => {
+    highlightRegistry.setCurrent(isSearching ? currentOcc : -1);
+  }, [highlightRegistry, currentOcc, isSearching]);
+
+  // v0.9.8 需求23：打开一个在当前搜索词下有命中的会话——页面发来搜索跳转信号，
+  // 当帧把第一处命中放到视口正中。不走下面那条「120ms 后平滑滚动」的导航：
+  // 首帧就是最终位置，也不会和「打开会话滚到底」相争（搜索态下贴底跟随不启动）。
+  const handledJumpRef = useRef(0);
+  const listRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!searchJump || searchJump.sessionId !== (sessionId ?? null) || searchJump.nonce === handledJumpRef.current) return;
+    handledJumpRef.current = searchJump.nonce;
+    if (isSearching && searchState.total > 0) {
+      setCurrentOcc(0);
+      const container = scrollContainerRef?.current;
+      const list = listRef.current;
+      const first = searchState.matchToMessage[0];
+      const row = rows.find((r) => r.messageIndices.includes(first));
+      const rowEl = list?.querySelector<HTMLElement>(`[data-message-index="${row?.messageIndices[0] ?? -1}"]`);
+      const range = highlightActive ? highlightRegistry.getMatchRange(0) : undefined;
+      // 量不到尺寸的位置不算（起止点已失效等）——退而按整行放，随后的导航再对正
+      const sized = (rect: DOMRect | null | undefined) => (rect && (rect.width > 0 || rect.height > 0) ? rect : null);
+      const matchRect = () =>
+        sized(range ? rectOfMatch(range) : null) ??
+        sized(list?.querySelector('[data-match-idx="0"]')?.getBoundingClientRect()) ??
+        null;
+      // 目标行按真实高度量（见 withRenderedRows）
+      const target = rowEl
+        ? withRenderedRows([rowEl], () => matchRect() ?? rowEl.getBoundingClientRect())
+        : matchRect();
+      if (container && target) centerInScroller(container, target);
+    }
+    onSearchJumpDone?.();
+  }, [
+    searchJump,
+    sessionId,
+    isSearching,
+    searchState.total,
+    searchState.matchToMessage,
+    highlightActive,
+    highlightRegistry,
+    rows,
+    scrollContainerRef,
+    onSearchJumpDone,
+  ]);
+
+  // v0.9.8 需求23：搜索态只显示命中行，退出时上下的消息重新补进来。搜索期间记住
+  // 「视口顶上是哪条行、离视口顶多远」（LensAnchor），列表展开后把它放回屏幕原处——
+  // 正在看的内容不动。补偿在布局阶段完成（绘制之前），随后几帧只做微量修正。
+  const lensAnchorRef = useRef<LensAnchor | null>(null);
+  const pendingAnchorRef = useRef<LensAnchor | null>(null);
+  const wasSearchingRef = useRef(false);
+  const keepLensAnchor = useCallback(() => {
+    const container = scrollContainerRef?.current;
+    const list = listRef.current;
+    if (!container || !list) return;
+    const top = container.getBoundingClientRect().top;
+    for (const row of list.querySelectorAll<HTMLElement>("[data-message-index]")) {
+      const rect = row.getBoundingClientRect();
+      if (rect.bottom <= top) continue; // 整行都在视口上方
+      lensAnchorRef.current = { kind: "row", messageIndex: Number(row.dataset.messageIndex), offset: rect.top - top };
+      return;
+    }
+    // 视口里没有消息行（停在列表最底，下面只剩「后面省略」细条）——记住「在底部」
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= 2;
+    lensAnchorRef.current = atBottom ? { kind: "bottom" } : null;
+  }, [scrollContainerRef]);
+
+  const putLensAnchorBack = useCallback(() => {
+    const anchor = pendingAnchorRef.current;
+    if (!anchor) return;
+    const container = scrollContainerRef?.current;
+    const list = listRef.current;
+    if (!container || !list) return;
+    if (anchor.kind === "bottom") {
+      container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+      pendingAnchorRef.current = null;
+      // 视口底部的行渲染后高度还会变——随后几帧跟着贴底
+      holdScrollForFrames(container, () => container.scrollHeight - container.scrollTop - container.clientHeight);
+      return;
+    }
+    const rowsInList = [...list.querySelectorAll<HTMLElement>("[data-message-index]")];
+    const at = rowsInList.findIndex((el) => Number(el.dataset.messageIndex) === anchor.messageIndex);
+    if (at < 0) {
+      // 这一行在渲染窗口之外（长会话只渲染最近若干行）——扩窗把它渲染出来，
+      // 渲染后（visibleRows 变化）由下面的 effect 接着放回
+      const rowIndex = rows.findIndex((r) => r.messageIndices[0] === anchor.messageIndex);
+      const needed = rowIndex < 0 ? 0 : rows.length - rowIndex;
+      if (needed > windowRows) {
+        setWindowRows(needed);
+      } else {
+        pendingAnchorRef.current = null; // 消息已不存在，或本该渲染却没渲染——不再等
+      }
+      return;
+    }
+    pendingAnchorRef.current = null;
+    // 视口上方约一屏半以内的行，浏览器随后就会渲染、高度会变——连同目标行一起先按真实高度量
+    const row = rowsInList[at];
+    const reach = container.getBoundingClientRect().top - container.clientHeight * 1.5;
+    const toRender = [row];
+    for (let i = at - 1; i >= 0; i--) {
+      if (rowsInList[i].getBoundingClientRect().bottom < reach) break;
+      toRender.push(rowsInList[i]);
+    }
+    const offsetNow = () => row.getBoundingClientRect().top - container.getBoundingClientRect().top;
+    container.scrollTop += withRenderedRows(toRender, () => offsetNow() - anchor.offset);
+    // 更远的行若也被渲染、高度变了，随后几帧补回（用户一滚就停）
+    holdScrollForFrames(container, () => offsetNow() - anchor.offset);
+  }, [rows, windowRows, scrollContainerRef]);
+
+  // 换了会话：上一条会话里记的行作废（新会话的行在同一次提交里重新记）。
+  // 只在会话真的变了时清——首次挂载不清，否则会把这次提交刚记下的行抹掉。
+  // 必须排在下面的「退出搜索」之前：「进入会话」（需求23 补充轮）会同时切会话、退出搜索，
+  // 同一次提交里先作废旧会话的行，退出搜索才不会把它套到新会话上。
+  const anchorSessionRef = useRef(sessionId);
+  useLayoutEffect(() => {
+    if (anchorSessionRef.current === sessionId) return;
+    anchorSessionRef.current = sessionId;
+    lensAnchorRef.current = null;
+    pendingAnchorRef.current = null;
+  }, [sessionId]);
+  useLayoutEffect(() => {
+    const exited = wasSearchingRef.current && !isSearching;
+    wasSearchingRef.current = isSearching;
+    if (!exited) return;
+    pendingAnchorRef.current = lensAnchorRef.current;
+    lensAnchorRef.current = null;
+    putLensAnchorBack();
+  }, [isSearching, putLensAnchorBack]);
+  useLayoutEffect(() => {
+    if (pendingAnchorRef.current) putLensAnchorBack();
+  }, [visibleRows, putLensAnchorBack]);
+  // 搜索期间每次提交后刷新（命中切换、内容更新都会改变「视口顶上是哪条行」）
+  useLayoutEffect(() => {
+    if (lensHolds) keepLensAnchor();
+  });
+  useEffect(() => {
+    const container = scrollContainerRef?.current;
+    if (!lensHolds || !container) return;
+    container.addEventListener("scroll", keepLensAnchor, { passive: true });
+    return () => container.removeEventListener("scroll", keepLensAnchor);
+  }, [lensHolds, keepLensAnchor, scrollContainerRef]);
+
   useEffect(() => {
     if (searchState.total === 0 || scrollTrigger === 0) return;
     // If the target match is already rendered and fully inside the viewport,
@@ -1016,20 +1403,57 @@ export const MessageView = memo(function MessageView({
     // avoids the jarring scroll-up-then-back jump when navigating between
     // matches that are already visible together on screen.
     const container = scrollContainerRef?.current;
-    const visibleEl = document.querySelector(`[data-match-idx="${currentOcc}"]`);
-    if (container && visibleEl) {
-      const er = visibleEl.getBoundingClientRect();
+    // 回落方式（源码切分）有 <mark> 元素；渲染后标黄只有登记的文字范围。
+    const rowOfCurrent = () => {
+      const msgIdx = searchState.matchToMessage[currentOcc];
+      const row = rows.find((r) => r.messageIndices.includes(msgIdx));
+      return row
+        ? (listRef.current?.querySelector<HTMLElement>(`[data-message-index="${row.messageIndices[0]}"]`) ?? null)
+        : null;
+    };
+    // 行在视口外、浏览器还没排版时范围量出来尺寸为 0——先让这一行按真实高度参与布局
+    // 再量（见 withRenderedRows）。一行比屏幕还高时按「整行」滚等于没滚，长会话里
+    // 几十处命中常常都在同一行，必须按命中自己的位置滚（v0.9.8 需求23 终验实测）。
+    const rectOfCurrent = (): DOMRect | null => {
+      const visibleEl = listRef.current?.querySelector(`[data-match-idx="${currentOcc}"]`);
+      if (visibleEl) return visibleEl.getBoundingClientRect();
+      const range = highlightActive ? highlightRegistry.getMatchRange(currentOcc) : undefined;
+      if (!range) return null;
+      const sized = (rect: DOMRect | null) => (rect && (rect.width > 0 || rect.height > 0) ? rect : null);
+      const rowEl = rowOfCurrent();
+      return sized(rectOfMatch(range)) ?? (rowEl ? withRenderedRows([rowEl], () => sized(rectOfMatch(range))) : null);
+    };
+    const shown = rectOfCurrent();
+    if (container && shown) {
       const cr = container.getBoundingClientRect();
-      if (er.top >= cr.top && er.bottom <= cr.bottom) return;
+      if (shown.top >= cr.top && shown.bottom <= cr.bottom) return;
     }
     const msgIdx = searchState.matchToMessage[currentOcc];
     if (msgIdx === undefined) return;
     const timer = setTimeout(() => {
-      const el = document.querySelector(`[data-match-idx="${currentOcc}"]`);
-      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      const el = listRef.current?.querySelector(`[data-match-idx="${currentOcc}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+      const target = highlightActive ? rectOfCurrent() : null;
+      if (container && target) {
+        container.scrollTo({
+          top: scrollTopToCenter({
+            scrollTop: container.scrollTop,
+            containerTop: container.getBoundingClientRect().top,
+            containerHeight: container.clientHeight,
+            targetTop: target.top,
+            targetHeight: target.height,
+          }),
+          behavior: "smooth",
+        });
+        return;
+      }
+      rowOfCurrent()?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 120);
     return () => clearTimeout(timer);
-  }, [currentOcc, scrollTrigger, searchState.matchToMessage, searchState.total]);
+  }, [currentOcc, scrollTrigger, searchState.matchToMessage, searchState.total, highlightActive, highlightRegistry, rows, scrollContainerRef]);
 
   // 需求13：最后一条用户消息（尾向前）——唯一可编辑行；rawText 取首 text 块
   // 原文（落盘原文，含 /jishu-task 包装——页面回调按需重包装）。
@@ -1045,75 +1469,143 @@ export const MessageView = memo(function MessageView({
     return -1;
   }, [messages]);
 
+  // v0.9.8 需求23：每行的 key、渲染条目、复制文本按消息缓存。搜索词每变一次
+  // MessageView 都会重渲染，而 key 的计算要把整行消息文本拼出来（重行上百 KB），
+  // 不能每次重算；条目的引用也要稳定，已显示的行才跳得过重渲染（Markdown 不重新解析）。
+  const rowCache = useMemo(() => {
+    const cache = new Map<RenderRow, { key: string; items: RenderItem[]; copyText: string }>();
+    for (const row of rows) {
+      cache.set(row, {
+        key: rowKey(row, messages),
+        items: buildRenderItemsForMessages(
+          messages,
+          row.kind === "assistant" ? row.messageIndices : [row.messageIndex],
+          resultMap,
+          errorToolIds,
+        ),
+        copyText: row.kind === "assistant" ? extractMessagesText(messages, row.messageIndices) : "",
+      });
+    }
+    return cache;
+  }, [rows, messages, resultMap, errorToolIds]);
+
+  // 需求13：仅最后一条用户消息挂编辑提交（引用稳定——不随搜索词变化）。
+  const editSubmit = useMemo(() => {
+    if (!onEditLastUserMessage || lastUserMessageIndex < 0) return null;
+    const msg = messages[lastUserMessageIndex];
+    if (!msg) return null;
+    return (newText: string, remainingToolIds?: string[]) => {
+      const raw = msg.content.find((b) => b.type === "text");
+      onEditLastUserMessage(raw && raw.type === "text" ? raw.text : "", newText, remainingToolIds);
+    };
+  }, [messages, onEditLastUserMessage, lastUserMessageIndex]);
+
   const renderRow = useCallback((row: RenderRow) => {
+    const cached = rowCache.get(row);
+    // 高亮接口生效时行的渲染结果不依赖搜索词——搜索属性给固定值（见 EMPTY_OFFSETS）
+    const rowQuery = highlightActive ? "" : renderingQuery;
+    const rowOffsets = highlightActive ? EMPTY_OFFSETS : searchState.offsets;
+    const rowOcc = highlightActive ? NO_CURRENT_MATCH : currentOcc;
     if (row.kind === "assistant") {
-      const items = buildRenderItemsForMessages(messages, row.messageIndices, resultMap, errorToolIds);
       return (
         <AssistantBubble
-          items={items}
-          copyText={extractMessagesText(messages, row.messageIndices)}
-          renderingQuery={renderingQuery}
-          searchOffsets={searchState.offsets}
-          currentOcc={currentOcc}
+          items={cached?.items ?? EMPTY_ITEMS}
+          copyText={cached?.copyText ?? ""}
+          renderingQuery={rowQuery}
+          searchOffsets={rowOffsets}
+          currentOcc={rowOcc}
         />
       );
     }
 
     const msg = messages[row.messageIndex];
-    const items = buildRenderItemsForMessages(messages, [row.messageIndex], resultMap, errorToolIds);
     const roleView = roleResolver ? roleResolver(msg) : null;
-    // 需求13：仅最后一条用户消息挂编辑提交。
-    const editable = onEditLastUserMessage && row.messageIndex === lastUserMessageIndex
-      ? (newText: string, remainingToolIds?: string[]) => {
-          const raw = msg.content.find((b) => b.type === "text");
-          onEditLastUserMessage(raw && raw.type === "text" ? raw.text : "", newText, remainingToolIds);
-        }
-      : null;
     return (
       <UserBubble
         msg={msg}
-        items={items}
-        renderingQuery={renderingQuery}
-        searchOffsets={searchState.offsets}
-        currentOcc={currentOcc}
+        items={cached?.items ?? EMPTY_ITEMS}
+        renderingQuery={rowQuery}
+        searchOffsets={rowOffsets}
+        currentOcc={rowOcc}
         messageIndex={row.messageIndex}
         roleView={roleView}
         toolNames={toolNames}
         toolCats={toolCats}
-        onEditSubmit={editable}
+        onEditSubmit={row.messageIndex === lastUserMessageIndex ? editSubmit : null}
         onDismissUnsent={
           msg.unsent && onDismissUnsent ? () => onDismissUnsent(msg) : null
         }
       />
     );
-  }, [currentOcc, messages, renderingQuery, resultMap, errorToolIds, searchState.offsets, roleResolver, toolNames, onEditLastUserMessage, lastUserMessageIndex, onDismissUnsent]);
+  }, [rowCache, messages, highlightActive, renderingQuery, searchState.offsets, currentOcc, roleResolver, toolNames, toolCats, lastUserMessageIndex, editSubmit, onDismissUnsent]);
+
+  const renderRowElement = (row: RenderRow) => (
+    <div
+      key={rowCache.get(row)?.key ?? rowKey(row, messages)}
+      data-user-message={row.kind === "user" ? "true" : undefined}
+      data-turn-index={row.kind === "user" ? row.turnIndex : undefined}
+      data-message-index={row.messageIndices[0]}
+      style={ROW_STYLE}
+    >
+      {renderRow(row)}
+    </div>
+  );
 
   // v0.9.1 需求5：user 行轮次序号（实例内从 0 递增），横杠导航轨按
   // [data-turn-index] 定位跳转。v0.9.2 需求1 P1：序号由统一视图模型携带
   // （buildSessionRows 计算，与轮次摘要消费方同源）。
   const fullMessageList = (
-    <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
-      {hiddenCount > 0 && (
-        <button
-          type="button"
-          onClick={() => setWindowRows((n) => n + RENDER_WINDOW_ROWS * 2)}
-          className="mx-auto block rounded-full border border-border/60 bg-muted/50 px-4 py-1.5 text-xs text-muted-foreground hover:bg-muted"
-        >
-          {t("sessions.loadEarlier", "加载更早的消息（剩余 {{count}} 行）", { count: hiddenCount })}
-        </button>
-      )}
-      {visibleRows.map((row) => (
-        <div
-          key={rowKey(row, messages)}
-          data-user-message={row.kind === "user" ? "true" : undefined}
-          data-turn-index={row.kind === "user" ? row.turnIndex : undefined}
-          data-message-index={row.messageIndices[0]}
-          style={ROW_STYLE}
-        >
-          {renderRow(row)}
+    <SearchHighlightModeContext.Provider value={highlightActive}>
+    <SearchHighlightContext.Provider value={highlightContext}>
+      <div className="relative">
+        {/* v0.9.8 需求23：没有命中时消息照常显示，只在顶部浮一条提示——不挪动列表，
+            停在会话底部的人不会因为列表塌掉被甩到顶部。提示吸顶：停在哪里都看得见。 */}
+        {isSearching && searchState.total === 0 && (
+          <div
+            data-search-empty=""
+            className="pointer-events-none sticky top-2 z-10 flex h-0 items-start justify-center"
+          >
+            <span className="rounded-full border border-border/60 bg-background/90 px-3 py-1 text-xs text-muted-foreground">
+              {t("sessions.searchNoMatch", { query: renderingQuery })}
+            </span>
+          </div>
+        )}
+        <div ref={listRef} className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
+          {isSearching && searchState.total > 0 ? (
+            // v0.9.8 需求23：搜索态只显示含命中的行，其余折成细条
+            searchItems.map((item) =>
+              item.kind === "gap" ? (
+                <div
+                  key={`gap-${item.before}`}
+                  data-search-gap={item.count}
+                  className="flex items-center gap-3 px-2 text-[11px] text-muted-foreground"
+                >
+                  <span className="h-px flex-1 bg-border/60" />
+                  {t(GAP_LABEL_KEYS[item.position], { count: item.count })}
+                  <span className="h-px flex-1 bg-border/60" />
+                </div>
+              ) : (
+                renderRowElement(item.row)
+              ),
+            )
+          ) : (
+            <>
+              {hiddenCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setWindowRows((n) => n + RENDER_WINDOW_ROWS * 2)}
+                  className="mx-auto block rounded-full border border-border/60 bg-muted/50 px-4 py-1.5 text-xs text-muted-foreground hover:bg-muted"
+                >
+                  {t("sessions.loadEarlier", "加载更早的消息（剩余 {{count}} 行）", { count: hiddenCount })}
+                </button>
+              )}
+              {visibleRows.map((row) => renderRowElement(row))}
+            </>
+          )}
         </div>
-      ))}
-    </div>
+      </div>
+    </SearchHighlightContext.Provider>
+    </SearchHighlightModeContext.Provider>
   );
 
   if (flat) return <EquipSessionContext.Provider value={sessionId ?? null}>{fullMessageList}</EquipSessionContext.Provider>;

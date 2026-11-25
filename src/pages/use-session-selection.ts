@@ -61,6 +61,11 @@ export interface SessionSelectionDeps {
   // 邻接动作
   closeViewer: () => void;
   refreshSessionUsageRef: RefObject<(sessionId: string) => void>;
+  // v0.9.8 需求23：搜索态（见 use-search-lens）——有命中的会话打开时落到命中处；
+  // 搜索态下离开会话不记滚动位置。
+  isInSearchLens: (sessionId: string) => boolean;
+  landsOnSearchHit: (sessionId: string) => boolean;
+  jumpToSearchHit: (sessionId: string) => void;
 }
 
 export function useSessionSelection(deps: SessionSelectionDeps) {
@@ -95,6 +100,9 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
     setTaskNodeSessionAgentId,
     closeViewer,
     refreshSessionUsageRef,
+    isInSearchLens,
+    landsOnSearchHit,
+    jumpToSearchHit,
   } = deps;
 
   const [optimisticSessions, setOptimisticSessions] = useState<Session[]>([]);
@@ -137,9 +145,13 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleSelectSessionRef = useRef<(sessionId: string) => void>(() => {});
+  const handleSelectSessionRef = useRef<(sessionId: string, options?: { fullView?: boolean }) => void>(() => {});
 
-  const handleSelectSession = async (sessionId: string) => {
+  /**
+   * 打开会话。`fullView`：按完整视图打开——即使当前有搜索词、该会话有命中，也不落到命中处
+   *（v0.9.8 需求23 补充轮「进入会话」：退出搜索并按平时的方式打开）。
+   */
+  const handleSelectSession = async (sessionId: string, options?: { fullView?: boolean }) => {
     setTaskModeActive(false);
     setTaskLaunchOpen(false);
     setTaskLaunchReadOnly(false);
@@ -160,7 +172,9 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
     // 上下文，跨会话保留易误导。同会话重复点击已被上方守卫拦截。
     closeViewer();
 
-    if (selectedSessionRef.current && messageAreaRef.current) {
+    // v0.9.8 需求23：这个会话正以搜索态显示（只显示命中行）时，此刻的像素位置
+    // 在完整列表里没有意义——不记，保留它进入搜索前的位置。
+    if (selectedSessionRef.current && messageAreaRef.current && !isInSearchLens(selectedSessionRef.current)) {
       // v0.9.4 需求7 测试期修复八：滚动记忆语义化——离开时在底部（距底
       // 100px 内，与 isAwayFromBottom 同口径）记 "bottom" 而非绝对像素：
       // 离开后回合继续追加内容（后台回复/引号重发），回来按旧像素恢复会
@@ -227,7 +241,15 @@ export function useSessionSelection(deps: SessionSelectionDeps) {
     // 会话打开即拉取权威用量（含重启后的历史累计）。
     refreshSessionUsageRef.current?.(sessionId);
 
-    if (isFirstVisit) {
+    if (isFirstVisit) visitedSessions.current.add(sessionId);
+    if (!options?.fullView && landsOnSearchHit(sessionId)) {
+      // v0.9.8 需求23：搜索态下打开有命中的会话——视图落到第一处命中，由消息视图
+      // 当帧定位（搜索跳转信号）。这里不投「到底/恢复」：打开会话的滚动与搜索
+      // 导航争同一个位置时，贴底跟随会把视图每帧拉回底部，命中留在屏幕外。
+      // 与上面的 setSessionMessages 在同一批更新里——消息视图在消息就绪的那一帧定位。
+      armScroll();
+      jumpToSearchHit(sessionId);
+    } else if (isFirstVisit) {
       armScroll();
       scrollAction.current = { type: "bottom" };
       visitedSessions.current.add(sessionId);

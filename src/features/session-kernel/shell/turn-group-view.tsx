@@ -6,7 +6,7 @@
  *
  * 布局归宿主（内核）；分类卡/概览卡内容后续可被插件认领（renderers 通道）。
  */
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, FileDiff, Hammer } from "lucide-react";
 import i18n from "@/i18n";
 import type { RenderItem } from "@/components/sessions/message-view";
@@ -37,10 +37,14 @@ export const TurnGroupView = memo(function TurnGroupView({
   const hasWork = segments.workItems.length > 0;
 
   // v0.9.5 需求5 T3 排查：三段式分组去向（interaction 进 work 还是 text）。
-  devLog("session", "ia-render:turngroup", {
-    work: segments.workItems.map((i) => i.kind),
-    text: segments.textItems.map((i) => i.kind),
-  });
+  // 日志在提交之后写：渲染期间写日志会同步刷新日志面板，把正在进行的低优先级渲染
+  // （如搜索词延迟生效）打断重来——v0.9.8 需求23 实测逐帧空转、搜索永远不生效。
+  useEffect(() => {
+    devLog("session", "ia-render:turngroup", {
+      work: segments.workItems.map((i) => i.kind),
+      text: segments.textItems.map((i) => i.kind),
+    });
+  }, [segments]);
 
   return (
     <div className="space-y-2">

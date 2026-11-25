@@ -179,9 +179,6 @@ export const InlineImages = memo(function InlineImages({ text }: { text: string 
   );
 });
 
-export function stripImagePrompt(text: string): string {
-  return text
-    .replace(/<!--JISHU_HUB_IMAGES_BEGIN-->[\s\S]*?<!--JISHU_HUB_IMAGES_END-->/g, "")
-    .replace(/\\n/g, "\n")
-    .trim();
-}
+// v0.9.8 需求23：实现移到 @/lib/session-search-text——气泡显示、搜索计数与
+// 摘要共用同一个「用户看得见的文字」出处；这里保留原导出路径。
+export { stripImagePrompt } from "@/lib/session-search-text";

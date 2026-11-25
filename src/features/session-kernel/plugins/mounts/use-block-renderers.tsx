@@ -1,6 +1,5 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import { listSessionPlugins } from "../registry";
-import { devLog } from "@/lib/dev-log";
 import type { BlockRendererMount, BlockTypeRendererMount, CodeBlockRendererMount } from "../types";
 
 /**
@@ -55,10 +54,8 @@ export function matchBlockRenderer(
     if (renderer.matching !== "code") continue;
     if (renderer.languages.length === 0 || !renderer.languages.includes(lang)) continue;
     if (renderer.detect(lang, code)) {
-      // 需求14：遮蔽命中观测——哪个插件接管了哪个语言的代码块。
-      const meta = renderer as { pluginId?: string };
-      devLog("capability", `block-renderer hit: ${lang} → ${meta.pluginId ?? "unknown"}`,
-        { language: lang, pluginId: meta.pluginId });
+      // 需求14：遮蔽命中观测（哪个插件接管了哪个语言的代码块）由调用方在提交之后
+      // 写日志——本函数在渲染期间执行，不能在这里写。
       return renderer;
     }
   }

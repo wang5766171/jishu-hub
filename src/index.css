@@ -601,3 +601,17 @@ select option {
 .message-appear {
   animation: message-slide-in 200ms ease-out;
 }
+
+/*
+ * 会话内搜索命中高亮（v0.9.8 需求23）。用 CSS Custom Highlight API 在渲染好的
+ * 文字上标黄，不改页面结构——正文保持正常渲染（表格、代码高亮都在），
+ * 高亮与当前命中各一个名字，颜色与原先 <mark> 的黄底一致。
+ */
+::highlight(jishu-search-match) {
+  background-color: rgb(254 249 195);
+  color: rgb(31 41 55);
+}
+::highlight(jishu-search-current) {
+  background-color: rgb(252 211 77);
+  color: rgb(31 41 55);
+}

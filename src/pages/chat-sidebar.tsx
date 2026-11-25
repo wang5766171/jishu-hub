@@ -12,6 +12,7 @@ import {
   ClipboardList,
   FolderOpen,
   GitBranch,
+  LogIn,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -90,6 +91,8 @@ export interface ChatSidebarProps {
    * 该插件 [menu].prompt 发起。 */
   onLaunchMenuPlugin: (prompt: string) => void;
   handleSelectSession: (sessionId: string) => void;
+  /** v0.9.8 需求23 补充轮：「进入会话」——退出搜索并按平时的方式打开该会话（搜索结果行的双击 / 右键菜单）。 */
+  onEnterSession: (sessionId: string) => void;
   handleFloatSession: (sessionId: string) => void;
   handleResumeSession: (sessionId: string) => void | Promise<void>;
   handleForkSession: (sessionId: string) => void | Promise<void>;
@@ -140,6 +143,7 @@ export function ChatSidebar(props: ChatSidebarProps) {
     handleOpenTaskConversation,
     onLaunchMenuPlugin,
     handleSelectSession,
+    onEnterSession,
     handleFloatSession,
     handleResumeSession,
     handleForkSession,
@@ -149,6 +153,8 @@ export function ChatSidebar(props: ChatSidebarProps) {
     setRenameTaskTarget,
   } = props;
   const { t } = useTranslation();
+  // v0.9.8 需求23 补充轮：搜索态下才有「进入会话」（双击结果行 / 右键菜单）；平时双击只是打开会话。
+  const isSearching = searchQuery.trim().length > 0;
   // v0.9.7 需求5 E3（Q12）：当前空间是默认工作空间时，左上角空间名旁展示
   // 「默认」徽标（判定单源在后端 is_default_workspace——与 E5 会话子目录共用）。
   const [isDefaultWorkspace, setIsDefaultWorkspace] = useState(false);
@@ -185,7 +191,8 @@ export function ChatSidebar(props: ChatSidebarProps) {
           {/* v0.7.3 需求2：项目切换移至输入区 footer（目录旁左右箭头），左上角仅展示项目名 */}
           <div className="flex items-center gap-2 px-3 h-10 border-b border-border/20">
             <FolderOpen className={cn("h-5 w-5 shrink-0 ml-1", currentProject ? "text-[var(--icon-folder)]" : "text-muted-foreground/40")} />
-            <span className={cn("truncate text-sm font-semibold flex-1 min-w-0 leading-none pt-[1px]", currentProject ? "text-foreground" : "text-muted-foreground")} title={currentProject ? projectDisplayName : undefined}>
+            {/* 字底余量 pb-[2px]：说明见下方会话标题处 */}
+            <span className={cn("truncate text-sm font-semibold flex-1 min-w-0 leading-none pt-[1px] pb-[2px]", currentProject ? "text-foreground" : "text-muted-foreground")} title={currentProject ? projectDisplayName : undefined}>
               {currentProject ? projectDisplayName : t("sessions.noProject")}
             </span>
             {isDefaultWorkspace && (
@@ -208,7 +215,7 @@ export function ChatSidebar(props: ChatSidebarProps) {
               )}
             >
               <SquarePen className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
-              <span className="truncate leading-none pt-[1px]">{t("sessions.startNewChat")}</span>
+              <span className="truncate leading-none pt-[1px] pb-[2px]">{t("sessions.startNewChat")}</span>
             </button>
             <button
               onClick={handleRefresh}
@@ -234,7 +241,7 @@ export function ChatSidebar(props: ChatSidebarProps) {
               )}
             >
               <ClipboardList className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
-              <span className="truncate leading-none pt-[1px]">{t("tasks.startTask")}</span>
+              <span className="truncate leading-none pt-[1px] pb-[2px]">{t("tasks.startTask")}</span>
             </button>
             <MenuPluginEntries onLaunch={onLaunchMenuPlugin} enabled={Boolean(projectId)} />
           </div>
@@ -415,6 +422,7 @@ export function ChatSidebar(props: ChatSidebarProps) {
                 <ContextMenuTrigger asChild>
                   <button
                     onClick={() => handleSelectSession(session.id)}
+                    onDoubleClick={isSearching ? () => onEnterSession(session.id) : undefined}
                     className={cn(
                       "flex flex-col w-full items-start pl-5 pr-2 py-2 text-xs transition-fast border-b border-border/10",
                       isActive
@@ -443,7 +451,12 @@ export function ChatSidebar(props: ChatSidebarProps) {
                            保留固定占位（与呼吸点同尺寸），状态圆点更突出且行宽不跳 */
                         <span className="flex h-3.5 w-3 shrink-0 items-center justify-center" />
                       )}
-                      <span className="truncate flex-1 text-left min-w-0 leading-none pt-[1px]">{name}</span>
+                    {/* v0.9.8 需求23 补充轮：行高等于字号 + 超出隐藏，裁切线就是行框底边，比字形的
+                        实际高度矮——字的下沿会被裁掉（微软雅黑带下伸的字母 p/j/g/y、部分汉字；150% 缩放
+                        下肉眼可见）。裁切盒子底部留 2 像素；侧栏里同一写法的 6 处都留了。 */}
+                      <span className="truncate flex-1 text-left min-w-0 leading-none pt-[1px] pb-[2px]" title={name}>
+                        {name}
+                      </span>
                       {searchHit ? (
                         <span className="shrink-0 rounded-full bg-primary/20 text-primary px-1.5 py-0.5 text-[9px] font-medium leading-none">
                           {searchHit.matchCount}
@@ -465,6 +478,12 @@ export function ChatSidebar(props: ChatSidebarProps) {
                   </button>
                 </ContextMenuTrigger>
                 <ContextMenuContent>
+                  {isSearching && (
+                    <ContextMenuItem onClick={() => onEnterSession(session.id)}>
+                      <LogIn className="h-3.5 w-3.5 mr-2" />
+                      {t("sessions.enterSession")}
+                    </ContextMenuItem>
+                  )}
                   <ContextMenuItem onClick={() => handleFloatSession(session.id)}>
                     <PictureInPicture2 className="h-3.5 w-3.5 mr-2" />
                     {t("sessions.float", "悬浮窗口")}
@@ -572,7 +591,7 @@ function MenuPluginEntries({
           title={e.hasPage ? `${e.label}${t("plugins.menuOpenPage", "（打开页面）")}` : e.label}
         >
           <Zap className="h-3.5 w-3.5 shrink-0 text-[var(--icon-action)]" />
-          <span className="truncate leading-none pt-[1px]">{e.label}</span>
+          <span className="truncate leading-none pt-[1px] pb-[2px]">{e.label}</span>
         </button>
       ))}
     </div>

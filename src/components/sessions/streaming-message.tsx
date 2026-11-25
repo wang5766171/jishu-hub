@@ -293,6 +293,17 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
     -1,
   );
 
+  // v0.9.5 需求5 T3 排查：流式 part 渲染点。
+  // 日志在提交之后写：渲染期间写日志会同步刷新日志面板，把正在进行的低优先级渲染
+  // （如搜索词延迟生效）打断重来——v0.9.8 需求23 实测逐帧空转、搜索永远不生效。
+  useEffect(() => {
+    for (const part of parts) {
+      if (part.kind === "interaction") {
+        devLog("session", "ia-render:stream-part", { items: part.items.length });
+      }
+    }
+  });
+
   return (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
       {/* User message bubble */}
@@ -328,8 +339,6 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
         }
 
         if (part.kind === "interaction") {
-          // v0.9.5 需求5 T3 排查：流式 part 渲染点
-          devLog("session", "ia-render:stream-part", { items: part.items.length });
           return (
             <div key={`interaction-${i}`} className="w-full">
               <div className="max-w-full min-w-0 flex flex-col">

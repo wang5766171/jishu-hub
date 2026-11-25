@@ -135,7 +135,9 @@ const TaskRow = memo(function TaskRow({
               }
               return <span className="flex h-3.5 w-3 shrink-0 items-center justify-center" />;
             })()}
-            <span className="min-w-0 flex-1 truncate text-left leading-none pt-[1px]">
+            {/* v0.9.8 需求23 补充轮：pb-[2px] 是字底余量（行高等于字号 + 超出隐藏会裁掉字的下沿），
+                与会话侧栏标题同一写法，说明见 chat-sidebar.tsx 的会话标题处 */}
+            <span className="min-w-0 flex-1 truncate text-left leading-none pt-[1px] pb-[2px]">
               {task.title}
             </span>
             {phase && (

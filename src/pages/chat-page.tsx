@@ -101,6 +101,7 @@ import { ChatSidebar } from "./chat-sidebar";
 import { useSessionSelection } from "./use-session-selection";
 import { useChatScroll } from "./use-chat-scroll";
 import { useTaskSessionLoad } from "./use-task-session-load";
+import { commitEnterSession, useSearchLens, type SearchLensInput } from "./use-search-lens";
 import { useTaskExecutionStage } from "./use-task-execution-stage";
 import { useTaskSessionRouting } from "./use-task-session-routing";
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
@@ -442,10 +443,28 @@ export function ChatPage({
   // whether the streaming bubble is rendered and whether the input is in Stop mode.
   const currentStream = useSessionStream(selectedSession);
 
+  // ── v0.9.8 需求23：搜索态输入（见 use-search-lens）──
+  // 搜索域（useMessageSearch）声明在后面；滚动系统、任务会话加载、会话选择都要
+  // 用它，且只在事件与副作用里读——渲染期间写入本轮的值（见 useMessageSearch 之后）。
+  const searchLensInputRef = useRef<SearchLensInput>({
+    query: "",
+    selectedSession: null,
+    hitSessionIds: new Set(),
+  });
+  const {
+    isInSearchLens,
+    landsOnSearchHit,
+    searchJump,
+    jumpToSearchHit,
+    finishSearchJump,
+  } = useSearchLens(searchLensInputRef);
+
   // ── 簇A 滚动系统（v0.9.7 需求2 补充：迁自本文件 use-chat-scroll，零逻辑变更）──
   const {
     scrollAction,
     armScroll,
+    disarmScroll,
+    stopBottomFollow,
     isAwayFromBottomRef,
     isAwayFromBottom,
     activeTurnIndex,
@@ -453,7 +472,7 @@ export function ChatPage({
     handleJumpToTurn,
     messageExpandSignal,
     handleScrollToBottom,
-  } = useChatScroll({ messageAreaRef, sessionMessages, selectedSession });
+  } = useChatScroll({ messageAreaRef, sessionMessages, selectedSession, searchLensInputRef });
   // ── 簇B 任务/节点会话加载（同上迁出 use-task-session-load）──
   const streamTextStarted = (currentStream?.text?.length ?? 0) > 0;
   useTaskSessionLoad({
@@ -468,6 +487,9 @@ export function ChatPage({
     scrollMemory,
     sessionMessagesRef,
     setSessionMessages,
+    isInSearchLens,
+    landsOnSearchHit,
+    jumpToSearchHit,
   });
   // v0.8.0 需求6：正在输出的会话集合（含后台会话）。驱动会话列表行的加载动效；
   // 快照仅在集合成员变化时更新，流式内容增量不会引起列表重渲染。
@@ -547,6 +569,27 @@ export function ChatPage({
     total: messageSearchTotal,
     label: messageSearchLabel,
   } = useMessageSearch({ sessions, selectedSession });
+  // v0.9.8 需求23：把本轮的搜索态交给早先声明的消费方（滚动系统 / 任务会话加载 / 会话选择）。
+  const searchHitSessionIds = useMemo(
+    () => new Set(searchResults.map((result) => result.sessionId)),
+    [searchResults],
+  );
+  searchLensInputRef.current = {
+    query: searchQuery,
+    selectedSession,
+    hitSessionIds: searchHitSessionIds,
+  };
+  // 进入搜索态：停掉可能还在跑的贴底跟随（打开会话后 10 秒内跟随时，它会和
+  // 「滚到命中处」争同一个位置，每帧把视图拉回底部）。
+  const hasSearchQuery = searchQuery.trim().length > 0;
+  useEffect(() => {
+    if (hasSearchQuery) stopBottomFollow();
+  }, [hasSearchQuery, stopBottomFollow]);
+  // 搜索跳转已处理（消息视图定位完成，或没有可定位的命中）：解除滚动遮蔽、撤掉信号。
+  const handleSearchJumpDone = useCallback(() => {
+    disarmScroll();
+    finishSearchJump();
+  }, [disarmScroll, finishSearchJump]);
   // ── A5 簇①：任务实例同步钩子（装载/3s 轮询/事件刷新/快照应用） ──
   // 状态（taskLaunchSessions/nodeSessionIds）由钩子拥有；discover 经 ref 回填
   //（其定义依赖本钩子的列表 setter，位于下方）。
@@ -573,6 +616,18 @@ export function ChatPage({
   useEffect(() => {
     refetchSessionsRef.current = refetchSessions;
   }, [refetchSessions]);
+
+  // v0.9.8 需求23：回合结束时把该会话在列表里的消息换成正文那一份——侧栏搜索与摘要读的是
+  // 列表，列表只在读取时从磁盘读一次，不换的话同一个会话第二轮起再聊的内容侧栏搜不到、
+  // 徽标数停在旧的一份上。按 id 换这一项，别的会话不动（不重读整个列表）。
+  const syncSessionListMessagesRef = useRef<((sessionId: string, messages: Message[]) => void) | null>(null);
+  syncSessionListMessagesRef.current = (sessionId, messages) => {
+    setSessions((cur) => {
+      // 列表里还没有这一项（新会话的第一轮：重读列表后才加进来）——不动
+      if (!cur?.some((s) => s.id === sessionId)) return cur;
+      return cur.map((s) => (s.id === sessionId ? { ...s, messages } : s));
+    });
+  };
 
   useEffect(() => {
     // Clear sessions when switching agents to avoid showing stale data from previous agent
@@ -643,9 +698,22 @@ export function ChatPage({
     setActiveTaskRequirementFile,
     setTaskSelectedNodeId,
     setTaskNodeSessionAgentId,
+    // v0.9.8 需求23：搜索态（见 use-search-lens）
+    isInSearchLens,
+    landsOnSearchHit,
+    jumpToSearchHit,
     closeViewer,
     refreshSessionUsageRef,
   });
+  // v0.9.8 需求23 补充轮：「进入会话」（搜索结果行的双击 / 右键菜单）——退出搜索，并按平时的方式
+  // 打开该会话。已经打开着的会话只退出搜索：清空搜索词时「正在看的消息不动」，视图就停在刚才
+  // 看的那处命中上；没打开的会话按平时的方式落位（首次到底 / 重访恢复）。
+  const handleEnterSession = useCallback((sessionId: string) => {
+    commitEnterSession(
+      () => setSearchQuery(""),
+      () => handleSelectSessionRef.current(sessionId, { fullView: true }),
+    );
+  }, [setSearchQuery]);
 
   let displaySessions = regularSessions;
   if (deferredSearchQuery.trim() && sessions) {
@@ -687,7 +755,12 @@ export function ChatPage({
   // 重置 effect 会绕过 handleSelectSession 内的保存点直接置 null，切回时
   // restore 到残留旧像素。置空前统一补存（与 use-session-selection.ts 同口径）。
   const saveCurrentScrollBeforeLeave = useCallback(() => {
-    if (selectedSessionRef.current && messageAreaRef.current) {
+    // v0.9.8 需求23：正以搜索态显示的会话，像素位置在完整列表里没有意义——不记。
+    if (
+      selectedSessionRef.current &&
+      messageAreaRef.current &&
+      !isInSearchLens(selectedSessionRef.current)
+    ) {
       const el = messageAreaRef.current;
       const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 100;
       scrollMemory.current.set(
@@ -695,7 +768,7 @@ export function ChatPage({
         atBottom ? "bottom" : el.scrollTop,
       );
     }
-  }, []);
+  }, [isInSearchLens]);
 
   // 需求9 补充1：上一个项目的 encoded（离开上报用——effect 执行时
   // currentProject 已是新值，旧值经 ref 传递）。
@@ -2180,6 +2253,7 @@ export function ChatPage({
         sessionsRef,
         stagedApiRef,
         supportsSteerRef,
+        syncSessionListMessagesRef,
         taskLaunchOpenRef,
         taskLaunchPhaseRef,
         taskLaunchGoalRef,
@@ -2382,6 +2456,7 @@ export function ChatPage({
         handleRefresh={handleRefresh}
         handleOpenTaskConversation={handleOpenTaskConversation}
         handleSelectSession={handleSelectSession}
+        onEnterSession={handleEnterSession}
         handleFloatSession={handleFloatSession}
         handleResumeSession={handleResumeSession}
         handleForkSession={handleForkSession}
@@ -2558,6 +2633,8 @@ export function ChatPage({
                       searchQuery={searchQuery}
                       searchNavigation={messageSearchNavigation}
                       onSearchStatusChange={handleMessageSearchStatusChange}
+                      searchJump={searchJump}
+                      onSearchJumpDone={handleSearchJumpDone}
                       flat
                       scrollContainerRef={messageAreaRef}
                       expandSignal={messageExpandSignal}
