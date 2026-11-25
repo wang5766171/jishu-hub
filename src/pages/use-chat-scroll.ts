@@ -27,6 +27,9 @@ import { devLog } from "@/lib/dev-log";
 import type { Message } from "@/types";
 import type { SearchLensInput } from "./use-search-lens";
 
+/** 恢复滚动位置时，内容还没撑到目标高度的话最多等多久（逐帧重试的时间上限）。 */
+const RESTORE_RETRY_MS = 3000;
+
 export interface ChatScrollHandle {
   /** 滚动指令（外部写入：bottom / restore；本 hook 消费后置 null）。 */
   scrollAction: RefObject<{ type: "bottom" } | { type: "restore"; top: number } | null>;
@@ -78,6 +81,24 @@ export function useChatScroll({
   // 需求9 补充3 回归修复：触摸上滑解除跟随的方向判定基准（上一触点 Y）。
   const lastTouchYRef = useRef<number | null>(null);
   const scrollAction = useRef<{ type: "bottom" } | { type: "restore"; top: number } | null>( null);
+  // v0.9.8 需求24 续：恢复位置的等待期间（首帧内容没撑到目标高度、逐帧再试）靠这三样判断「停手」。
+  // - 用户动过：按滚轮 / 触摸 / 拖滚动条判断（与贴底跟随同一口径），**不按位置变化判断**——
+  //   视口上方的内容撑高时，浏览器的滚动锚定自己就会挪动滚动位置，那不是用户操作
+  //  （实测带任务图的任务回来时因此放弃放回，停在半路）。
+  // - 换了会话 / 来了新内容（消息数组变了）：不再把上一个会话的位置按到新内容上。
+  // - 来了新的定位指令：以新的为准。
+  const userScrollAtRef = useRef(0);
+  const lastMessagesRef = useRef<Message[]>(sessionMessages);
+  const restoreGenRef = useRef(0);
+  /** 恢复位置还在等待（首帧被压低、逐帧再试）——这期间视图在半路上，不算在底部。 */
+  const restorePendingRef = useRef(false);
+  /**
+   * 「离开底部」标记的唯一写点。它是别处判断「用户在不在底部」的依据（任务执行段的自动滚动、
+   * 流式输出的贴底）：恢复位置还在等待期间恒为真，其余按此刻的实际位置算。
+   */
+  const syncAwayFromBottom = useCallback((el: HTMLElement) => {
+    isAwayFromBottomRef.current = restorePendingRef.current || el.scrollHeight - el.scrollTop - el.clientHeight > 100;
+  }, []);
 
   // ── 需求9 补充3：滚动武装遮蔽 ──
   // 指令投递（armScroll）到定位完成（消费 layoutEffect）之间，消息区
@@ -116,12 +137,17 @@ export function useChatScroll({
   }, []);
 
   useLayoutEffect(() => {
+    // 恢复位置的等待循环靠它认「换了会话 / 来了新内容」——没有新指令时也要更新，所以放在最前面
+    lastMessagesRef.current = sessionMessages;
     if (!scrollAction.current || !messageAreaRef.current) return;
     // v0.9.2 测试期修复：消息未加载时消费滚动指令 → scrollHeight=0 → 定位到
     // 顶部而非底部。等待 sessionMessages 非空后再执行（restore 同理）。
     if (sessionMessages.length === 0) return;
     const action = scrollAction.current;
     scrollAction.current = null;
+    // 恢复位置的等待循环靠下面的代号认「来了新的定位指令」
+    const generation = ++restoreGenRef.current;
+    restorePendingRef.current = false;
     // 遮蔽解除时机（需求9 补充3 二轮）：**延到定位动作落定后**——bottom 在
     // rAF 首轮跟随拉底之后（内容分帧撑高的半成品高度帧不上屏）；restore
     // clamp 扩窗在双 rAF 重设之后；常规 restore 消费帧即解除。实测：消费即
@@ -167,26 +193,52 @@ export function useChatScroll({
       // 时代的高度，窗口化后 scrollHeight 偏小会被 clamp 到底——检测到
       // clamp 即 bump expandSignal 扩全窗，下一帧重设原位置。
       const maxTop = el.scrollHeight - el.clientHeight;
+      // v0.9.8 需求24 续：「离开底部」标记当场更新（见 syncAwayFromBottom）。它是别处判断
+      //「用户在不在底部」的依据（任务执行段的自动滚动）；原来只靠滚动事件更新、慢两三帧，
+      // 程序性恢复位置之后的那几帧里触发的「滚到底」会把刚恢复的位置盖掉。
+      // 恢复还没放到位（被压低、要逐帧等内容长出来）期间保持为真：视图在半路上，不算在底部——
+      // 实测带任务图的任务回来时，视图先被压到当前内容的底部，任务图加载完触发的「进入执行段
+      // 拉到底」就把它拽走了。
+      restorePendingRef.current = action.top > maxTop;
+      syncAwayFromBottom(el);
       // v0.9.8 需求24 续：被压低就不分大小。首帧内容还没撑到最终高度时，恢复的位置会被
       // 浏览器悄悄压低十几个像素，之后内容长出来也不动（实测切走再回来差 14 像素）。
       // 压低超过 50 像素的多半是目标在渲染窗口之外——额外扩全窗一次。
       if (action.top > maxTop + 50) setMessageExpandSignal((n) => n + 1);
       if (action.top > maxTop) {
-        // 等布局稳定再放回原位；内容还在长就逐帧再试（最多约半秒）。用户已经动过就停手。
-        let lastSet = el.scrollTop;
-        let tries = 0;
+        // 等布局稳定再放回原位；内容还在长就逐帧再试，最多 RESTORE_RETRY_MS。用户已经动过就停手。
+        // 按时间算而不是按帧数：带任务图的任务，内容要等任务图加载完才长出来（约 0.8 秒），
+        // 按帧数只试约半秒就放弃了，恢复的位置永远放不回去。
+        const giveUpAt = performance.now() + RESTORE_RETRY_MS;
+        const startedAt = performance.now();
+        const messagesAtStart = sessionMessages;
         const place = () => {
           const el2 = messageAreaRef.current;
           if (!el2) return;
-          if (Math.abs(el2.scrollTop - lastSet) > 1) {
+          const interrupted =
+            generation !== restoreGenRef.current || // 来了新的定位指令
+            scrollAction.current !== null ||
+            lastMessagesRef.current !== messagesAtStart || // 换了会话或来了新内容
+            userScrollAtRef.current > startedAt; // 用户滚轮 / 触摸 / 拖了滚动条
+          if (interrupted) {
+            // 不再把视图挪到原位；标记按此刻的实际位置算
+            restorePendingRef.current = false;
+            syncAwayFromBottom(el2);
             disarmIfArmed();
             return;
           }
           const top = Math.min(action.top, el2.scrollHeight - el2.clientHeight);
           el2.scrollTop = top;
-          lastSet = top;
-          if (top < action.top - 1 && tries++ < 30) requestAnimationFrame(place);
-          else disarmIfArmed();
+          if (top < action.top - 1 && performance.now() < giveUpAt) {
+            // 还没放到位：继续等
+            syncAwayFromBottom(el2);
+            requestAnimationFrame(place);
+          } else {
+            // 放到位了，或等不到：按实际位置算
+            restorePendingRef.current = false;
+            syncAwayFromBottom(el2);
+            disarmIfArmed();
+          }
         };
         requestAnimationFrame(() => requestAnimationFrame(place));
       } else {
@@ -229,10 +281,14 @@ export function useChatScroll({
         bottomFollowRef.current = false;
       }
     };
+    // v0.9.8 需求24 续：这套意图判定同时记下「用户最近一次滚动操作的时刻」——
+    // 恢复位置的等待靠它判断用户动过（见 userScrollAtRef）。
     const onWheel = (e: WheelEvent) => {
+      userScrollAtRef.current = performance.now();
       if (e.deltaY < 0) releaseFollow();
     };
     const onTouchMove = (e: TouchEvent) => {
+      userScrollAtRef.current = performance.now();
       const first = e.touches[0];
       if (!lastTouchYRef.current) {
         lastTouchYRef.current = first.clientY;
@@ -242,6 +298,14 @@ export function useChatScroll({
       lastTouchYRef.current = first.clientY;
     };
     const onTouchEnd = () => { lastTouchYRef.current = null; };
+    // 拖竖向滚动条：按下点落在滚动条槽里（元素外沿与内沿之差就是滚动条宽度）
+    const onPointerDown = (e: PointerEvent) => {
+      const gutter = el.offsetWidth - el.clientWidth;
+      if (gutter > 0 && e.clientX >= el.getBoundingClientRect().right - gutter) {
+        userScrollAtRef.current = performance.now();
+        releaseFollow();
+      }
+    };
     const onScroll = () => {
       if (scrollTicking) return;
       scrollTicking = true;
@@ -254,7 +318,7 @@ export function useChatScroll({
       const el2 = messageAreaRef.current;
       if (!el2) return;
       const awayFromBottom = el2.scrollHeight - el2.scrollTop - el2.clientHeight > 100;
-      isAwayFromBottomRef.current = awayFromBottom;
+      syncAwayFromBottom(el2);
       setIsAwayFromBottom(awayFromBottom);
       // 底部恢复贴底跟随解除：用户明确上翻即停（程序性贴底不触发本条件）。
       if (awayFromBottom && bottomFollowRef.current) {
@@ -279,11 +343,13 @@ export function useChatScroll({
     el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("touchmove", onTouchMove, { passive: true });
     el.addEventListener("touchend", onTouchEnd, { passive: true });
+    el.addEventListener("pointerdown", onPointerDown, { passive: true });
     return () => {
       el.removeEventListener("scroll", onScroll);
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("touchend", onTouchEnd);
+      el.removeEventListener("pointerdown", onPointerDown);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSession, sessionMessages]);

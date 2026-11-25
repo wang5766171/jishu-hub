@@ -110,6 +110,12 @@ export function useTaskExecutionStage({
     execPromptDismissedTaskId !== (activeTaskLaunchInstance?.task_id ?? null);
 
   // ── 执行段滚动（进入拉底 + run 流增长贴底） ──
+  // v0.9.8 需求24 续：这两处「滚到底」都不能拽动停在中间的视图——与普通会话的贴底跟随同一
+  // 口径（用户没上翻才跟）。带任务图的任务每次重新打开都要重新加载任务图，「进入执行段」
+  // 每次都会重新触发，无条件拉到底会把打开函数按滚动记忆恢复的位置盖掉（实测：往上翻后
+  // 切走再回来，每次都停在底部）。
+  // 「视图在不在底部」以滚动系统维护的 isAwayFromBottomRef 为准，并且动手前再看一眼：
+  // 排帧到回调之间视图可能刚被程序恢复到中间（滚动系统当场把标记置真）。
   const execAutoScrolledRef = useRef<string | null>(null);
   useEffect(() => {
     if (!taskExecutionMode) return;
@@ -119,10 +125,16 @@ export function useTaskExecutionStage({
     if (execAutoScrolledRef.current === key) return;
     if (sessionMessagesLength === 0 && !taskRunStarted) return;
     execAutoScrolledRef.current = key;
+    // 先看标记：滚动记忆的恢复还没放到位时它为真（视图在半路上，哪怕此刻停在当前内容的底部）
+    if (isAwayFromBottomRef.current) return;
+    // 这里同步量、不等下面那两帧：打开函数的定位（先遮住、同一次提交里生效）此刻已经落上了
+    const el = messageAreaRef.current;
+    if (!el || el.scrollHeight - el.scrollTop - el.clientHeight > 100) return;
     const raf = requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const el = messageAreaRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
+        if (isAwayFromBottomRef.current) return;
+        const target = messageAreaRef.current;
+        if (target) target.scrollTop = target.scrollHeight;
       });
     });
     return () => cancelAnimationFrame(raf);
@@ -133,6 +145,7 @@ export function useTaskExecutionStage({
     if (!taskExecutionMode || !taskRunStarted) return;
     if (isAwayFromBottomRef.current) return;
     const raf = requestAnimationFrame(() => {
+      if (isAwayFromBottomRef.current) return;
       const el = messageAreaRef.current;
       if (el) el.scrollTop = el.scrollHeight;
     });

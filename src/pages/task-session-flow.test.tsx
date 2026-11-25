@@ -15,7 +15,7 @@
  */
 import { fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import type { Message } from "@/types";
 import { deleteCachedSessionMessages, setCachedSessionMessages } from "@/features/session-kernel/kernel/session-cache";
@@ -23,6 +23,7 @@ import { useChatScroll } from "./use-chat-scroll";
 import { useNodeSessionReload } from "./use-node-session-reload";
 import type { SearchLensInput } from "./use-search-lens";
 import { useSessionSelection, type ReloadSessionMessages, type SelectSessionOptions } from "./use-session-selection";
+import { useTaskExecutionStage } from "./use-task-execution-stage";
 
 const invokeCommand = vi.hoisted(() => vi.fn());
 
@@ -34,7 +35,21 @@ vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => k
 const msg = (text: string): Message => ({ role: "user", content: [{ type: "text", text }], timestamp: 1 });
 const noop = () => {};
 
-type Mode = { taskModeActive: boolean; taskSelectedNodeId: string | null; taskNodeSessionAgentId: string | null };
+const frames: FrameRequestCallback[] = [];
+/** 执行当前排队的帧（每个只跑一次；跑的过程中新排的帧留到下一轮）。 */
+function runFrames() {
+  const queued = frames.splice(0, frames.length);
+  for (const frame of queued) frame(0);
+}
+
+type Mode = {
+  taskModeActive: boolean;
+  taskSelectedNodeId: string | null;
+  taskNodeSessionAgentId: string | null;
+  /** 任务执行段（S24-U20 用）：是否处于执行段视图、执行流里有几条内容。 */
+  execMode?: boolean;
+  projected?: unknown[];
+};
 
 function useFlow(m: Mode) {
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
@@ -92,7 +107,36 @@ function useFlow(m: Mode) {
     streamTextStarted: false,
     reloadSessionMessagesRef,
   });
-  return { ...selection, setSelectedSession, selectedSessionRef, sessionMessages, scrollAction: scroll.scrollAction, closeViewer, messageAreaRef };
+  // 任务执行段（S24-U20）：任务图与执行流用最小的假数据；这里只关心它的两处「滚到底」
+  const execMode = m.execMode === true;
+  const taskGraph = useMemo(
+    () => ({ snapshot: null, projectedMessages: m.projected ?? [], nodeRuns: {}, activeRunId: null, runStatus: null }) as never,
+    [m.projected],
+  );
+  useTaskExecutionStage({
+    taskExecutionMode: execMode,
+    taskRunStarted: true,
+    activeTaskLaunchInstance: execMode ? ({ task_id: "task-1", title: "验证", skill_id: "jishu-task-runner", status: "active" } as never) : null,
+    taskGraph,
+    taskGraphRef: { current: taskGraph },
+    boardRunId: null,
+    projectPath: "E:/p",
+    agents: [],
+    confirmDialog: vi.fn(async () => true),
+    isAwayFromBottomRef: scroll.isAwayFromBottomRef,
+    messageAreaRef,
+    sessionMessagesLength: sessionMessages.length,
+  });
+  return {
+    ...selection,
+    setSelectedSession,
+    selectedSessionRef,
+    sessionMessages,
+    scrollAction: scroll.scrollAction,
+    isAwayFromBottomRef: scroll.isAwayFromBottomRef,
+    closeViewer,
+    messageAreaRef,
+  };
 }
 
 function mount(mode: Mode = { taskModeActive: false, taskSelectedNodeId: null, taskNodeSessionAgentId: null }) {
@@ -100,6 +144,15 @@ function mount(mode: Mode = { taskModeActive: false, taskSelectedNodeId: null, t
   const size = { scrollHeight: 1000, clientHeight: 500 };
   Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => size.scrollHeight });
   Object.defineProperty(el, "clientHeight", { configurable: true, get: () => size.clientHeight });
+  // jsdom 给 scrollTop 赋值不会压到可滚动范围内；浏览器会——按浏览器的规矩来
+  let top = 0;
+  Object.defineProperty(el, "scrollTop", {
+    configurable: true,
+    get: () => top,
+    set: (v: number) => {
+      top = Math.max(0, Math.min(v, size.scrollHeight - size.clientHeight));
+    },
+  });
   let api: ReturnType<typeof useFlow> | null = null;
   const next = { sessionId: "", options: undefined as SelectSessionOptions | undefined };
   function Harness(props: Mode) {
@@ -121,6 +174,7 @@ function mount(mode: Mode = { taskModeActive: false, taskSelectedNodeId: null, t
       return api!;
     },
     el,
+    size,
     clickOpen,
     rerender: (m: Mode) => view.rerender(<Harness {...m} />),
   };
@@ -133,7 +187,11 @@ beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
   invokeCommand.mockReset();
   for (const id of ["s1", "s2", "sess-main", "node-sess"]) deleteCachedSessionMessages(id);
-  vi.stubGlobal("requestAnimationFrame", vi.fn());
+  frames.length = 0;
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+    frames.push(cb);
+    return frames.length;
+  });
   vi.stubGlobal("cancelAnimationFrame", vi.fn());
 });
 
@@ -147,7 +205,7 @@ describe("任务工作台的会话流程 · 三个钩子接在一起（从真实
     invokeCommand.mockResolvedValue([msg("s1 的消息")]);
     const h = mount();
     await h.clickOpen("s1");
-    expect(h.el.scrollTop).toBe(1000); // 首次打开：到底
+    expect(h.el.scrollTop).toBe(500); // 首次打开：到底
     // 往上翻一段再切走：记下这个位置
     h.el.scrollTop = 200;
     invokeCommand.mockResolvedValue([msg("s2 的消息")]);
@@ -166,7 +224,7 @@ describe("任务工作台的会话流程 · 三个钩子接在一起（从真实
     const h = mount();
     await h.clickOpen("sess-main", { keepTaskContext: true });
     expect(h.api.sessionMessages).toEqual([msg("任务主会话的消息")]);
-    expect(h.el.scrollTop).toBe(1000);
+    expect(h.el.scrollTop).toBe(500);
 
     // 选中节点：导流钩子在同一次更新里落下节点选中态与占位（中间不会出现「节点已选中、
     // 主区还是主会话」的状态，否则补读会把主会话当成节点会话重读）
@@ -183,7 +241,7 @@ describe("任务工作台的会话流程 · 三个钩子接在一起（从真实
     expect(h.api.sessionMessages).toEqual([msg("节点会话的消息")]);
     // 消息到了，定位指令随即被消费（首次打开：到底）
     expect(h.api.scrollAction.current).toBeNull();
-    expect(h.el.scrollTop).toBe(1000);
+    expect(h.el.scrollTop).toBe(500);
 
     // 取消选中：导流钩子先清掉节点选中态，再调用打开函数回到任务主会话
     //（缓存里有，不用再读磁盘；节点选中态清掉后补读也不再管这个会话）
@@ -193,5 +251,32 @@ describe("任务工作台的会话流程 · 三个钩子接在一起（从真实
     await h.clickOpen("sess-main", { keepTaskContext: true });
     expect(h.api.sessionMessages).toEqual([msg("任务主会话的消息")]);
     expect(invokeCommand.mock.calls.length).toBe(calls);
+  });
+
+  it("打开带任务图的任务：按滚动记忆恢复位置之后任务图才加载完，视图不被拽到底——S24-U20", async () => {
+    setCachedSessionMessages("sess-main", [msg("任务主会话的消息")]);
+    setCachedSessionMessages("s1", [msg("普通会话的消息")]);
+    const mode = { taskModeActive: true, taskSelectedNodeId: null, taskNodeSessionAgentId: null };
+    const h = mount(mode);
+    await h.clickOpen("sess-main", { keepTaskContext: true });
+    expect(h.el.scrollTop).toBe(500); // 首次打开：到底
+    // 往上翻一段（真实环境里滚轮会解除贴底跟随、滚动事件会把「离开底部」标记置真）
+    h.el.scrollTop = 200;
+    h.el.dispatchEvent(new WheelEvent("wheel", { deltaY: -400 }));
+    h.el.dispatchEvent(new Event("scroll"));
+    await h.clickOpen("s1"); // 切走：记下 200
+
+    // 回来：这一帧内容还不够高（执行卡要等任务图加载完才出现），恢复的位置先被压低
+    h.size.scrollHeight = 600;
+    await h.clickOpen("sess-main", { keepTaskContext: true });
+    expect(h.el.scrollTop).toBe(100);
+
+    // 任务图加载完：内容长出来；执行段同时出现（进入执行段 + 执行流有了内容）
+    h.size.scrollHeight = 1200;
+    h.rerender({ ...mode, execMode: true, projected: [{ kind: "event" }] });
+    await new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < 6; i++) runFrames();
+
+    expect(h.el.scrollTop).toBe(200);
   });
 });
