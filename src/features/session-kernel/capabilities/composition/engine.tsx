@@ -158,7 +158,11 @@ function SourceShell({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ctx.messages, ctx.turns, ctx.activeTurnIndex, manifest.source!.type]);
+    // v0.9.8 需求24 续：任务上下文（ctx.task）进依赖。此前漏了它——「源 = 任务」的面板
+    //（任务看板）挂载后不再随任务重算：进入带任务图的任务时图还没加载，面板按「没有图」
+    // 算了一次，图加载完、执行状态变化它都不动（停在 0/0、没有节点和主会话入口），
+    // 只有主会话来了新消息才顺带刷新。
+  }, [ctx.messages, ctx.turns, ctx.activeTurnIndex, ctx.task, manifest.source!.type]);
   return <RendererShell manifest={manifest} schema={schema} payload={payload} sessionId={ctx.sessionId} ctx={ctx} fileComponent={fileComponent} />;
 }
 
