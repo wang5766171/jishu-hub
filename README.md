@@ -6,7 +6,7 @@
 
 [![Version](https://img.shields.io/github/v/release/wang5766171/jishu-hub?color=blue&label=version)](https://github.com/wang5766171/jishu-hub/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://github.com/wang5766171/jishu-hub/releases)
-[![Size](https://img.shields.io/badge/size-<30MB-blue.svg)](https://github.com/wang5766171/jishu-hub/releases/latest)
+[![Size](https://img.shields.io/badge/size-~60MB-blue.svg)](https://github.com/wang5766171/jishu-hub/releases/latest)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
 
 [English](#) | [中文](README_ZH.md)
@@ -22,7 +22,7 @@ AI coding agents are evolving rapidly — Claude Code, OpenAI Codex, Open Code, 
 **Jishu Hub (机枢)** is a multi-agent collaboration platform built on three pillars:
 
 > - **One unified surface for many agents** — Claude Code, OpenAI Codex, Open Code, and the built-in Jishu Self agent chat, switch, and run in parallel in one desktop interface; multi-task across projects without context interference
-> - **Local-first** — your data stays yours: session history lives alongside each project, Hub metadata in local `~/.jishu-hub/`, nothing is ever uploaded; native CLI passthrough with zero proxies, and a Tauri v2 + Rust build that stays small and starts instantly
+> - **Local-first** — your data stays yours: session history is kept per project in each agent's own local directory (`~/.claude/`, `~/.codex/`, `~/.jishu-agent/`), Hub metadata in local `~/.jishu-hub/`, nothing is ever uploaded; native CLI passthrough with zero proxies, and a Tauri v2 + Rust build that stays small and starts instantly
 > - **Craftable plugins** — a three-source plugin market (curated / Pi extension ecosystem / skill market) with one-click scene bundles and post-install guidance; the interface itself is reshaped by plugins (mounts, block renderers, themes) — you can even have an AI agent write an adapter plugin for you
 
 ## Quick Start
@@ -32,6 +32,12 @@ Download the latest release from [GitHub Releases](https://github.com/wang576617
 For users in China, downloads are also available from [Gitee Releases](https://gitee.com/wangzwa/jishu-hub/releases).
 
 **System Requirements**: Windows 10 or later
+
+**First launch**: the app checks the agent engine and your runtime (Node.js, Git, …) automatically, and walks you through installing anything that's missing.
+
+<p align="center">
+  <img src="./screenshots/安装引导.png" alt="First-launch environment check" width="100%" />
+</p>
 
 ## Screenshots
 
@@ -44,35 +50,56 @@ A clean, focused, and immersive chat interface natively on your desktop. Jishu H
 ### Multimodal Capabilities
 <p align="center">
   <img src="./screenshots/图片会话.png" alt="Image Chat" width="49%" />
-  <img src="./screenshots/图片发送支持标注.png" alt="Image Annotation" width="49%" />
+  <img src="./screenshots/图片发送支持标注.png" alt="Auto-numbered attachments" width="49%" />
 </p>
-Engage in rich multimodal conversations. Send images and files effortlessly, and use built-in image annotation tools to highlight exactly what you need the AI to focus on.
+Engage in rich multimodal conversations. Send images and files effortlessly; multiple attachments are numbered automatically (image 1, image 2, …) so you can point to them by name in your message.
 
 ### Multi-Agent Collaboration & Parallel Tasks
 <p align="center">
   <img src="./screenshots/智能体切换.png" alt="Agent Switching" width="49%" />
   <img src="./screenshots/多任务的并行处理.png" alt="Parallel Tasks" width="49%" />
 </p>
-Switch smoothly between CLI agents (Claude Code, OpenAI Codex, Open Code, and more) via the plugin architecture. Run multiple sessions in parallel across projects without context interference.
+Switch smoothly between CLI agents (Claude Code, OpenAI Codex, Open Code, and more) via the plugin architecture. Run multiple sessions in parallel across projects without context interference — and pop any session into a floating window to watch its output live.
+
+### Task Mode & Artifacts Center
+<p align="center">
+  <img src="./screenshots/任务模式与产物中心.png" alt="Task Mode & Artifacts Center" width="100%" />
+</p>
+In task mode the agent breaks the work into steps and drives them forward while the task board tracks progress in real time. Files it produces show up as reference cards in the reply — click one to preview it right in the Artifacts sidebar.
+
+### Plugin Market & Scene Guidance
+<p align="center">
+  <img src="./screenshots/插件市场-精选.png" alt="Plugin Market · Curated" width="49%" />
+  <img src="./screenshots/插件市场-扩展生态.png" alt="Plugin Market · Pi Extension Ecosystem" width="49%" />
+</p>
+<p align="center">
+  <img src="./screenshots/场景套装.png" alt="Scene bundle" width="49%" />
+  <img src="./screenshots/装后引导卡.png" alt="Post-install guide card" width="49%" />
+</p>
+A three-source plugin market: curated picks, the Pi extension ecosystem, and the skill market. Install a whole scene bundle in one click; a guide card then tells you what you installed, whether it needs configuration, and how to use it first — or generates a UI plugin for an extension in one click.
+<p align="center">
+  <img src="./screenshots/场景推荐横条.png" alt="Suggested plugins in a new conversation" width="100%" />
+</p>
+In a new conversation, suggested plugins for the scene appear right above the input box — click to mount one.
 
 ### Project & Session Management
 <p align="center">
   <img src="./screenshots/项目管理.png" alt="Project Management" width="49%" />
   <img src="./screenshots/项目全局搜索.png" alt="Global Search" width="49%" />
 </p>
-Projects are automatically discovered and organized. Instantly locate past conversations with the powerful global session search.
+Projects are automatically discovered and organized. Instantly locate past conversations with the powerful global session search, with every match highlighted in place.
 
-### Configuration Editor
+### Configuration
 <p align="center">
-  <img src="./screenshots/配置管理.png" alt="Config Management" width="100%" />
+  <img src="./screenshots/配置管理.png" alt="Configuration" width="100%" />
 </p>
-Ditch manual JSON edits. Use the visual form-based editor to manage models, environment variables, and agent presets — with built-in templates for popular providers and automatic backup & restore.
+Ditch manual JSON edits. Manage model channels, access permissions, and behavior templates in visual forms — with built-in channels for popular providers (Zhipu AI, Alibaba Bailian, Kimi, DeepSeek, …), custom channels, and automatic backup & restore.
 
 ## Features
 
 ### Plugin Market & Scene Guidance (v0.9.7+)
 - Three-source plugin market: curated picks / Pi extension ecosystem (Pi Index) / skill market (SkillHub)
-- One-click scene bundles: pick a scene (coding, office, video, …), fine-tune the checklist, install in one go
+- One-click scene bundles: starter bundles for coding and video production — fine-tune the checklist and install in one go, with more scenes on the way
 - Post-install guide card: what you installed, whether config is needed, how to use it first — plus one-click GUI adaptation to generate a UI plugin for an extension
 - Empty-session scene suggestions: recommended tools per scene, injected with one click
 - Cross-process plugin state sync: change state via CLI, sync in the GUI with one click
@@ -90,7 +117,7 @@ Ditch manual JSON edits. Use the visual form-based editor to manage models, envi
 - Built-in environment detection and one-click agent installation (npm / winget / choco)
 
 ### CLI & Orchestration (v0.6.0)
-- `jishu` CLI binary with 15 subcommands for agents, projects, sessions, config, and more
+- `jishu` CLI binary with 17 subcommands for agents, plugins, sessions, config, and more
 - Orchestrator engine with planner/dispatcher architecture for multi-step task execution
 - LLM provider abstraction (OpenAI / Anthropic) with streaming support
 - ACP (Agent Communication Protocol) server over stdio JSON-RPC
@@ -103,7 +130,8 @@ Ditch manual JSON edits. Use the visual form-based editor to manage models, envi
 - Project-local files detected automatically — referenced by path, not copied
 - Three ways to add files: paste, drag-and-drop, or file picker
 - Streaming output with real-time Markdown rendering
-- Floating window (picture-in-picture) for independent session viewing
+- Floating window (picture-in-picture): watch a session's output live while working on another — ideal for parallel tasks
+- Context usage ring: see context consumption next to the model selector; click for details or to compact right away
 
 ### Session Management
 - Browse all sessions grouped by project
@@ -115,12 +143,13 @@ Ditch manual JSON edits. Use the visual form-based editor to manage models, envi
 - Auto-discovers all projects across agents
 - Shows session count and last active time
 - Add projects via folder picker (including uninitialized projects)
+- Default workspace: start chatting without picking a project — each session gets its own subdirectory, so throwaway tasks never land in your code repos
 
 ### Configuration
-- Visual form editor for agent settings
-- Model selector, environment variables, plugin toggles
-- Built-in templates for popular providers (OpenRouter, SiliconFlow, etc.)
-- Save and switch between config presets
+- Visual forms for agent settings
+- Model selection, access permissions, plugin toggles
+- Built-in channels for popular providers (Zhipu AI, Alibaba Bailian, Kimi, DeepSeek, …) — paste an API key and go; custom channels supported
+- Behavior templates (daily development / deep work / quick Q&A) applied in one click, or save your current config as your own template
 - Auto-backup with one-click restore
 
 ### Custom Commands
@@ -128,7 +157,7 @@ Ditch manual JSON edits. Use the visual form-based editor to manage models, envi
 - Execute commands directly from the UI
 
 ### Personalization
-- Three themes: Light / Colorful / Dark (dark by default)
+- Three themes: Light / Colorful / Dark (dark by default), plus custom color schemes
 - Independent font size control for UI and chat content (4 presets)
 - Bilingual support (Chinese & English), auto-detects system language
 
@@ -159,7 +188,7 @@ Contributions are welcome! Whether it's code, bug reports, or feature suggestion
 | Tool | Min Version | Purpose |
 |------|-------------|---------|
 | [Node.js](https://nodejs.org/) | 18+ | Frontend build |
-| [Rust](https://rustup.rs/) | 1.77+ | Backend compile |
+| [Rust](https://rustup.rs/) | 1.79+ | Backend compile |
 | [VS Build Tools 2022](https://visualstudio.microsoft.com/visual-cpp-build-tools/) | Latest | Windows C++ toolchain |
 
 ### Build & Run
@@ -196,6 +225,7 @@ npm run tauri dev
 | `~/.jishu-hub/runs/` | Orchestrator run traces (JSONL) |
 | `~/.claude/` | Claude Code agent data |
 | `~/.codex/` | Codex agent data |
+| `~/.jishu-agent/` | Jishu Self agent data (sessions, model config, extensions) |
 
 </details>
 
