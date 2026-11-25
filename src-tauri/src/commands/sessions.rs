@@ -135,18 +135,46 @@ pub(crate) fn validate_preview_file(
     Ok(kind)
 }
 
+/// v0.8.1 需求7 → v0.9.0 需求3 方案 C：剥注入块并派生 tool_ids 元数据
+///（pill 渲染数据源；集中一处，覆盖全部 adapter 的回放）。
+///
+/// v0.9.8 需求23：正文读取与会话列表共用这一个函数——列表是侧栏搜索和摘要的
+/// 数据源，两处给出的用户消息必须是同一份「用户看得见的文字」。此前只有正文
+/// 读取剥注入块，列表里的用户消息带着装备目录等内部块：搜「插件」会命中每条
+/// 消息里注入的目录，摘要里也露出内部标记。
+pub(crate) fn strip_user_injected_blocks(messages: &mut [session::Message]) {
+    for message in messages {
+        if message.role != "user" {
+            continue;
+        }
+        for block in &mut message.content {
+            if let session::ContentBlock::Text { text, tool_ids } = block {
+                let (clean, ids) = crate::agent::internal_prompts::extract_tool_snapshot(text);
+                *text = clean;
+                *tool_ids = ids;
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn list_sessions(
     state: tauri::State<'_, Mutex<AppState>>,
     agent_id: String,
     encoded_name: String,
 ) -> Result<Vec<session::Session>, String> {
-    let s = state
-        .lock()
-        .map_err(|_| "App state lock poisoned".to_string())?;
-    s.registry
-        .require_agent(&agent_id)?
-        .list_sessions(&encoded_name)
+    let mut sessions = {
+        let s = state
+            .lock()
+            .map_err(|_| "App state lock poisoned".to_string())?;
+        s.registry
+            .require_agent(&agent_id)?
+            .list_sessions(&encoded_name)?
+    };
+    for session in &mut sessions {
+        strip_user_injected_blocks(&mut session.messages);
+    }
+    Ok(sessions)
 }
 
 #[tauri::command]
@@ -164,19 +192,8 @@ pub(crate) async fn get_session_messages(
         .registry
         .require_agent(&agent_id)?
         .get_session_messages(&session_id, &encoded_name)?;
-    // v0.8.1 需求7 → v0.9.0 需求3 方案 C：剥注入块并派生 tool_ids 元数据
-    // （pill 渲染数据源；集中一处，覆盖全部 adapter 的回放）。
-    for message in &mut messages {
-        if message.role == "user" {
-            for block in &mut message.content {
-                if let crate::session::ContentBlock::Text { text, tool_ids } = block {
-                    let (clean, ids) = crate::agent::internal_prompts::extract_tool_snapshot(text);
-                    *text = clean;
-                    *tool_ids = ids;
-                }
-            }
-        }
-    }
+    // 剥注入块并派生 tool_ids——与会话列表同一个函数（见 strip_user_injected_blocks）。
+    strip_user_injected_blocks(&mut messages);
     // v0.9.8 需求13 复测取证（窗口期停止重复渲染悬案）：读取层指纹——
     // 区分「后端就返回了重复」与「前端自己堆叠」。与前端缓存总闸
     // （session-cache.ts setCachedSessionMessages）同一指纹口径（user 首
@@ -621,6 +638,34 @@ mod tests {
             timestamp: None,
             unsent: None,
         }
+    }
+
+    /// v0.9.8 需求23：会话列表与正文读取共用同一份清理——用户消息里的注入块
+    ///（装备目录 / 工具插件等）剥掉、工具块派生出 tool_ids；助手消息原样。
+    #[test]
+    fn strip_user_injected_blocks_cleans_user_text_only() {
+        use crate::agent::internal_prompts::{
+            EQUIP_CATALOG_CLOSE, EQUIP_CATALOG_OPEN, TOOL_BLOCK_CLOSE, TOOL_BLOCK_OPEN,
+        };
+        let user = user_msg(&format!(
+            "这张图里有几根柱子？\n\n{EQUIP_CATALOG_OPEN}\n可装插件目录……\n{EQUIP_CATALOG_CLOSE}\n\n{TOOL_BLOCK_OPEN}\n## jishu-cli — 指南\n{TOOL_BLOCK_CLOSE}"
+        ));
+        let mut assistant = assistant_msg();
+        if let session::ContentBlock::Text { text, .. } = &mut assistant.content[0] {
+            *text = format!("{EQUIP_CATALOG_OPEN}助手回复里的块不剥{EQUIP_CATALOG_CLOSE}");
+        }
+        let mut messages = vec![user, assistant];
+        super::strip_user_injected_blocks(&mut messages);
+
+        let session::ContentBlock::Text { text, tool_ids } = &messages[0].content[0] else {
+            panic!("用户消息应是文本块");
+        };
+        assert_eq!(text, "这张图里有几根柱子？");
+        assert_eq!(tool_ids.as_slice(), ["jishu-cli".to_string()].as_slice());
+        let session::ContentBlock::Text { text, .. } = &messages[1].content[0] else {
+            panic!("助手消息应是文本块");
+        };
+        assert!(text.starts_with(EQUIP_CATALOG_OPEN), "助手消息原样");
     }
 
     /// v0.9.8 需求13：读取层指纹——同文本多份（total>uniq）即重复信号；
