@@ -499,7 +499,13 @@ fn count_sessions(dir: &Path) -> usize {
         .unwrap_or(0)
 }
 
-fn get_last_active(dir: &Path) -> Option<String> {
+/// 目录内最新 `.jsonl` 的修改时间，格式 `YYYY-MM-DD HH:mm`（本地时间）。
+///
+/// 项目「最后活跃时间」的唯一出处——各智能体的项目扫描都用它。此前内置
+/// 智能体自带一份同功能实现，输出的是 UTC 的 `2026-11-24T13:49:56`：界面上
+/// 与其他智能体的项目格式不一、时间差 8 小时，跨智能体合并时按字符串比
+/// 先后也会错。
+pub(crate) fn get_last_active(dir: &Path) -> Option<String> {
     std::fs::read_dir(dir)
         .ok()?
         .filter_map(|e| e.ok())
@@ -713,6 +719,29 @@ mod tests {
 
         let decoded = decode_project_path(&encoded);
         assert_eq!(decoded, path);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn last_active_is_local_time_in_display_format() {
+        let tmp = std::env::temp_dir().join("jishu-test-last-active");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        // 目录里没有会话文件 → 没有最后活跃时间
+        assert_eq!(get_last_active(&tmp), None);
+
+        let file = tmp.join("2026-01-01T00-00-00_01a00000-0000-7000-8000-000000000000.jsonl");
+        fs::write(&file, "{}").unwrap();
+
+        let got = get_last_active(&tmp).expect("有会话文件就该有最后活跃时间");
+        // 与该文件实际修改时间的本地显示一致：`YYYY-MM-DD HH:mm`，不带 T、不带秒、不是 UTC
+        let modified: chrono::DateTime<chrono::Local> =
+            fs::metadata(&file).unwrap().modified().unwrap().into();
+        assert_eq!(got, modified.format("%Y-%m-%d %H:%M").to_string());
+        assert_eq!(got.len(), 16);
+        assert!(!got.contains('T'));
 
         let _ = fs::remove_dir_all(&tmp);
     }

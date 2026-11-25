@@ -1147,7 +1147,8 @@ pub(crate) fn scan_pi_projects() -> Vec<crate::project::Project> {
         }
 
         let session_count = count_pi_sessions_in_dir(&dir);
-        let last_active = last_modified_in_dir(&dir);
+        // 与其他智能体同一出处、同一格式（本地时间 `YYYY-MM-DD HH:mm`）
+        let last_active = crate::project::get_last_active(&dir);
 
         if let Some(project) = crate::project::project_from_agent_path(
             &project_path,
@@ -1218,25 +1219,6 @@ fn count_pi_sessions_in_dir(dir: &Path) -> usize {
                 .count()
         })
         .unwrap_or(0)
-}
-
-fn last_modified_in_dir(dir: &Path) -> Option<String> {
-    fs::read_dir(dir).ok().and_then(|entries| {
-        entries
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "jsonl")
-                    .unwrap_or(false)
-            })
-            .filter_map(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
-            .max()
-            .map(|t| {
-                let dt: DateTime<Utc> = t.into();
-                dt.format("%Y-%m-%dT%H:%M:%S").to_string()
-            })
-    })
 }
 
 fn file_modified_utc(path: &Path) -> Option<DateTime<Utc>> {
