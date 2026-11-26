@@ -128,7 +128,7 @@ Rust 层是微内核形态，四个核心抽象：
 
 运行形态：底层复用 `third_party/pi` fork（`--mode rpc` 协议，GUI 与用户不感知 Pi 身份）；`PI_CODING_AGENT_DIR=~/.jishu-agent` 隔离自有 runtime 数据（路径派生见 `agent/jishu_self/paths.rs`）；会话走 Pi session 机制，Hub 维护 GUI/native 映射。**改动 pi fork 前必读 `PI_CHANGE.MD`，任何改动如实详细记录。**
 
-MCP 扩展：由独立 `pi-mcp-adapter` 包实现（不在 Pi 核心，Hub 协议层不参与）；Hub 只做配置同步与生命周期入口（`supports/check/install/update/migrate` trait 方法），同样禁止 agent_id 分支。
+MCP：走引擎原生 MCP 客户端（v0.9.5 起，独立的 `pi-mcp-adapter` 扩展已退役，启动时顺带清理它的残留）；Hub 只负责把 `jishu-hub` 自己的 MCP 条目写进引擎用户级的 `mcp.json` 并做连接健康检查，不参与协议层，同样禁止 agent_id 分支。
 
 ## 9. 会话系统与数据持久化原则
 
@@ -149,6 +149,8 @@ MCP 扩展：由独立 `pi-mcp-adapter` 包实现（不在 Pi 核心，Hub 协�
 2. 列表/甘特/画布不得各自维护独立任务模型；运行事实只来自 TaskEvent。
 3. 纯视觉状态（坐标/折叠/视口）属 Workbench Layout，不进 Revision；语义变更必须是明确领域命令。
 4. 敏感输入只存 SecretRef 或脱敏摘要。
+5. 「不询问」按会话生效：开关记在任务实例上，只对该任务的主会话与节点会话生效，其他任务会话与普通会话一律不生效。执行器扩展与工具审批扩展都按当前会话取值，没有全局开关。
+6. 任务实例在**发送入口**登记，先于首条 prompt：任务模式下被包装成启动命令的那条消息发送时带上任务意图（`send_message` 的 `taskLaunch`），后端在拉起进程之前建好实例并挂在本次发送的会话键上，会话解析回调里（早于首条 prompt 写出）换成真实会话号；拉起失败或新会话始终没解析出会话号就撤销登记。这样引擎首轮来查「是不是任务会话、开没开不询问」时查得到；前端收到 `session_resolved` 只按任务号读回刷新，不创建实例。
 
 **Planner/Supervisor（jishu，智能）vs Task Orchestrator（确定性）**：前者产提案（图结构、角色建议、语义评估、返工建议），后者做裁决（校验、调度、Lease、审批、预算、状态机、恢复）。前者禁止直接写 TaskStore/Run/状态、发放 Lease、越权改图；后者不替前者做语义判断。skill/template/policy 是声明式规划输入：版本与内容 hash 必须入 Revision、实际解析入 Run 事实；不得持有 agent id 特例，只能声明角色、capability 要求与约束。角色分配基于 capability 与结构化 `AgentAssignmentConstraint`，不是 agent id 分支。
 
@@ -164,6 +166,17 @@ MCP 扩展：由独立 `pi-mcp-adapter` 包实现（不在 Pi 核心，Hub 协�
 行数是**审视触发器**：<500 正常；500–1000 留意；1000–2500 必须给拆分方案或不拆理由；>2500 默认必须处置。拆分前过**三问**（全过才拆）：职责问（≥2 个可独立命名关注点）、边界问（窄接口耦合；强耦合状态机整体保留）、收益问（零逻辑变更纯移动）。
 
 手法要点：巨型 `impl` 按聚合拆子模块（`use super::*`，跨模块项仅 `pub(super)`/`pub(crate)`）；Tauri 命令按领域进 `commands/<领域>.rs`，`lib.rs` 只留 AppState/run/注册表；连接循环与状态机整体留在各自 `mod.rs`；测试文件化只移动不修改；原 `pub` 项经根 `pub use` 重导出。前端对应：纯函数 → `*-utils.ts`，成组状态 → `features/*/hooks`，可复用 UI → 子组件；god-component 禁机械切割，先设计 props/上下文边界再分批。
+
+**存量超线文件处置**（三问逐个定过的结论；档位变动时复核，结论不变不重写）。范围是评审点名过的文件；其余超过 1000 行的文件（前端与后端各有三十来个）还没有处置结论，下次触碰时按同一套三问补进本表：
+
+| 文件 | 档位 | 三问结论 | 处置 |
+|---|---|---|---|
+| `src/pages/chat-page.tsx` | >2500 | 职责问过：会话选择、任务容器编排、会话操作、斜杠命令、页面装配可各自命名。边界问只对一半成立：这些域共享同一组编排态（选中会话、智能体、项目、列表刷新），「成组状态连同其副作用」能以窄接口出去，页面 JSX 装配不能。收益问：抽钩子是纯移动，拆 JSX 不是。 | 本体保留「核心视图 + 编排壳」，不强拆。按域分批抽钩子（滚动、会话选择、任务执行段、节点补读、任务实例同步等已出界）；触碰本文件的需求，先把新增的成组状态落到钩子或纯函数模块，再改本体。 |
+| `src/components/sessions/chat-input.tsx` | 1000–2500 | 职责问过：附件与图片发送、+ 引用菜单、斜杠命令面板、输入建议、待发送区与引导、压缩发起、装备建议条、发送出口。边界问大体成立：各组状态多为自用，接口可收窄到会话键、发送回调、工具清单。收益问：抽钩子或子组件是纯移动。 | 按域抽；编辑镜面（textarea 与 pill 镜面同步）与 token 解析强绑定，整体留在本体。 |
+| `src/pages/plugin-market.tsx` | 1000–2500 | 三问全过：三源装载、推荐区与套装弹层、在线安装与冲突确认各自是独立状态机，只经「已装集、安装执行器、刷新回调」相交。 | 拆：已装集与安装结果的消费放 `features/equipment`（纯函数，弹层、推荐卡、建议条共用）；推荐区与套装弹层抽成 `components/market/` 子组件；本体留三源装载与页签。 |
+| `src/components/sessions/message-view.tsx` | 1000–2500 | 三问全过：搜索高亮区、块渲染器、助手气泡、用户气泡、列表容器本就是顶层件，只经 props 相交。 | 按现有顶层边界分文件（纯移动），本体留列表容器。拆分方案定为三块、各自成文件：搜索高亮上下文（两个 context、空集合常量、`SearchHighlightArea`，约 70 行 → `search-highlight-context.tsx`）；搜索定位与滚动保持（`SearchPlan` / `SearchJump` / `LensAnchor` / `withRenderedRows` / `holdScrollForFrames`，约 80 行 → `search-lens-anchor.ts`）；行条目构造（`buildRenderItemsForMessages` / `rowKey`，约 150 行 → `message-row-entry.ts`）。拆分单独成一笔纯移动提交，不与行为修复同批；下次有需求触碰本文件时先做这笔移动，再改本体。 |
+| `src-tauri/src/commands/agents.rs` | 1000–2500 上沿 | 三问全过：近九十条命令横跨智能体健康与桥、插件启停与增删改、组合件与混合件、会话工具引用、配置面与预连接、主题资产与文件读写、扩展导入与登记簿、市场目录、装备推荐、安装与冲突确认、卸载与迁移；命令彼此独立，只共享注册表重建、安装登记、卸载守卫几个辅助函数。 | 按领域拆 `commands/agents/` 子模块（手法要点「Tauri 命令按领域」），辅助函数 `pub(super)`；纯移动。安装登记的用例已放到 `commands/agents/install_ledger_tests.rs`（只含用例）——`commands/agents/` 目录已开头，领域拆分方案不变。 |
+| `src-tauri/src/pi_rpc_runtime.rs` | 1000–2500 | 职责问过：事件归一化、问答卡协议翻译、hub 调用分发、发送簿记与扩展命令识别、审批路由、测试都可独立命名且接口窄。边界问对连接循环不过：回合状态机（回合中 / 空闲 / 取消收尾 / 压缩 / 缓冲合并）、三看门狗、合批写出与缓冲区是同一个强耦合整体。 | 上述各块已拆进 `pi_rpc_runtime/` 子模块（normalize / protocol / hub_invoke / prompts / approval / watchdog / tests），子模块项经根 `pub(crate) use` 重导出、外部路径不变。主文件只留连接循环与状态机，不再拆；新增测试一律写进 `tests.rs`。 |
 
 ## 13. 版本与验证纪律
 
@@ -183,12 +196,16 @@ npx vitest run
 npx vite build    # 涉及无测试覆盖的大文件时必跑（转换期才暴露解析错误）
 ```
 
+`vitest run` 的退出码必须为 0：未处理的 Promise 拒绝会让退出码变 1 而用例全绿。渲染真实组件的测试必须替身 `@tauri-apps/api/event`（组件挂载即监听事件，测试环境没有 Tauri 桥）。
+
 改动 `third_party/pi` 时（记录义务见 `PI_CHANGE.MD`）：
 
 ```powershell
 cd third_party/pi/packages/coding-agent
 npx vitest run test/<相关文件>.test.ts
 ```
+
+**界面自动化与打包守卫**：`scripts/e2e/` 是随仓库分发的界面自动化测试（Playwright 经调试口驱动真实应用；只连接、不启动浏览器，用法与它会对真实环境做什么见该目录 README）。它不进安装包：`npm run build` 在前端产物与随包资源生成后、主程序编译前运行打包守卫（`scripts/e2e/check-not-bundled.mjs`），确认测试基建没有混进前端产物、打包清单、随包资源、随包资源目录（`src-tauri/resources`）和安装脚本（`src-tauri/nsis`），命中即中止构建；守卫带自测。用例默认不替用户放行工具审批（出现审批卡按拒绝处理并判该用例失败）。
 
 三条架构回归测试（transport 走 adapter contract、registry 无 agentId 分支、jishu 交互不经 bridge）全程保持绿。用户做 GUI 功能验证，开发者负责构建、测试与文档。
 
@@ -237,34 +254,37 @@ npx vitest run test/<相关文件>.test.ts
 
 ### 16.3 工具插件与会话注入
 
-**数据流**（2026-08-31 用户裁决保持 workbuddy 形态；v0.9.0 需求3 方案 C 废弃文本标记；v0.9.5 重构：注入后缀化 + 内部提示词单源管理 + 标记统一大写横线）：
+**数据流**（workbuddy 形态，用户裁决；注入块一律后缀追加；话术单源管理）：
 
-- **消息即所见（用户裁决）**：+ 菜单点击 → 插入 `@[显示名]` pill 到输入框 → 发送时 `extractToolTokens` 剥 token + token→id 归一 → **本条 token 集合 = 本条工具集**（所见即所得：空 token = 本条不带工具，覆盖写入会话集合）。回放 pill 数据源 = 后端从注入块 `## id — desc` 头派生的 tool_ids（`extract_tool_snapshot`），消息文本不再嵌任何标记。
-- **写入键同源（M0）**：`session_set_tools` 的键 = `send_message` 携带的 sessionId（前端 `nextPendingId`：续聊真实 id / 新会话 `pending-<ts>`）——修前用 `activeSessionId`（流式引用，非流式恒 null）写入全落暂存键、注入永不命中。新会话草稿落 `__new_session__`，首条消息由后端 compose 前迁移（`migrate_session_tools`），会话 id 解析回调再迁移 pending→真实 id，启动清扫孤儿 pending 键。
-- **注入（M1 → v0.9.5 后缀化）**：`compose_tool_message`（统一入口，ACP 早退与 spawn 两路径共享）→ 迁移暂存键 → 注入块**后缀追加**在用户消息之后（图片派发块紧随消息、直指上方附件行，工具块 / MCP 提示殿后）→ agent 经原生 shell 执行，审批走既有策略链。无净化步骤（v0.9.0 方案 C 版本级裁决：手输字面标记亦不防御）。
-- **内部提示词单源（v0.9.5 重构）**：标记对、话术版本登记、回放剥离链统一于 `agent/internal_prompts.rs`；话术正文存 `src-tauri/resources/prompts/`（一文件一话术，`{{占位符}}` 由注入方填充），版本台账见该目录 `CHANGELOG.md`，启动日志打印版本锚点。改话术 = 改文件 + 版本号 +1 + 台账记一行。
-- **消息组装单源（M5）**：`composeOutgoing`（chat-input.tsx）为发送/引导/steer 唯一组装函数。
+- **消息即所见（用户裁决）**：+ 菜单点击 → 把 `@[显示名]` 插进输入框 → 原样随消息发送、落盘（用户放在哪就是哪，回放就地渲染成 pill）。**本条消息里的 `@[名]` 集合 = 本条工具集**：空 = 本条不带工具，覆盖会话原有的工具集。
+- **工具集只在发送入口确定**：后端 `send_message` 是所有用户消息出口（手动发送、回合结束与压缩结束后的自动发送、停止后重发、引导补发、编辑重发）的必经点——先按消息文本解析 `@[显示名]` → 工具 id 并写入会话工具集，再组装注入块。编辑重发可显式传工具集（表达「编辑态保留的工具」这一文本之外的意图）。前端 `composeOutgoing`（chat-input.tsx）只算展示用的两样东西——本条消息的工具引用快照（流式气泡、引导占位的 pill）与会话键——并同步 + 菜单勾选态；不写工具集。
+- **写入键同源**：工具集的写入键就是 `send_message` 收到的会话键（续聊 = 真实 id；新会话 = 暂存键，真实 id 解析后迁移到真实键）。前端流式键与之取同一个值。
+- **引导（steer）是独立出口**：回合进行中的引导经 `steer_chat` 把原文送进正在跑的回合——不解析工具引用、不注入说明块、不记落地账。
+- **注入**：`compose_tool_message`（统一入口，ACP 早退与 spawn 两路径共享）把注入块**后缀追加**在用户消息之后，顺序固定：图片派发块（直指上方附件行）→ 工具块或 MCP 提示 → 装备目录块。agent 经原生 shell 执行，审批走既有策略链。无净化步骤（版本级裁决：手输字面标记亦不防御）。
+- **内部提示词单源**：标记对、话术版本登记、回放剥离链统一于 `agent/internal_prompts.rs`；话术正文存 `src-tauri/resources/prompts/`（一文件一话术，`{{占位符}}` 由注入方填充），版本台账见该目录 `CHANGELOG.md`，启动日志打印版本锚点。改话术 = 改文件 + 版本号 +1 + 台账记一行。
 
-**标记契约**（注入块统一由后端剥离链处理；命名规范 `JISHU-` 大写横线）：
+**标记契约**（命名规范 `JISHU-` 大写横线）：
 
 | 标记 | 出现位置 | 剥离方 |
 |---|---|---|
-| `@[显示名]` | 输入框（用户可见 pill） | 前端 `extractToolTokens`（`composeOutgoing` 内） |
-| `<JISHU-TOOL-PLUGINS>` / `<JISHU-MCP-HINT>` / `<JISHU-IMAGE-DISPATCH>` | 用户消息 prompt 后缀 | 后端 `agent::internal_prompts` 统一剥离链（get_session_messages / session 加载 / 标题摘要全经此，含 tool_ids 派生） |
-| `<JISHU-EXEC-CONTRACT>` | orchestrator 节点 prompt 后缀（permission_scope 硬契约，标记与正文一并剥） | 同上（v0.9.5 自 `[JISHU-PROMT]` 配对块换标，话术入 prompts/exec-contract.md） |
-| `[JISHU-TASK:…]` 前缀消息 | Conductor 方法论注入（display:false 但写 JSONL） | 前端 `filterInvisibleUserMessages`（chat-page-utils.tsx，回放过滤） |
+| `@[显示名]` | 用户消息正文（随消息落盘） | 不剥离：展示面就地渲染成 pill |
+| `<JISHU-TOOL-PLUGINS>` / `<JISHU-MCP-HINT>` / `<JISHU-IMAGE-DISPATCH>` / `<JISHU-EQUIP-CATALOG>` | 用户消息 prompt 后缀 | 后端 `agent::internal_prompts` 统一剥离链（会话列表、正文加载、标题摘要全经此；工具块同时派生 tool_ids） |
+| `<JISHU-EXEC-CONTRACT>` | orchestrator 节点 prompt 后缀（permission_scope 硬契约，标记与正文一并剥） | 同上（话术在 prompts/exec-contract.md） |
+| `<!--JISHU_HUB_IMAGES_BEGIN-->` … `<!--JISHU_HUB_IMAGES_END-->` | 用户消息 prompt 后缀（附件行清单：文件名与路径，提示 agent 用读取工具查看） | 前端 `lib/session-search-text.ts` 的 `stripImagePrompt`（展示与搜索共用）；后端剥离链不处理它 |
+| `[JISHU-TASK:…]` 前缀消息 | Conductor 方法论注入（display:false 但写 JSONL） | 前端 `filterInvisibleUserMessages`（`src/features/chat-core/visible-user-messages.ts`，回放正文与侧栏搜索共用这一处过滤） |
+| `<JISHU-EQUIP-RECOMMEND>{json}</JISHU-EQUIP-RECOMMEND>` | 助手回复正文（agent 输出的界面渲染指令） | 不剥离、不在回放剥离链：前端解析成一键安装的推荐卡（equip-recommend-card.tsx） |
 
 **无历史兼容（用户裁决 2026-09-30）**：旧小写连字符标记（`<jishu-*>`）、`[JISHU-PROMT:开始/结束]` 配对块、`[图片处理] ` 行前缀、旧 `<jishu-task-*>` 标签——剥离逻辑全部移除，不做兜底；相关历史会话回放原样呈现。
 
-**禁止复制正则**：标记常量与剥离链只允许单一宿主定义——后端 `agent/internal_prompts.rs`（Rust）、前端 `embedded-tools.tsx` / `chat-input.tsx` / `chat-page-utils.tsx`（TS，token 剥离与回放过滤）。任何新增展示/持久化面必须复用既有剥离函数，不得自写。
+**禁止复制正则**：注入块的标记常量与剥离链只允许单一宿主定义——后端 `agent/internal_prompts.rs`。工具引用 `@[显示名]` 只有三处宿主，不得再增：后端 `commands/agents.rs` 的 `resolve_tool_refs`（生效口径：显示名 → 工具 id，发送入口必经）；前端 `chat-input.tsx` 的 `extractToolTokens`（展示口径：发送时算本条的工具引用快照，导出给其它文件复用）；前端 `src/lib/tool-token.ts`（token 写法与尾随标签的判定，气泡渲染与搜索文本共用）。三处同一写法、同一规则（清单里首个同名者；未匹配原样保留），改写法必须三处同改。任何新增展示/持久化面必须复用既有剥离函数，不得自写。
 
-**回放渲染**：前端 `UserTextWithPills`（embedded-tools.tsx）为全部用户消息展示面的统一组件（pill + 正文同一内联流）——流式/回放/引导占位/暂存四个面共用，新增面必须复用它。
+**回放渲染**：前端 `UserTextWithPills`（embedded-tools.tsx）为全部用户消息展示面的统一组件——正文与 pill 同一处渲染，流式/回放/引导占位/暂存四个面共用，新增面必须复用它。消息文本里的 `@[显示名]` 就地成 pill；文本里没有引用而 tool_ids 快照（后端从工具块的 `## id — desc` 头派生）非空的消息（早期剥离形态）回退为尾随 pill。标签的页面文字就是原始文本 `@[显示名]`（首尾的 `@[` `]` 不占宽度），搜索文本与之同源：用户文字块的搜索文本 = 看得见的正文 + 跟在正文后面的标签的原始文本，出自同一个函数（`lib/session-search-text.ts` 的 `blockSearchText`）——「哪些标签跟在正文后面」渲染与搜索用同一个判定（`lib/tool-token.ts`）。工具 id → 显示名的映射是全局一份（`lib/tool-catalog.ts`），气泡里的标签与侧栏搜索读同一份，不得各会话各取。
 
 ### 16.4 适配引擎（adaptive.rs）
 
 `resolve_form(manifest, plugin_dir, target_agent)` → `AdaptiveForm::{PiOnly, CliOnly, Both, None}`——按 `[pi_extension].target_agent` 匹配 + `[tool]` 段存在性判定。这是声明驱动的适配层逻辑核心：插件声明"能做什么"，适配引擎决定"在这个 agent 上走哪条通道"。
 
-**已接线（v0.9.2）**：`[pi_extension]` 是 **pi 扩展工具的热插拔闸门**——manifest 以 `tools` 字段声明本插件治理的扩展工具名（entry 可选：纯闸门形态不部署扩展文件），adapter spawn 时按「插件已启用」聚合进 pi `--tools` 白名单（空集兜底常量，宁可关不掉不可流程死）。pi 的 `--tools` 是硬白名单：名单外扩展工具连会话内工具收窄也无法激活，故扩展工具必须显式声明注入（agent 私有知识，属 adapter 职责）。`resolve_form` 形态判定（PiOnly/Both/CliOnly）供部署管线消费。**工具组**（组 = 工具集的代理、多对多归属、enable_tool_group 自发现升级）为下版本规划，设计全文见 `docs/v0.9.2/需求7-扩展工具插件化与治理/02`。
+**接线状态**：`[pi_extension]` 是 **pi 扩展工具的启停闸门**——manifest 以 `tools` 字段声明本插件治理的扩展工具名（entry 可选：纯闸门形态不部署扩展文件），按「插件是否启用」聚合出已启用的扩展工具。常规模式下 spawn **不传 `--tools`**，工具可见性对齐引擎原生管理：核心工具由引擎 `settings.json` 的 `defaultTools` 管，扩展工具由 `packages` 管（装了就在、停了就不在），MCP 工具由引擎原生机制暴露——新增工具来源不需要改 spawn 参数。闸门聚合结果只在**只读模式**使用：只读模式仍传限制性 `--tools`（读取类核心工具 + 已启用的扩展工具）并关闭 MCP。`resolve_form` 形态判定（PiOnly/Both/CliOnly）供部署管线消费。**工具组**（组 = 工具集的代理、多对多归属、enable_tool_group 自发现升级）为下版本规划，设计全文见 `docs/v0.9.2/需求7-扩展工具插件化与治理/02`。
 
 ### 16.5 CLI 形态底层
 
@@ -283,20 +303,27 @@ GUI（插件页 + 创建/编辑对话框）与 CLI（`jishu-cli plugins add/list
 | 会话工具选择 | `~/.jishu-hub/session-tools.json` | JSON（session_id → [tool_id]） |
 | 项目记忆 | `~/.jishu-hub/memory.db` | SQLite（§9 原则） |
 | 审批记忆 | `~/.jishu-hub/approval.db` | SQLite（§9 原则） |
+| 消息落地账本（「未送达」的判定依据） | `~/.jishu-hub/pending_messages.db` | SQLite（§9 原则） |
+| 扩展登记簿（注册索引、适配关系、级联停用台账） | `~/.jishu-hub/extensions.db` | SQLite（§9 原则） |
+| 装备推荐数据（标签库、任务画像、已推记忆、安装来源） | `~/.jishu-hub/equipment.db` | SQLite（§9 原则） |
+| 用量记账 | `~/.jishu-hub/usage.db` | SQLite（§9 原则） |
+| 模型渠道配置 | `~/.jishu-hub/channel-models.db` | SQLite |
+| 任务实例（含「不询问」开关 `task_instance.no_ask`） | `<project>/.jishu-hub/tasks/task-instances.db` | SQLite（随项目走） |
+| 任务图存储（图、运行、事件、投影） | `<系统数据目录>/jishu-hub/taskstore.db`（Windows 为 `%APPDATA%`） | SQLite |
 | hub 会话存储 | `~/.jishu-hub/agent-sessions/` | JSONL（manifest agent 专属） |
 | 任务产物 | `<project>/.jishu-hub/tasks/<id>/artifacts/` | Markdown + JSON（随项目走） |
 
 ### 16.8 硬边界追加
 
-- **插件标记正则单源**：注入标记对（`<jishu-tool-plugins>` / `<jishu-mcp-hint>` / `<jishu-image-dispatch>`）与剥离链只允许在 `agent/internal_prompts.rs`（后端）定义，`@[token]` 剥离只允许在 `embedded-tools.tsx` / `chat-input.tsx`（前端），禁止在其他文件复制。
-- **token→id 归一**：发送路径的 token（可能是显示名）必须在 `chat-input.tsx` 归一为插件 id 后再调 `session_set_tools`——后端严格校验 id。
+- **插件标记正则单源**：注入标记对（`<JISHU-TOOL-PLUGINS>` / `<JISHU-MCP-HINT>` / `<JISHU-IMAGE-DISPATCH>` / `<JISHU-EQUIP-CATALOG>` / `<JISHU-EXEC-CONTRACT>`）与剥离链只允许在 `agent/internal_prompts.rs`（后端）定义，禁止在其他文件复制；展示与搜索用的图片注释标记剥离只住在 `lib/session-search-text.ts`（前端）；附件渲染（`inline-image.tsx`）与导出（`export-engine.ts`）各有一份同写法的解析，改写法时三处同改。工具引用 `@[显示名]` 只允许 §16.3「禁止复制正则」列出的三处宿主，不得新增。
+- **显示名 → 工具 id 归一**：只有两处——后端 `commands/agents.rs` 的 `resolve_tool_refs`（生效口径）与前端 `chat-input.tsx` 的 `extractToolTokens`（展示口径，经导出复用）。清单里取首个同名者，未匹配原样保留。后端对传统工具件的 id 严格校验；扩展与混合件只点名、不落会话工具集（没有可注入的说明块）。
 - **注入统一入口**：`compose_tool_message` 是内部提示词注入的唯一入口，ACP 早退路径与 spawn 路径都必须经此函数（禁止直接 `send_prompt(原消息)`）。
 - **后缀注入**（v0.9.5 用户裁决）：内部提示词块一律追加在用户消息之后（消息在前），禁止改回前缀。
 - **标记命名规范**（v0.9.5 用户裁决）：注入标记统一 `JISHU-` 大写横线（`<JISHU-TOOL-PLUGINS>` 等，与 `[JISHU-TASK:` 同族），新增标记必须遵守。
 - **无历史格式兼容**（v0.9.5 用户裁决）：旧小写标记与 legacy 纯行/配对块的剥离兜底已整体移除，禁止再加回；换标记格式时旧格式不剥（版本级裁决）。
 - **话术版本登记**（v0.9.5）：内部提示词正文改动必须走 `resources/prompts/` 文件 + `internal_prompts.rs` 版本号 +1 + CHANGELOG.md 台账记录，禁止话术回迁代码内联。
-- **集合写入键同源**（M0）：`session_set_tools` 的写入键必须与 `send_message` 携带的 sessionId 同源（`nextPendingId`）——修前写暂存键导致注入永不命中。语义为本条 token 集合覆盖（所见即所得，用户裁决）。
-- **消息组装单源**（M5）：所有用户消息出口（发送/引导/steer）必须经 `composeOutgoing`，禁止各自拼装标记或另走旁路。
+- **集合写入键同源**：会话工具集的写入键必须就是 `send_message` 收到的会话键。语义为本条消息的 `@[名]` 集合覆盖（所见即所得，用户裁决）。
+- **发送入口单源**：所有用户消息出口必须经后端 `send_message`——工具集在那里按消息文本确定，禁止出口各自解析、各写工具集或另走旁路直投原文。引导（steer）经 `steer_chat` 原文直达，是明文允许的例外。
 - **渲染单源**（M5）：用户消息展示一律用 `UserTextWithPills`，禁止裸渲染含标记文本。
 - **内建自适应插件收敛**（v0.9.7 C3.4 + 用户裁决）：task-requirements / task-plan 改为 curated 精选推荐件——默认不物化、可经市场装卸、启动不覆写（原「幂等覆写不可卸载」条款退役）；required 名单件（20 件）仍拒禁用/卸载，守卫与 curated.json 单一真源对齐（见 §16.1）。
 - **无 [tool] 段插件不参与注入**（M3）：`render_tool_block` 跳过 PiOnly 形态（schema 允许 kind=tool 仅含 `[pi_extension]`），消费层不得假设 `[tool]` 段必存在。
@@ -330,7 +357,12 @@ GUI（插件页 + 创建/编辑对话框）与 CLI（`jishu-cli plugins add/list
 
 - **内核零任务语义**：任务/流程能力一律经「任务流程」插件的挂载点进入，内核不含任务分支。
 - **插件作用域**：一切会话域易变状态（引导占位等）必须按会话 key 作用域，禁止跨会话泄漏。
-- **扩展工具注入**：pi 扩展工具必须经 §16.4 闸门声明注入；hub spawn 白名单聚合是唯一通道，禁止旁路直改 pi 工具集。**白名单例外（v0.9.7 需求2 成文）**：任务 runner 三工具（`runner_update_steps`/`runner_ask_user`/`runner_dispatch_to_node`）由 `jishu_self/mod.rs` spawn 时硬编码并入白名单——它们是任务模式的引擎底座能力（随 hub 分发、`task_plan.rs` 无条件部署扩展文件，无虚假能力），不占 `[pi_extension].tools` 闸门；新增底座级工具须同款评审成文，禁止业务插件效仿。
+- **工具可见性对齐引擎原生管理**：常规模式 spawn 不传 `--tools` 硬白名单——核心工具由引擎 `settings.json` 的 `defaultTools` 管（含任务执行器的三个工具；首次启动幂等写入全量清单，已有显式值不覆盖），扩展工具由 `packages` 管（装了就在、停了就不在），agent-tools 随扩展加载自动注册，MCP 工具由引擎原生机制暴露。只读模式是唯一例外，仍传限制性 `--tools`（见 §16.4）。新增工具来源不改 spawn 参数；禁止回到「每次 spawn 传硬白名单、缺了补名单」的做法。扩展的启停以 §16.4 闸门与登记簿为准，禁止旁路直改引擎的工具与包配置。
+- **回合结束原因**：`TurnEndReason` 取值 Complete / Aborted / Error / MaxTokens / Handled（线上值同名）。`Handled` 专指「这条消息是引擎直接处理的扩展命令：已处理、无回合」——不落用户消息、不起回合。回合由这条消息启动时，后端合成 `TurnComplete{Handled}` 并回到空闲；引擎正在跑别的回合时收到扩展命令只转发，不改回合状态。前端收到 `Handled` 即丢弃这条流：不留用户气泡、不生成标题、不发通知、照常投递待发送区。是否扩展命令以引擎为准（连接循环持有本会话的扩展命令名集合）。
+- **扩展命令与引擎 TUI 一致**：扩展命令在引擎空闲和输出中都立即执行；GUI 命令面板只列引擎列出的命令，TUI 没有的 GUI 不加。
+- **落地账本（防丢消息）**：一笔账 = 一次发送；账本身份随发送请求带到引擎侧、永不复用。销账按身份与顺序、不比文本——引擎回报「用户消息已落盘」时，销掉该会话里最早的一笔落地账；扩展命令被引擎处理时当场销账。确定没送达的账（引擎拒收、回合收口仍无回执）落成终态，不再等回执。加载时按时间判定残留：账目记录之后该会话有用户消息落盘，即视为已送达——只认真正的用户消息（工具结果条目不算回执），时刻取消息自己的 `timestamp`。回合发起前也先拿会话文件按同一条规则对账，对不上的上一代落地账才落终态。判「送达」的三个入口（实时回执、加载、回合发起）只用这一条规则。旧版账本（v1）原地换表迁移，旧行一律按落地账判定——旧包按文本对不上而留下的「未送达」，升级后打开会话即销。只有声明了落盘回执能力（`PERSISTED_RECEIPT`）的通道记账，不按智能体 id 分支。
+- **压缩与普通消息等价**：回合进行中发起的压缩进入待发送区按序执行，引擎空闲时才执行；引擎空闲时发起则立即执行。
+- **结构化错误前缀**：需要前端分支判断的后端错误消息，以稳定前缀开头（`[interaction_stale]`、`[no_active_session]`），其后跟人话文案；前端先按前缀判断，前缀不在时才退回子串匹配。
 - **会话状态文案按阶段准确**（v0.9.4 需求10，用户裁决话术）：流式状态按真实阶段区分显示——连接中（agent 正在赶来）/等待模型响应（思考中）/思考生成（深度思考中）/工具调用中/回复生成（处理中）；切换信号以 session_resolved（连接建立）与首个内容事件为准，禁止一律「思考中」误导。禁止把「send IPC 返回」当作连接建立的信号（spawn 未完成时为时过早）。
 
 ### 16.11 dev 日志中心（v0.9.4）

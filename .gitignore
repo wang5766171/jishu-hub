@@ -53,6 +53,7 @@ scratch/
 .tmp/
 check_log.txt
 test_*.py
+test_*.js
 test_*.exe
 test_*.pdb
 test_*.rs

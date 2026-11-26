@@ -23,6 +23,7 @@ message 以 `agent名:` 作为前缀，表明本次提交由哪个智能体产�
 | OpenCode | `opencode:` |
 | Antigravity | `antigravity:` |
 | Codex | `codex:` |
+| ZCode | `zcode:` |
 
 格式：
 

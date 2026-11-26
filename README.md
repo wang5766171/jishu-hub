@@ -85,9 +85,9 @@ In a new conversation, suggested plugins for the scene appear right above the in
 ### Project & Session Management
 <p align="center">
   <img src="./screenshots/项目管理.png" alt="Project Management" width="49%" />
-  <img src="./screenshots/项目全局搜索.png" alt="Global Search" width="49%" />
+  <img src="./screenshots/项目全局搜索.png" alt="Session Search" width="49%" />
 </p>
-Projects are automatically discovered and organized. Instantly locate past conversations with the powerful global session search, with every match highlighted in place.
+Projects are automatically discovered and organized. Instantly locate past conversations with the project-wide session search, with every match highlighted in place.
 
 ### Configuration
 <p align="center">
@@ -97,8 +97,8 @@ Ditch manual JSON edits. Manage model channels, access permissions, and behavior
 
 ## Features
 
-### Plugin Market & Scene Guidance (v0.9.7+)
-- Three-source plugin market: curated picks / Pi extension ecosystem (Pi Index) / skill market (SkillHub)
+### Plugin Market & Scene Guidance (v0.9.8)
+- Three-source plugin market: curated picks / Pi extension ecosystem / skill market (SkillHub)
 - One-click scene bundles: starter bundles for coding and video production — fine-tune the checklist and install in one go, with more scenes on the way
 - Post-install guide card: what you installed, whether config is needed, how to use it first — plus one-click GUI adaptation to generate a UI plugin for an extension
 - Empty-session scene suggestions: recommended tools per scene, injected with one click
@@ -117,7 +117,7 @@ Ditch manual JSON edits. Manage model channels, access permissions, and behavior
 - Built-in environment detection and one-click agent installation (npm / winget / choco)
 
 ### CLI & Orchestration (v0.6.0)
-- `jishu` CLI binary with 17 subcommands for agents, plugins, sessions, config, and more
+- `jishu` CLI binary with 17 subcommands — agents, chat, plans & tasks, plugins, models, diagnostics, and more
 - Orchestrator engine with planner/dispatcher architecture for multi-step task execution
 - LLM provider abstraction (OpenAI / Anthropic) with streaming support
 - ACP (Agent Communication Protocol) server over stdio JSON-RPC
@@ -135,7 +135,7 @@ Ditch manual JSON edits. Manage model channels, access permissions, and behavior
 
 ### Session Management
 - Browse all sessions grouped by project
-- Full-text content search across sessions — instantly locate any conversation
+- Full-text content search across sessions in the current project — instantly locate any conversation
 - Custom session naming for easy identification
 - Resume sessions in terminal with one click
 
@@ -157,7 +157,7 @@ Ditch manual JSON edits. Manage model channels, access permissions, and behavior
 - Execute commands directly from the UI
 
 ### Personalization
-- Three themes: Light / Colorful / Dark (dark by default), plus custom color schemes
+- Three themes: Light / Colorful / Dark (dark by default), plus theme plugins
 - Independent font size control for UI and chat content (4 presets)
 - Bilingual support (Chinese & English), auto-detects system language
 
@@ -168,7 +168,7 @@ See [ROADMAP.md](./ROADMAP.md) for direction and cadence (Now / Next / Later).
 ## Join the Beta
 
 - After trying it out, share feedback via [Gitee Issues](https://gitee.com/wangzwa/jishu-hub/issues) / [GitHub Issues](https://github.com/wang5766171/jishu-hub/issues) — feature ideas, UX problems, and compatibility reports are all welcome
-- Check the pinned "Feature Roadmap" and "Feedback" issues for ongoing discussions
+- Look for the "Feature Roadmap" and "Feedback" issues (titles prefixed with 📌) for ongoing discussions
 
 ## Contributing
 
@@ -187,18 +187,27 @@ Contributions are welcome! Whether it's code, bug reports, or feature suggestion
 
 | Tool | Min Version | Purpose |
 |------|-------------|---------|
-| [Node.js](https://nodejs.org/) | 18+ | Frontend build |
-| [Rust](https://rustup.rs/) | 1.79+ | Backend compile |
+| [Node.js](https://nodejs.org/) | 22.19+ / 24+ | Frontend build, tests & bundled engine packaging |
+| [Rust](https://rustup.rs/) | 1.89+ | Backend compile (the minimum required by the dependencies locked in `Cargo.lock`) |
+| [Git](https://git-scm.com/) | Latest | Cloning the repository with its submodules |
 | [VS Build Tools 2022](https://visualstudio.microsoft.com/visual-cpp-build-tools/) | Latest | Windows C++ toolchain |
 
 ### Build & Run
 
 ```bash
-git clone https://github.com/wang5766171/jishu-hub.git
+git clone --recursive https://github.com/wang5766171/jishu-hub.git   # --recursive: also checks out third_party/pi
 cd jishu-hub
 npm install
+
+# First run only — the Rust build script refuses to build until these exist:
+(cd third_party/pi && npm install && npm run build)   # build the bundled engine (its build output is not committed)
+node scripts/pack-pi.mjs                              # produces third_party/pi-runtime.zip
+mkdir -p src-tauri/target/release && touch "src-tauri/target/release/jishu-cli-$(rustc -vV | tr -d '\r' | sed -n 's/^host: //p').exe"   # placeholder for the command-line sidecar
+
 npm run tauri dev
 ```
+
+> The empty `jishu-cli-<target triple>.exe` is a placeholder that lets the build pass (the same trick CI uses). To use the `jishu` command-line features in dev, build the real binary (`cargo build --release --bin jishu-cli --features cli --manifest-path src-tauri/Cargo.toml`) and copy `src-tauri/target/release/jishu-cli.exe` over it. To produce the installer, run `npm run build`: it packages the bundled engine, builds the command-line program and the frontend, and then builds the installer. It does **not** build the engine itself — the first step above (`npm run build` inside `third_party/pi`) has to be done once beforehand.
 
 </details>
 
@@ -220,8 +229,8 @@ npm run tauri dev
 
 | Path | Description |
 |------|-------------|
-| `~/.jishu-hub/` | Hub metadata (agents, session names, presets, state, models) |
-| `~/.jishu-hub/models.json` | LLM model presets configuration |
+| `~/.jishu-hub/` | Hub metadata (agents, session names, presets, state) |
+| `~/.jishu-agent/agent/models.json` | Model presets for the built-in agent |
 | `~/.jishu-hub/runs/` | Orchestrator run traces (JSONL) |
 | `~/.claude/` | Claude Code agent data |
 | `~/.codex/` | Codex agent data |
@@ -231,4 +240,4 @@ npm run tauri dev
 
 ## License
 
-[MIT](LICENSE) © 2025 Jishu Hub
+[MIT](LICENSE) © 2026 wang5766171

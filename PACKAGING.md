@@ -7,8 +7,8 @@
 Jishu Hub 只发布一个发行版：内嵌 `pi` 引擎（jishu agent）的**全量版**。
 
 - 打包时上游 `build-coding-agent-bundle.mjs`（pi v0.85.0 起）以 esbuild 将 `coding-agent` 各模块及依赖打包为混淆的 `dist/bundle/cli.js`（多入口 + 代码分割：cli / rpc-entry / coordinator / index / client + chunks），fork 的 `build-bundle.mjs` 输出 `dist/runtime-deps.json` 依赖清单；打包后清理 TS 源码（`src`）、无用配置（`.git`）等，满足闭源与混淆诉求。
-- 安装器在安装/覆盖更新时会自动把 `pi-bundle` 装入用户目录（`~/.jishu-agent`），实现**开箱即用**与**离线运行**，用户无需手动 `npm install`。
-- 卸载时会清理 agent 本体（`packages`/`node_modules`），避免残留冲突；用户数据按「删除用户数据」勾选决定。
+- 安装器只带一个 `pi-runtime.zip`；应用**首次启动**时由主程序把 agent 运行时解压安装到 `~/.jishu-agent`（v0.9.7 起），实现**开箱即用**与**离线运行**，用户无需手动 `npm install`。
+- 卸载时不清理 agent 本体（升级与卸载都不改动 `~/.jishu-agent`，运行时的安装与更新由主程序启动时处理）；用户数据按「删除用户数据」勾选决定。
 
 > v0.7.2 起移除了精简版（Lite），agent 完全随 hub 安装包分发。
 
@@ -16,17 +16,45 @@ Jishu Hub 只发布一个发行版：内嵌 `pi` 引擎（jishu agent）的**全
 
 ## 2. Windows 平台打包（本地构建）
 
-打包前确保已安装 **Node.js** 与 **Rust**。
+打包前确保已安装 **Node.js**（22.19+ / 24+，与 README 的本地开发要求一致）与 **Rust**（1.89+，以 `Cargo.lock` 锁定的依赖为准）。
+
+全新克隆先构建一次内置引擎（它的构建产物不入库）：
+
+```bash
+cd third_party/pi && npm install && npm run build && cd ../..
+```
+
+`pack-pi.mjs` 发现引擎没有构建产物会直接退出，并提示这一步。
 
 1. 在项目根目录执行：
    ```bash
    npm run build
    ```
-2. 构建脚本自动完成：前端编译 → 内置 pi 引擎打包（`pack-pi.mjs`）→ Rust 后端编译 → `jishu-cli` sidecar → Tauri 安装包生成。
+2. 构建脚本（`scripts/build.mjs`）自动完成：内置 pi 引擎打包（`pack-pi.mjs`）→ 前端编译 → 打包守卫（见 2.1）→ Rust 后端编译 → `jishu-cli` sidecar → Tauri 安装包生成。
 3. 安装包输出在：
    `src-tauri/target/release/bundle/nsis/Jishu Hub_<版本号>_x64-setup.exe`
 
-> 安装器（NSIS）在 POSTINSTALL 阶段调用 `Jishu Hub.exe --install-agent` 把 pi-bundle 装到 `~/.jishu-agent`；POSTUNINSTALL 阶段清理 agent 本体。这样安装/更新 hub 即自动安装/更新 agent，卸载 hub 即清理 agent。
+> 安装器本身不改动 `~/.jishu-agent`（升级与卸载都一样）：agent 运行时随包一个 `pi-runtime.zip`，由主程序在首次启动时解压安装；`jishu` 命令行入口也由主程序在初始化时登记。安装、更新、卸载 hub 都不直接增删用户目录里的运行时文件。
+
+---
+
+## 2.1 打包守卫
+
+仓库带有界面自动化测试（`scripts/e2e/`：用 Playwright 连上真实应用做界面验证，用法与它会对运行环境做什么见该目录的 README）。它只在开发期使用，**不进安装包**。
+
+`npm run build` 在前端产物（`dist/`）与随包资源（`third_party/pi-runtime.zip`）生成之后、主程序编译之前，运行 `node scripts/e2e/check-not-bundled.mjs`，检查五处打包来源：
+
+1. `dist/`：文件名和内容不得出现测试基建；
+2. `src-tauri/tauri.conf.json` 的打包清单（resources / externalBin）：不得指向 `scripts/`；
+3. `third_party/pi-runtime.zip`：包内文件名不得出现测试脚本；
+4. 编译期嵌入主程序的 `src-tauri/resources/**`：文件名和内容不得出现测试基建；
+5. 安装脚本 `src-tauri/nsis/*.nsh`：不得引用测试基建。
+
+任何一处命中即中止构建；该有的产物不存在同样按失败处理，不按跳过。守卫每次被调用先自测一遍，也可以单独确认它工作正常：
+
+```bash
+node scripts/e2e/check-not-bundled.mjs --selftest
+```
 
 ---
 

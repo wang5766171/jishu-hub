@@ -85,9 +85,9 @@ AI 编程智能体正在快速演进 —— Claude Code、OpenAI Codex、Open Co
 ### 项目与会话管理
 <p align="center">
   <img src="./screenshots/项目管理.png" alt="项目管理" width="49%" />
-  <img src="./screenshots/项目全局搜索.png" alt="全局搜索" width="49%" />
+  <img src="./screenshots/项目全局搜索.png" alt="会话搜索" width="49%" />
 </p>
-自动发现和整理你的项目。强大的全局会话搜索，瞬间定位过去的重要对话，命中处高亮显示。
+自动发现和整理你的项目。项目内的会话搜索，瞬间定位过去的重要对话，命中处高亮显示。
 
 ### 配置管理
 <p align="center">
@@ -97,8 +97,8 @@ AI 编程智能体正在快速演进 —— Claude Code、OpenAI Codex、Open Co
 
 ## 功能特性
 
-### 插件市场与场景引导（v0.9.7+）
-- 三源插件市场：官方精选 / Pi 扩展生态（Pi Index） / 技能市场（SkillHub）
+### 插件市场与场景引导（v0.9.8）
+- 三源插件市场：官方精选 / Pi 扩展生态 / 技能市场（SkillHub）
 - 场景套装一键安装：编程、视频制作两个起步套装，勾选微调一次装齐，更多场景陆续补充
 - 装后引导卡：装完即知「装了什么 / 要不要配置 / 首次怎么用」；扩展可一键 GUI 适配生成界面插件
 - 空会话场景联动推荐：按场景建议挂载工具，点击即注入
@@ -117,7 +117,7 @@ AI 编程智能体正在快速演进 —— Claude Code、OpenAI Codex、Open Co
 - 内置环境检测与智能体一键安装（npm / winget / choco）
 
 ### CLI 与任务编排（v0.6.0）
-- `jishu` CLI 命令行工具，包含 17 个子命令，覆盖智能体、插件、会话、配置等
+- `jishu` CLI 命令行工具，包含 17 个子命令，覆盖智能体、对话、计划与任务、插件、模型、诊断等
 - 编排引擎（Orchestrator）采用 planner/dispatcher 架构，支持多步骤任务执行
 - LLM 供应商抽象层（OpenAI / Anthropic），支持流式输出
 - ACP（智能体通信协议）服务器，通过 stdio JSON-RPC 通信
@@ -135,7 +135,7 @@ AI 编程智能体正在快速演进 —— Claude Code、OpenAI Codex、Open Co
 
 ### 会话管理
 - 按项目分组浏览所有会话
-- 会话内容全文搜索，快速定位历史对话
+- 当前项目内的会话内容全文搜索，快速定位历史对话
 - 自定义会话名称，方便管理
 - 会话可一键在终端中继续
 
@@ -157,7 +157,7 @@ AI 编程智能体正在快速演进 —— Claude Code、OpenAI Codex、Open Co
 - 直接在界面中执行
 
 ### 个性化
-- 三种主题：浅色 / 色彩 / 暗色（默认暗色），支持自定义配色方案
+- 三种主题：浅色 / 彩色 / 暗色（默认暗色），并支持主题插件
 - 系统界面和会话内容字体独立调节（四档预设）
 - 中英文双语支持，自动识别系统语言
 
@@ -168,7 +168,7 @@ AI 编程智能体正在快速演进 —— Claude Code、OpenAI Codex、Open Co
 ## 参与体验
 
 - 下载试用后欢迎到 [Gitee Issues](https://gitee.com/wangzwa/jishu-hub/issues) / [GitHub Issues](https://github.com/wang5766171/jishu-hub/issues) 反馈：功能建议、体验问题、兼容性报告都欢迎
-- 仓库内置「功能路线图」「体验反馈」两个置顶 issue，可直达当前讨论
+- 仓库的 issue 里有「功能路线图」「体验反馈」两个帖子（标题带 📌），可直达当前讨论
 
 ## 贡献
 
@@ -187,18 +187,27 @@ AI 编程智能体正在快速演进 —— Claude Code、OpenAI Codex、Open Co
 
 | 软件 | 最低版本 | 用途 |
 |------|----------|------|
-| [Node.js](https://nodejs.org/) | 18+ | 前端构建 |
-| [Rust](https://rustup.rs/) | 1.79+ | 后端编译 |
+| [Node.js](https://nodejs.org/) | 22.19+ / 24+ | 前端构建、测试与内置引擎打包 |
+| [Rust](https://rustup.rs/) | 1.89+ | 后端编译（以 `Cargo.lock` 锁定的依赖要求的最低版本为准） |
+| [Git](https://git-scm.com/) | 最新 | 连同子模块克隆仓库 |
 | [VS Build Tools 2022](https://visualstudio.microsoft.com/visual-cpp-build-tools/) | 最新 | Windows C++ 工具链 |
 
 ### 构建运行
 
 ```bash
-git clone https://github.com/wang5766171/jishu-hub.git
+git clone --recursive https://github.com/wang5766171/jishu-hub.git   # --recursive：同时检出 third_party/pi 子模块
 cd jishu-hub
 npm install
+
+# 仅首次需要——下面三步做完，Rust 构建脚本要用的两个产物才都在：
+(cd third_party/pi && npm install && npm run build)   # 构建内置引擎（其构建产物不入库）
+node scripts/pack-pi.mjs                              # 生成 third_party/pi-runtime.zip
+mkdir -p src-tauri/target/release && touch "src-tauri/target/release/jishu-cli-$(rustc -vV | tr -d '\r' | sed -n 's/^host: //p').exe"   # 命令行 sidecar 的占位文件
+
 npm run tauri dev
 ```
+
+> 空的 `jishu-cli-<目标三元组>.exe` 只是让构建通过的占位文件（与 CI 的做法相同）。开发时要用到 `jishu` 命令行功能，请先编出真正的程序（`cargo build --release --bin jishu-cli --features cli --manifest-path src-tauri/Cargo.toml`），再把 `src-tauri/target/release/jishu-cli.exe` 复制覆盖它。要出安装包，运行 `npm run build`：它会打包内置引擎、编出命令行程序、构建前端，然后构建安装包。它**不会**构建引擎本身——上面第一步（在 `third_party/pi` 里 `npm run build`）需要事先单独做一次。
 
 </details>
 
@@ -220,8 +229,8 @@ npm run tauri dev
 
 | 路径 | 说明 |
 |------|------|
-| `~/.jishu-hub/` | Hub 元数据（智能体注册、会话名称、预设、状态、模型配置） |
-| `~/.jishu-hub/models.json` | LLM 模型预设配置 |
+| `~/.jishu-hub/` | Hub 元数据（智能体注册、会话名称、预设、状态） |
+| `~/.jishu-agent/agent/models.json` | 内置智能体的模型预设配置 |
 | `~/.jishu-hub/runs/` | 编排引擎运行追踪（JSONL） |
 | `~/.claude/` | Claude Code 智能体数据 |
 | `~/.codex/` | Codex 智能体数据 |
@@ -231,4 +240,4 @@ npm run tauri dev
 
 ## License
 
-[MIT](LICENSE) © 2025 Jishu Hub
+[MIT](LICENSE) © 2026 wang5766171

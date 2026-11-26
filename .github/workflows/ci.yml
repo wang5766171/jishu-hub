@@ -49,5 +49,16 @@ jobs:
           if (-not (Test-Path $stub)) { New-Item -ItemType File -Path $stub | Out-Null }
           Write-Host "sidecar stub: $stub"
 
+      # 同一类校验还有两处：bundle.resources（third_party/pi-runtime.zip）与 frontendDist（../dist）。
+      # 都是构建期才生成的产物；CI 只跑库测试，落空占位过校验。
+      - name: Prepare resource and dist placeholders (tauri-build checks)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "third_party/pi-runtime.zip")) { New-Item -ItemType File -Path "third_party/pi-runtime.zip" | Out-Null }
+          if (-not (Test-Path "dist/index.html")) {
+            New-Item -ItemType Directory -Force -Path dist | Out-Null
+            New-Item -ItemType File -Path dist/index.html | Out-Null
+          }
+
       - name: Run Rust library tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib

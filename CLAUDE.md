@@ -18,7 +18,7 @@ Rules:
 
 ## Git 提交规范
 
-执行 git 提交前，必须遵循 `agent-commit-guide.md`（本地文件，未跟踪）。要点：
+执行 git 提交前，必须遵循 `agent-commit-guide.md`（已纳入仓库版本管理）。要点：
 - message 用中文；
 - 以当前 agent 名称开头作前缀，如 `claude:`；
 - 按问题/功能分批提交；一个文件涉及多个问题时跟随任一问题即可，无需拆分单文件。
