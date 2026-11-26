@@ -11,7 +11,12 @@ import {
   markdownVisibleText,
   searchRegExp,
   stripImagePrompt,
+  stripTaskLaunchPrefix,
+  userVisibleText,
 } from "./session-search-text";
+
+const NAMES = { "dev-god": "写后诊断", "skill-a": "方案规划" } as Record<string, string>;
+const userBlock = (text: string, tool_ids?: string[]) => ({ type: "text", text, tool_ids });
 
 const IMAGE_MARKERS = [
   "帮我看看这张图里哪个月的访问量最高",
@@ -136,5 +141,100 @@ describe("markdownVisibleText 的边界", () => {
     expect(blockSearchText(block, "assistant")).toBe("一");
     block.text = "**二**";
     expect(blockSearchText(block, "assistant")).toBe("二");
+  });
+});
+
+/**
+ * 消息里的工具标签计入搜索文本——v0.9.8 评审修复轮 R2（用户裁决「标签的格式可以
+ * 直接搜……搜索时识别原始文本即可」），对应 tests/V-用例清单 V1-U7 / V1-U10 / V1-U12。
+ */
+describe("用户消息的搜索文本带上工具标签的原始文本", () => {
+  it("跟在正文后面的标签按 @[显示名] 接在正文之后，中间没有分隔", () => {
+    expect(blockSearchText(userBlock("查一下这段代码", ["dev-god"]), "user", NAMES)).toBe("查一下这段代码@[写后诊断]");
+    expect(blockSearchText(userBlock("查一下", ["dev-god", "skill-a"]), "user", NAMES)).toBe("查一下@[写后诊断]@[方案规划]");
+  });
+
+  it("正文里的字样本来就是原文；被它覆盖到的工具不再接在后面", () => {
+    expect(blockSearchText(userBlock("用 @[方案规划] 排期", ["skill-a", "dev-god"]), "user", NAMES)).toBe(
+      "用 @[方案规划] 排期@[写后诊断]",
+    );
+    expect(blockSearchText(userBlock("用 @[方案规划] 排期", ["skill-a"]), "user", NAMES)).toBe("用 @[方案规划] 排期");
+  });
+
+  it("显示名取不到的标签按 id 计（页面上显示的也是 id）；没传映射时全部按 id", () => {
+    expect(blockSearchText(userBlock("查", ["ghost"]), "user", NAMES)).toBe("查@[ghost]");
+    expect(blockSearchText(userBlock("查", ["dev-god"]), "user")).toBe("查@[dev-god]");
+  });
+
+  it("标签搜得到：显示名、@[名]、@[ 各命中一次；别的工具名不命中", () => {
+    const text = blockSearchText(userBlock("查一下这段代码", ["dev-god"]), "user", NAMES);
+    expect(countMatches(text, searchRegExp("写后诊断"))).toBe(1);
+    expect(countMatches(text, searchRegExp("@[写后诊断]"))).toBe(1);
+    expect(countMatches(text, searchRegExp("@["))).toBe(1);
+    expect(countMatches(text, searchRegExp("方案规划"))).toBe(0);
+  });
+
+  it("不带工具的消息与原先完全一样", () => {
+    expect(blockSearchText(userBlock("普通消息", []), "user", NAMES)).toBe("普通消息");
+    expect(blockSearchText(userBlock("普通消息"), "user", NAMES)).toBe("普通消息");
+  });
+
+  it("先剥任务启动包装与图片附件标记，再接标签", () => {
+    const raw = ["/jishu-task dev 修复登录问题", "", "<!--JISHU_HUB_IMAGES_BEGIN-->", "x.png", "<!--JISHU_HUB_IMAGES_END-->"].join("\n");
+    expect(blockSearchText(userBlock(raw, ["dev-god"]), "user", NAMES)).toBe("修复登录问题@[写后诊断]");
+  });
+
+  it("助手消息的 tool_ids 不影响搜索文本", () => {
+    expect(blockSearchText(userBlock("**一**", ["dev-god"]), "assistant", NAMES)).toBe("一");
+  });
+
+  it("缓存：工具集或工具名映射换了会重算", () => {
+    const block = userBlock("查", ["dev-god"]);
+    expect(blockSearchText(block, "user")).toBe("查@[dev-god]");
+    expect(blockSearchText(block, "user", NAMES)).toBe("查@[写后诊断]");
+    block.tool_ids = ["skill-a"];
+    expect(blockSearchText(block, "user", NAMES)).toBe("查@[方案规划]");
+  });
+});
+
+/** 用户消息里用户看得见的正文——气泡显示与搜索同一份。 */
+describe("用户看得见的正文", () => {
+  it("剥掉任务启动包装（内部路由指令不属于用户原话）", () => {
+    expect(stripTaskLaunchPrefix("/jishu-task dev 修复登录问题")).toBe("修复登录问题");
+    expect(stripTaskLaunchPrefix("/jishu-task research 调研一下")).toBe("调研一下");
+    expect(stripTaskLaunchPrefix("/jishu-task 直接开始")).toBe("直接开始");
+    expect(stripTaskLaunchPrefix("普通消息 /jishu-task 不在开头")).toBe("普通消息 /jishu-task 不在开头");
+  });
+
+  it("先剥包装、再剥图片附件标记", () => {
+    expect(userVisibleText(["/jishu-task dev 看这张图", "<!--JISHU_HUB_IMAGES_BEGIN-->x<!--JISHU_HUB_IMAGES_END-->"].join("\n"))).toBe(
+      "看这张图",
+    );
+  });
+});
+
+describe("助手消息里的装备推荐块不进搜索文本（二轮评审 R3 P2-11）", () => {
+  const assistantBlock = (text: string) => ({ type: "text", text, tool_ids: undefined as string[] | undefined });
+  const RECOMMEND =
+    '<JISHU-EQUIP-RECOMMEND>{"items":[{"ref":"curated:task-plan","reason":"适合做流程规划"}],"profile":{"scene":"coding","keywords":["流程规划"]}}</JISHU-EQUIP-RECOMMEND>';
+
+  it("推荐块里的 JSON 不显示，不计入搜索文本：只取看得见的文字段", () => {
+    const text = `先聊聊流程规划的思路。\n\n${RECOMMEND}\n\n需要的话告诉我。`;
+    const visible = blockSearchText(assistantBlock(text), "assistant");
+    // 修前：整段按 Markdown 投影——块里理由与画像关键词里的「流程规划」被数成命中，页面上却没有这段文字
+    expect(countMatches(visible, searchRegExp("流程规划"))).toBe(1);
+    expect(visible).not.toContain("JISHU-EQUIP-RECOMMEND");
+    expect(visible).not.toContain("task-plan");
+    expect(visible).toContain("先聊聊流程规划的思路。");
+    expect(visible).toContain("需要的话告诉我。");
+  });
+
+  it("JSON 非法的推荐块页面上不渲染，同样不计入；没有推荐块的助手消息与原先一样", () => {
+    const broken = `前一句\n<JISHU-EQUIP-RECOMMEND>{not json}</JISHU-EQUIP-RECOMMEND>\n后一句`;
+    const visible = blockSearchText(assistantBlock(broken), "assistant");
+    expect(visible).not.toContain("not json");
+    expect(visible).toContain("前一句");
+    expect(visible).toContain("后一句");
+    expect(blockSearchText(assistantBlock("# 标题\n\n正文"), "assistant")).toBe(markdownVisibleText("# 标题\n\n正文"));
   });
 });

@@ -6,9 +6,10 @@
  */
 import i18n from "@/i18n";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatSidebar } from "./chat-sidebar";
+import { catalogStub } from "@/components/sessions/__stubs__/tool-catalog";
 import type { Session, SessionSearchResult } from "@/types";
 
 vi.mock("@/hooks/use-invoke", () => ({ invokeCommand: vi.fn(async () => false) }));
@@ -21,6 +22,7 @@ vi.mock("@/features/session-kernel/capabilities/composition/loader", () => ({
   subscribeComposed: () => () => {},
 }));
 vi.mock("@/features/task-workspace/sidebar/task-session-tree", () => ({ TaskSessionTree: () => null }));
+vi.mock("@/lib/tool-catalog", async () => await import("@/components/sessions/__stubs__/tool-catalog"));
 
 const session = (id: string, name: string): Session => ({
   id,
@@ -151,5 +153,40 @@ describe("会话侧栏 · 进入会话——S23-U27", () => {
     mount();
     const title = row("创建r2-steps").querySelector("span.truncate[title]");
     expect(title?.getAttribute("title")).toBe("创建r2-steps与docs文件并补充说明");
+  });
+});
+
+/** 「进入会话」的说法与项目卡上的那一个一致——v0.9.8 评审修复轮 R2（tests/V-用例清单 V6-U3）。 */
+describe("会话侧栏 · 「进入会话」的说法一致", () => {
+  afterEach(async () => {
+    await i18n.changeLanguage("zh");
+  });
+
+  it("中英文都与 projects.enterChat 是同一个说法——V6-U3", async () => {
+    expect(i18n.t("sessions.enterSession")).toBe(i18n.t("projects.enterChat"));
+    await i18n.changeLanguage("en");
+    expect(i18n.t("sessions.enterSession")).toBe("Enter Chat");
+    expect(i18n.t("projects.enterChat")).toBe("Enter Chat");
+  });
+
+  it("英文下右键菜单项是 Enter Chat", async () => {
+    await i18n.changeLanguage("en");
+    mount({ query: "蓝鲸", results: [hit("s1")] });
+    fireEvent.contextMenu(row("创建r2-steps"), { button: 2, clientX: 120, clientY: 160 });
+    expect(screen.getByRole("menuitem", { name: "Enter Chat" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Open session" })).toBeNull();
+  });
+});
+
+/** 侧栏搜索认得出消息里的工具标签——v0.9.8 评审修复轮 R2（tests/V-用例清单 V9-U5）。 */
+describe("会话侧栏 · 工具目录", () => {
+  beforeEach(() => {
+    catalogStub.reset();
+  });
+
+  it("侧栏一挂上就用到工具目录：会话还没打开过，搜索也认得出消息里的标签", () => {
+    mount();
+    expect(catalogStub.ensured).toHaveLength(1);
+    expect(catalogStub.ensured[0]).toBeNull();
   });
 });

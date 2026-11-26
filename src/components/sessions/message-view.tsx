@@ -1,4 +1,4 @@
-import { Fragment, createContext, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { devLog } from "@/lib/dev-log";
@@ -9,7 +9,7 @@ import rehypeHighlight from "rehype-highlight";
 import { Check, Copy, Bot, Pencil, Trash2 } from "lucide-react";
 import type { ContentBlock, Message } from "@/types";
 import { InlineImages, stripImagePrompt } from "./inline-image";
-import { blockSearchText, countMatches, searchRegExp } from "@/lib/session-search-text";
+import { blockSearchText, countMatches, searchRegExp, stripTaskLaunchPrefix, userVisibleText } from "@/lib/session-search-text";
 import { SearchHighlightRegistry, centerInScroller, findMatchRanges, rectOfMatch, scrollTopToCenter, supportsTextHighlight } from "./search-highlight";
 import { extractCodeText } from "./code-block-text";
 // v0.9.7 需求6 F2：产物引用链接（jishu-artifact://）——Q14：仅助手消息两处接入。
@@ -68,7 +68,7 @@ type SearchHighlightContextValue = {
   /** 文字块 → 该块第一处命中的全局序号（`${消息下标}-${块下标}`）。 */
   offsets: Map<string, number>;
   /** 含命中的文字块（`${消息下标}-${块下标}`）——只有这些块需要到页面上找命中。 */
-  hitBlocks: Set<string>;
+  hitBlocks: ReadonlySet<string>;
 };
 const SearchHighlightContext = createContext<SearchHighlightContextValue>({
   registry: new SearchHighlightRegistry(),
@@ -92,7 +92,39 @@ const NO_CURRENT_MATCH = -1;
  * 属性用这份固定值，搜索词变化时已显示的行才能跳过重渲染。
  */
 const EMPTY_OFFSETS: Map<string, number> = new Map();
-const EMPTY_ITEMS: RenderItem[] = [];
+const EMPTY_BLOCK_HITS: ReadonlySet<string> = new Set();
+const EMPTY_MATCHES: number[] = [];
+/**
+ * 搜索态最多显示的命中行数（v0.9.8 评审修复轮 R2）。行是整轮，命中一处就整轮
+ * 完整渲染；常见字在超长会话里可能每行都命中，等于把整个会话完整渲染。超出
+ * 的命中行先不显示，末尾给「显示更多」的入口。
+ */
+const SEARCH_ROW_LIMIT = 200;
+
+/**
+ * 一次搜索的账（v0.9.8 需求23）：显示哪些行、每一处命中的全局序号、哪些文字块
+ * 含命中。标题栏计数、正文里的黄底、「上一处 / 下一处」翻到的位置都从这一份出。
+ */
+type SearchPlan = {
+  /** 命中总数——只数显示出来的行里的命中。 */
+  total: number;
+  /** 文字块 → 该块第一处命中的全局序号。 */
+  offsets: Map<string, number>;
+  /** 含命中的文字块——只有这些块需要到页面上找命中。 */
+  hitBlocks: ReadonlySet<string>;
+  /** 全局第 n 处命中所在的消息下标。 */
+  matchToMessage: number[];
+  /** 显示条目：命中行、细条、「显示更多」；不在搜索时为空。 */
+  items: SearchDisplayItem<RenderRow>[];
+};
+
+const EMPTY_PLAN: SearchPlan = {
+  total: 0,
+  offsets: EMPTY_OFFSETS,
+  hitBlocks: EMPTY_BLOCK_HITS,
+  matchToMessage: EMPTY_MATCHES,
+  items: [],
+};
 
 /** v0.9.8 需求23：搜索跳转信号（页面 → 消息视图）：目标会话 + 递增序号。 */
 export type SearchJump = { sessionId: string | null; nonce: number };
@@ -393,6 +425,7 @@ const TextBlock = memo(function TextBlock({
  * 取出残缺文本导致 HTML 块恒不渲染（mermaid 非 hljs 语言不受影响）。 */
 function MarkdownPreWithRenderers({ children }: { children?: React.ReactNode }) {
   const renderers = useBlockRenderers();
+  const { t } = useTranslation();
   const child = Array.isArray(children) ? children[0] : children;
   const codeProps =
     child && typeof child === "object" && "props" in child
@@ -406,26 +439,31 @@ function MarkdownPreWithRenderers({ children }: { children?: React.ReactNode }) 
   // （如搜索词延迟生效）打断重来——v0.9.8 需求23 实测逐帧空转、搜索永远不生效。
   const pluginId = renderer ? (renderer as { pluginId?: string }).pluginId : undefined;
   const hitLanguage = language.toLowerCase();
+  // 依赖只取这几个原始值：「被谁接管」不变就不重复写。原先不带依赖，每次渲染都写一条。
+  const takenOver = Boolean(renderer);
   useEffect(() => {
-    if (!renderer) return;
+    if (!takenOver) return;
     devLog("capability", `block-renderer hit: ${hitLanguage} → ${pluginId ?? "unknown"}`, {
       language: hitLanguage,
       pluginId,
     });
-  });
+  }, [takenOver, hitLanguage, pluginId]);
   if (renderer) {
     const Renderer = renderer.Component;
     // 需求14 M1（K5）：接管可见性——右上角轻角标（hover 提亮，title 全称），
     // 「谁接管了这块」一眼可辨（含遮蔽内置的场合）。
     if (pluginId) {
       const source = renderer as { pluginId?: string; pluginLabel?: string };
+      const label = source.pluginLabel ?? source.pluginId;
+      // 角标是界面装饰，不参与搜索命中（否则正文里找不到的一处会被算进来）。
       return (
         <div className="relative">
           <span
+            data-no-search=""
             className="pointer-events-none absolute -top-0.5 right-1 z-10 rounded bg-background/70 px-1 text-[9px] leading-4 text-muted-foreground/50"
-            title={`由插件渲染：${source.pluginLabel ?? source.pluginId}（${source.pluginId}）`}
+            title={t("sessions.renderedByPlugin", { name: label, id: source.pluginId })}
           >
-            ⚙ {source.pluginLabel ?? source.pluginId}
+            ⚙ {label}
           </span>
           <Renderer code={code} language={language} />
         </div>
@@ -835,8 +873,8 @@ function UserBubbleImpl({
   /** 需求13：非空=本气泡是可编辑的最近用户消息（提交回调收编辑后文本+
    * 保留的工具调用 id——编辑可删/留工具）。 */
   onEditSubmit?: ((newText: string, remainingToolIds?: string[]) => void) | null;
-  /** v0.9.8 需求2：非空=本气泡是未送达消息（pending 幽灵），显示删除入口。 */
-  onDismissUnsent?: (() => void) | null;
+  /** v0.9.8 需求2：非空=可删除「未送达」消息（pending 幽灵），气泡显示删除入口。 */
+  onDismissUnsent?: ((msg: Message) => void) | null;
 }) {
   const { t } = useTranslation();
   // v0.9.5 需求5 T3 排查：user 组渲染点（带间距修复的分支）。
@@ -867,10 +905,10 @@ function UserBubbleImpl({
   const rawText = firstTextBlock && firstTextBlock.type === "text" ? firstTextBlock.text : "";
   // 需求2 收版反馈 H：剥内部命令前缀——任务首条经 prepareTaskLaunchMessage
   // 包装为 `/jishu-task dev <goal>` 落盘，回放气泡显示/复制均应还原用户原话
-  //（内部路由指令不属于用户可见内容）。
-  const displayText = rawText.replace(/^\/jishu-task(?:\s+(?:dev|research))?\s+/, "");
+  //（内部路由指令不属于用户可见内容）。搜索文本走同一个剥离（lib/session-search-text）。
+  const displayText = stripTaskLaunchPrefix(rawText);
   const toolIds = (firstTextBlock && firstTextBlock.type === "text" ? firstTextBlock.tool_ids : undefined) ?? [];
-  const copyText = extractMessageText(msg).replace(/^\/jishu-task(?:\s+(?:dev|research))?\s+/, "");
+  const copyText = stripTaskLaunchPrefix(extractMessageText(msg));
 
   // 三角色：roleResolver 解析为 orchestrator（主进程派发）→ 「任务助手」样式。
   const isOrchestrator = roleView?.role === "orchestrator";
@@ -973,35 +1011,37 @@ function UserBubbleImpl({
             // v0.9.8 需求9-②（方案 B 统一末尾）：pill 渲染在正文之后——注入
             // 本就是后缀追加，原「pill 恒前置」误导（用户实测 #3）；与
             // UserTextWithPills（暂存/steer 路径）同序，展示面单源。
+            // v0.9.8 评审修复轮 R2（用户裁决「把标签放进容器内」）：两条路径的
+            // 标签都在正文容器之内——正文与标签是同一个块级容器的内联子元素，
+            // 同一行、正文换行时自然跟随。搜索也因此扫得到标签：每个标签在页面
+            // 上的文字是它的原始文本 `@[显示名]`，与该块的搜索文本逐字相等。
             if (item.block.type === "text" && item.block === firstTextBlock) {
+              // 这一文字块登记命中用的搜索文本 = 页面文字（见 blockSearchText）。
+              const blockText = blockSearchText(item.block, "user", toolNames);
               // v0.9.8 需求9 路线甲：正文含可内联 @[名] 字样（新消息——用户
               // 填入位置随文本持久）→ UserTextWithPills 就地内联（trailing
               // 排重内置）；无字样（历史剥离消息）→ 原 TextBlock+尾随路径。
-              // v0.9.8 需求23：两条路径都包进 SearchHighlightArea——命中在渲染
-              // 结果上上色，含字样路径同样参与（回落到源码切分时含字样路径仍
-              // 不参与，属已知取舍）。
               if (hasKnownToolToken(displayText, toolNames)) {
                 return (
-                  <SearchHighlightArea key={`b-${item.blockIndex}`} blockKey={offsetKey} text={displayText}>
-                    <UserTextWithPills text={displayText} toolIds={toolIds} toolNames={toolNames} toolCats={toolCats} />
+                  <SearchHighlightArea key={`b-${item.blockIndex}`} blockKey={offsetKey} text={blockText}>
+                    {/* 给展示件的是用户看得见的正文（已剥图片附件标记）——与搜索文本同一份。 */}
+                    <UserTextWithPills text={userVisibleText(displayText)} toolIds={toolIds} toolNames={toolNames} toolCats={toolCats} />
                   </SearchHighlightArea>
                 );
               }
               return (
-                <Fragment key={`b-${item.blockIndex}`}>
-                  <SearchHighlightArea blockKey={offsetKey} text={displayText}>
-                    <TextBlock
-                      text={displayText}
-                      query={renderingQuery}
-                      dark
-                      matchOffset={searchOffsets.get(offsetKey) ?? 0}
-                      currentMatch={currentOcc}
-                    />
-                  </SearchHighlightArea>
+                <SearchHighlightArea key={`b-${item.blockIndex}`} blockKey={offsetKey} text={blockText}>
+                  <TextBlock
+                    text={displayText}
+                    query={renderingQuery}
+                    dark
+                    matchOffset={searchOffsets.get(offsetKey) ?? 0}
+                    currentMatch={currentOcc}
+                  />
                   {toolIds.length > 0 && (
                     <EmbeddedToolPills toolIds={toolIds} toolNames={toolNames} toolCats={toolCats} trailing />
                   )}
-                </Fragment>
+                </SearchHighlightArea>
               );
             }
             const rendered = renderBlock(
@@ -1033,10 +1073,10 @@ function UserBubbleImpl({
             // v0.9.8 需求2：未送达消息的清除入口（复制旁）。
             <button
               type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDismissUnsent();
-              }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onDismissUnsent(msg);
+            }}
               className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 mt-0.5 text-[11px] text-muted-foreground hover:text-destructive hover:bg-muted transition-colors"
               title={t("sessions.unsentDismiss", "删除这条未送达消息")}
             >
@@ -1094,7 +1134,7 @@ export const MessageView = memo(function MessageView({
   onDismissUnsent,
 }: MessageViewProps) {
   const { t } = useTranslation();
-  // v0.8.1 需求7：用户消息 pill 的 id→中文名映射（按会话加载一次）。
+  // v0.8.1 需求7：用户消息 pill 的 id→中文名映射（全局工具目录，见 embedded-tools.tsx）。
   const toolNames = useSessionToolNames(sessionId ?? null);
   // 需求7 补充：pill 图标按类型（UserBubble 消费，+ 菜单同款映射）。
   const toolCats = useSessionToolCats(sessionId ?? null);
@@ -1109,33 +1149,6 @@ export const MessageView = memo(function MessageView({
     }
   }, [externalSearchQuery, initialSearchQuery]);
 
-  // v0.9.8 需求23：搜索文本 = 用户看得见的文字（用户消息剥掉内部注入块，助手
-  // 消息去掉 Markdown 语法符号），与侧栏搜索、气泡显示同一出处。
-  const searchState = useMemo(() => {
-    if (!renderingQuery.trim()) {
-      return { total: 0, offsets: new Map<string, number>(), hitBlocks: new Set<string>(), matchToMessage: [] as number[] };
-    }
-    const regex = searchRegExp(renderingQuery);
-    const offsets = new Map<string, number>();
-    const hitBlocks = new Set<string>();
-    const matchToMessage: number[] = [];
-    let total = 0;
-
-    messages.forEach((msg, mi) => {
-      msg.content.forEach((block, bi) => {
-        if (block.type !== "text") return;
-        const key = `${mi}-${bi}`;
-        offsets.set(key, total);
-        const count = countMatches(blockSearchText(block, msg.role), regex);
-        if (count > 0) hitBlocks.add(key);
-        for (let i = 0; i < count; i++) matchToMessage.push(mi);
-        total += count;
-      });
-    });
-
-    return { total, offsets, hitBlocks, matchToMessage };
-  }, [messages, renderingQuery]);
-
   // v0.9.8 需求23：渲染后标黄（命中范围登记处）+ 搜索态只显示命中消息。
   const isSearching = renderingQuery.trim().length > 0;
   // 需求23 补充轮：搜索词已经清空、列表还没展开的那一帧（延迟生效的搜索词慢一拍）不再记
@@ -1144,11 +1157,6 @@ export const MessageView = memo(function MessageView({
   const lensHolds = isSearching && searchQuery.trim().length > 0;
   const highlightRegistry = useMemo(() => new SearchHighlightRegistry(), []);
   const highlightActive = useMemo(() => isSearching && supportsTextHighlight(), [isSearching]);
-  const hitMessages = useMemo(() => {
-    const hits = new Set<number>();
-    for (const messageIndex of searchState.matchToMessage) hits.add(messageIndex);
-    return hits;
-  }, [searchState]);
 
   const resultMap = useMemo(() => {
     const map = new Map<string, { output: string; details?: Record<string, unknown> }>();
@@ -1198,45 +1206,98 @@ export const MessageView = memo(function MessageView({
     lastExpandSignalRef.current = signal;
     setWindowRows(rows.length);
   }, [expandSignal, rows.length]);
-  // 搜索态不再整窗渲染：只显示含命中的行（见 searchItems），渲染量与命中数
-  // 成正比、与会话长度无关（v0.9.8 需求23）；窗口只管常态。
+  // 搜索态不走窗口、只显示命中行（见下面的 searchPlan）：渲染量与命中数成正比、
+  // 与会话长度无关（v0.9.8 需求23）；窗口只管常态。
   const effectiveWindow = windowRows;
   const visibleRows = useMemo(
     () => (rows.length > effectiveWindow ? rows.slice(rows.length - effectiveWindow) : rows),
     [rows, effectiveWindow],
   );
   const hiddenCount = rows.length - visibleRows.length;
-  const searchItems = useMemo<SearchDisplayItem<RenderRow>[]>(
-    () => (isSearching ? buildSearchDisplayItems(rows, hitMessages) : []),
-    [isSearching, rows, hitMessages],
-  );
+  // 「显示更多」：点过之后记下「哪个搜索词、放到多少行」。搜索词一换就不作数——
+  // 在渲染期间直接改状态，React 会丢掉这一次渲染、立刻按新状态重来。
+  const [moreHits, setMoreHits] = useState<{ query: string; limit: number } | null>(null);
+  if (moreHits && moreHits.query !== renderingQuery) setMoreHits(null);
+  const searchRowLimit = moreHits?.query === renderingQuery ? moreHits.limit : SEARCH_ROW_LIMIT;
+  const showMoreHits = () => setMoreHits({ query: renderingQuery, limit: searchRowLimit + SEARCH_ROW_LIMIT });
+  // v0.9.8 需求23：搜索文本 = 用户看得见的文字（用户消息剥掉内部注入块并带上
+  // 工具标签的原始文本，助手消息去掉 Markdown 语法符号），与侧栏搜索、气泡显示
+  // 同一出处（blockSearchText）。
+  const searchPlan = useMemo<SearchPlan>(() => {
+    if (!renderingQuery.trim()) return EMPTY_PLAN;
+    const regex = searchRegExp(renderingQuery);
+    // 第一步：哪些文字块含命中、各几处——全部消息过一遍，纯字符串匹配，不渲染。
+    const counts = new Map<string, number>();
+    const hitMessages = new Set<number>();
+    messages.forEach((msg, mi) => {
+      msg.content.forEach((block, bi) => {
+        if (block.type !== "text") return;
+        const count = countMatches(blockSearchText(block, msg.role, toolNames), regex);
+        if (count > 0) {
+          counts.set(`${mi}-${bi}`, count);
+          hitMessages.add(mi);
+        }
+      });
+    });
+    // 第二步：显示哪些行（只显示含命中的行，命中行有上限）。
+    const items = buildSearchDisplayItems(rows, hitMessages, searchRowLimit);
+    // 第三步：计数只数显示出来的行里的命中——标题栏计数、正文里的黄底、「上一处 /
+    // 下一处」翻到的位置才是同一批，不会翻到没渲染出来的行上。
+    const offsets = new Map<string, number>();
+    const hitBlocks = new Set<string>();
+    const matchToMessage: number[] = [];
+    let total = 0;
+    for (const item of items) {
+      if (item.kind !== "row") continue;
+      for (const mi of item.row.messageIndices) {
+        if (!hitMessages.has(mi)) continue;
+        messages[mi].content.forEach((_, bi) => {
+          const key = `${mi}-${bi}`;
+          const count = counts.get(key) ?? 0;
+          offsets.set(key, total);
+          if (count > 0) hitBlocks.add(key);
+          for (let i = 0; i < count; i++) matchToMessage.push(mi);
+          total += count;
+        });
+      }
+    }
+    return { total, offsets, hitBlocks, matchToMessage, items };
+  }, [messages, rows, renderingQuery, toolNames, searchRowLimit]);
   const highlightContext = useMemo<SearchHighlightContextValue>(
     () => ({
       registry: highlightRegistry,
       active: highlightActive,
       query: renderingQuery,
-      offsets: searchState.offsets,
-      hitBlocks: searchState.hitBlocks,
+      offsets: searchPlan.offsets,
+      hitBlocks: searchPlan.hitBlocks,
     }),
-    [highlightRegistry, highlightActive, renderingQuery, searchState.offsets, searchState.hitBlocks],
+    [highlightRegistry, highlightActive, renderingQuery, searchPlan.offsets, searchPlan.hitBlocks],
   );
   const [currentOcc, setCurrentOcc] = useState(0);
   const [scrollTrigger, setScrollTrigger] = useState(0);
 
+  // 搜索词换了、或消息列表变了（回合并入）：当前命中回到第 1 处并滚过去。
+  // 点「显示更多」不算——新增的命中都接在后面，原有命中的序号没变，用户正看的那一处
+  // 不该被打回第一处（二轮评审 R3 P2-9：修前在列表底部点「显示更多」，视图跳回第一处）。
+  const lastSearchBasisRef = useRef<{ query: string; limit: number } | null>(null);
   useEffect(() => {
-    if (!renderingQuery.trim() || searchState.total === 0) {
+    const basis = { query: renderingQuery, limit: searchRowLimit };
+    const previous = lastSearchBasisRef.current;
+    lastSearchBasisRef.current = basis;
+    if (!renderingQuery.trim() || searchPlan.total === 0) {
       setCurrentOcc(0);
       return;
     }
+    if (previous && previous.query === basis.query && previous.limit !== basis.limit) return;
     setCurrentOcc(0);
     setScrollTrigger((n) => n + 1);
-  }, [renderingQuery, searchState.total]);
+  }, [renderingQuery, searchPlan.total, searchRowLimit]);
 
   const navigateMatch = useCallback((dir: 1 | -1) => {
-    if (searchState.total === 0) return;
-    setCurrentOcc((prev) => (prev + dir + searchState.total) % searchState.total);
+    if (searchPlan.total === 0) return;
+    setCurrentOcc((prev) => (prev + dir + searchPlan.total) % searchPlan.total);
     setScrollTrigger((n) => n + 1);
-  }, [searchState.total]);
+  }, [searchPlan.total]);
 
   useEffect(() => {
     if (!searchNavigation || searchNavigation.nonce === lastNavigationNonceRef.current) return;
@@ -1245,17 +1306,23 @@ export const MessageView = memo(function MessageView({
   }, [navigateMatch, searchNavigation]);
 
   useEffect(() => {
-    if (!renderingQuery.trim() || searchState.total === 0) {
+    if (!renderingQuery.trim() || searchPlan.total === 0) {
       onSearchStatusChange?.({ current: 0, total: 0 });
       return;
     }
-    onSearchStatusChange?.({ current: currentOcc + 1, total: searchState.total });
-  }, [currentOcc, onSearchStatusChange, renderingQuery, searchState.total]);
+    onSearchStatusChange?.({ current: currentOcc + 1, total: searchPlan.total });
+  }, [currentOcc, onSearchStatusChange, renderingQuery, searchPlan.total]);
 
-  // 当前命中交给登记处上色（渲染后标黄）——文字块不必为「上一处 / 下一处」重渲染。
-  useEffect(() => {
+  // 上色一次提交只做一次（v0.9.8 评审修复轮 R2）：各文字块在布局阶段登记命中范围
+  // （只记不变），这里的布局副作用排在它们之后——把当前命中交过去，再统一上色，
+  // 赶在绘制之前。文字块不必为「上一处 / 下一处」重渲染。
+  useLayoutEffect(() => {
     highlightRegistry.setCurrent(isSearching ? currentOcc : -1);
-  }, [highlightRegistry, currentOcc, isSearching]);
+    highlightRegistry.flush();
+  });
+  // 视图卸载：各文字块在布局收尾里注销之后，把页面上的高亮也撤掉，不留指向已卸载
+  // 文字的旧范围。放在被动副作用的收尾里——排在全部布局收尾之后。
+  useEffect(() => () => highlightRegistry.sync(), []);
 
   // v0.9.8 需求23：打开一个在当前搜索词下有命中的会话——页面发来搜索跳转信号，
   // 当帧把第一处命中放到视口正中。不走下面那条「120ms 后平滑滚动」的导航：
@@ -1265,11 +1332,11 @@ export const MessageView = memo(function MessageView({
   useLayoutEffect(() => {
     if (!searchJump || searchJump.sessionId !== (sessionId ?? null) || searchJump.nonce === handledJumpRef.current) return;
     handledJumpRef.current = searchJump.nonce;
-    if (isSearching && searchState.total > 0) {
+    if (isSearching && searchPlan.total > 0) {
       setCurrentOcc(0);
       const container = scrollContainerRef?.current;
       const list = listRef.current;
-      const first = searchState.matchToMessage[0];
+      const first = searchPlan.matchToMessage[0];
       const row = rows.find((r) => r.messageIndices.includes(first));
       const rowEl = list?.querySelector<HTMLElement>(`[data-message-index="${row?.messageIndices[0] ?? -1}"]`);
       const range = highlightActive ? highlightRegistry.getMatchRange(0) : undefined;
@@ -1290,8 +1357,8 @@ export const MessageView = memo(function MessageView({
     searchJump,
     sessionId,
     isSearching,
-    searchState.total,
-    searchState.matchToMessage,
+    searchPlan.total,
+    searchPlan.matchToMessage,
     highlightActive,
     highlightRegistry,
     rows,
@@ -1397,7 +1464,7 @@ export const MessageView = memo(function MessageView({
   }, [lensHolds, keepLensAnchor, scrollContainerRef]);
 
   useEffect(() => {
-    if (searchState.total === 0 || scrollTrigger === 0) return;
+    if (searchPlan.total === 0 || scrollTrigger === 0) return;
     // If the target match is already rendered and fully inside the viewport,
     // just let the highlight move (driven by currentOcc) without scrolling —
     // avoids the jarring scroll-up-then-back jump when navigating between
@@ -1405,7 +1472,7 @@ export const MessageView = memo(function MessageView({
     const container = scrollContainerRef?.current;
     // 回落方式（源码切分）有 <mark> 元素；渲染后标黄只有登记的文字范围。
     const rowOfCurrent = () => {
-      const msgIdx = searchState.matchToMessage[currentOcc];
+      const msgIdx = searchPlan.matchToMessage[currentOcc];
       const row = rows.find((r) => r.messageIndices.includes(msgIdx));
       return row
         ? (listRef.current?.querySelector<HTMLElement>(`[data-message-index="${row.messageIndices[0]}"]`) ?? null)
@@ -1428,7 +1495,7 @@ export const MessageView = memo(function MessageView({
       const cr = container.getBoundingClientRect();
       if (shown.top >= cr.top && shown.bottom <= cr.bottom) return;
     }
-    const msgIdx = searchState.matchToMessage[currentOcc];
+    const msgIdx = searchPlan.matchToMessage[currentOcc];
     if (msgIdx === undefined) return;
     const timer = setTimeout(() => {
       const el = listRef.current?.querySelector(`[data-match-idx="${currentOcc}"]`);
@@ -1453,7 +1520,7 @@ export const MessageView = memo(function MessageView({
       rowOfCurrent()?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 120);
     return () => clearTimeout(timer);
-  }, [currentOcc, scrollTrigger, searchState.matchToMessage, searchState.total, highlightActive, highlightRegistry, rows, scrollContainerRef]);
+  }, [currentOcc, scrollTrigger, searchPlan.matchToMessage, searchPlan.total, highlightActive, highlightRegistry, rows, scrollContainerRef]);
 
   // 需求13：最后一条用户消息（尾向前）——唯一可编辑行；rawText 取首 text 块
   // 原文（落盘原文，含 /jishu-task 包装——页面回调按需重包装）。
@@ -1472,22 +1539,28 @@ export const MessageView = memo(function MessageView({
   // v0.9.8 需求23：每行的 key、渲染条目、复制文本按消息缓存。搜索词每变一次
   // MessageView 都会重渲染，而 key 的计算要把整行消息文本拼出来（重行上百 KB），
   // 不能每次重算；条目的引用也要稳定，已显示的行才跳得过重渲染（Markdown 不重新解析）。
-  const rowCache = useMemo(() => {
+  // v0.9.8 评审修复轮 R2：只为显示出来的行计算（惰性）。长会话里绝大多数行不在
+  // 渲染窗口里、也不是命中行，消息每变一次就把全部行算一遍是白算。
+  const rowEntries = useMemo(() => {
     const cache = new Map<RenderRow, { key: string; items: RenderItem[]; copyText: string }>();
-    for (const row of rows) {
-      cache.set(row, {
-        key: rowKey(row, messages),
-        items: buildRenderItemsForMessages(
-          messages,
-          row.kind === "assistant" ? row.messageIndices : [row.messageIndex],
-          resultMap,
-          errorToolIds,
-        ),
-        copyText: row.kind === "assistant" ? extractMessagesText(messages, row.messageIndices) : "",
-      });
-    }
-    return cache;
-  }, [rows, messages, resultMap, errorToolIds]);
+    return (row: RenderRow) => {
+      let entry = cache.get(row);
+      if (!entry) {
+        entry = {
+          key: rowKey(row, messages),
+          items: buildRenderItemsForMessages(
+            messages,
+            row.kind === "assistant" ? row.messageIndices : [row.messageIndex],
+            resultMap,
+            errorToolIds,
+          ),
+          copyText: row.kind === "assistant" ? extractMessagesText(messages, row.messageIndices) : "",
+        };
+        cache.set(row, entry);
+      }
+      return entry;
+    };
+  }, [messages, resultMap, errorToolIds]);
 
   // 需求13：仅最后一条用户消息挂编辑提交（引用稳定——不随搜索词变化）。
   const editSubmit = useMemo(() => {
@@ -1501,16 +1574,16 @@ export const MessageView = memo(function MessageView({
   }, [messages, onEditLastUserMessage, lastUserMessageIndex]);
 
   const renderRow = useCallback((row: RenderRow) => {
-    const cached = rowCache.get(row);
+    const entry = rowEntries(row);
     // 高亮接口生效时行的渲染结果不依赖搜索词——搜索属性给固定值（见 EMPTY_OFFSETS）
     const rowQuery = highlightActive ? "" : renderingQuery;
-    const rowOffsets = highlightActive ? EMPTY_OFFSETS : searchState.offsets;
+    const rowOffsets = highlightActive ? EMPTY_OFFSETS : searchPlan.offsets;
     const rowOcc = highlightActive ? NO_CURRENT_MATCH : currentOcc;
     if (row.kind === "assistant") {
       return (
         <AssistantBubble
-          items={cached?.items ?? EMPTY_ITEMS}
-          copyText={cached?.copyText ?? ""}
+          items={entry.items}
+          copyText={entry.copyText}
           renderingQuery={rowQuery}
           searchOffsets={rowOffsets}
           currentOcc={rowOcc}
@@ -1523,7 +1596,7 @@ export const MessageView = memo(function MessageView({
     return (
       <UserBubble
         msg={msg}
-        items={cached?.items ?? EMPTY_ITEMS}
+        items={entry.items}
         renderingQuery={rowQuery}
         searchOffsets={rowOffsets}
         currentOcc={rowOcc}
@@ -1532,24 +1605,77 @@ export const MessageView = memo(function MessageView({
         toolNames={toolNames}
         toolCats={toolCats}
         onEditSubmit={row.messageIndex === lastUserMessageIndex ? editSubmit : null}
-        onDismissUnsent={
-          msg.unsent && onDismissUnsent ? () => onDismissUnsent(msg) : null
-        }
+        // 直接传页面那一个回调（气泡自己带着消息）。每次渲染新建闭包会让这一行的
+        // memo 失效——父级任何一次重渲染都带着它重来。
+        onDismissUnsent={msg.unsent && onDismissUnsent ? onDismissUnsent : null}
       />
     );
-  }, [rowCache, messages, highlightActive, renderingQuery, searchState.offsets, currentOcc, roleResolver, toolNames, toolCats, lastUserMessageIndex, editSubmit, onDismissUnsent]);
+  }, [rowEntries, messages, highlightActive, renderingQuery, searchPlan.offsets, currentOcc, roleResolver, toolNames, toolCats, lastUserMessageIndex, editSubmit, onDismissUnsent]);
 
-  const renderRowElement = (row: RenderRow) => (
-    <div
-      key={rowCache.get(row)?.key ?? rowKey(row, messages)}
-      data-user-message={row.kind === "user" ? "true" : undefined}
-      data-turn-index={row.kind === "user" ? row.turnIndex : undefined}
-      data-message-index={row.messageIndices[0]}
-      style={ROW_STYLE}
-    >
-      {renderRow(row)}
-    </div>
-  );
+  const renderRowElement = (row: RenderRow) => {
+    const { key } = rowEntries(row);
+    return (
+      <div
+        key={key}
+        data-user-message={row.kind === "user" ? "true" : undefined}
+        data-turn-index={row.kind === "user" ? row.turnIndex : undefined}
+        data-message-index={row.messageIndices[0]}
+        style={ROW_STYLE}
+      >
+        {renderRow(row)}
+      </div>
+    );
+  };
+
+  // 列表的子元素在搜索态与常态下都是「同一个父元素下的平级列表」：进出搜索时已经
+  // 在页面上的行按 key 对得上，不删除重建（v0.9.8 评审修复轮 R2）。此前一个分支是
+  // 数组、一个分支是 Fragment，切换时整批行删掉重挂。
+  const showSearch = isSearching && searchPlan.total > 0;
+  const listChildren: React.ReactNode[] = showSearch
+    ? // v0.9.8 需求23：搜索态只显示含命中的行，其余折成细条
+      searchPlan.items.map((item) => {
+        if (item.kind === "gap") {
+          return (
+            <div
+              key={`gap-${item.before}`}
+              data-search-gap={item.count}
+              className="flex items-center gap-3 px-2 text-[11px] text-muted-foreground"
+            >
+              <span className="h-px flex-1 bg-border/60" />
+              {t(GAP_LABEL_KEYS[item.position], { count: item.count })}
+              <span className="h-px flex-1 bg-border/60" />
+            </div>
+          );
+        }
+        if (item.kind === "more") {
+          // 命中行超过上限：先显示前若干行，这里给出继续显示的入口
+          return (
+            <button
+              key="search-more"
+              type="button"
+              data-search-more={item.hidden}
+              onClick={showMoreHits}
+              className="mx-auto block rounded-full border border-border/60 bg-muted/50 px-4 py-1.5 text-xs text-muted-foreground hover:bg-muted"
+            >
+              {t("sessions.searchMoreHits", { count: item.hidden })}
+            </button>
+          );
+        }
+        return renderRowElement(item.row);
+      })
+    : [
+        hiddenCount > 0 ? (
+          <button
+            key="load-earlier"
+            type="button"
+            onClick={() => setWindowRows((n) => n + RENDER_WINDOW_ROWS * 2)}
+            className="mx-auto block rounded-full border border-border/60 bg-muted/50 px-4 py-1.5 text-xs text-muted-foreground hover:bg-muted"
+          >
+            {t("sessions.loadEarlier", "加载更早的消息（剩余 {{count}} 行）", { count: hiddenCount })}
+          </button>
+        ) : null,
+        ...visibleRows.map((row) => renderRowElement(row)),
+      ];
 
   // v0.9.1 需求5：user 行轮次序号（实例内从 0 递增），横杠导航轨按
   // [data-turn-index] 定位跳转。v0.9.2 需求1 P1：序号由统一视图模型携带
@@ -1557,10 +1683,12 @@ export const MessageView = memo(function MessageView({
   const fullMessageList = (
     <SearchHighlightModeContext.Provider value={highlightActive}>
     <SearchHighlightContext.Provider value={highlightContext}>
-      <div className="relative">
+      {/* message-stream：搜索命中所在的范围。样式表里给这个范围内的文字选区配了
+          成对的颜色（选区画在命中高亮上面，见 index.css）。 */}
+      <div className="message-stream relative">
         {/* v0.9.8 需求23：没有命中时消息照常显示，只在顶部浮一条提示——不挪动列表，
             停在会话底部的人不会因为列表塌掉被甩到顶部。提示吸顶：停在哪里都看得见。 */}
-        {isSearching && searchState.total === 0 && (
+        {isSearching && searchPlan.total === 0 && (
           <div
             data-search-empty=""
             className="pointer-events-none sticky top-2 z-10 flex h-0 items-start justify-center"
@@ -1571,37 +1699,7 @@ export const MessageView = memo(function MessageView({
           </div>
         )}
         <div ref={listRef} className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
-          {isSearching && searchState.total > 0 ? (
-            // v0.9.8 需求23：搜索态只显示含命中的行，其余折成细条
-            searchItems.map((item) =>
-              item.kind === "gap" ? (
-                <div
-                  key={`gap-${item.before}`}
-                  data-search-gap={item.count}
-                  className="flex items-center gap-3 px-2 text-[11px] text-muted-foreground"
-                >
-                  <span className="h-px flex-1 bg-border/60" />
-                  {t(GAP_LABEL_KEYS[item.position], { count: item.count })}
-                  <span className="h-px flex-1 bg-border/60" />
-                </div>
-              ) : (
-                renderRowElement(item.row)
-              ),
-            )
-          ) : (
-            <>
-              {hiddenCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setWindowRows((n) => n + RENDER_WINDOW_ROWS * 2)}
-                  className="mx-auto block rounded-full border border-border/60 bg-muted/50 px-4 py-1.5 text-xs text-muted-foreground hover:bg-muted"
-                >
-                  {t("sessions.loadEarlier", "加载更早的消息（剩余 {{count}} 行）", { count: hiddenCount })}
-                </button>
-              )}
-              {visibleRows.map((row) => renderRowElement(row))}
-            </>
-          )}
+          {listChildren}
         </div>
       </div>
     </SearchHighlightContext.Provider>

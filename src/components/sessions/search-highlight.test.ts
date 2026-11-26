@@ -2,10 +2,13 @@
  * 搜索高亮登记处单测——v0.9.8 需求23。findMatchRanges 在真实 DOM 上验证：
  * 跨节点的关键词、按钮文字不参与；rectOfMatch 用真实 Range 量位置
  *（StaticRange 自己没有量位置的方法——界面验证时实测抓到过这个错，替身不再补这个方法）。
+ * v0.9.8 评审修复轮 R2 追加：一次提交只上色一次、页面文字、高亮样式的静态契约。
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { SearchHighlightRegistry, centerInScroller, findMatchRanges, rectOfMatch, scrollTopToCenter } from "./search-highlight";
+import { SearchHighlightRegistry, centerInScroller, findMatchRanges, pageText, rectOfMatch, scrollTopToCenter } from "./search-highlight";
 
 type FakeRange = { startContainer: Node; startOffset: number; endContainer: Node; endOffset: number };
 class FakeStaticRange implements FakeRange {
@@ -22,8 +25,11 @@ class FakeStaticRange implements FakeRange {
 }
 class FakeHighlight {
   ranges: FakeRange[];
-  constructor(...ranges: FakeRange[]) {
-    this.ranges = ranges;
+  constructor() {
+    this.ranges = [];
+  }
+  add(range: FakeRange): void {
+    this.ranges.push(range);
   }
 }
 
@@ -65,6 +71,12 @@ describe("findMatchRanges", () => {
   it("按钮、读屏文字里的同名文字不参与", () => {
     const root = mount("<div><p>正文里的关键词</p><button>复制关键词</button><span class='sr-only'>关键词</span></div>");
     expect(findMatchRanges(root, "关键词").map(textOf)).toEqual(["关键词"]);
+  });
+
+  it("标了 data-no-search 的文字不参与（工具标签里排版用的占位）——v0.9.8 评审修复轮 R2", () => {
+    const root = mount("<p>查代码<span data-no-search=''>@[写后诊断]</span><span>@[写后诊断]</span></p>");
+    expect(findMatchRanges(root, "写后诊断").map(textOf)).toEqual(["写后诊断"]);
+    expect(findMatchRanges(root, "@[写后诊断]").map(textOf)).toEqual(["@[写后诊断]"]);
   });
 
   it("大小写不敏感；关键词里有正则符号按字面匹配", () => {
@@ -135,11 +147,15 @@ describe("把一处命中放到视口正中", () => {
 
 describe("SearchHighlightRegistry", () => {
   const setup = () => {
-    const highlights = new Map<string, { ranges: FakeRange[] }>();
+    const highlights = new Map<string, FakeRange[]>();
+    /** `CSS.highlights.set`（上色一次 = 命中层、当前层各调一次）。 */
+    const set = vi.fn((name: string, value: FakeHighlight) => {
+      highlights.set(name, value.ranges);
+    });
     vi.stubGlobal("StaticRange", FakeStaticRange);
     vi.stubGlobal("Highlight", FakeHighlight);
-    vi.stubGlobal("CSS", { highlights });
-    return { highlights, registry: new SearchHighlightRegistry() };
+    vi.stubGlobal("CSS", { highlights: { set } });
+    return { highlights, set, registry: new SearchHighlightRegistry() };
   };
   const range = (n: number) => ({ startContainer: document.createTextNode(String(n)), startOffset: 0, endContainer: null, endOffset: 0 }) as unknown as StaticRange;
 
@@ -147,13 +163,88 @@ describe("SearchHighlightRegistry", () => {
     const { highlights, registry } = setup();
     registry.setBlock("0-0", 0, [range(1), range(2)]);
     registry.setBlock("1-0", 2, [range(3)]);
+    // 登记只记下来；取范围不依赖上色
     expect(registry.getMatchRange(2)).toBeDefined();
     expect(registry.getMatchRange(3)).toBeUndefined();
     registry.setCurrent(1);
-    expect(highlights.get("jishu-search-match")!.ranges).toHaveLength(2);
-    expect(highlights.get("jishu-search-current")!.ranges).toHaveLength(1);
+    registry.flush();
+    expect(highlights.get("jishu-search-match")!.length).toBe(2);
+    expect(highlights.get("jishu-search-current")!.length).toBe(1);
     registry.removeBlock("0-0");
-    expect(highlights.get("jishu-search-match")!.ranges).toHaveLength(1);
+    registry.flush();
+    expect(highlights.get("jishu-search-match")!.length).toBe(1);
     expect(registry.getMatchRange(0)).toBeUndefined();
+  });
+
+  it("一次提交只上色一次：多块登记 + 当前命中变化，flush 一次、上色一次；没有变化时 flush 什么都不做", () => {
+    const { highlights, set, registry } = setup();
+    registry.setBlock("0-0", 0, [range(1)]);
+    registry.setBlock("1-0", 1, [range(2), range(3)]);
+    registry.setBlock("2-0", 3, [range(4)]);
+    registry.setCurrent(2);
+    expect(set).not.toHaveBeenCalled();
+    registry.flush();
+    // 命中层、当前层各一次
+    expect(set).toHaveBeenCalledTimes(2);
+    expect(highlights.get("jishu-search-match")!.length).toBe(3);
+    expect(highlights.get("jishu-search-current")!.length).toBe(1);
+    registry.flush();
+    expect(set).toHaveBeenCalledTimes(2);
+    registry.setCurrent(3);
+    registry.flush();
+    expect(set).toHaveBeenCalledTimes(4);
+    expect(highlights.get("jishu-search-current")!.length).toBe(1);
+  });
+
+  it("sync：按登记的现状重新上色；登记清空后撤掉全部高亮", () => {
+    const { highlights, set, registry } = setup();
+    registry.setBlock("0-0", 0, [range(1)]);
+    registry.setCurrent(0);
+    registry.sync();
+    expect(set).toHaveBeenCalledTimes(2);
+    expect(highlights.get("jishu-search-current")!.length).toBe(1);
+    // 各文字块注销后（视图卸载）：高亮撤干净
+    registry.removeBlock("0-0");
+    registry.sync();
+    expect(highlights.get("jishu-search-match")!.length).toBe(0);
+    expect(highlights.get("jishu-search-current")!.length).toBe(0);
+    expect(registry.getMatchRange(0)).toBeUndefined();
+  });
+});
+
+describe("页面文字", () => {
+  it("参与搜索的文字节点按先后拼起来；按钮与 data-no-search 的文字不在其中", () => {
+    const root = mount("<p>正文<button>复制</button><span data-no-search=''>占位</span><span>尾部</span></p>");
+    expect(pageText(root)).toBe("正文尾部");
+  });
+});
+
+/**
+ * 高亮与文字选区叠加的样式契约（v0.9.8 评审修复轮 R2）。
+ * jsdom 不加载样式表，这里直接读样式表：选区画在搜索命中上面，选中的字用最上面那层
+ * 高亮自己的颜色重画——消息区的选区必须自带成对的颜色，当前命中要有底色之外的标记。
+ */
+describe("高亮样式（index.css 静态契约）", () => {
+  const css = readFileSync(join(__dirname, "..", "..", "index.css"), "utf-8");
+  const rule = (selector: string) => {
+    const start = css.indexOf(`${selector} {`);
+    expect(start, `缺少规则 ${selector}`).toBeGreaterThanOrEqual(0);
+    const end = css.indexOf("}", start);
+    return css.slice(start, end);
+  };
+
+  it("消息区的文字选区同时声明了底色与字色", () => {
+    const selection = rule(".message-stream ::selection");
+    expect(selection).toMatch(/background-color\s*:/);
+    expect(selection).toMatch(/[^-]color\s*:/);
+  });
+
+  it("当前命中带下划线标记与下划线颜色；普通命中与当前命中都自带字色", () => {
+    const current = rule("::highlight(jishu-search-current)");
+    expect(current).toMatch(/text-decoration\s*:\s*underline/);
+    expect(current).toMatch(/text-decoration-color\s*:/);
+    for (const name of ["jishu-search-match", "jishu-search-current"]) {
+      expect(rule(`::highlight(${name})`)).toMatch(/[^-]color\s*:/);
+    }
   });
 });

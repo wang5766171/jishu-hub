@@ -20,7 +20,8 @@
     "dismiss": "知道了",
     "disabled": "已禁用",
     "enabled": "已启用",
-    "notFound": "未找到"
+    "notFound": "未找到",
+    "listSeparator": "、"
   },
   "time": {
     "justNow": "刚刚",
@@ -100,9 +101,7 @@
     "checkingUpdate": "检查中...",
     "updateLabel": "更新",
     "adapter": "适配器",
-    "mcpDesc": "为 Jishu Agent 提供 MCP 服务调用能力（Web 搜索、网页读取等）",
     "bridge": "桥",
-    "bridgeDesc": "claude_code 借此桥以 ACP 协议运行，启用会话中途的结构化提问；缺失将降级为命令行模式",
     "cliNotInstalled": "未安装命令行工具",
     "cliDesc": "为了在外部终端中便捷唤起 Jishu Hub，强烈建议安装 jishu 命令 (需授权)。",
     "elevationTitle": "需要管理员权限",
@@ -218,6 +217,7 @@
     "searchGapAfter": "后面省略 {{count}} 条消息",
     "searchNoMatch": "没有找到「{{query}}」",
     "enterSession": "进入会话",
+    "searchMoreHits": "显示更多命中的消息（还有 {{count}} 条）",
     "turnRail": {
       "label": "对话轮次导航",
       "jump": "跳转到第 {{index}} 轮对话",
@@ -330,6 +330,7 @@
     "slashCommandTitle": "无法执行命令",
     "slashNeedSession": "这个命令要在已有会话里使用。",
     "slashNoMatch": "没有匹配的命令",
+    "slashUnavailable": "这个命令现在不能用。",
     "usageContextUsed": "上下文已用 {{percent}}%",
     "usageWatermarkDetail": "已用 {{used}} / {{total}} tokens",
     "toolModeFull": "完全访问",
@@ -392,8 +393,10 @@
     "imageOnlyBubble": "📎 发送了附件",
     "imageOnlyEditPlaceholder": "（图片消息）",
     "toolPillRemove": "删除此工具调用（重发不再携带）",
+    "renderedByPlugin": "由插件渲染：{{name}}（{{id}}）",
     "taskUnreadFailed": "有失败结果未读",
     "taskUnreadDone": "有完成结果未读",
+    "cancelTaskRun": "取消执行",
     "scrollToBottom": "滚动到底部",
     "stagingDrag": "拖动调整顺序",
     "imageOnlyEditHint": "补充文字重发将不再携带原图片，需要图片请重新上传",
@@ -440,7 +443,7 @@
     "behaviorConfirmRun": "该动作已开启「执行前确认」——确认执行？",
     "behaviorShortcut": "快捷键",
     "behaviorShortcutDesc": "全局组合键切换面板/触发动作；退格清除",
-    "behaviorRenderPending": "渲染类默认视图/自动渲染开关属后续批次（06 §5.2 block-renderer 行）；作用域已生效。",
+    "behaviorRenderPending": "渲染类插件目前可设置作用域；默认视图与自动渲染开关暂不提供。",
     "implSettingsTitle": "实现配置",
     "noSchemaHint": "该插件无可调参数——仅支持使用行为设置。",
     "implConfig": "配置实现",
@@ -528,7 +531,7 @@
     "skillAssetBadge": "含",
     "skillAssetUnit": "附件",
     "skillFolderNotice": "文件夹模式：将以目录形式创建插件，整目录携带",
-    "skillFolderNotice2": "个附属文件（references/scripts 等）；SKILL.md 按下方表单渲染。分发到各 agent 时附件一并落地。",
+    "skillFolderNotice2": "个附属文件（references/scripts 等）；SKILL.md 按下方表单渲染。分发到各智能体时附件一并落地。",
     "skillFolderExit": "改用纯文本",
     "skillFolderSingleEntry": "文件夹模式仅支持一条完整 skill 声明",
     "skillFolderCreatedSuffix": "（文件夹形式，附属文件已复制）",
@@ -550,15 +553,21 @@
     "catCustomDesc": "自由形态（含流水线/菜单入口）",
     "typeSkill": "skill 工具",
     "typeSkillForm": "总控转发",
-    "typeSkillDesc": "声明 SKILL.md 能力，经解析器分发到 agent skill 目录",
+    "typeSkillDesc": "声明 SKILL.md 能力，经解析器分发到智能体 skill 目录",
     "skillSection": "Skill 声明",
     "fSkillDesc": "描述 *",
     "fSkillBody": "内容 *",
-    "hSkillDesc": "SKILL.md 的 frontmatter 描述——agent 按此判断何时使用该 skill。",
-    "hSkillBody": "SKILL.md 正文指令；启用后自动分发到各 agent 的 skill 目录（启停即分发/回收）。",
+    "hSkillDesc": "SKILL.md 的 frontmatter 描述——智能体按此判断何时使用该 skill。",
+    "hSkillBody": "SKILL.md 正文指令；启用后自动分发到各智能体的 skill 目录（启停即分发/回收）。",
     "skillResolverDisabled": "需先启用「Skill 解析器」插件后才能添加 Skill 工具",
     "skillBadge": "Skill",
     "tplSkill": "Skill 示例",
+    "tplBlank": "空白",
+    "tplClaude": "基于 Claude Code",
+    "tplCodex": "基于 Codex",
+    "tplOpencode": "基于 OpenCode",
+    "tplToolGh": "GitHub CLI 工具",
+    "tplToolDingtalk": "钉钉 CLI 工具",
     "catCore": "核心引擎",
     "catSession": "会话能力",
     "catAppearance": "外观",
@@ -680,7 +689,7 @@
       "apiRegisterLabel": "注册",
       "livePreview": "实时预览（模拟数据，非沙箱）",
       "tomlPreview": "生成预览（plugin.toml + 保存位置 plugins/{{id}}/）",
-      "mountMenu": "菜单页（独立页面，v0.9.7 二十二轮）",
+      "mountMenu": "菜单页（独立页面）",
       "entryWizards": {
         "theme": "主题向导",
         "themeDesc": "可视化调色板",
@@ -714,6 +723,9 @@
     "catExtension": "扩展包",
     "catCustomGroup": "自定义与外观",
     "extEmpty": "暂无扩展包——可在插件市场「扩展生态」安装",
+    "extListUnreadable": "已安装的扩展清单读取失败",
+    "extListRetry": "重试",
+    "skillLedgerUnreadable": "已安装技能的清单读取失败",
     "catSkill": "技能",
     "identityCore": "核心引擎",
     "identityBuiltin": "内置",
@@ -764,7 +776,7 @@
   },
   "nativeMcp": {
     "title": "原生 MCP 服务",
-    "subtitle": "jishu 直连的 MCP server（pi 原生）；与下方聚合插件互补",
+    "subtitle": "jishu 直连的 MCP server（智能体原生支持）；与下方聚合插件互补",
     "add": "添加服务",
     "addTitle": "添加原生 MCP 服务",
     "addDesc": "写入 ~/.jishu-agent/agent/mcp.json（jishu 会话直连）；需 OAuth 的服务添加后在终端执行 jishu mcp login",
@@ -823,7 +835,7 @@
     "noPlugins": "未配置插件",
     "skipDangerous": "免确认模式",
     "modelsTitle": "模型",
-    "modelsHint": "直接编辑 ~/.jishu-agent/models.json —— the agent 启动时读取的同一个文件。激活的 (provider, model) 存储在 ~/.jishu-hub/settings.json。",
+    "modelsHint": "直接编辑 ~/.jishu-agent/agent/models.json —— 智能体启动时读取的同一个文件。激活的 (provider, model) 存储在 ~/.jishu-hub/settings.json。",
     "addProvider": "添加接入",
     "editProvider": "编辑接入",
     "deleteProviderConfirm": "确定删除接入「{{name}}」吗?",
@@ -913,8 +925,8 @@
     "apiKeyHint": "明文存储在 models.json 中",
     "advancedJson": "高级 (compat / headers / authHeader / modelOverrides) —— JSON",
     "rawJsonEditor": "models.json (raw)",
-    "noProviders": "还没有 provider。点「添加 provider」注册一个(例如 zhipu、openai、anthropic)。",
-    "jishuSelfHint": "jishu agent 配置 = ~/.jishu-agent/models.json (the agent 读取的同一个文件)。核心字段可视化,高级字段用 JSON。",
+    "noProviders": "还没有模型接入。点「添加接入」注册一个（例如 zhipu、openai、anthropic）。",
+    "jishuSelfHint": "Jishu Agent 的配置 = ~/.jishu-agent/agent/models.json（智能体读取的同一个文件）。核心字段可视化，高级字段用 JSON。",
     "modelsHintTitle": "关于模型配置",
     "authHeader": "authHeader",
     "authHeaderHint": "启用后,API key 通过 Authorization 请求头发送(而非 X-Api-Key)",
@@ -927,8 +939,8 @@
     "addModel": "添加模型",
     "contextWindow": "上下文窗口",
     "maxTokens": "最大输出 tokens",
-    "perModelBaseUrl": "模型 baseUrl (可选,覆盖 provider)",
-    "perModelApi": "模型 API 协议 (可选,覆盖 provider)",
+    "perModelBaseUrl": "模型 baseUrl（可选，覆盖所属接入的设置）",
+    "perModelApi": "模型 API 协议（可选，覆盖所属接入的设置）",
     "reasoning": "支持推理",
     "inputText": "支持文本输入",
     "inputImage": "支持图像输入",
@@ -1042,7 +1054,7 @@
     "fieldMapEnv": "env — 环境设置（键值对）",
     "fieldMapPlugins": "enabledPlugins — 已启用插件",
     "fieldMapMcp": "mcpServers — MCP 服务 JSON。opencode 会保存为 mcp。",
-    "fieldMapJishuConfig": "配置文件：~/.jishu-agent/settings.json\n包含模型选择、权限、MCP 服务、环境变量等设置。\n模型供应商配置位于 ~/.jishu-agent/models.json。",
+    "fieldMapJishuConfig": "配置文件：~/.jishu-agent/agent/settings.json\n包含模型选择、权限、MCP 服务、环境变量等设置。\n模型供应商配置位于 ~/.jishu-agent/agent/models.json。",
     "fieldMapAdvanced": "verbose — 详细日志\nmaxTurns — 最大对话轮次",
     "mcpServers": "MCP 服务",
     "mcpJsonHint": "以 JSON 方式编辑 MCP 服务定义。",
@@ -1055,7 +1067,7 @@
     "sandbox": "沙箱",
     "enabled": "已启用",
     "disabled": "已禁用",
-    "modelManagerDesc": "配置 LLM 模型供应商，支持 OpenAI 和 Anthropic 兼容协议。配置后可用于 the agent 智能体和任务编排。",
+    "modelManagerDesc": "配置 LLM 模型供应商，支持 OpenAI 和 Anthropic 兼容协议。配置后可用于 Jishu Agent 和任务编排。",
     "noModels": "暂无模型配置",
     "noModelsDesc": "点击上方「添加模型」按钮配置第一个模型",
     "testModel": "测试连通性",
@@ -1144,7 +1156,7 @@
     "customProviderIdPlaceholder": "供应商标识（如 zhipu）",
     "customProvidersHint": "模型 ID 为 provider/model 形式；保存（页头）后写入 opencode.json 的 provider 段。",
     "jishuBehaviorHintV3": "此处设置新会话的全局默认行为（思考档位、上下文压缩、初始工具、请求重试），均写入全局配置；项目配置可覆盖思考档位与压缩。会话内的即时控制（工具模式 完整/只读、临时切换档位）在会话页输入框旁进行；模型选择在「模型设置」。",
-    "defaultThinkingLevelHelp": "写入 jishu agent 的全局默认思考档位（defaultThinkingLevel），对之后新开的会话生效；会话内的档位切换不受影响。",
+    "defaultThinkingLevelHelp": "写入 Jishu Agent 的全局默认思考档位（defaultThinkingLevel），对之后新开的会话生效；会话内的档位切换不受影响。",
     "resetToDefault": "恢复默认",
     "compactionTitle": "上下文压缩",
     "compactionHelp": "上下文用量达到模型窗口的指定百分比时自动摘要压缩（compaction）。此处为全局默认，项目配置优先于它。",
@@ -1181,7 +1193,7 @@
     "providerKeyAuto": "",
     "refresh": "刷新",
     "codemode": "代码模式（实验）",
-    "codemodeHint": "模型可在沙箱内写脚本并行编排工具（pi codemode，quickjs 隔离无网络/文件系统）；对全体新会话生效"
+    "codemodeHint": "模型可在沙箱内写脚本并行编排工具（quickjs 隔离，无网络与文件系统访问）；对全体新会话生效"
   },
   "commands": {
     "title": "快捷命令",
@@ -1575,13 +1587,10 @@
       "description": "回合完成、需审批、任务失败时发送系统通知",
       "turnDone": "回合完成",
       "turnFailed": "回合失败",
-      "turnBody": "会话 {{id}}… {{state}}",
-      "stateDone": "已回复完毕",
-      "stateError": "执行出错",
       "approvalTitle": "等待审批",
-      "approvalBody": "会话请求人工审批",
       "taskFailedTitle": "任务失败",
-      "taskFailedBody": "「{{title}}」执行失败"
+      "taskFailedTitled": "任务失败：{{title}}",
+      "sessionRef": "会话 {{id}}…"
     },
     "export": {
       "name": "会话导出",
@@ -1631,8 +1640,8 @@
       "retrying": "重试"
     },
     "agentPreconnect": {
-      "name": "Agent 预连接",
-      "description": "对当前标签项目预启动 jishu agent 进程，新对话首连免冷启动等待（跟随标签切换，仅对新会话生效）"
+      "name": "智能体预连接",
+      "description": "对当前标签项目预启动智能体进程，新对话首连免冷启动等待（跟随标签切换，仅对新会话生效）"
     },
     "interaction": {
       "name": "交互问答卡",
@@ -1641,13 +1650,13 @@
     },
     "artifacts": {
       "name": "产物中心",
-      "description": "侧边栏预览会话产物（HTML/图片/Markdown/文本）：agent 调 preview_html 自动预览，或手动点选主会话与子节点产出",
+      "description": "侧边栏预览会话产物（HTML/图片/Markdown/文本）：智能体调 preview_html 自动预览，或手动点选主会话与子节点产出",
       "panelTitle": "产物中心",
       "sessionFiles": "会话产出",
       "noFiles": "尚未检测到本会话的产物文件",
       "empty": "暂无预览",
       "loading": "读取中…",
-      "refresh": "刷新（agent 覆写文件后重读）",
+      "refresh": "刷新（智能体覆写文件后重读）",
       "truncated": "文件超过 512KB，预览已截断",
       "closeTab": "关闭标签",
       "more": "更多",
@@ -1658,14 +1667,21 @@
     },
     "todoBoard": {
       "name": "待办面板",
-      "description": "右缘待办列表面板（rpiv-todo 快照可视化 + 子代理并行指示；随「待办」插件启停）",
+      "description": "右缘待办列表面板（待办快照可视化 + 子代理并行指示；随「待办」插件启停）",
       "title": "待办",
       "collapse": "收起",
       "hint": "待办列表（{{done}}/{{total}} 完成）",
       "agents": "{{n}} 个子代理执行中",
-      "empty": "暂无待办——让 agent「创建几条待办并跟踪执行」",
+      "empty": "暂无待办——让智能体「创建几条待办并跟踪执行」",
       "batchDone": "已完成批次 · {{n}} 条",
       "batchCurrent": "当前批次"
+    },
+    "toolResult": {
+      "notTable": "非表格 JSON（需含 columns + rows）",
+      "imageAlt": "工具图片输出"
+    },
+    "engine": {
+      "renderUnregistered": "渲染组件未注册：{{component}}"
     }
   },
   "sessionPanels": {
@@ -1854,7 +1870,7 @@
     "skillVersion": "版本",
     "skillPublisher": "发布者",
     "skillApiKey": "需要 API Key",
-    "skillRiskNote": "技能为第三方提示词文件包，安装后 agent 可读取执行；已校验包含 SKILL.md 且拒绝路径穿越。",
+    "skillRiskNote": "技能为第三方提示词文件包，安装后智能体可读取执行；已校验包含 SKILL.md 且拒绝路径穿越。",
     "guideKindPlugin": "插件",
     "guideKindSkill": "技能",
     "guideKindExtension": "扩展",
@@ -1870,7 +1886,7 @@
     "bundleInstall": "安装选中项",
     "bundleAllInstalled": "全部已安装",
     "conflictTitle": "能力重叠：{{name}}",
-    "conflictDesc": "该扩展与已装能力重叠：{{items}}。\\n继续安装将停用上述扩展（内置项在卸载本扩展时自动恢复）；取消则不安装。",
+    "conflictDesc": "该扩展与已装能力重叠：{{items}}。\n继续安装将停用上述扩展（内置项在卸载本扩展时自动恢复）；取消则不安装。",
     "conflictConfirm": "停用并安装",
     "conflictItem": "「{{opponent}}」（工具 {{tool}}）",
     "conflictStopped": "已停用：{{items}}（卸载本扩展时自动恢复）",
@@ -1910,7 +1926,7 @@
     "onlineLib": "在线扩展库",
     "onlineSearch": "搜索扩展名…",
     "onlineEmpty": "没有匹配的扩展包",
-    "onlineLibPiindex": "在线扩展库（Pi Index）",
+    "onlineLibPiindex": "在线扩展库",
     "checkUpdates": "检查更新",
     "updateAll": "全部更新",
     "allUpToDate": "已装内容均为最新版本",
@@ -1940,7 +1956,15 @@
     "recommendByTask": "根据最近任务：{{note}}",
     "recommendHint": "按最近任务挑选的组合",
     "recommendByProject": "项目特征：{{basis}}",
-    "recommendByProjectTask": "根据项目特征：{{basis}}"
+    "recommendByProjectTask": "根据项目特征：{{basis}}",
+    "countAbbr": "{{wan}}万",
+    "bundleDoneSkipped": "安装完成：成功 {{ok}} 项、失败 {{fail}} 项、未安装 {{skip}} 项",
+    "bundleSkipped": "未安装",
+    "bundleConfirm": "需确认",
+    "installedUnknown": "状态未知",
+    "installedUnreadable": "暂时无法判断哪些插件已安装",
+    "installedStale": "没能刷新已安装清单，显示的是上一次的结果",
+    "bundleBusyAnother": "还有别的安装正在进行，完成后才能安装这一批"
   },
   "onboarding": {
     "initTitle": "正在准备你的智能体",
@@ -1988,7 +2012,8 @@
     "rtUpdateFailed": "更新失败",
     "rtMethodInstaller": "在线安装包",
     "rtOpenDownload": "打开下载页手动更新",
-    "recBundles": "入门套装"
+    "recBundles": "入门套装",
+    "installedUnknown": "暂时无法判断哪些已经安装，没有默认勾选；已安装的不会重复安装"
   },
   "taskSteps": {
     "title": "任务步骤",
@@ -2010,7 +2035,8 @@
     "disabled": "已停用",
     "hint": "同步后插件中心立即应用最新状态。",
     "later": "暂不同步",
-    "sync": "同步"
+    "sync": "同步",
+    "syncFailed": "同步失败"
   },
   "equip": {
     "recommendTitle": "为这个任务推荐插件",
@@ -2021,7 +2047,7 @@
     "installFailedWhy": "安装失败，查看原因",
     "cancelRemaining": "取消剩余项",
     "retryFailed": "重试失败项",
-    "skillSafetyNote": "技能项将安装到本地技能目录，已通过完整性校验",
+    "skillSafetyNote": "技能项将安装到本地技能目录，安装时会校验完整性与路径安全",
     "cfgTitle": "插件推荐",
     "cfgSubtitle": "控制各处的插件推荐如何出现",
     "cfgEnabled": "插件推荐",
@@ -2037,7 +2063,13 @@
     "cfgLimit": "每个会话的推荐次数",
     "cfgLimitDesc": "同一会话内最多出现几次推荐",
     "cfgReset": "重置推荐记忆",
-    "cfgResetDesc": "清除「推荐过未安装」的记录，让推荐重新出现",
-    "cfgResetDone": "已重置"
+    "cfgResetDesc": "清除「推荐过未安装」的记录，并恢复被关闭的输入框建议",
+    "cfgResetDone": "已重置",
+    "installDoneSkipped": "安装完成：成功 {{ok}} 项、失败 {{fail}} 项、未安装 {{skip}} 项",
+    "installSkipped": "未安装",
+    "installConfirm": "需确认",
+    "installedUnreadable": "无法读取已安装清单，本次未安装",
+    "installResultUnknown": "安装结果无法确认，未记为已安装",
+    "installRefUnknown": "无法识别这个安装项，本次未安装"
   }
 }

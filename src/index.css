@@ -606,12 +606,31 @@ select option {
  * 会话内搜索命中高亮（v0.9.8 需求23）。用 CSS Custom Highlight API 在渲染好的
  * 文字上标黄，不改页面结构——正文保持正常渲染（表格、代码高亮都在），
  * 高亮与当前命中各一个名字，颜色与原先 <mark> 的黄底一致。
+ * 字色单独指定成深灰：气泡里的文字本来是什么颜色都要压得住（浅色主题下
+ * 用户气泡是蓝底白字，白字落在浅黄上看不清）。
  */
 ::highlight(jishu-search-match) {
   background-color: rgb(254 249 195);
   color: rgb(31 41 55);
 }
+/* 当前命中：底色更深，另加一道下划线——只靠底色深浅区分，落在文字选区里就分不出来。 */
 ::highlight(jishu-search-current) {
   background-color: rgb(252 211 77);
   color: rgb(31 41 55);
+  text-decoration: underline;
+  text-decoration-color: rgb(146 64 14);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+/*
+ * 消息区里的文字选区自带成对的颜色（v0.9.8 评审修复轮 R2）。
+ * 文字选区画在搜索命中上面；选中的字是用「最上面那层高亮自己的颜色」重画的——
+ * 选区没有自己的颜色，就会拿下面那层（搜索命中）的深色字压在选区底色上。
+ * 这里给选区配一对自成一体、深浅主题下都看得清的底色与字色。范围限定在消息视图
+ *（.message-stream）：搜索命中只出现在这里，别处的选区仍是系统默认。
+ */
+.message-stream ::selection {
+  background-color: rgb(37 99 235);
+  color: rgb(255 255 255);
 }

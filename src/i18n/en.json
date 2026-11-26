@@ -20,7 +20,8 @@
     "dismiss": "Dismiss",
     "disabled": "Disabled",
     "enabled": "Enabled",
-    "notFound": "Not found"
+    "notFound": "Not found",
+    "listSeparator": ", "
   },
   "time": {
     "justNow": "just now",
@@ -100,9 +101,7 @@
     "checkingUpdate": "Checking...",
     "updateLabel": "Update",
     "adapter": "Adapter",
-    "mcpDesc": "Provides Jishu Agent with MCP service capabilities (web search, web reading, etc.)",
     "bridge": "Bridge",
-    "bridgeDesc": "Runs claude_code over ACP via this bridge, enabling mid-turn structured questions; falls back to CLI mode when absent",
     "cliNotInstalled": "Command-line tool not installed",
     "cliDesc": "To conveniently launch Jishu Hub from external terminals, installing the jishu command is strongly recommended (requires authorization).",
     "elevationTitle": "Administrator privileges required",
@@ -214,10 +213,14 @@
     "previousMatch": "Previous match",
     "nextMatch": "Next match",
     "searchGap": "{{count}} messages in between",
+    "searchGap_one": "1 message in between",
     "searchGapBefore": "{{count}} earlier messages",
+    "searchGapBefore_one": "1 earlier message",
     "searchGapAfter": "{{count}} later messages",
+    "searchGapAfter_one": "1 later message",
     "searchNoMatch": "No matches for \"{{query}}\"",
-    "enterSession": "Open session",
+    "enterSession": "Enter Chat",
+    "searchMoreHits": "Show more matching messages ({{count}} more)",
     "turnRail": {
       "label": "Conversation turns",
       "jump": "Jump to turn {{index}}",
@@ -330,6 +333,7 @@
     "slashCommandTitle": "Command not available",
     "slashNeedSession": "Use this command in an existing session.",
     "slashNoMatch": "No matching command",
+    "slashUnavailable": "This command can't be used right now.",
     "usageContextUsed": "Context {{percent}}% used",
     "usageWatermarkDetail": "{{used}} / {{total}} tokens used",
     "toolModeFull": "Full access",
@@ -392,8 +396,10 @@
     "imageOnlyBubble": "📎 Attachment sent",
     "imageOnlyEditPlaceholder": "(image message)",
     "toolPillRemove": "Remove this tool call (won't be included on resend)",
+    "renderedByPlugin": "Rendered by plugin: {{name}} ({{id}})",
     "taskUnreadFailed": "Unread failed result",
     "taskUnreadDone": "Unread completed result",
+    "cancelTaskRun": "Cancel run",
     "scrollToBottom": "Scroll to bottom",
     "stagingDrag": "Drag to reorder",
     "imageOnlyEditHint": "Resending with new text will not carry the original image — re-attach it if needed",
@@ -440,7 +446,7 @@
     "behaviorConfirmRun": "This action has confirm-before-run enabled — proceed?",
     "behaviorShortcut": "Shortcut",
     "behaviorShortcutDesc": "Global combo to toggle the panel / trigger the action; Backspace clears",
-    "behaviorRenderPending": "Renderer default-view / auto-render arrive in a later batch (06 §5.2); scope is effective now.",
+    "behaviorRenderPending": "Renderer plugins currently support the scope setting; the default-view and auto-render switches are not available yet.",
     "implSettingsTitle": "Implementation config",
     "noSchemaHint": "No tunable parameters — only usage behavior is available.",
     "implConfig": "Config-built",
@@ -559,6 +565,12 @@
     "skillResolverDisabled": "Enable the \"Skill resolver\" plugin before adding skill tools",
     "skillBadge": "Skill",
     "tplSkill": "Skill example",
+    "tplBlank": "Blank",
+    "tplClaude": "Based on Claude Code",
+    "tplCodex": "Based on Codex",
+    "tplOpencode": "Based on OpenCode",
+    "tplToolGh": "GitHub CLI tool",
+    "tplToolDingtalk": "DingTalk CLI tool",
     "catCore": "Core engines",
     "catSession": "Session capabilities",
     "catAppearance": "Appearance",
@@ -714,6 +726,9 @@
     "catExtension": "Extensions",
     "catCustomGroup": "Custom & Appearance",
     "extEmpty": "No extensions yet — install from Market → Extensions",
+    "extListUnreadable": "Couldn't read the list of installed extensions",
+    "extListRetry": "Retry",
+    "skillLedgerUnreadable": "Couldn't read the list of installed skills",
     "catSkill": "Skills",
     "identityCore": "Core",
     "identityBuiltin": "Built-in",
@@ -823,7 +838,7 @@
     "noPlugins": "No plugins configured",
     "skipDangerous": "Auto-Approve Mode",
     "modelsTitle": "Models",
-    "modelsHint": "Edits ~/.jishu-agent/models.json directly — the same file the agent reads on startup. The active (provider, model) is stored in ~/.jishu-hub/settings.json.",
+    "modelsHint": "Edits ~/.jishu-agent/agent/models.json directly — the same file the agent reads on startup. The active (provider, model) is stored in ~/.jishu-hub/settings.json.",
     "addProvider": "Add provider",
     "editProvider": "Edit provider",
     "deleteProviderConfirm": "Delete provider '{{name}}'?",
@@ -914,7 +929,7 @@
     "advancedJson": "Advanced (compat / headers / authHeader / modelOverrides) — JSON",
     "rawJsonEditor": "models.json (raw)",
     "noProviders": "No providers yet. Click 'Add provider' to register one (e.g. zhipu, openai, anthropic).",
-    "jishuSelfHint": "jishu agent configuration = ~/.jishu-agent/models.json (the same file the agent reads). Core fields are visual; advanced fields use JSON.",
+    "jishuSelfHint": "Jishu Agent configuration = ~/.jishu-agent/agent/models.json (the same file the agent reads). Core fields are visual; advanced fields use JSON.",
     "modelsHintTitle": "About model configuration",
     "authHeader": "authHeader",
     "authHeaderHint": "When enabled, the API key is sent in the Authorization request header instead of X-Api-Key.",
@@ -1042,7 +1057,7 @@
     "fieldMapEnv": "env — Environment Settings (key-value pairs)",
     "fieldMapPlugins": "enabledPlugins — Enabled Plugins",
     "fieldMapMcp": "mcpServers — MCP server JSON. opencode stores this as mcp.",
-    "fieldMapJishuConfig": "Config file: ~/.jishu-agent/settings.json\nContains model selection, permissions, MCP servers, environment variables, etc.\nModel provider config is stored in ~/.jishu-agent/models.json.",
+    "fieldMapJishuConfig": "Config file: ~/.jishu-agent/agent/settings.json\nContains model selection, permissions, MCP servers, environment variables, etc.\nModel provider config is stored in ~/.jishu-agent/agent/models.json.",
     "fieldMapAdvanced": "verbose — Verbose Logging\nmaxTurns — Max Turns",
     "mcpServers": "MCP Servers",
     "mcpJsonHint": "Edit MCP server definitions as JSON.",
@@ -1181,7 +1196,7 @@
     "providerKeyAuto": "",
     "refresh": "Refresh",
     "codemode": "Code mode (experimental)",
-    "codemodeHint": "The model can write sandboxed scripts that orchestrate tools in parallel (pi codemode, quickjs-isolated, no network/filesystem); applies to all new sessions"
+    "codemodeHint": "The model can write sandboxed scripts that orchestrate tools in parallel (quickjs-isolated, no network or filesystem access); applies to all new sessions"
   },
   "commands": {
     "title": "Commands",
@@ -1575,13 +1590,10 @@
       "description": "Notify on turn complete, approvals and task failure",
       "turnDone": "Turn complete",
       "turnFailed": "Turn failed",
-      "turnBody": "Session {{id}}… {{state}}",
-      "stateDone": "reply finished",
-      "stateError": "errored",
       "approvalTitle": "Approval needed",
-      "approvalBody": "A session requests approval",
       "taskFailedTitle": "Task failed",
-      "taskFailedBody": "\"{{title}}\" failed"
+      "taskFailedTitled": "Task failed: {{title}}",
+      "sessionRef": "Session {{id}}…"
     },
     "export": {
       "name": "Session Export",
@@ -1658,7 +1670,7 @@
     },
     "todoBoard": {
       "name": "Todo panel",
-      "description": "Right-edge todo list panel (rpiv-todo snapshot visualization + subagent parallel indicator; toggles with the Todo plugin)",
+      "description": "Right-edge todo list panel (todo snapshot visualization + subagent parallel indicator; toggles with the Todo plugin)",
       "title": "Todos",
       "collapse": "Collapse",
       "hint": "Todo list ({{done}}/{{total}} done)",
@@ -1666,6 +1678,13 @@
       "empty": "No todos yet — ask the agent to add some and track them",
       "batchDone": "Finished batch · {{n}} items",
       "batchCurrent": "Current batch"
+    },
+    "toolResult": {
+      "notTable": "Not a table (JSON needs columns + rows)",
+      "imageAlt": "Tool image output"
+    },
+    "engine": {
+      "renderUnregistered": "Renderer not registered: {{component}}"
     }
   },
   "sessionPanels": {
@@ -1870,7 +1889,7 @@
     "bundleInstall": "Install selected",
     "bundleAllInstalled": "All installed",
     "conflictTitle": "Capability overlap: {{name}}",
-    "conflictDesc": "This extension overlaps installed capabilities: {{items}}.\\nInstalling will disable the above (built-ins auto-restore when this extension is uninstalled); cancel to skip.",
+    "conflictDesc": "This extension overlaps installed capabilities: {{items}}.\nInstalling will disable the above (built-ins auto-restore when this extension is uninstalled); cancel to skip.",
     "conflictConfirm": "Disable & install",
     "conflictItem": "\"{{opponent}}\" (tool {{tool}})",
     "conflictStopped": "Disabled: {{items}} (auto-restores on uninstalling this extension)",
@@ -1899,7 +1918,7 @@
     "migrationFailedTitle": "Data upgrade incomplete",
     "migrationRetry": "Retry",
     "migrationExportLog": "Copy diagnostic info",
-    "bundleDone": "Done: {{ok}} succeeded, {{fail}} failed",
+    "bundleDone": "Install finished: {{ok}} succeeded, {{fail}} failed",
     "bundleRetryFailed": "Retry failed",
     "verified": "Verified publisher",
     "needsApiKey": "Requires API key",
@@ -1907,10 +1926,10 @@
     "nextPage": "Next",
     "pageInfo": "Page {{page}} / {{pages}} · {{total}} items",
     "pageSize": "Per page",
-    "onlineLib": "Online extensions",
+    "onlineLib": "Online extension library",
     "onlineSearch": "Search extensions…",
     "onlineEmpty": "No matching extensions",
-    "onlineLibPiindex": "Online Extensions (Pi Index)",
+    "onlineLibPiindex": "Online extension library",
     "checkUpdates": "Check updates",
     "updateAll": "Update all",
     "allUpToDate": "Everything installed is up to date",
@@ -1940,7 +1959,15 @@
     "recommendByTask": "Based on a recent task: {{note}}",
     "recommendHint": "A combo picked for your recent task",
     "recommendByProject": "Project signals: {{basis}}",
-    "recommendByProjectTask": "Based on your project: {{basis}}"
+    "recommendByProjectTask": "Based on your project: {{basis}}",
+    "countAbbr": "{{k}}K",
+    "bundleDoneSkipped": "Install finished: {{ok}} succeeded, {{fail}} failed, {{skip}} not installed",
+    "bundleSkipped": "Not installed",
+    "bundleConfirm": "Needs confirmation",
+    "installedUnknown": "Status unknown",
+    "installedUnreadable": "Can't tell which plugins are installed right now",
+    "installedStale": "Couldn't refresh the installed list; showing the last known state",
+    "bundleBusyAnother": "Another install is still in progress. You can install this batch once it finishes."
   },
   "onboarding": {
     "initTitle": "Preparing your agent",
@@ -1988,7 +2015,8 @@
     "rtUpdateFailed": "Update failed",
     "rtMethodInstaller": "online installer",
     "rtOpenDownload": "Open download page",
-    "recBundles": "Starter bundles"
+    "recBundles": "Starter bundles",
+    "installedUnknown": "Can't tell what's already installed right now, so nothing is pre-selected. Already-installed items won't be installed again."
   },
   "taskSteps": {
     "title": "Task steps",
@@ -2010,7 +2038,8 @@
     "disabled": "disabled",
     "hint": "Sync to apply the latest states in the plugin center.",
     "later": "Not now",
-    "sync": "Sync"
+    "sync": "Sync",
+    "syncFailed": "Sync failed"
   },
   "equip": {
     "recommendTitle": "Recommended plugins for this task",
@@ -2021,7 +2050,7 @@
     "installFailedWhy": "Install failed — view reason",
     "cancelRemaining": "Cancel remaining",
     "retryFailed": "Retry failed",
-    "skillSafetyNote": "Skill items install to your local skills folder and pass integrity checks",
+    "skillSafetyNote": "Skill items install to your local skills folder; integrity and path safety are checked at install time",
     "cfgTitle": "Plugin recommendations",
     "cfgSubtitle": "Control where plugin recommendations appear",
     "cfgEnabled": "Plugin recommendations",
@@ -2037,7 +2066,13 @@
     "cfgLimit": "Recommendations per chat",
     "cfgLimitDesc": "How many times recommendations may appear in one chat",
     "cfgReset": "Reset recommendation memory",
-    "cfgResetDesc": "Clear the \"recommended but not installed\" records so they can appear again",
-    "cfgResetDone": "Reset done"
+    "cfgResetDesc": "Clear the \"recommended but not installed\" records and bring back the input box suggestions you dismissed",
+    "cfgResetDone": "Reset done",
+    "installDoneSkipped": "Install finished: {{ok}} succeeded, {{fail}} failed, {{skip}} not installed",
+    "installSkipped": "Not installed",
+    "installConfirm": "Needs confirmation",
+    "installedUnreadable": "Couldn't read the installed list; nothing was installed",
+    "installResultUnknown": "Couldn't confirm the installation result; it was not marked as installed",
+    "installRefUnknown": "Unrecognized item; nothing was installed"
   }
 }

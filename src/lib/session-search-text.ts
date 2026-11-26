@@ -6,8 +6,15 @@
  * 看不见的文字算进去。这里把「这条消息用户看到什么」收敛成一个函数：
  * - 用户消息：剥掉内部注入块（图片附件标记等），与气泡显示同一份；
  * - 助手消息：Markdown 源码 → 渲染后看得见的文字（只去掉语法符号，其余原样）。
+ *
+ * v0.9.8 评审修复轮 R2（用户裁决「标签的格式可以直接搜……搜索时识别原始文本即可」）：
+ * 用户消息里跟在正文后面的工具标签按原始文本 `@[显示名]` 计入搜索文本，气泡里的
+ * 标签在页面上也正是这段文字——搜索文本与页面文字逐字相等，侧栏徽标数、正文
+ * 高亮数、标题栏计数才对得上。
  */
 import type { Message } from "@/types";
+import { toolTokenText, trailingToolIds } from "./tool-token";
+import { extractEquipSegments } from "./equip-segments";
 
 /** 剥掉用户消息里的内部注入块（图片附件提示等），得到气泡显示的文字。 */
 export function stripImagePrompt(text: string): string {
@@ -15,6 +22,19 @@ export function stripImagePrompt(text: string): string {
     .replace(/<!--JISHU_HUB_IMAGES_BEGIN-->[\s\S]*?<!--JISHU_HUB_IMAGES_END-->/g, "")
     .replace(/\\n/g, "\n")
     .trim();
+}
+
+/**
+ * 剥掉任务启动包装（内部路由指令 `/jishu-task dev|research`，不属于用户原话）。
+ * 回放气泡的显示、复制与搜索文本共用这一处。
+ */
+export function stripTaskLaunchPrefix(text: string): string {
+  return text.replace(/^\/jishu-task(?:\s+(?:dev|research))?\s+/, "");
+}
+
+/** 用户消息里用户看得见的正文：先剥任务启动包装，再剥图片附件标记。 */
+export function userVisibleText(text: string): string {
+  return stripImagePrompt(stripTaskLaunchPrefix(text));
 }
 
 const TABLE_SEPARATOR = /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{0,}:?\s*\|?\s*$/;
@@ -91,16 +111,65 @@ function projectProseLine(line: string): string {
   return s;
 }
 
-type SearchableBlock = { type: string; text?: string };
-const cache = new WeakMap<object, { text: string; role: string; visible: string }>();
+type SearchableBlock = { type: string; text?: string; tool_ids?: string[] };
+const NO_NAMES: Readonly<Record<string, string>> = {};
+const cache = new WeakMap<object, {
+  text: string;
+  role: string;
+  ids: string[] | undefined;
+  names: Readonly<Record<string, string>>;
+  visible: string;
+}>();
 
-/** 一个文字块的搜索文本。按块对象缓存——同一条消息在连续按键之间只算一次。 */
-export function blockSearchText(block: SearchableBlock, role: Message["role"]): string {
+/**
+ * 用户文字块的搜索文本：看得见的正文 + 跟在正文后面的工具标签的原始文本
+ * `@[显示名]`（显示名取不到时用 id——与标签上显示的文字一致）。标签之间、标签
+ * 与正文之间都没有分隔：页面上的文字节点也是这样首尾相接的。
+ */
+function userSearchText(
+  text: string,
+  toolIds: string[] | undefined,
+  toolNames: Readonly<Record<string, string>>,
+): string {
+  const body = userVisibleText(text);
+  if (!toolIds || toolIds.length === 0) return body;
+  return body + trailingToolIds(body, toolIds, toolNames).map((id) => toolTokenText(toolNames[id] ?? id)).join("");
+}
+
+/**
+ * 助手文字块的搜索文本：只取看得见的文字段。装备推荐块（<JISHU-EQUIP-RECOMMEND>）
+ * 在页面上渲染成推荐卡，块里的 JSON 不显示——不进搜索文本；分段用渲染的同一个函数
+ *（二轮评审 R3 P2-11：此前整段按 Markdown 投影，理由里的词被数成命中、页面上却没有这段
+ * 文字，标题栏与侧栏的计数比正文高亮多）。卡上的标题与理由是异步取回的另一份文字，卡
+ * 自带 data-no-search，也不计入。
+ */
+function assistantSearchText(text: string): string {
+  if (!text.includes("<JISHU-EQUIP-RECOMMEND>")) return markdownVisibleText(text);
+  return extractEquipSegments(text)
+    .filter((segment): segment is { type: "text"; content: string } => segment.type === "text")
+    .map((segment) => markdownVisibleText(segment.content))
+    .join("\n");
+}
+
+/**
+ * 一个文字块的搜索文本。按块对象缓存——同一条消息在连续按键之间只算一次
+ * （工具集或工具名映射换了会重算）。
+ *
+ * `toolNames`：id → 显示名。用户消息里带工具标签的块要靠它得出标签的原始文本；
+ * 助手消息用不到。消息视图与侧栏搜索传的都是工具目录里的同一份映射。
+ */
+export function blockSearchText(
+  block: SearchableBlock,
+  role: Message["role"],
+  toolNames: Readonly<Record<string, string>> = NO_NAMES,
+): string {
   if (block.type !== "text" || typeof block.text !== "string") return "";
   const hit = cache.get(block);
-  if (hit && hit.text === block.text && hit.role === role) return hit.visible;
-  const visible = role === "user" ? stripImagePrompt(block.text) : markdownVisibleText(block.text);
-  cache.set(block, { text: block.text, role, visible });
+  if (hit && hit.text === block.text && hit.role === role && hit.ids === block.tool_ids && hit.names === toolNames) {
+    return hit.visible;
+  }
+  const visible = role === "user" ? userSearchText(block.text, block.tool_ids, toolNames) : assistantSearchText(block.text);
+  cache.set(block, { text: block.text, role, ids: block.tool_ids, names: toolNames, visible });
   return visible;
 }
 

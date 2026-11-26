@@ -43,6 +43,7 @@ import { composedPlugins, composedVersion, subscribeComposed } from "@/features/
 import { Zap } from "lucide-react";
 import { TaskSessionTree } from "@/features/task-workspace/sidebar/task-session-tree";
 import { formatRelativeTime, TerminalIcon } from "./chat-page-utils";
+import { useToolNames } from "@/components/sessions/embedded-tools";
 import type { ConfirmDialogOptions } from "@/components/ui/confirm-dialog";
 import type { Project, Session, SessionSearchResult } from "@/types";
 import type { TaskLaunchInstanceSummary } from "@/features/task-instance/types";
@@ -153,6 +154,9 @@ export function ChatSidebar(props: ChatSidebarProps) {
     setRenameTaskTarget,
   } = props;
   const { t } = useTranslation();
+  // v0.9.8 评审修复轮 R2：会话搜索把消息里的工具标签按显示名算进命中，显示名取自
+  // 工具目录。侧栏常驻，目录在这里最早加载——会话没打开过也认得出标签。
+  useToolNames();
   // v0.9.8 需求23 补充轮：搜索态下才有「进入会话」（双击结果行 / 右键菜单）；平时双击只是打开会话。
   const isSearching = searchQuery.trim().length > 0;
   // v0.9.7 需求5 E3（Q12）：当前空间是默认工作空间时，左上角空间名旁展示
@@ -192,7 +196,7 @@ export function ChatSidebar(props: ChatSidebarProps) {
           <div className="flex items-center gap-2 px-3 h-10 border-b border-border/20">
             <FolderOpen className={cn("h-5 w-5 shrink-0 ml-1", currentProject ? "text-[var(--icon-folder)]" : "text-muted-foreground/40")} />
             {/* 字底余量 pb-[2px]：说明见下方会话标题处 */}
-            <span className={cn("truncate text-sm font-semibold flex-1 min-w-0 leading-none pt-[1px] pb-[2px]", currentProject ? "text-foreground" : "text-muted-foreground")} title={currentProject ? projectDisplayName : undefined}>
+            <span className={cn("truncate text-sm font-semibold flex-1 min-w-0 leading-none pt-[1px] pb-[4px]", currentProject ? "text-foreground" : "text-muted-foreground")} title={currentProject ? projectDisplayName : undefined}>
               {currentProject ? projectDisplayName : t("sessions.noProject")}
             </span>
             {isDefaultWorkspace && (

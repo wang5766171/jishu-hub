@@ -3,14 +3,19 @@
  *
  * 范围是当前项目的会话列表。文本取自 blockSearchText——与气泡显示、正文区
  * 搜索同一出处：摘要不再露出内部注入标记，命中数与正文里的黄底数一致。
+ *
+ * v0.9.8 评审修复轮 R2：用户消息里跟在正文后面的工具标签按原始文本 `@[显示名]`
+ * 计入。显示名取自工具目录（全局一份，与气泡里的标签同源）——会话没打开过也认得
+ * 出标签。调用方传了映射就用传进来的（随映射更新重新计算）。
  */
 import type { Session, Message, SessionSearchResult } from "@/types";
 import { blockSearchText, countMatches, searchRegExp } from "./session-search-text";
+import { getToolNames } from "./tool-catalog";
 
-function extractPreviewText(message: Message, q: string): string {
+function extractPreviewText(message: Message, q: string, toolNames: Readonly<Record<string, string>>): string {
   for (const block of message.content) {
     if (block.type !== "text") continue;
-    const text = blockSearchText(block, message.role);
+    const text = blockSearchText(block, message.role, toolNames);
     const idx = text.toLowerCase().indexOf(q);
     if (idx !== -1) {
       const start = Math.max(0, idx - 20);
@@ -22,7 +27,11 @@ function extractPreviewText(message: Message, q: string): string {
   return "";
 }
 
-export function searchSessions(sessions: Session[], query: string): SessionSearchResult[] {
+export function searchSessions(
+  sessions: Session[],
+  query: string,
+  toolNames: Readonly<Record<string, string>> = getToolNames(),
+): SessionSearchResult[] {
   if (!query.trim()) return [];
   const q = query.toLowerCase();
   const regex = searchRegExp(query);
@@ -41,7 +50,7 @@ export function searchSessions(sessions: Session[], query: string): SessionSearc
       // 命中导航），侧栏徽标数才会和正文里的计数对得上。
       for (const block of message.content) {
         if (block.type !== "text") continue;
-        const count = countMatches(blockSearchText(block, message.role), regex);
+        const count = countMatches(blockSearchText(block, message.role, toolNames), regex);
         if (count > 0) {
           matchCount += count;
           messageHasMatch = true;
@@ -50,7 +59,7 @@ export function searchSessions(sessions: Session[], query: string): SessionSearc
 
       if (messageHasMatch && firstMatchIndex === -1) {
         firstMatchIndex = i;
-        previewText = extractPreviewText(message, q);
+        previewText = extractPreviewText(message, q, toolNames);
       }
     }
 

@@ -11,12 +11,17 @@
  * 「滚到了哪里」直接读容器的 scrollTop。
  */
 import i18n from "@/i18n";
-import { act, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { startTransition } from "react";
-import type { Message } from "@/types";
+import type { Message, StreamChunk } from "@/types";
+import { streamStore } from "@/hooks/use-stream-store";
 import { MessageView } from "./message-view";
+import { pageText } from "./search-highlight";
+import { stubTextHighlightApi } from "./__stubs__/text-highlight-api";
+
+vi.mock("@/lib/tool-catalog", async () => await import("./__stubs__/tool-catalog"));
 
 const text = (role: Message["role"], value: string): Message => ({
   role,
@@ -102,7 +107,6 @@ afterEach(() => {
   document.body.innerHTML = "";
   resetRects();
 });
-
 function resetRects() {
   lensRowRects = {};
   fullRowRects = {};
@@ -159,9 +163,9 @@ describe("渲染后标黄（文字高亮接口可用）——S23-U5", () => {
     }
   }
   class FakeHighlight {
-    ranges: FakeRange[];
-    constructor(...ranges: FakeRange[]) {
-      this.ranges = ranges;
+    ranges: FakeRange[] = [];
+    add(range: FakeRange): void {
+      this.ranges.push(range);
     }
   }
   const highlights = new Map<string, FakeHighlight>();
@@ -451,5 +455,91 @@ describe("打开命中会话与退出搜索——S23-U9~U14（回落方式）", 
     });
     expect(el.querySelectorAll("[data-message-index]").length).toBe(3);
     expect(el.scrollTop).toBe(0);
+  });
+});
+
+/**
+ * 正在输出的会话里搜索——v0.9.8 评审修复轮 R2（tests/V-用例清单 V5-U1 / V5-U2）。
+ *
+ * 行为（定案）：搜索针对已经进入消息列表的内容。正在输出的那一轮由流式气泡显示，
+ * 不参与搜索态的筛选、不标黄、不计数，照常显示在下方；回合并入消息列表后自动纳入。
+ */
+describe("正在输出的会话里搜索", () => {
+  const streamingSession = "session-streaming-search";
+  const chunk = (data: StreamChunk["data"]): StreamChunk => ({ session_id: streamingSession, event_type: data.kind, data });
+  /** 装上高亮接口；`count` = 两层里登记的范围总数。 */
+  const enableHighlight = () => {
+    const api = stubTextHighlightApi();
+    return { count: () => (api.highlights.get("jishu-search-match")?.ranges.length ?? 0) + (api.highlights.get("jishu-search-current")?.ranges.length ?? 0) };
+  };
+
+  afterEach(() => {
+    streamStore.drop(streamingSession);
+  });
+
+  it("流式里的内容不计数、不登记——V5-U1", () => {
+    const { count } = enableHighlight();
+    streamStore.start(streamingSession, null);
+    streamStore.push(streamingSession, chunk({ kind: "text_delta", delta: "流式回复里也有 关键词，再一个 关键词" }));
+    const onSearchStatusChange = vi.fn();
+    render(<MessageView messages={messages} sessionId={streamingSession} flat searchQuery="关键词" onSearchStatusChange={onSearchStatusChange} />);
+    // 消息列表里「关键词」共 2 处（都在第 2 条消息里）；流式那两处不算
+    expect(onSearchStatusChange).toHaveBeenLastCalledWith({ current: 1, total: 2 });
+    expect(count()).toBe(2);
+  });
+
+  it("回合并入后纳入：总数增加、当前命中回到第 1 处、新命中上色；已在页面上的行不丢字——V5-U2", () => {
+    const { count } = enableHighlight();
+    const onSearchStatusChange = vi.fn();
+    const grown: Message[] = [...messages, text("user", "追问"), text("assistant", "又一个 关键词")];
+    const view = (list: Message[], navigation?: { direction: 1 | -1; nonce: number }) => (
+      <MessageView messages={list} flat searchQuery="关键词" searchNavigation={navigation} onSearchStatusChange={onSearchStatusChange} />
+    );
+    const utils = render(view(messages));
+    const hitRow = utils.container.querySelector('[data-message-index="1"]')!;
+    const textBefore = pageText(hitRow);
+    utils.rerender(view(messages, { direction: 1, nonce: 1 }));
+    expect(onSearchStatusChange).toHaveBeenLastCalledWith({ current: 2, total: 2 });
+    // 这一轮结束：流式内容并入消息列表
+    utils.rerender(view(grown));
+    expect(onSearchStatusChange).toHaveBeenLastCalledWith({ current: 1, total: 3 });
+    expect(count()).toBe(3);
+    expect(utils.container.querySelector('[data-message-index="1"]')).toBe(hitRow);
+    expect(pageText(hitRow)).toBe(textBefore);
+  });
+});
+
+/** 细条文案的单复数——v0.9.8 评审修复轮 R2（tests/V-用例清单 V6-U1 / V6-U2）。 */
+describe("省略细条的单复数", () => {
+  /** 两处命中，中间与后面各隔 1 行。 */
+  const gaps = [text("user", "关键词 一"), text("assistant", "隔开一行"), text("user", "关键词 二"), text("assistant", " filler ")];
+  afterEach(async () => {
+    cleanup();
+    await i18n.changeLanguage("zh");
+  });
+
+  it("英文：省略 1 条用单数，其余用复数——V6-U1", async () => {
+    await i18n.changeLanguage("en");
+    render(<MessageView messages={gaps} flat searchQuery="关键词" />);
+    expect(screen.getByText("1 message in between")).toBeTruthy();
+    expect(screen.getByText("1 later message")).toBeTruthy();
+    cleanup();
+    // 最前面隔 2 行、最后隔 2 行：用复数
+    render(
+      <MessageView
+        messages={[text("user", "不相关"), text("assistant", " filler "), text("user", "关键词 零"), ...gaps, text("user", "不相关")]}
+        flat
+        searchQuery="关键词"
+      />,
+    );
+    expect(screen.getByText("2 earlier messages")).toBeTruthy();
+    expect(screen.getByText("2 later messages")).toBeTruthy();
+  });
+
+  it("中文不变——V6-U2", async () => {
+    await i18n.changeLanguage("zh");
+    render(<MessageView messages={gaps} flat searchQuery="关键词" />);
+    expect(screen.getByText("中间省略 1 条消息")).toBeTruthy();
+    expect(screen.getByText("后面省略 1 条消息")).toBeTruthy();
   });
 });

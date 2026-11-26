@@ -61,4 +61,18 @@ describe("i18n 覆盖守卫", () => {
     }
     expect(missing, `缺翻译 key：\n${missing.join("\n")}`).toEqual([]);
   });
+
+  it("模版卡的 nameKey 在 zh / en 里都有（英文界面不显示中文回退）", () => {
+    // 二轮评审 R3（域 3 P1-2）：这些键经 nameKey 属性 + tr() 取值，上面的扫描只认 t("…")——
+    // 9 张模版卡里 6 张在英文界面显示中文名，守卫没拦住。
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const zh = JSON.parse(readFileSync(join(__dirname, "zh.json"), "utf-8"));
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const en = JSON.parse(readFileSync(join(__dirname, "en.json"), "utf-8"));
+    const text = readFileSync(join(ROOT, "pages/plugin-create-dialog-templates.tsx"), "utf-8");
+    const keys = [...text.matchAll(/nameKey:\s*["']([^"']+)["']/g)].map((m) => m[1]);
+    expect(keys.length).toBeGreaterThanOrEqual(9);
+    const missing = keys.filter((key) => dig(zh, key) === undefined || dig(en, key) === undefined);
+    expect(missing, `模版卡名字缺翻译：${missing.join(", ")}`).toEqual([]);
+  });
 });

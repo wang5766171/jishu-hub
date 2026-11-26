@@ -1,99 +1,66 @@
 /**
  * v0.9.0 需求3 方案 C：消息内嵌工具 pill 渲染——数据源为消息元数据
  * `tool_ids`（回放：后端从注入块派生；流式：compose 时前端已知并显式传递）。
- * 文本标记（[JISHU-TOOLS:...]）方案已按版本级裁决整体废弃，本模块不再
- * 做任何文本解析。
+ * 文本标记（[JISHU-TOOLS:...]）方案已按版本级裁决整体废弃；本模块对文本做的
+ * 解析只有一种——用户填入的 `@[显示名]` 字样（v0.9.8 需求9：用户放在哪，标签
+ * 就在哪），写法与判定在 `lib/tool-token.ts`，本模块不自带正则。
+ *
+ * v0.9.8 评审修复轮 R2：pill 里的文字是标签的原始文本 `@[显示名]`（见 PillLabel），
+ * 搜索按它识别标签；工具名与类别的映射取自全局工具目录（lib/tool-catalog.ts）。
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { invokeCommand } from "@/hooks/use-invoke";
 import { Blocks, Package, Server, Sparkles, Wrench, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ensureToolCatalog, getToolCats, getToolNames, subscribeToolCatalog } from "@/lib/tool-catalog";
+import { findToolTokens, toolTokenText, trailingToolIds } from "@/lib/tool-token";
 
-/** 会话工具条目（后端 session_tool_list，与 chat-input 的 SessionTool 同构）。 */
-interface SessionTool {
-  id: string;
-  display_name: string;
-  /** cli | mcp | skill | extension（需求7 补充：pill 图标）。 */
-  category?: string;
-}
-
-/** id → 显示名 缓存（按会话 key）。pill 渲染层只读这个映射：
- * 显示用中文名，标记与后端通信仍用英文 id——属性处理能力的单一来源。 */
-const toolNamesCache = new Map<string, Record<string, string>>();
-/** id → category 缓存（需求7 补充：pill 图标按类型区分，与 + 菜单同款
- * 映射——skill=Sparkles/mcp=Server/extension=Package/cli=Blocks）。与
- * names 同一次拉取双写。 */
-const toolCatsCache = new Map<string, Record<string, string>>();
-
-/** 加载会话工具的 id→显示名映射（v0.8.1 需求7：消息气泡 pill 显示中文名，
- * 而非插件英文编码）。同一会话只拉取一次，模块级缓存跨组件共享。 */
+/**
+ * 工具名映射（id → 显示名）。pill 显示中文名，标记与后端通信仍用英文 id。
+ * 映射是全局工具目录里的那一份（与具体会话无关）：已经取到过就是现成的，新会话
+ * 第一帧就有显示名；还没有时在这里发起加载。`sessionId` 只随请求带给后端。
+ */
 export function useSessionToolNames(sessionId: string | null): Record<string, string> {
-  const key = sessionId ?? "__new_session__";
-  const [names, setNames] = useState<Record<string, string>>(() => toolNamesCache.get(key) ?? {});
   useEffect(() => {
-    let cancelled = false;
-    const cached = toolNamesCache.get(key);
-    if (cached) {
-      setNames(cached);
-      return;
-    }
-    invokeCommand<SessionTool[]>("session_tool_list", { sessionId: key })
-      .then((tools) => {
-        const map: Record<string, string> = {};
-        const cats: Record<string, string> = {};
-        for (const t of tools) {
-          map[t.id] = t.display_name;
-          cats[t.id] = t.category ?? "cli";
-        }
-        toolNamesCache.set(key, map);
-        toolCatsCache.set(key, cats);
-        if (!cancelled) setNames(map);
-      })
-      .catch(() => {
-        if (!cancelled) setNames({});
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [key]);
-  return names;
+    ensureToolCatalog(sessionId);
+  }, [sessionId]);
+  return useSyncExternalStore(subscribeToolCatalog, getToolNames, getToolNames);
 }
 
-/** id → category 映射（需求7 补充：pill 图标按类型）。与
- * useSessionToolNames 共享同一次 session_tool_list 拉取（双写缓存），
- * names 先挂载时本 hook 独立拉取一次后同样入缓存。 */
+/** 工具名映射（不针对某个会话）：侧栏搜索用它认出消息里的工具标签，并触发目录加载。 */
+export function useToolNames(): Record<string, string> {
+  return useSessionToolNames(null);
+}
+
+/** id → category 映射（pill 图标按类型），与显示名取自同一份工具目录。 */
 export function useSessionToolCats(sessionId: string | null): Record<string, string> {
-  const key = sessionId ?? "__new_session__";
-  const [cats, setCats] = useState<Record<string, string>>(() => toolCatsCache.get(key) ?? {});
   useEffect(() => {
-    let cancelled = false;
-    const cached = toolCatsCache.get(key);
-    if (cached) {
-      setCats(cached);
-      return;
-    }
-    invokeCommand<SessionTool[]>("session_tool_list", { sessionId: key })
-      .then((tools) => {
-        const map: Record<string, string> = {};
-        for (const t of tools) map[t.id] = t.category ?? "cli";
-        toolCatsCache.set(key, map);
-        if (!cancelled) setCats(map);
-      })
-      .catch(() => {
-        if (!cancelled) setCats({});
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [key]);
-  return cats;
+    ensureToolCatalog(sessionId);
+  }, [sessionId]);
+  return useSyncExternalStore(subscribeToolCatalog, getToolCats, getToolCats);
+}
+
+/**
+ * 标签里的文字 = 标签的原始文本 `@[显示名]`：显示名看得见；首尾的 `@[` `]` 是原始
+ * 文本的一部分，留在页面文字里（搜索按原始文本识别标签——搜显示名、搜 `@[名]`
+ * 都命中这一个标签），不占宽度。外层是一个不设间距的弹性盒：零宽的首尾两段不参与
+ * 图标与名字之间的间距。
+ */
+function PillLabel({ name }: { name: string }) {
+  return (
+    <span className="flex min-w-0 items-center">
+      <span className="w-0 shrink-0 overflow-hidden" aria-hidden="true">{"@["}</span>
+      <span className="truncate">{name}</span>
+      <span className="w-0 shrink-0 overflow-hidden" aria-hidden="true">{"]"}</span>
+    </span>
+  );
 }
 
 /** 消息气泡内的内联工具 pill 组（v0.8.1 28f37e8e 形态修正：**内联**渲染——
  * 与正文同一个 whitespace-pre-wrap 流，pill 与文本同行排列，不再用块级
- * div 强制换行。pill 是一个视觉整体，仅渲染，不做其他特殊处理）。 */
+ * div 强制换行。pill 是一个视觉整体，仅渲染，不做其他特殊处理。
+ * 每个 pill 在页面上的文字是它的原始文本 `@[显示名]`，见 PillLabel）。 */
 export function EmbeddedToolPills({
   toolIds,
   toolNames,
@@ -124,7 +91,7 @@ export function EmbeddedToolPills({
           title={id}
         >
           {pillIcon(toolCats?.[id])}
-          <span className="truncate">{toolNames[id] ?? id}</span>
+          <PillLabel name={toolNames[id] ?? id} />
           {onRemove && (
             <button
               type="button"
@@ -141,9 +108,6 @@ export function EmbeddedToolPills({
   );
 }
 
-/** 单个工具 pill（输入框 mirror 层用：视觉替换 `@[显示名]` token）。
- * 结构：透明等宽占位（与 textarea 里 token 文本同宽）+ 绝对定位的可见
- * pill——保证光标位置与视觉 pill 对齐。 */
 /** 名字→category（正文内联 pill 只有 @[名]：names 反查 id → cats）。 */
 function kindForName(
   names: Record<string, string> | undefined,
@@ -172,26 +136,23 @@ function pillIcon(kind?: string) {
   }
 }
 
+/** 单个工具 pill：输入框 mirror 层与消息正文内联共用。
+ * 结构：透明等宽占位（与 textarea 里 token 文本等宽）+ 绝对定位的可见
+ * pill——保证光标位置与视觉 pill 对齐。 */
 export function EmbeddedToolPill({ name, kind }: { name: string; kind?: string }) {
   return (
     <span className="relative inline-flex" data-tool-pill="">
-      {/* 等宽占位：与 textarea 中的 `@[name]` 文本等宽（同字体继承） */}
-      <span className="invisible whitespace-pre">@[{name}]</span>
+      {/* 等宽占位：与 textarea 中的 `@[name]` 文本等宽（同字体继承）。只是排版用的
+          一份拷贝，不参与搜索——页面上的原始文本由下面看得见的那份给出。 */}
+      <span className="invisible whitespace-pre" data-no-search="">@[{name}]</span>
       <span className="absolute inset-y-0 left-0 inline-flex items-center gap-1 rounded-md border border-border/70 bg-muted px-1.5 text-xs leading-none text-foreground">
         {pillIcon(kind)}
-        <span className="truncate">{name}</span>
+        <PillLabel name={name} />
       </span>
     </span>
   );
 }
 
-/** 用户消息正文展示统一组件（M5 → v0.9.0 需求3 元数据化）：tool_ids 快照
- * → pill + 正文同一内联流。pill 数据一律来自 toolIds 元数据参数，组件本身
- * 零文本解析（展示面单源纪律 §16.3）。
- * v0.9.8 需求9-②：pill 渲染在正文**之后**（方案 B 统一末尾）——注入本来就
- * 是后缀追加（compose_tool_message 单源），原「pill 恒前置」误导用户以为
- * 工具挂在了消息开头（用户实测 #3「插件永远在最前面」）。真实插入位置的
- * 元数据方案（A）留待用户验收 B 后裁决。 */
 /** v0.9.8 需求9 路线甲：正文是否含**可内联**的 @[名] 字样（名字在
  * toolNames 映射中）——含则渲染走 UserTextWithPills 内联（用户填入位置），
  * 不含（历史剥离消息）走原 TextBlock+尾随 pill 路径。 */
@@ -199,33 +160,38 @@ export function hasKnownToolToken(
   text: string,
   toolNames: Record<string, string> | undefined,
 ): boolean {
-  if (!text || !text.includes("@[") || !toolNames) return false;
-  const known = new Set(Object.values(toolNames));
-  const re = /@\[([^\]]+)\]/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    if (known.has(m[1])) return true;
-  }
-  return false;
+  if (!text || !toolNames) return false;
+  const knownNames = new Set(Object.values(toolNames));
+  return findToolTokens(text).some((token) => knownNames.has(token.name));
 }
 
 /** v0.9.8 需求9 路线甲：编辑提交时从 draft 文本反扫工具 id（@[名] 字样
- * 即载体——编辑态 pill 列表在文本含字样时不置，提交以文本为准）。 */
+ * 即载体——编辑态 pill 列表在文本含字样时不置，提交以文本为准）。
+ * 两个工具显示名相同时取清单里靠前的那个——与后端 resolve_tool_refs、
+ * chat-input 的 extractToolTokens 同一规则（工程指导 §16.3）。 */
 export function scanToolIdsFromText(
   text: string,
   toolNames: Record<string, string>,
 ): string[] {
   const ids: string[] = [];
-  const nameToId = new Map(Object.entries(toolNames).map(([id, name]) => [name, id]));
-  const re = /@\[([^\]]+)\]/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const id = nameToId.get(m[1]);
+  const nameToId = new Map<string, string>();
+  for (const [id, name] of Object.entries(toolNames)) {
+    if (!nameToId.has(name)) nameToId.set(name, id);
+  }
+  for (const { name } of findToolTokens(text)) {
+    const id = nameToId.get(name);
     if (id && !ids.includes(id)) ids.push(id);
   }
   return ids;
 }
 
+/**
+ * 用户消息正文展示统一组件（M5 → v0.9.0 需求3 元数据化；展示面单源纪律 §16.3）：
+ * 正文里的 `@[名]` 字样在原位渲染成标签，没被字样覆盖到的工具（历史剥离消息的
+ * 全部工具）跟在正文**之后**（v0.9.8 需求9-②：注入本就是后缀追加——
+ * compose_tool_message 单源，原「pill 恒前置」误导用户以为工具挂在消息开头）。
+ * 标签与正文在同一个内联流里。
+ */
 export function UserTextWithPills({
   text,
   toolIds,
@@ -242,35 +208,27 @@ export function UserTextWithPills({
   // 映射中存在才转换——未知 @[x] 按原文）。
   // v0.9.8 需求9 路线甲（用户裁决「用户放在哪就是哪」）：全部类型 token
   // 原文保留（发送链 extractToolTokens 恒保留），内联渲染即用户填入位置；
-  // trailing pill 只兜底渲染**未被内联覆盖**的 id（历史剥离消息无字样→
-  // 全部尾随；新消息全内联→尾随空——防内联+尾随双份）。
+  // 名字对不上的 `@[x]` 按原文显示。
   let textNode: import("react").ReactNode = text;
-  const inlinedNames = new Set<string>();
   const knownNames = new Set(Object.values(toolNames));
-  if (text.includes("@[") && knownNames.size > 0) {
-    const parts: import("react").ReactNode[] = [];
-    const re = /@\[([^\]]+)\]/g;
-    let last = 0;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
-      if (!knownNames.has(m[1])) continue;
-      if (m.index > last) parts.push(text.slice(last, m.index));
-      parts.push(<EmbeddedToolPill key={`pill-${m.index}`} name={m[1]} kind={kindForName(toolNames, toolCats, m[1])} />);
-      inlinedNames.add(m[1]);
-      last = m.index + m[0].length;
-    }
-    if (last === 0) {
-      // 无命中：保持原文本（不进 parts 分支）。
-    } else {
-      if (last < text.length) parts.push(text.slice(last));
-      textNode = parts;
-    }
+  const parts: import("react").ReactNode[] = [];
+  let last = 0;
+  for (const { index, name } of findToolTokens(text)) {
+    if (!knownNames.has(name)) continue;
+    if (index > last) parts.push(text.slice(last, index));
+    parts.push(<EmbeddedToolPill key={`pill-${index}`} name={name} kind={kindForName(toolNames, toolCats, name)} />);
+    last = index + toolTokenText(name).length;
   }
-  const trailingIds = toolIds.filter((id) => !inlinedNames.has(toolNames[id]));
+  if (last > 0) {
+    if (last < text.length) parts.push(text.slice(last));
+    textNode = parts;
+  }
+  // 跟在正文后面的标签：工具集里没有被上面的内联覆盖到的 id（内联与尾随不重复
+  // 出同一个工具）。与搜索文本用同一个判定（lib/tool-token）。
   return (
     <span className="whitespace-pre-wrap break-all">
       {textNode}
-      <EmbeddedToolPills toolIds={trailingIds} toolNames={toolNames} toolCats={toolCats} trailing />
+      <EmbeddedToolPills toolIds={trailingToolIds(text, toolIds, toolNames)} toolNames={toolNames} toolCats={toolCats} trailing />
     </span>
   );
 }
