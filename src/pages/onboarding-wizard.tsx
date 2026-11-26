@@ -17,6 +17,11 @@
  *    「开始使用」→ onComplete（落默认空间由 app 兜底 effect 承接，Q11）。
  * 全程四步（评审 P2-11 修复：头注释对齐实现，原只列到③）；无「先逛逛」
  *（Q1：装完才进主界面）；「进入工作台」只在步骤④出现。
+ *
+ * v0.9.8 评审修复轮 R3（二轮评审 P1-2）：安装步走统一出口 installRef，选择步读
+ * 同一份已装集——装过之后再重走引导，已装的件标出来、不默认勾、不进安装清单；
+ * 安装步执行时再判一次已装。修前④直接调安装命令：后端对已装技能的「安装」是
+ * 整目录删了重写，用户放在技能目录里的改动会没掉。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -25,6 +30,9 @@ import { invokeCommand } from "@/hooks/use-invoke";
 import { PLUGIN_SCENES } from "@/lib/plugin-scenes";
 import { MIN_NODE_VERSION, isVersionNewer, nodeVersionSatisfies } from "@/agents/version-constants";
 import { cn } from "@/lib/utils";
+import { userFacingError } from "@/lib/user-facing-error";
+import { buildInstalledRefs, fetchInstalledLedgers, isInstalledRef, type InstalledLedgers } from "@/features/equipment/installed";
+import { installRef } from "@/features/equipment/install";
 import { Button } from "@/components/ui/button";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
@@ -76,7 +84,13 @@ interface SkillhubEntry {
   publisher_verified: boolean;
 }
 
-type InstallState = "idle" | "installing" | "done" | "failed";
+/** 行的安装状态：idle 未开始 / installing 安装中 / done 装成 / already 执行时
+ *  已装（没有重复安装）/ skipped 未安装 / failed 失败（行上带原因）。 */
+export type InstallState = "idle" | "installing" | "done" | "already" | "skipped" | "failed";
+
+/** 已装态（二轮评审 P1-2）：pending = 还没读到；unknown = 读不到（已装态不明）；
+ *  其余 = 三份台账。与市场页同一份构造（features/equipment/installed）。 */
+type InstalledKnowledge = "pending" | "unknown" | InstalledLedgers;
 
 export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   const { t } = useTranslation();
@@ -647,6 +661,16 @@ export interface InstallItem {
   meta?: string;
 }
 
+/** 勾选键（plugin::<id> / skill::<slug>）→ 装备 ref。 */
+const refOfKey = (key: string): string => {
+  const [kind, id] = key.split("::");
+  return kind === "plugin" ? `curated:${id}` : `skillhub:${id}`;
+};
+const refOfItem = (item: InstallItem): string =>
+  item.kind === "plugin" ? `curated:${item.id}` : `skillhub:${item.id}`;
+/** 集合并（返回新集合；更新函数保持纯函数，不在里面读会变的外部状态）。 */
+const union = (base: Set<string>, adds: string[]): Set<string> => (adds.length === 0 ? base : new Set([...base, ...adds]));
+
 function RecommendStep({
   scenes,
   onNext,
@@ -673,6 +697,23 @@ function RecommendStep({
   // 模块级 holder 跨「返回②卸载」存活——修复轮回归收口：条件挂载曾使
   // 返回路径重置勾选）。
   const knownPicksRef = { current: knownRecommendationsHolder };
+  // 已装集（二轮评审 P1-2）：与市场页、推荐卡、安装出口同一份。已装的件标出来、
+  // 不默认勾、不进安装清单；读不到时不默认勾选并说明原因（哪些装了说不准）。
+  const [installed, setInstalled] = useState<InstalledKnowledge>("pending");
+  const installedRefs = useMemo(
+    () => (installed === "pending" || installed === "unknown" ? null : buildInstalledRefs(installed)),
+    [installed],
+  );
+  const installedUnknown = installed === "unknown";
+  /** 这一行对应的件已装——只在读到了台账时下结论。 */
+  const isKeyInstalled = (key: string) => installedRefs !== null && isInstalledRef(installedRefs, refOfKey(key));
+  /** 一行的勾选形态：installed 已装（标出、不勾、不可点）/ unknown 已装态不明
+   *  （不勾，可手动勾）/ required 套装必备（锁定为勾）/ optional 可选。 */
+  const shapeOf = (key: string, required: boolean): "installed" | "unknown" | "required" | "optional" => {
+    if (!installedRefs) return "unknown";
+    if (isInstalledRef(installedRefs, refOfKey(key))) return "installed";
+    return required ? "required" : "optional";
+  };
 
   const load = useCallback(async () => {
     setSkillError(false);
@@ -682,13 +723,20 @@ function RecommendStep({
     const scenesToLoad = scenes.length > 0
       ? scenes
       : PLUGIN_SCENES.filter((s) => s.id !== "custom").map((s) => s.id);
+    // 这次读到的已装集（null = 读不到）。下面所有默认勾选的判定都用它——已装态
+    // 明确才默认勾；已装的、读不到的都不勾。
+    let refs: Set<string> | null = null;
     try {
       // 需求5（合并版）：入门套装优先——所选场景有官方套装的以套装形态
       // 呈现（必备锁定+可选勾选）；套装覆盖的条目从散装清单剔除。
-      const [fullCurated, bundleList] = await Promise.all([
+      const [fullCurated, bundleList, ledgers] = await Promise.all([
         invokeCommand<MarketEntry[]>("market_list_curated", { scene: null }),
         invokeCommand<Array<{ id: string; scene: string; title: string; description: string; items: Array<{ ref: string; required: boolean }> }>>("market_list_bundles").catch(() => []),
+        fetchInstalledLedgers(),
       ]);
+      const known = ledgers ? buildInstalledRefs(ledgers) : null;
+      refs = known;
+      setInstalled(ledgers ?? "unknown");
       const entryById = new Map((fullCurated ?? []).map((e) => [e.id, e]));
       const myBundles = (bundleList ?? []).filter((b) => scenes.includes(b.scene));
       const coveredIds = new Set(
@@ -707,16 +755,21 @@ function RecommendStep({
             .map((i) => ({ entry: entryById.get(i.ref.slice("curated:".length))!, required: i.required })),
         })),
       );
+      // 已装的件从勾选里摘掉——上一轮留下的（装过了）、或读不到时手动勾的
+      //（后来读到它已装）。更新函数只读它拿到的上一份，不读外部会变的状态。
+      if (known) {
+        applyPicked((prev) => new Set([...prev].filter((key) => !isInstalledRef(known, refOfKey(key)))));
+      }
       // 入门套装口径：默认勾必备（粗场景兜底；可选项默认不勾——微调权在用户）。
-      applyPicked((prev) => {
-        const next = new Set(prev);
-        for (const b of myBundles) {
-          for (const item of b.items) {
-            if (item.required) next.add(`plugin::${item.ref.replace(/^curated:/, "")}`);
-          }
-        }
-        return next;
-      });
+      // 已装的必备项不勾；已装态读不到时也不默认勾。要勾的项在这里算出来——
+      // 不把判定写进更新函数（见下面插件默认勾选处的说明）。
+      const bundlePicks = known
+        ? myBundles
+            .flatMap((b) => b.items)
+            .filter((i) => i.required && i.ref.startsWith("curated:") && !isInstalledRef(known, i.ref))
+            .map((i) => `plugin::${i.ref.slice("curated:".length)}`)
+        : [];
+      applyPicked((prev) => union(prev, bundlePicks));
 
       const all: MarketEntry[] = [];
       const seen = new Set<string>();
@@ -731,18 +784,18 @@ function RecommendStep({
       }
       const pickedList = scenes.length > 0 ? all : shuffle(all).slice(0, 6);
       setPlugins(pickedList);
-      if (preselect) {
-        // 评审 P2-6：只合并首次出现的新项（首次 load=全量勾选，后续 load
-        // 保留用户已有勾选）。
-        applyPicked((prev) => {
-          const next = new Set(prev);
-          for (const e of pickedList) {
-            const key = `plugin::${e.id}`;
-            if (!knownPicksRef.current.has(key)) next.add(key);
-          }
-          return next;
-        });
+      // 评审 P2-6：只合并首次出现的新项（首次 load=全量勾选，后续 load 保留用户
+      // 已有勾选）。已装的件不默认勾；已装态读不到时不默认勾、也不记「已见」
+      //（之后读到了还来得及默认勾）。
+      // 要勾的项必须在这里算出来：修前把「是不是新项」的判定写进了 setState 的
+      // 更新函数，而更新函数是 React 渲染时才求值的——那时下面这句同步代码已经
+      // 把这一项记成了「已见」，判定恒为假，默认勾选从来没生效过。
+      if (preselect && known) {
+        const fresh = pickedList
+          .filter((e) => !knownPicksRef.current.has(`plugin::${e.id}`) && !isInstalledRef(known, `curated:${e.id}`))
+          .map((e) => `plugin::${e.id}`);
         for (const e of pickedList) knownPicksRef.current.add(`plugin::${e.id}`);
+        applyPicked((prev) => union(prev, fresh));
       }
     } catch {
       /* 插件源内嵌不会失败 */
@@ -767,18 +820,15 @@ function RecommendStep({
       }
       const skillList = scenes.length > 0 ? collected : shuffle(collected).slice(0, 6);
       setSkills(skillList);
-      if (preselect) {
-        // 评审 P2-6：与插件同规则——只合并首次出现的新项，不回加用户已
-        // 取消勾选的技能。
-        applyPicked((prev) => {
-          const next = new Set(prev);
-          for (const s of skillList) {
-            const key = `skill::${s.slug}`;
-            if (!knownPicksRef.current.has(key)) next.add(key);
-          }
-          return next;
-        });
+      // 与插件同规则（评审 P2-6）：只合并首次出现的新项，不回加用户已取消勾选的
+      // 技能。已装的不默认勾——已装的技能再装一遍会把技能目录整目录重写。
+      const skillRefs = refs;
+      if (preselect && skillRefs) {
+        const fresh = skillList
+          .filter((s) => !knownPicksRef.current.has(`skill::${s.slug}`) && !isInstalledRef(skillRefs, `skillhub:${s.slug}`))
+          .map((s) => `skill::${s.slug}`);
         for (const s of skillList) knownPicksRef.current.add(`skill::${s.slug}`);
+        applyPicked((prev) => union(prev, fresh));
       }
     } catch {
       setSkillError(true);
@@ -810,24 +860,31 @@ function RecommendStep({
 
   const proceed = () => {
     const items: InstallItem[] = [];
-    // 需求5（合并版）：套装条目（必备恒选；可选项走 picked）。
+    // 已装的件不进安装清单（二轮评审 P1-2）。安装步执行时还会以执行时刻的台账
+    // 再判一次——这里看到的是渲染时的快照。
+    // 需求5（合并版）：套装条目（必备恒选；可选项走 picked）。必备只在读到了
+    // 已装集时才算选中——读不到时没有默认勾任何项，以用户勾的为准。
     const bundleSeen = new Set<string>();
     for (const b of bundles) {
       for (const { entry, required } of b.entries) {
         if (bundleSeen.has(entry.id)) continue;
         bundleSeen.add(entry.id);
-        if (required || picked.has(`plugin::${entry.id}`)) {
+        const key = `plugin::${entry.id}`;
+        if (isKeyInstalled(key)) continue;
+        if ((required && installedRefs) || picked.has(key)) {
           items.push({ kind: "plugin", id: entry.id, title: entry.title, description: entry.description });
         }
       }
     }
     for (const p of plugins) {
-      if (picked.has(`plugin::${p.id}`)) {
+      const key = `plugin::${p.id}`;
+      if (picked.has(key) && !isKeyInstalled(key)) {
         items.push({ kind: "plugin", id: p.id, title: p.title, description: p.description });
       }
     }
     for (const s of skills) {
-      if (picked.has(`skill::${s.slug}`)) {
+      const key = `skill::${s.slug}`;
+      if (picked.has(key) && !isKeyInstalled(key)) {
         items.push({ kind: "skill", id: s.slug, title: s.name, description: s.description, meta: s.requires_api_key ? t("onboarding.needsKey", "需要 API Key") : undefined });
       }
     }
@@ -843,6 +900,22 @@ function RecommendStep({
         </div>
       </div>
 
+      {/* 已装清单读不到：哪些装了说不准，所以没有默认勾选任何项；说明原因并给重试。 */}
+      {installedUnknown && (
+        <div
+          role="status"
+          data-onboarding-installed-unknown=""
+          className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground"
+        >
+          <span className="flex-1">
+            {t("onboarding.installedUnknown", "暂时无法判断哪些已经安装，没有默认勾选；已安装的不会重复安装")}
+          </span>
+          <Button variant="outline" size="sm" className="h-6 px-2 text-[10px]" onClick={() => void load()}>
+            {t("onboarding.retry", "重试")}
+          </Button>
+        </div>
+      )}
+
       {bundles.length > 0 && (
         <div>
           <div className="mb-2 text-sm font-medium text-muted-foreground">{t("onboarding.recBundles", "入门套装")}</div>
@@ -854,15 +927,18 @@ function RecommendStep({
                 <div className="space-y-1.5">
                   {b.entries.map(({ entry, required }) => {
                     const key = `plugin::${entry.id}`;
+                    const shape = shapeOf(key, required);
                     return (
                       <RecommendRow
                         key={key}
-                        checked={required || picked.has(key)}
+                        // 已装：标出、不勾、不可点。已装态不明：不默认勾，可手动勾。
+                        installed={shape === "installed"}
+                        checked={shape === "required" ? true : picked.has(key)}
                         onToggle={() => toggle(key)}
                         title={entry.title}
                         description={entry.description}
                         state="idle"
-                        disabled={required}
+                        disabled={shape === "required"}
                       />
                     );
                   })}
@@ -882,6 +958,7 @@ function RecommendStep({
               return (
                 <RecommendRow
                   key={key}
+                  installed={isKeyInstalled(key)}
                   checked={picked.has(key)}
                   onToggle={() => toggle(key)}
                   title={p.title}
@@ -916,6 +993,7 @@ function RecommendStep({
               return (
                 <RecommendRow
                   key={key}
+                  installed={isKeyInstalled(key)}
                   checked={picked.has(key)}
                   onToggle={() => toggle(key)}
                   title={s.name}
@@ -957,6 +1035,8 @@ function shuffle<T>(arr: T[]): T[] {
 function InstallStep({ items, onStart, onBack }: { items: InstallItem[]; onStart: () => void; onBack: () => void }) {
   const { t } = useTranslation();
   const [states, setStates] = useState<Record<string, InstallState>>({});
+  // 没装成的行上的原因（给用户看的文字）。
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [started, setStarted] = useState(false);
 
   // 进入即安装（runRef 幂等：严格模式双调用下只装一次）。
@@ -967,21 +1047,23 @@ function InstallStep({ items, onStart, onBack }: { items: InstallItem[]; onStart
     setStarted(true);
     void (async () => {
       const next: Record<string, InstallState> = {};
+      const reasons: Record<string, string> = {};
       for (const item of items) {
         const key = `${item.kind}::${item.id}`;
         next[key] = "installing";
         setStates({ ...next });
         try {
-          if (item.kind === "plugin") {
-            await invokeCommand<string>("market_install", { pluginId: item.id });
-          } else {
-            await invokeCommand<string>("skillhub_install", { slug: item.id });
-          }
-          next[key] = "done";
-        } catch {
+          // 统一出口（二轮评审 P1-2）：执行时以执行时刻的台账再判一次已装——已装
+          // 的不装（已装的技能再装一遍会把技能目录整目录重写），行直接是「已安装」。
+          const result = await installRef(refOfItem(item));
+          next[key] = result.kind === "already" ? "already" : result.kind === "declined" ? "skipped" : "done";
+        } catch (e) {
+          // 没装成：原因留在行上（给用户看的文字——出口交出来的已经洗过）。
           next[key] = "failed";
+          reasons[key] = userFacingError(e);
         }
         setStates({ ...next });
+        setErrors({ ...reasons });
       }
       setStarted(false);
     })();
@@ -1014,6 +1096,7 @@ function InstallStep({ items, onStart, onBack }: { items: InstallItem[]; onStart
                 title={item.title}
                 description={item.description}
                 state={states[key] ?? "idle"}
+                error={errors[key]}
                 disabled
                 meta={item.meta}
               />
@@ -1042,6 +1125,8 @@ function RecommendRow({
   state,
   disabled,
   meta,
+  installed,
+  error,
 }: {
   checked: boolean;
   onToggle: () => void;
@@ -1050,33 +1135,58 @@ function RecommendRow({
   state: InstallState;
   disabled: boolean;
   meta?: string;
+  /** 这一件已经装了（选择步）：标出来、不勾、不可点。 */
+  installed?: boolean;
+  /** 没装成的原因（安装步），显示在行上。 */
+  error?: string;
 }) {
+  const { t } = useTranslation();
+  // 已装的件、执行时已装、未安装：行不显示成勾着的——勾只表示「这次要装 / 这次装了」。
+  const settledUninstalled = state === "already" || state === "skipped";
+  const isChecked = installed || settledUninstalled ? false : checked;
   return (
     <label
+      data-row-state={state}
+      data-row-installed={installed || state === "already" ? "" : undefined}
       className={cn(
         "flex cursor-pointer items-start gap-2.5 rounded-lg border p-2.5 transition-colors",
-        checked ? "border-primary/50 bg-primary/5" : "border-border/50 hover:border-primary/30",
-        disabled && "cursor-default opacity-90",
+        isChecked ? "border-primary/50 bg-primary/5" : "border-border/50 hover:border-primary/30",
+        (disabled || installed) && "cursor-default opacity-90",
       )}
     >
       <input
         type="checkbox"
-        checked={checked}
+        checked={isChecked}
         onChange={onToggle}
-        disabled={disabled}
+        disabled={disabled || installed}
         className="mt-0.5 h-3.5 w-3.5 accent-[var(--primary)]"
       />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-sm font-medium">
           <span className="truncate">{title}</span>
           {meta && <span className="shrink-0 text-[11px] text-amber-600">{meta}</span>}
+          {/* 已装的件如实标出：不是这次装的，也不会再装一遍。 */}
+          {installed && (
+            <span className="shrink-0 text-[11px] text-muted-foreground" data-row-installed-mark="">
+              {t("market.installed", "已安装")}
+            </span>
+          )}
         </div>
         <p className="line-clamp-1 text-xs text-muted-foreground" title={description}>
           {description}
         </p>
+        {error && <p className="mt-0.5 break-all text-xs text-destructive/90">{error}</p>}
       </div>
       {state === "installing" && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
       {state === "done" && <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
+      {state === "already" && (
+        <span className="shrink-0 text-[11px] text-muted-foreground" data-row-installed-mark="">
+          {t("market.installed", "已安装")}
+        </span>
+      )}
+      {state === "skipped" && (
+        <span className="shrink-0 text-[11px] text-muted-foreground">{t("equip.installSkipped", "未安装")}</span>
+      )}
       {state === "failed" && <X className="h-3.5 w-3.5 shrink-0 text-destructive" />}
     </label>
   );

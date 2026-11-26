@@ -10,7 +10,9 @@ vi.mock("@/hooks/use-invoke", () => ({
   invokeCommand,
 }));
 
-vi.mock("@/tauri-apps/api/event", () => ({
+// 事件模块替身：组件挂载时会监听安装进度事件，测试环境里没有 Tauri 桥，
+// 不替身会留下未处理的 Promise 拒绝（污染 vitest 退出码）。
+vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 

@@ -10,6 +10,12 @@ vi.mock("@/hooks/use-invoke", () => ({
   invokeCommand,
 }));
 
+// 事件模块替身：市场面板挂载时会监听目录更新事件，测试环境里没有 Tauri
+// 桥，不替身会留下未处理的 Promise 拒绝（污染 vitest 退出码）。
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+
 vi.mock("@/components/ui/confirm-dialog", () => ({
   useConfirmDialog: () => ({
     confirm: async () => true,

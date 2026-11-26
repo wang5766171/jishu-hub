@@ -84,6 +84,28 @@ describe("L0 matchByTags（零推理本地匹配）", () => {
   it("文本过短（<2 字符）不匹配", () => {
     expect(matchByTags("查", input)).toHaveLength(0);
   });
+
+  /** v0.9.8 评审修复轮 R2 / M-11：子串匹配没有边界——短英文标签会命中别的单词
+   *  的一部分（「AI」命中 said、detail）。纯英文 / 数字标签按整词命中；中文短语
+   *  仍按子串（设计 §3.1），汉字不算词内字符。 */
+  it("M11-1 英文标签按整词命中；中文短语仍按子串命中", () => {
+    const catalog: CatalogEntry[] = [
+      { ref: "curated:ai", title: "AI 助手", tags: ["AI"], stars: 4 },
+      { ref: "curated:ppt", title: "PPT 助手", tags: ["PPT"], stars: 4 },
+      { ref: "curated:code", title: "写后诊断", tags: ["代码检查"], stars: 4 },
+    ];
+    const boundary = { catalog, installedRefs: new Set<string>() };
+    const refs = (text: string) => matchByTags(text, boundary, 3).map((h) => h.entry.ref);
+    // 「ai」只是别的单词的一部分：不命中
+    expect(refs("please explain the details")).toEqual([]);
+    expect(refs("what he said")).toEqual([]);
+    // 整词出现：命中
+    expect(refs("用 AI 写一段")).toEqual(["curated:ai"]);
+    // 汉字不算词内字符
+    expect(refs("帮我做个PPT模板")).toEqual(["curated:ppt"]);
+    // 中文短语：子串即命中
+    expect(refs("做一次代码检查")).toEqual(["curated:code"]);
+  });
 });
 
 describe("L0.5 matchByWorkspaceScene（工作区场景匹配——按项目定位）", () => {

@@ -1,5 +1,5 @@
 // v0.9.8 需求5（合并版）：插件推荐设置页（管理→插件推荐）。
-// 六键配置 + 重置推荐记忆（含恢复输入框建议条——用户点 × 关闭后从此处找回）。
+// 六键配置 + 重置推荐记忆（含恢复输入框建议——用户点 × 关闭后从此处找回）。
 // 文案只述功能，不述过程。
 
 import { useEffect, useState } from "react";
@@ -100,7 +100,7 @@ export function RecommendPage() {
     }
   };
 
-  // 重置 = 清「推过未装」记忆 + 恢复被 × 关闭的输入框建议条（否则用户
+  // 重置 = 清「推过未装」记忆 + 恢复被 × 关闭的输入框建议（否则用户
   // 点过一次 × 就再也找不回建议条——唯一恢复入口收拢在此）。
   const resetMemory = async () => {
     try {
@@ -117,7 +117,7 @@ export function RecommendPage() {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-        {t("common.loading", "加载中…")}
+        {t("common.loading", "加载中...")}
       </div>
     );
   }
@@ -197,7 +197,7 @@ export function RecommendPage() {
         <div className="min-w-0 text-[11px] text-muted-foreground">
           {resetDone
             ? t("equip.cfgResetDone", "已重置")
-            : t("equip.cfgResetDesc", "清除「推荐过未安装」的记录并恢复输入框建议条")}
+            : t("equip.cfgResetDesc", "清除「推荐过未安装」的记录，并恢复被关闭的输入框建议")}
         </div>
         <Button variant="outline" size="sm" className="h-7 shrink-0 px-2 text-[11px]" onClick={() => void resetMemory()}>
           <RotateCcw className="h-3 w-3" />

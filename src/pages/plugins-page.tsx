@@ -32,6 +32,10 @@ import { buildGuiAdaptDraft } from "@/components/market/gui-adapt-draft";
 import { listSessionPlugins } from "@/features/session-kernel/plugins/registry";
 import { isPluginForm, PLUGIN_FORM_VALUES, type PluginForm } from "./plugin-wizard-utils";
 import { composedVersion, subscribeComposed } from "@/features/session-kernel/capabilities/composition/loader";
+import { fetchInstalledExtensionSources, fetchInstalledSkillLedger } from "@/features/equipment/installed";
+// 二轮评审 R3（P2-2a）：「卸载更新 / 还原钉版」走统一出口的重装入口与撞名确认卡。
+import { askConflictDialog, reinstallRef, type PiConflictView } from "@/features/equipment/install";
+import { userFacingError } from "@/lib/user-facing-error";
 import { Info, Settings2, FileCode2, LayoutGrid, Pin, Bell, MousePointerClick, Palette, Layers, Rocket, Wrench } from "lucide-react";
 import {
   Dialog,
@@ -480,11 +484,17 @@ export function PluginsPage({
   // v0.9.7 需求3 已安装统一页（2026-11-14 裁决）：扩展包/市场技能的更新
   // 与还原数据面（市场「已安装」子页并入本页）。
   const [extInstalled, setExtInstalled] = useState<string[]>([]);
+  // 已装扩展清单读不到（扩展设置文件读不到或不是合法 JSON）：清单保留上一次读到的，
+  // 页签里标出读取失败——「读不到」不等于「一个都没装」。
+  const [extInstalledUnreadable, setExtInstalledUnreadable] = useState(false);
   // 十七轮⑧：已装扩展实装版本（node_modules package.json——浮动安装/更新
   // 后的真实版本；settings 源串 @version 是意图快照会陈旧/缺失）。
   const [extVersions, setExtVersions] = useState<Record<string, string>>({});
   const [extPins, setExtPins] = useState<Array<{ source: string; package: string; version: string }>>([]);
   const [skillLedger, setSkillLedger] = useState<Record<string, string>>({});
+  // 技能台账读不到（台账文件读不了或不是合法 JSON）：保留上一次读到的，技能页签里
+  // 标出读取失败——后端读失败会报错，不再吞成「一个都没装」。
+  const [skillLedgerUnreadable, setSkillLedgerUnreadable] = useState(false);
   const [piindexMeta, setPiindexMeta] = useState<Array<{
     name: string; description: string; npm_package: string | null; install_command: string;
     detail_url: string | null; category: string;
@@ -567,19 +577,21 @@ export function PluginsPage({
     // 扩展包（pi 生态件）/技能台账/钉版快照/目录元数据（失败静默——
     // 各自独立展示位，不阻塞插件清单）。
     const [sources, versions, pins, ledger, piindex] = await Promise.all([
-      invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
+      fetchInstalledExtensionSources(),
       invokeCommand<Record<string, string>>("pi_package_installed_versions").catch(() => ({}) as Record<string, string>),
       invokeCommand<Array<{ source: string; package: string; version: string }>>("pi_package_builtin_pins").catch(() => []),
-      invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>),
+      fetchInstalledSkillLedger(),
       invokeCommand<Array<{
         name: string; description: string; npm_package: string | null; install_command: string;
         detail_url: string | null; category: string;
       }>>("piindex_search", { keyword: null }).catch(() => null),
     ]);
-    setExtInstalled(sources ?? []);
+    setExtInstalledUnreadable(sources === null);
+    if (sources) setExtInstalled(sources);
     setExtVersions(versions ?? {});
     setExtPins(pins ?? []);
-    setSkillLedger(ledger ?? {});
+    setSkillLedgerUnreadable(ledger === null);
+    if (ledger) setSkillLedger(ledger);
     setPiindexMeta(piindex ?? []);
   }, []);
 
@@ -1291,6 +1303,38 @@ export function PluginsPage({
         );
   };
 
+  /** 已装扩展清单读不到的提示——页签级，独立于清单长度（二轮评审 P2-1）。
+   *  修前写在 renderExtCards 里：第一次加载就失败时清单是空的，那个函数根本
+   *  不被调用，页签落「暂无插件」；之前读到过时又是提示把卡片整个换掉、页签
+   *  计数却还是上一次的数量。现在提示归提示、卡片归卡片。 */
+  const renderExtUnreadable = () => (
+    <div
+      role="alert"
+      data-ext-list-unreadable=""
+      className="col-span-full flex flex-wrap items-center justify-center gap-2 py-4 text-sm text-muted-foreground"
+    >
+      <span>{tr("plugins.extListUnreadable", "已安装的扩展清单读取失败")}</span>
+      <Button variant="outline" size="sm" className="h-7 px-2.5 text-xs" onClick={() => void refresh()}>
+        {tr("plugins.extListRetry", "重试")}
+      </Button>
+    </div>
+  );
+
+  /** 技能台账读不到的提示（技能页签级）。后端读不了或解析不了台账文件会报错，
+   *  这里不再把它吞成「一个技能都没装」——卡上的已装与可更新状态在那一刻不下结论。 */
+  const renderSkillUnreadable = () => (
+    <div
+      role="alert"
+      data-skill-ledger-unreadable=""
+      className="col-span-full flex flex-wrap items-center justify-center gap-2 py-4 text-sm text-muted-foreground"
+    >
+      <span>{tr("plugins.skillLedgerUnreadable", "已安装技能的清单读取失败")}</span>
+      <Button variant="outline" size="sm" className="h-7 px-2.5 text-xs" onClick={() => void refresh()}>
+        {tr("plugins.extListRetry", "重试")}
+      </Button>
+    </div>
+  );
+
   /** v0.9.7 需求3（2026-11-14 裁决）：扩展包 tab 卡片——pi 生态件（npm/git）
    * 统一呈现：内置钉版件带「内置」徽章，支持更新与**还原原生版本**（钉版
    * 快照=hub 分发时版本）；市场安装件支持更新与卸载。说明来自 piindex。 */
@@ -1314,28 +1358,37 @@ export function PluginsPage({
       const meta = piindexMeta?.find((e) => e.npm_package === pkg);
       const upd = extUpdates?.find((u) => u.package === pkg);
       const busyCard = updateBusy === pkg || batchUpdates.extensionRunning;
-      const runPkg = (action: () => Promise<unknown>, refreshSources = true) => void (async () => {
+      /** 这张卡上的动作收尾：重读已装源（读不到时保留原清单并标出失败）、
+       *  这一张卡的更新态、实装版本。 */
+      const refreshAfterAction = async () => {
+        const sources = await fetchInstalledExtensionSources();
+        setExtInstalledUnreadable(sources === null);
+        if (sources) setExtInstalled(sources);
+        // 十五轮：动作后单查消解该卡更新态（更新按钮不残留，回到最新/新箭头）。
+        await invokeCommand<ExtensionUpdateStatus>("extension_check_update", { package: pkg })
+          .then(mergeExtUpdate)
+          .catch(() => null);
+        // 十七轮⑧：实装版本同步刷新（安装/更新/还原后版本随之变化）。
+        const versions = await invokeCommand<Record<string, string>>("pi_package_installed_versions").catch(() => ({}) as Record<string, string>);
+        setExtVersions(versions ?? {});
+      };
+      /** 这张卡上的动作：置忙 → 执行 → 失败弹「操作失败」（原因经清洗）→ 解忙。 */
+      const withPkgBusy = (action: () => Promise<void>) => void (async () => {
         setUpdateBusy(pkg);
         try {
           await action();
-          if (refreshSources) {
-            const sources = await invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]);
-            // 十五轮：动作后单查消解该卡更新态（更新按钮不残留，回到最新/新箭头）。
-            await invokeCommand<ExtensionUpdateStatus>("extension_check_update", { package: pkg })
-              .then(mergeExtUpdate)
-              .catch(() => null);
-            // 十七轮⑧：实装版本同步刷新（安装/更新/还原后版本随之变化）。
-            const versions = await invokeCommand<Record<string, string>>("pi_package_installed_versions").catch(() => ({}) as Record<string, string>);
-            setExtVersions(versions ?? {});
-            setExtInstalled(sources ?? []);
-          }
         } catch (e) {
           console.warn("ext action failed:", e);
-          void alertDialog({ title: tr("plugins.actionFailed", "操作失败"), description: String(e) });
+          void alertDialog({ title: tr("plugins.actionFailed", "操作失败"), description: userFacingError(e) });
         } finally {
           setUpdateBusy((prev) => (prev === pkg ? null : prev));
         }
       })();
+      const runPkg = (action: () => Promise<unknown>, refreshSources = true) =>
+        withPkgBusy(async () => {
+          await action();
+          if (refreshSources) await refreshAfterAction();
+        });
       // 单卡检查：结果并入全局更新状态（与全部检查联动）。
       const checkOne = () =>
         runPkg(
@@ -1482,7 +1535,18 @@ export function PluginsPage({
               title={pin ? tr("plugins.uninstallUpdate", "卸载更新") : tr("plugins.remove", "卸载")}
               onClick={() => {
                 if (pin) {
-                  void runPkg(() => invokeCommand("pi_package_install_online", { source: pin.source }));
+                  // 二轮评审 P2-2a：还原钉版 =「已装的件按指定版本重装」，走统一出口的
+                  // 重装入口——与安装同一个结果判读：撞名弹确认卡，取消不算成功。
+                  // 修前直接调安装命令、返回值被丢掉：撞名时后端回滚并返回待确认，
+                  // 界面当成功、不报错，卡上版本也没变。
+                  // 不走 installRef：件本来就在已装清单里，「已装就不装」会把还原拦下。
+                  withPkgBusy(async () => {
+                    const result = await reinstallRef(`pi:${pin.source}`, undefined, (display: string, conflicts: PiConflictView[]) =>
+                      askConflictDialog(confirmDialog, t, display, conflicts),
+                    );
+                    // 取消 = 什么都没发生，不刷新
+                    if (result.kind !== "declined") await refreshAfterAction();
+                  });
                   return;
                 }
                 // 需求4 D4-8b④（R2-T5 实测抓到的缺口收口）：卸载被适配件
@@ -1784,8 +1848,9 @@ export function PluginsPage({
               )}
             >
               {tr(cat.labelKey, cat.fallback)}
+              {/* 读不到、也从没读到过：计数是「不明」，不显示成 0（二轮评审 P2-1）。 */}
               <span className={cn("text-[10px] tabular-nums", active ? "opacity-80" : "opacity-50")}>
-                {items.length}
+                {cat.key === "extension" && extInstalledUnreadable && items.length === 0 ? "–" : items.length}
               </span>
             </button>
           );
@@ -1938,19 +2003,20 @@ export function PluginsPage({
                       if (isSkillTab) {
                         const [skillsLatest, ledger] = await Promise.all([
                           invokeCommand<SkillUpdateStatus[]>("skillhub_check_updates").catch(() => null),
-                          invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({}) as Record<string, string>),
+                          fetchInstalledSkillLedger(),
                         ]);
                         if (skillsLatest) setSkillUpdates(skillsLatest);
-                        setSkillLedger(ledger ?? {});
+                        setSkillLedgerUnreadable(ledger === null);
+                        if (ledger) setSkillLedger(ledger);
                       } else {
-                        const [sources, latest, versions] = await Promise.all([
-                          invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]),
+                        // 已装扩展清单不在这里重读：紧接着的 refresh() 会按「读不到
+                        // 保留原清单并标出失败」的口径重读一遍。
+                        const [latest, versions] = await Promise.all([
                           invokeCommand<ExtensionUpdateStatus[]>("extension_check_updates").catch(() => null),
                           // 十七轮⑧：批量更新后实装版本同步刷新。
                           invokeCommand<Record<string, string>>("pi_package_installed_versions").catch(() => ({}) as Record<string, string>),
                         ]);
                         setExtVersions(versions ?? {});
-                        setExtInstalled(sources ?? []);
                         if (latest) setExtUpdates(latest);
                       }
                       await refresh();
@@ -2029,11 +2095,18 @@ export function PluginsPage({
             : activeTab === "extension" && extDimsOk
               ? extInstalled.filter((src) => sourceFilter === "all" || extSourceOf(src) === sourceFilter)
               : [];
+          // 已装扩展清单读不到的提示：跟扩展卡同一个出场条件，但不看清单长度——
+          // 读不到、从没读到过时清单是空的，修前就是这时落了「暂无插件」
+          //（二轮评审 P2-1）。读不到时「暂无插件」不下结论：那是「不明」，不是「没有」。
+          const extUnreadableShown =
+            extInstalledUnreadable && extDimsOk && (!!search.trim() || activeTab === "extension");
           return (
             <>
         {visibleExts.length > 0 && renderExtCards(visibleExts)}
+        {extUnreadableShown && renderExtUnreadable()}
+        {skillLedgerUnreadable && extDimsOk && !search.trim() && activeTab === "skill" && renderSkillUnreadable()}
         {visiblePlugins.map((x) => renderCard(x))}
-        {visiblePlugins.length === 0 && visibleExts.length === 0 && (
+        {visiblePlugins.length === 0 && visibleExts.length === 0 && !extUnreadableShown && (
           <p className="col-span-full py-10 text-center text-sm text-muted-foreground">
             {search.trim()
               ? tr("plugins.searchEmpty", "无匹配插件")

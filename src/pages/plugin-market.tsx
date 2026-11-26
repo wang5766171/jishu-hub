@@ -5,18 +5,21 @@
  * - 扩展生态：pi npm 扩展包目录（钉版 5 包；启停与安装走同一执行面）。
  * - 技能市场：腾讯 SkillHub（场景分组/搜索/分页；安装前安全确认——
  *   来源/版本/发布者认证/是否需要密钥；装后各智能体立即可用）。
- * - 已装判定：精选/扩展 = plugin_list 交集；技能 = skillhub_installed 台账。
+ * - 已装判定：三份台账（plugin_list / skillhub_installed / 扩展包注册串）归一成一个
+ *   已装集，三个页签的 load() 都刷新——卡片、套装弹层、推荐区、安装队列同源。
+ *   读不到时已装态不明：卡片 / 弹层行给「状态未知」、不出安装入口（二轮评审 P2-6）。
  * - 文案不暴露内部引擎代号（§7）：三源页签名为 精选/扩展生态/技能市场。
  *
  * 评审 P2-12 处置说明（不拆分，第三轮评审更新口径）：九轮「已安装统一
  * 页」抽出后，已装/批量更新状态机（extUpdates/skillUpdates/
  * checkingUpdates/updateBusy/batchUpdates/extInstalled/extVersions 等）
- * 已全部迁往 plugins-page.tsx——本组件仅剩市场三源装载（onlineInstalled/
- * skillInstalled/piindex/busyIds）与 load/onChanged 回调。文件规模与拆分
- * 处置仍随 chat-page 拆分方向后续评估。
+ * 已全部迁往 plugins-page.tsx——本组件仅剩市场三源装载（installedLedgers/
+ * piindex/busyIds）与 load/onChanged 回调。文件规模与拆分处置仍随
+ * chat-page 拆分方向后续评估。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { listen } from "@tauri-apps/api/event";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -24,14 +27,25 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { PLUGIN_SCENES } from "@/lib/plugin-scenes";
-import { ArrowDownToLine, Bot, Check, Download, ExternalLink, Info, Loader2, Package, RefreshCw, Search, X, ShieldCheck, Sparkles, Star, Trash2 } from "lucide-react";
+import { ArrowDownToLine, Bot, Check, CircleDashed, Download, ExternalLink, Info, Loader2, Minus, Package, RefreshCw, Search, X, ShieldCheck, Sparkles, Star, Trash2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { InstallGuideCard, type InstallGuideInfo } from "@/components/market/install-guide-card";
 import { buildGuiAdaptDraft } from "@/components/market/gui-adapt-draft";
+import { userFacingError } from "@/lib/user-facing-error";
 // v0.9.8 需求5（合并版）：装备推荐——共享执行器（五修）+ L1/L0 匹配 + 目录。
 import { fetchEquipConfig, fetchEquipmentTags, fetchLatestProfile, fetchWorkspaceScene, type CatalogEntry } from "@/features/equipment/api";
 import { buildCatalog, matchByProfile, matchByWorkspaceScene } from "@/features/equipment/match";
-import { kindNameOf, useEquipmentRunner } from "@/features/equipment/runner";
+import { kindNameOf, useEquipmentRunner, type RunStatus } from "@/features/equipment/runner";
+// v0.9.8 评审修复轮 R2（R2-6 / R2-7）：已装集单源 + 安装单出口。
+import {
+  buildInstalledRefs,
+  fetchInstalledLedgers,
+  isInstalledRef,
+  packageKeyOf,
+  sameInstalledLedgers,
+  type InstalledLedgers,
+} from "@/features/equipment/installed";
+import { askConflictDialog, extensionDisplayName, installRef, type PiConflictView } from "@/features/equipment/install";
 import { setMarketOpen } from "@/lib/market-update-signal";
 
 interface MarketEntry {
@@ -115,17 +129,6 @@ interface PiindexEntry {
   search_text: string;
 }
 
-/** 需求15 方案 A：在线安装结果（serde tag=status）——冲突时弹确认卡。 */
-interface InstallOnlineOutcome {
-  status: "installed" | "conflict";
-  conflicts?: Array<{
-    tool: string;
-    opponent_source: string;
-    opponent_display: string;
-    opponent_builtin: boolean;
-  }>;
-}
-
 /** 需求15 方案 A：停用台账条目（pi_extension_overrides_list）。 */
 interface PiOverrideEntryView {
   source: string;
@@ -147,14 +150,6 @@ interface ExtGuiEntryView {
   adapters: Array<{ plugin_id: string; enabled: boolean; cascade_disabled: boolean }>;
 }
 
-/** 注册串 → 无版本关系键（npm:pkg@1.0 → npm:pkg；非 npm 源原样）。 */
-function pkgKeyOf(source: string): string {
-  if (!source.startsWith("npm:")) return source;
-  const rest = source.slice(4);
-  const m = rest.match(/^(@[^/]+\/[^@]+|[^@]+)@.*$/);
-  return "npm:" + (m ? m[1] : rest);
-}
-
 /** 已装源串与 piindex 条目匹配（npm 源按包名前缀；git 源归一 https
  * 前缀后比对安装命令尾段）——已装卡说明/查看来源的元数据来源。 */
 function installedSourceMatchesPiindex(src: string, entry: PiindexEntry): boolean {
@@ -172,14 +167,57 @@ function installedSourceMatchesPiindex(src: string, entry: PiindexEntry): boolea
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100];
 
+/** 已装集还没读到时用的空集 / 空台账（保持引用稳定）。 */
+const NO_REFS: Set<string> = new Set();
+const NO_SKILLS: Record<string, string> = {};
+/** 不是当前弹层发起的那一轮运行：它的行状态不在当前弹层显示（保持引用稳定）。 */
+const NO_STATUSES: RunStatus[] = [];
+
+/** 已装态（二轮评审 P2-6）。
+ *  pending = 首次读取还没回来（不下结论）；
+ *  known   = 读到了（stale = 这一次刷新失败、留着上一次读到的）；
+ *  unknown = 从没读到过——已装态不明，不当成「都没装」。
+ *  修前只有一个可空值，null 直接按空集算：台账读不到时卡片与弹层行全部显示
+ *  「未安装」并给出安装入口。 */
+type InstalledKnowledge =
+  | { state: "pending" }
+  | { state: "known"; ledgers: InstalledLedgers; stale: boolean }
+  | { state: "unknown" };
+
+/** 卡片的已装态：installed / missing 是读到了台账的结论；unknown 是不明。 */
+type InstalledCardState = "installed" | "missing" | "unknown";
+
+/** 套装 / 推荐弹层里一行的展示信息。 */
+interface BundleItemInfo {
+  title: string;
+  kindName: string;
+  installed: boolean;
+  /** 已装态不明（台账读不到）。 */
+  unknown: boolean;
+  unavailable: boolean;
+  stars: number;
+}
+
+/** 已装态不明（台账读不到）：不显示成「未安装」，也不出安装 / 卸载入口。 */
+function InstalledUnknownTag({ label }: { label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground" data-installed-unknown="">
+      <CircleDashed className="h-3 w-3" />
+      {label}
+    </span>
+  );
+}
+
 /** 评审 P1-13 修复②：load 世代号（模块级递增）——await 返回后 runId 不匹配
  * 即丢弃 setState，防 keyword/onlineKw 快慢响应交错覆盖新结果。 */
 let marketLoadRunId = 0;
 
-/** 计数缩写（对齐 piindex 呈现）：≥1万保留 1 位小数以万计，不足显示整数。 */
-function formatCount(n: number): string {
+/** 计数缩写（对齐 piindex 呈现）：≥1万保留 1 位小数以万计，不足显示整数；
+ *  英文按千计（12.3K）。两种写法各给一个插值，各语言取各的。 */
+export function formatCount(n: number, t: TFunction): string {
   if (!Number.isFinite(n)) return "-";
-  return n >= 10000 ? `${Math.round(n / 1000) / 10}万` : String(Math.floor(n));
+  if (n < 10000) return String(Math.floor(n));
+  return t("market.countAbbr", { wan: Math.round(n / 1000) / 10, k: Math.round(n / 100) / 10 });
 }
 
 /** 周下载涨跌着色与间距：彩色主题红绿区分涨跌（colorful: variant），黑白
@@ -307,18 +345,40 @@ export function PluginMarketPanel({
   const bundleCuratedRef = useRef<MarketEntry[]>([]);
   // v0.9.8 需求5：场景套装（精选源场景筛选区上方横滑卡）。
   const [bundles, setBundles] = useState<MarketBundle[]>([]);
-  const [bundleOpen, setBundleOpen] = useState<(MarketBundle & { dynamicNote?: string }) | null>(null);
+  const [bundleOpen, setBundleOpen] = useState<MarketBundle | null>(null);
   const [bundleChecked, setBundleChecked] = useState<Set<string>>(new Set());
   // 需求5（合并版）：「为你推荐」动态区（L1 画像命中 ≥2 件时呈现；否则回落
   // 入门套装横滑）。执行器抽离共享 hook（五修：取消令牌/重试保历史/失败
   // 原因/安全行/类型名）。
   const bundleRunner = useEquipmentRunner();
-  // v0.9.8 评审修复轮 R1-6：byWorkspace/basis 记录推荐来源（项目特征命中）
-  // 与原始特征文字——弹层描述据此选整句，不把「项目特征：…」套进别的句式。
+  // v0.9.8 评审修复轮 R2（R2-6）：已装集——三份台账存成一份状态，三个页签的
+  // load() 都刷新；卡片、套装弹层、推荐区、安装队列、「全部已安装」都从它派生。
+  // 修前拆成三个状态、各只在一个页签里刷新：推荐弹层所在的精选页签上，技能
+  // 与扩展的台账恒为空，已装的技能被当成没装，再点安装会把技能目录重写。
+  // 二轮评审 R3（P2-6）：读不到时是「不明」，不是「都没装」——卡片 / 弹层行
+  // 给「状态未知」、不出安装入口；从没读到过与「这一次刷新失败」分开。
+  const [installed, setInstalled] = useState<InstalledKnowledge>({ state: "pending" });
+  const installedLedgers = installed.state === "known" ? installed.ledgers : null;
+  const installedPending = installed.state === "pending";
+  const installedUnknown = installed.state === "unknown";
+  const installedStale = installed.state === "known" && installed.stale;
+  const installedRefs = useMemo(
+    () => (installedLedgers ? buildInstalledRefs(installedLedgers) : NO_REFS),
+    [installedLedgers],
+  );
+  /** 卡片的已装态。台账读不到时不下「未安装」的结论。 */
+  const installedStateOf = useCallback(
+    (ref: string): InstalledCardState =>
+      installedUnknown ? "unknown" : isInstalledRef(installedRefs, ref) ? "installed" : "missing",
+    [installedUnknown, installedRefs],
+  );
+  /** 推荐清单 = 目录 − 已装集：已装集一变（装完刷新）就重算。此前只在这里自取
+   *  一份快照、且只在切页签时算一次，装完再开还是旧清单。state 只存原始特征
+   *  词（byWorkspace 区分项目特征 / 最近任务），整句在渲染时才翻译。 */
   const [recommendZone, setRecommendZone] = useState<{
-    note: string;
     byWorkspace: boolean;
     basis: string;
+    profileKeywords: string[];
     items: CatalogEntry[];
   } | null>(null);
   useEffect(() => {
@@ -326,19 +386,16 @@ export function PluginMarketPanel({
     let cancelled = false;
     void (async () => {
       const config = await fetchEquipConfig();
-      if (cancelled || !config.enabled || !config.market_zone) {
+      if (cancelled || !config.enabled || !config.market_zone || !installedLedgers) {
         setRecommendZone(null);
         return;
       }
-      const [curated, tagRows, pluginList, skillInstalled, piSources, profile, wsScene] = await Promise.all([
+      const [curated, tagRows, profile, wsScene] = await Promise.all([
         invokeCommand<Array<{ id: string; kind: string; title: string; description: string; required: boolean; tags?: string[]; stars?: number }>>(
           "market_list_curated",
           { scene: null },
         ).catch(() => []),
         fetchEquipmentTags(),
-        invokeCommand<{ plugins: Array<{ id: string }> }>("plugin_list").catch(() => null),
-        invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({})),
-        invokeCommand<string[]>("pi_package_installed_sources").catch(() => []),
         fetchLatestProfile(),
         // 工作区场景（用户裁决「按项目定位」）：市场页无项目上下文——
         // 取最近活跃项目（编码名，Rust 端解码）做特征分析；默认空间无定论回落画像。
@@ -347,13 +404,6 @@ export function PluginMarketPanel({
         ).catch(() => null),
       ]);
       if (cancelled) return;
-      const installedRefs = new Set<string>();
-      for (const p of pluginList?.plugins ?? []) installedRefs.add(`curated:${p.id}`);
-      for (const slug of Object.keys(skillInstalled ?? {})) installedRefs.add(`skillhub:${slug}`);
-      for (const src of piSources ?? []) {
-        const at = src.lastIndexOf("@");
-        installedRefs.add(`pi:${at > 0 ? src.slice(0, at) : src}`);
-      }
       const catalog = buildCatalog(curated ?? [], tagRows);
       const mInput = { catalog, installedRefs, officialOnly: !config.third_party };
       // 优先级：工作区场景（项目特征）→ 最近任务画像。
@@ -367,13 +417,11 @@ export function PluginMarketPanel({
         setRecommendZone(
           hits.length >= 2
             ? {
-                note: wsPicks.length >= 2
-                  ? t("market.recommendByProject", { defaultValue: "项目特征：{{basis}}", basis: (wsScene?.basis ?? []).slice(0, 2).join(" / ") })
-                  : profile?.keywords.slice(0, 3).join(" / ") ?? "",
-                // v0.9.8 评审修复轮 R1-6：推荐来源显式区分——项目特征与最近
-                // 任务各用各的整句，不再把「项目特征：…」套进「根据最近任务」。
+                // 评审修复轮 R1-6：推荐来源显式区分——项目特征与最近任务各用
+                // 各的整句，不把「项目特征：…」套进「根据最近任务」。
                 byWorkspace: wsPicks.length >= 2,
                 basis: (wsScene?.basis ?? []).slice(0, 2).join(" / "),
+                profileKeywords: (profile?.keywords ?? []).slice(0, 3),
                 items: hits,
               }
             : null,
@@ -383,7 +431,7 @@ export function PluginMarketPanel({
     return () => {
       cancelled = true;
     };
-  }, [source]);
+  }, [source, installedLedgers, installedRefs]);
   // v0.9.8 需求8 A3：扩展目录慢载兜底——piindex 无缓存且拉取中超过 8s 给
   // 「网络不佳」提示+重试（预拉取就位后仅首装首开会走到这里）。
   const [extSlow, setExtSlow] = useState(false);
@@ -392,7 +440,6 @@ export function PluginMarketPanel({
   // 十四轮 UI 统一：精选页签统一搜索框（本地按名称/说明过滤）。
   const [curatedKw, setCuratedKw] = useState("");
   const [online, setOnline] = useState<PiOnlinePackage[] | null>(null);
-  const [onlineInstalled, setOnlineInstalled] = useState<string[]>([]);
   // 需求15 方案 A：冲突停用台账（卡上呈现「已停用（被 XX 替代）」——
   // 内置不可删除只显示替代提示；用户停用件可删除）。
   const [piOverrides, setPiOverrides] = useState<PiOverrideEntryView[]>([]);
@@ -408,7 +455,7 @@ export function PluginMarketPanel({
   const guiStateFor = useCallback(async (source: string): Promise<{ providedBy?: string; noneeded?: boolean }> => {
     try {
       const entries = await invokeCommand<ExtGuiEntryView[]>("extension_registry_list");
-      const entry = (entries ?? []).find((e) => e.pkg_key === pkgKeyOf(source));
+      const entry = (entries ?? []).find((e) => e.pkg_key === packageKeyOf(source));
       if (!entry) return {};
       if (entry.adapters.length > 0) return { providedBy: entry.adapters[0].plugin_id };
       if (entry.gui_verdict === "noneeded") return { noneeded: true };
@@ -417,14 +464,20 @@ export function PluginMarketPanel({
       return {};
     }
   }, []);
+  /** 冲突确认卡的「问」——与执行器 / npm 检索兜底卡走同一个安装出口
+   *  （installRef）、同一份文案（评审修复轮 R2 / R2-7）。 */
+  const askConflict = useCallback(
+    (display: string, conflicts: PiConflictView[]) => askConflictDialog(confirmDialog, t, display, conflicts),
+    [confirmDialog, t],
+  );
   // 需求3 补充：piindex 检索结果（在线库主源；npm 检索为兜底）；更新检查。
   const [piindex, setPiindex] = useState<PiindexEntry[] | null>(null);
   // 需求3 四轮：分类过滤 / 重新加载。
   const [extCategory, setExtCategory] = useState<string>("all");
   const [reloading, setReloading] = useState(false);
   const [skills, setSkills] = useState<SkillhubListResult | null>(null);
-  const [skillInstalled, setSkillInstalled] = useState<Record<string, string>>({});
-  const [installedIds, setInstalledIds] = useState<Set<string>>(new Set());
+  /** 技能台账（slug → 版本；技能页签「已安装 vX」）——已装集里技能那一份。 */
+  const skillInstalled = useMemo(() => installedLedgers?.skills ?? NO_SKILLS, [installedLedgers]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -471,15 +524,6 @@ export function PluginMarketPanel({
     return () => clearTimeout(timer);
   }, [onlineKw]);
 
-  const refreshInstalled = useCallback(async () => {
-    try {
-      const result = await invokeCommand<{ plugins: Array<{ id: string; enabled: boolean }> }>("plugin_list");
-      setInstalledIds(new Set((result.plugins ?? []).map((p) => p.id)));
-    } catch {
-      /* plugin_list 失败保持当前值 */
-    }
-  }, []);
-
   // 十五轮：分类基准快照——目录全量（首次非搜索加载冻结）。分类 chips
   // 从全量派生，不随搜索结果汇聚变化（搜索只过滤列表，页面不跳动）。
   const fullCatalogRef = useRef<PiindexEntry[] | null>(null);
@@ -524,31 +568,35 @@ export function PluginMarketPanel({
       setCurated(curatedEntries ?? []);
       // v0.9.8 需求5：套装清单（内嵌廉价，每次 load 同步刷新；curated: 引用
       // 的展示名解析用全量 entries——scene 过滤态下也要能解析，故独立拉全量）。
-      const [bundleList, allCurated] = await Promise.all([
+      // 评审修复轮 R2（R2-6）：三源已装集三个页签都刷新——不挂在某个页签的
+      // 分支里（修前技能 / 扩展两份台账只在各自页签才读）。
+      const [bundleList, allCurated, ledgers] = await Promise.all([
         invokeCommand<MarketBundle[]>("market_list_bundles").catch(() => [] as MarketBundle[]),
         invokeCommand<MarketEntry[]>("market_list_curated", { scene: null }),
+        fetchInstalledLedgers(),
       ]);
       if (runId !== marketLoadRunId) return;
       setBundles(bundleList ?? []);
       bundleCuratedRef.current = allCurated ?? [];
-      if (source !== "skills") {
-        await refreshInstalled();
-        if (runId !== marketLoadRunId) return;
-      }
+      // 读到了：内容没变不换引用（依赖它的推荐区不重算）。读不到：有上一次读到
+      // 的就留着并标出（stale），从没读到过就是「不明」——两种都不当成「都没装」。
+      setInstalled((prev) => {
+        if (!ledgers) {
+          return prev.state === "known" ? { state: "known", ledgers: prev.ledgers, stale: true } : { state: "unknown" };
+        }
+        const kept = prev.state === "known" && sameInstalledLedgers(prev.ledgers, ledgers) ? prev.ledgers : ledgers;
+        return { state: "known", ledgers: kept, stale: false };
+      });
       if (source === "extensions") {
         const entries = await invokeCommand<PiPackageEntry[]>("pi_package_catalog");
         if (runId !== marketLoadRunId) return;
         setExtensions(entries ?? []);
-        // 需求3 补充：在线库主源换 Pi Index（piindex.dev/awesome-pi 清单），
-        // npm pi-package 检索为兜底（piindex 不可达时回落）。
-        const sources = await invokeCommand<string[]>("pi_package_installed_sources").catch(() => [] as string[]);
-        if (runId !== marketLoadRunId) return;
-        setOnlineInstalled(sources ?? []);
-        // 需求15 方案 A：冲突停用台账随已装源同槽装载（安装/卸载后 load()
-        // 刷新即同步）。
+        // 需求15 方案 A：冲突停用台账（安装/卸载后 load() 刷新即同步）。
         const overrides = await invokeCommand<PiOverrideEntryView[]>("pi_extension_overrides_list").catch(() => []);
         if (runId !== marketLoadRunId) return;
         setPiOverrides(overrides ?? []);
+        // 需求3 补充：在线库主源换 Pi Index（piindex.dev/awesome-pi 清单），
+        // npm pi-package 检索为兜底（piindex 不可达时回落）。
         try {
           const results = await invokeCommand<PiindexEntry[]>("piindex_search", {
             keyword: debouncedOnlineKw.trim() || null,
@@ -569,7 +617,7 @@ export function PluginMarketPanel({
             setOnline(results ?? []);
           } catch (e) {
             if (runId !== marketLoadRunId) return;
-            setError(String(e));
+            setError(userFacingError(e));
           }
         }
       } else if (source === "skills") {
@@ -582,21 +630,23 @@ export function PluginMarketPanel({
         });
         if (runId !== marketLoadRunId) return;
         setSkills(result);
-        const installed = await invokeCommand<Record<string, string>>("skillhub_installed");
-        if (runId !== marketLoadRunId) return;
-        setSkillInstalled(installed ?? {});
       }
     } catch (e) {
       if (runId !== marketLoadRunId) return;
-      setError(String(e));
+      setError(userFacingError(e));
     } finally {
       if (runId === marketLoadRunId) setLoading(false);
     }
-  }, [source, scene, debouncedKeyword, page, debouncedOnlineKw, skillPageSize, refreshInstalled]);
+  }, [source, scene, debouncedKeyword, page, debouncedOnlineKw, skillPageSize]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  /** 最新的 load()：弹层关掉后在途的那一轮落定时要刷新清单——那时用户可能已经
+   *  换了页签 / 搜索词，不能用发起安装时闭包里的那一个。 */
+  const loadRef = useRef(load);
+  loadRef.current = load;
 
   // v0.9.8 需求8 A2 → D8-1 改造：预拉取通知（piindex-updated）不再自动
   // reload 打断浏览——页顶横幅提示「市场目录已更新 · 查看」，点查看才刷新；
@@ -644,7 +694,7 @@ export function PluginMarketPanel({
     try {
       setSkillDetail(await invokeCommand<SkillhubEntry>("skillhub_detail", { slug }));
     } catch (e) {
-      setActionError(String(e));
+      setActionError(userFacingError(e));
       setSkillDetailOpen(false);
     } finally {
       setSkillDetailLoading(false);
@@ -661,9 +711,15 @@ export function PluginMarketPanel({
       setActionError(null);
       setBusyIds((prev) => new Set(prev).add(id));
       try {
-        const command = action === "install" ? "market_install" : "market_uninstall";
-        await invokeCommand<string>(command, { pluginId: id });
         if (action === "install") {
+          // 精选 / 扩展目录卡片的安装也走统一出口（二轮评审 P2-2b）：执行前以
+          // 执行时刻的台账再判一次已装（已装的技能件再装会整目录重写）、带安装
+          // 链信息；撞名如实回报——修前直接调 market_install，两样都没有。
+          const result = await installRef(`curated:${id}`, undefined, askConflict);
+          if (result.kind === "declined") {
+            await load();
+            return;
+          }
           // v0.9.8 需求4：装后引导卡（精选源）——curated 条目即卡数据源。
           const entry = curated.find((c) => c.id === id);
           if (entry) {
@@ -674,11 +730,13 @@ export function PluginMarketPanel({
               usageHint: entry.usage_hint,
             });
           }
+        } else {
+          await invokeCommand<string>("market_uninstall", { pluginId: id });
         }
         onChanged?.();
         await load();
       } catch (e) {
-        setActionError(String(e));
+        setActionError(userFacingError(e));
       } finally {
         setBusyIds((prev) => {
           const next = new Set(prev);
@@ -687,7 +745,7 @@ export function PluginMarketPanel({
         });
       }
     },
-    [busyIds, curated, load, mapGuideKind, onChanged],
+    [askConflict, busyIds, curated, load, mapGuideKind, onChanged],
   );
 
   const installSkill = useCallback(
@@ -699,7 +757,7 @@ export function PluginMarketPanel({
           `${t("market.skillVersion", "版本")}：${entry.version || "latest"}`,
           `${t("market.skillPublisher", "发布者")}：${entry.publisher_name || "-"}${entry.publisher_verified ? " ✅" : ""}`,
           `${t("market.skillApiKey", "需要 API Key")}：${entry.requires_api_key ? t("common.yes", "是") : t("common.no", "否")}`,
-          t("market.skillRiskNote", "技能为第三方提示词文件包，安装后 agent 可读取执行；已校验包含 SKILL.md 且拒绝路径穿越。"),
+          t("market.skillRiskNote", "技能为第三方提示词文件包，安装后智能体可读取执行；已校验包含 SKILL.md 且拒绝路径穿越。"),
         ].join("\n"),
         confirmText: t("market.install", "安装"),
       });
@@ -708,7 +766,9 @@ export function PluginMarketPanel({
       setActionError(null);
       setBusyIds((prev) => new Set(prev).add(entry.slug));
       try {
-        await invokeCommand<string>("skillhub_install", { slug: entry.slug });
+        // 与套装 / 推荐卡 / 建议条同一个安装出口：执行时再判一次已装——台账可能
+        // 比卡片旧，已装的技能再装一次会把技能目录整目录重写。
+        await installRef(`skillhub:${entry.slug}`, undefined, askConflict);
         // v0.9.8 需求4：装后引导卡（技能源）——描述首句为建议 prompt；
         // requires_api_key 给一键到配置位。
         setGuideCard({
@@ -720,7 +780,7 @@ export function PluginMarketPanel({
         });
         await load();
       } catch (e) {
-        setActionError(String(e));
+        setActionError(userFacingError(e));
       } finally {
         setBusyIds((prev) => {
           const next = new Set(prev);
@@ -729,7 +789,7 @@ export function PluginMarketPanel({
         });
       }
     },
-    [busyIds, confirmDialog, firstSentence, load, t],
+    [askConflict, busyIds, confirmDialog, firstSentence, load, t],
   );
 
   const uninstallSkill = useCallback(
@@ -741,7 +801,7 @@ export function PluginMarketPanel({
         await invokeCommand<string>("skillhub_uninstall", { slug });
         await load();
       } catch (e) {
-        setActionError(String(e));
+        setActionError(userFacingError(e));
       } finally {
         setBusyIds((prev) => {
           const next = new Set(prev);
@@ -758,7 +818,10 @@ export function PluginMarketPanel({
   // 安全行/类型名）；此处仅条目解析。
   /** curated:/skillhub:/pi: 引用 → 展示条目（curated: 未命中 = 清单漂移
    * 不可用；skillhub/pi 下架在安装期以失败态呈现——单项失败不打断整批）。
-   * 五修⑤：类型名精确（kindNameOf 单源）+ skillhub 友好名（标签库 title）。 */
+   *  五修⑤：类型名精确（kindNameOf 单源）+ skillhub 友好名（标签库 title）。
+   *  已装判定三源同一个集合（评审修复轮 R2 / R2-6：修前各前缀各看一个状态，
+   *  pi: 条目写死未装）。台账读不到时是「不明」（unknown）：行显示「状态未知」，
+   *  不进安装队列（二轮评审 P2-6：修前按空集算，显示未安装、可勾可装）。 */
   const equipTagsRef = useRef<Array<{ ref: string; title: string }>>([]);
   useEffect(() => {
     void fetchEquipmentTags().then((rows) => {
@@ -766,15 +829,18 @@ export function PluginMarketPanel({
     });
   }, []);
   const resolveBundleItem = useCallback(
-    (ref: string): { title: string; kindName: string; installed: boolean; unavailable: boolean; stars: number } => {
+    (ref: string): BundleItemInfo => {
+      const known = !installedUnknown;
+      const isInstalled = known && isInstalledRef(installedRefs, ref);
+      const state = { installed: isInstalled, unknown: !known };
       if (ref.startsWith("curated:")) {
         const id = ref.slice("curated:".length);
         const e = bundleCuratedRef.current.find((c) => c.id === id);
-        if (!e) return { title: ref, kindName: "-", installed: false, unavailable: true, stars: 3 };
+        if (!e) return { title: ref, kindName: "-", ...state, unavailable: true, stars: 3 };
         return {
           title: e.title,
           kindName: kindNameOf(ref, (e as { kind?: string }).kind, t),
-          installed: installedIds.has(id),
+          ...state,
           unavailable: false,
           stars: (e as { stars?: number }).stars ?? 3,
         };
@@ -783,46 +849,107 @@ export function PluginMarketPanel({
         const slug = ref.slice("skillhub:".length);
         // 五修⑤：skillhub 条目友好名——标签库 title（无则回退 slug）。
         const friendly = equipTagsRef.current.find((r) => r.ref === ref)?.title;
-        return {
-          title: friendly || slug,
-          kindName: kindNameOf(ref, undefined, t),
-          installed: !!skillInstalled[slug],
-          unavailable: false,
-          stars: 3,
-        };
+        return { title: friendly || slug, kindName: kindNameOf(ref, undefined, t), ...state, unavailable: false, stars: 3 };
       }
       if (ref.startsWith("pi:")) {
         const source = ref.slice("pi:".length);
         return {
           title: equipTagsRef.current.find((r) => r.ref === ref)?.title || source,
           kindName: kindNameOf(ref, undefined, t),
-          installed: false,
+          ...state,
           unavailable: false,
           stars: 3,
         };
       }
-      return { title: ref, kindName: "-", installed: false, unavailable: true, stars: 3 };
+      return { title: ref, kindName: "-", installed: false, unknown: false, unavailable: true, stars: 3 };
     },
-    [installedIds, skillInstalled, t],
+    [installedUnknown, installedRefs, t],
   );
 
-  /** 弹层启动安装（执行器完成后刷新清单——与旧执行器行为一致）。 */
+  /** 当前这一轮运行是哪个弹层发起的（套装 id）。弹层关掉后运行还在途时，用户
+   *  可能打开的是别的套装——那一轮的行状态与汇总不属于这里。 */
+  const bundleRunOwnerRef = useRef<string | null>(null);
+  /** 弹层里显示的那一轮的行状态：只有「当前弹层就是发起它的那一个」才显示。
+   *  执行器忙不忙是另一回事（bundleRunner.running 全局一份），见页脚。 */
+  const runShown = bundleOpen !== null && bundleRunOwnerRef.current === bundleOpen.id;
+  const shownStatuses = runShown ? bundleRunner.statuses : NO_STATUSES;
+
+  /** 这次要点装的行：必备或勾选、未装、可用、已装态明确，且本轮还没落定——
+   *  已成功的不重复装，失败的走「重试失败项」；「未安装」的行（取消剩余项、
+   *  撞名时取消）留在这里，可以再点安装。 */
+  const bundleTargets = useMemo(() => {
+    if (!bundleOpen) return [];
+    const settled = new Set(
+      shownStatuses.filter((s) => s.state === "ok" || s.state === "fail").map((s) => s.ref),
+    );
+    return bundleOpen.items
+      .filter((i) => (i.required || bundleChecked.has(i.ref)) && !settled.has(i.ref))
+      .filter((i) => {
+        const info = resolveBundleItem(i.ref);
+        return !info.installed && !info.unavailable && !info.unknown;
+      });
+  }, [bundleOpen, bundleChecked, shownStatuses, resolveBundleItem]);
+
+  /** 弹层启动安装（执行器完成后刷新清单——与旧执行器行为一致）。运行未落定
+   *  不接受新一轮（执行器自己也会拦）。 */
   const startBundleRun = useCallback(() => {
-    if (!bundleOpen) return;
+    if (!bundleOpen || bundleRunner.running || bundleTargets.length === 0) return;
+    bundleRunOwnerRef.current = bundleOpen.id;
     bundleRunner.setOnDone(() => {
       onChanged?.();
-      void load();
+      // 最新的 load()：弹层关掉后在途的那一轮落定时，用户可能已经换了页签。
+      void loadRef.current();
       bundleRunner.setOnDone(null);
     });
-    const refs = bundleOpen.items
-      .filter((i) => i.required || bundleChecked.has(i.ref))
-      .filter((i) => !resolveBundleItem(i.ref).installed && !resolveBundleItem(i.ref).unavailable)
-      .map((i) => i.ref);
-    if (refs.length > 0) {
-      // 市场侧安装统一记 via=market-zone（入门套装/动态推荐同面）。
-      bundleRunner.run(refs.map((ref) => ({ ref, meta: { via: "market-zone" } })));
-    }
-  }, [bundleChecked, bundleOpen, bundleRunner, load, onChanged, resolveBundleItem]);
+    // 市场侧安装统一记 via=market-zone（入门套装/动态推荐同面）。
+    bundleRunner.run(bundleTargets.map((i) => ({ ref: i.ref, meta: { via: "market-zone" } })));
+  }, [bundleOpen, bundleRunner, bundleTargets, onChanged]);
+
+  // 二轮评审 P1-1：弹层开合与运行落定解耦。
+  // 修前运行期间不让关（Esc / 遮罩 / × 都被忽略）：点「取消剩余项」只作废后面
+  // 的项，在途那一件落定前弹层关不掉；后端安装子进程没有期限，网络挂起时用户
+  // 被困在模态弹层里。
+  // 现在：关 = 结束这次使用——剩余项不再发起（等同取消），在途那一件任其落定
+  //（结果照样落、onDone 照样刷新清单）。关的时候不 reset（reset 会丢掉在途结果、
+  // 收尾回调也不触发），落定后由下面的收尾清掉。
+  const closeBundle = () => {
+    const wasRunning = bundleRunner.running;
+    if (wasRunning) bundleRunner.cancel();
+    setBundleOpen(null);
+    if (!wasRunning) bundleRunner.reset();
+  };
+  const resetBundleRun = bundleRunner.reset;
+  const bundleRunning = bundleRunner.running;
+  const bundleStatuses = bundleRunner.statuses;
+  /** 在途的那一轮落定后，结果没人看了（弹层关着，或开着的是别的套装）→ 清掉，
+   *  下次打开是全新一轮。弹层开着且就是发起它的那一个 → 结果留给用户看。 */
+  useEffect(() => {
+    if (bundleRunning || bundleStatuses.length === 0) return;
+    if (bundleOpen === null || bundleRunOwnerRef.current !== bundleOpen.id) resetBundleRun();
+  }, [bundleRunning, bundleStatuses, bundleOpen, resetBundleRun]);
+  /** 再打开的还是发起那一轮的套装、且那一轮在途：接着看它（进行中如实显示、
+   *  勾选保持原样）；其余情况打开是全新一轮的勾选。 */
+  const resumesRun = (id: string) => bundleRunner.running && bundleRunOwnerRef.current === id;
+
+  /** 已装态的提示（页签级，独立于清单长度）：读不到 / 这次刷新失败 + 重试。
+   *  弹层是模态的，盖住页面的提示——弹层里已装态不明时自己也要说一声。 */
+  const renderInstalledNotice = (where: "page" | "dialog") =>
+    installedUnknown || installedStale ? (
+      <div
+        role="status"
+        data-installed-notice={where}
+        className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-foreground"
+      >
+        <span className="flex-1">
+          {installedUnknown
+            ? t("market.installedUnreadable", "暂时无法判断哪些插件已安装")
+            : t("market.installedStale", "没能刷新已安装清单，显示的是上一次的结果")}
+        </span>
+        <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => void load()}>
+          {t("market.retry", "重试")}
+        </Button>
+      </div>
+    ) : null;
 
   const sceneTabs = useMemo(
     () => [{ id: "all", label: t("market.sceneAll", "全部") }, ...PLUGIN_SCENES.map((s) => ({ id: s.id, label: t(s.nameKey) }))],
@@ -875,7 +1002,7 @@ export function PluginMarketPanel({
                     const fresh = await invokeCommand<PiindexEntry[]>("piindex_refresh");
                     setPiindex(fresh ?? []);
                   } catch (e) {
-                    setActionError(String(e));
+                    setActionError(userFacingError(e));
                   } finally {
                     setReloading(false);
                   }
@@ -908,16 +1035,14 @@ export function PluginMarketPanel({
                   id: "bundle-dynamic",
                   scene: "custom",
                   title: t("market.recommendForYou", "为你推荐"),
-                  description: !recommendZone.note
-                    ? t("market.recommendHint", "按最近任务挑选的组合")
-                    : recommendZone.byWorkspace
-                      ? t("market.recommendByProjectTask", { defaultValue: "根据项目特征：{{basis}}", basis: recommendZone.basis })
-                      : t("market.recommendByTask", { defaultValue: "根据最近任务：{{note}}", note: recommendZone.note }),
+                  description: recommendZone.byWorkspace
+                    ? t("market.recommendByProjectTask", { defaultValue: "根据项目特征：{{basis}}", basis: recommendZone.basis })
+                    : t("market.recommendByTask", { defaultValue: "根据最近任务：{{note}}", note: recommendZone.profileKeywords.join(" / ") }),
                   items: recommendZone.items.map((e) => ({ ref: e.ref, required: false })),
-                  dynamicNote: recommendZone.note,
                 });
-                // 自适应推荐卡默认全勾（agent 为任务挑的；微调是减法）。
-                setBundleChecked(new Set(recommendZone.items.map((e) => e.ref)));
+                // 自适应推荐卡默认全勾（为任务挑的、且都是未装件；微调是减法）。
+                // 它发起的那一轮还在途时接着看它：勾选保持原样。
+                if (!resumesRun("bundle-dynamic")) setBundleChecked(new Set(recommendZone.items.map((e) => e.ref)));
               }}
               className="shrink-0 rounded-lg border border-primary/60 bg-primary/10 px-3 py-1.5 text-left transition-colors"
             >
@@ -928,7 +1053,11 @@ export function PluginMarketPanel({
                 </span>
               </div>
               <div className="max-w-64 truncate text-[10px] text-muted-foreground">
-                {recommendZone.note || t("market.recommendHint", "按最近任务挑选的组合")}
+                {recommendZone.byWorkspace
+                  ? t("market.recommendByProject", { defaultValue: "项目特征：{{basis}}", basis: recommendZone.basis })
+                  : recommendZone.profileKeywords.length > 0
+                    ? recommendZone.profileKeywords.join(" / ")
+                    : t("market.recommendHint", "按最近任务挑选的组合")}
               </div>
             </button>
           )}
@@ -940,7 +1069,8 @@ export function PluginMarketPanel({
               onClick={() => {
                 setBundleOpen(b);
                 // 入门套装默认勾必备（粗场景兜底；细分由自适应推荐承担）。
-                setBundleChecked(new Set(b.items.filter((i) => i.required).map((i) => i.ref)));
+                // 它发起的那一轮还在途时接着看它：勾选保持原样。
+                if (!resumesRun(b.id)) setBundleChecked(new Set(b.items.filter((i) => i.required).map((i) => i.ref)));
               }}
               className={cn(
                 "shrink-0 rounded-lg border px-3 py-1.5 text-left transition-colors",
@@ -1024,6 +1154,10 @@ export function PluginMarketPanel({
         </div>
       )}
 
+      {/* 已装态的提示：独立于清单长度——台账读不到时每张卡片都是「状态未知」，
+          这里说明原因并给重试（二轮评审 P2-6）。 */}
+      {renderInstalledNotice("page")}
+
       {/* v0.9.8 需求8 D8-1：后台拉到新目录的页内横幅（替代自动 reload 打断
           浏览）——点查看刷新列表；× 关闭不刷新（下次事件再提示）。 */}
       {catalogUpdated && (
@@ -1035,7 +1169,15 @@ export function PluginMarketPanel({
             className="h-6 px-2 text-[11px]"
             onClick={() => {
               setCatalogUpdated(false);
-              void load();
+              // 更新的是扩展在线库的目录：在扩展生态页签就地刷新；在别的页签
+              // 点「查看」= 切过去看新目录（页签切换自己的 load() 会拉目录）。
+              // 修前一律只重载当前页签——在精选 / 技能页签点了没有任何变化。
+              if (source === "extensions") {
+                void load();
+              } else {
+                setSource("extensions");
+                setPage(1);
+              }
             }}
           >
             {t("market.catalogUpdatedView", "查看")}
@@ -1053,15 +1195,16 @@ export function PluginMarketPanel({
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive">
-          {source === "skills" ? t("market.skillNetworkError", "技能市场暂时不可用（网络）") : String(error)}
+          {source === "skills" ? t("market.skillNetworkError", "技能市场暂时不可用（网络）") : error}
           <Button variant="outline" size="sm" className="ml-3 h-6 px-2 text-[10px]" onClick={() => void load()}>
             {t("market.retry", "重试")}
           </Button>
         </div>
       )}
 
-      {/* 精选 */}
-      {source === "curated" && !error && (
+      {/* 精选。已装态首次读取还没回来时先不出卡片：不出一个「没有安装入口」的
+          半截形态，也不在 unknown / known 之间闪一下。 */}
+      {source === "curated" && !error && !installedPending && (
         <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(240px,1fr))]">
           {curated
             .filter((e) => {
@@ -1069,11 +1212,13 @@ export function PluginMarketPanel({
               return !q || [e.title, e.description, e.id].join(" ").toLowerCase().includes(q);
             })
             .map((entry) => {
-            const installed = installedIds.has(entry.id);
+            const state = installedStateOf(`curated:${entry.id}`);
             return (
               <div
                 key={entry.id}
                 className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3"
+                data-market-card={`curated:${entry.id}`}
+                data-installed-state={state}
               >
                 <div className="flex items-center gap-2">
                   <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{entry.title}</span>
@@ -1093,14 +1238,17 @@ export function PluginMarketPanel({
                     </span>
                   )}
                   <span className="flex-1" />
-                  {entry.required ? (
-                    installed ? (
+                  {/* 台账读不到：不给「未安装」的结论，也不出安装 / 卸载入口。 */}
+                  {state === "unknown" ? (
+                    <InstalledUnknownTag label={t("market.installedUnknown", "状态未知")} />
+                  ) : entry.required ? (
+                    state === "installed" ? (
                       <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
                         <Check className="h-3 w-3" />
                         {t("market.installed", "已安装")}
                       </span>
                     ) : null
-                  ) : installed ? (
+                  ) : state === "installed" ? (
                     <>
                       <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
                         <Check className="h-3 w-3" />
@@ -1155,10 +1303,15 @@ export function PluginMarketPanel({
       {source === "extensions" && !error && (
         <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
           {extensions.map((pkg) => {
-            const installed = installedIds.has(pkg.plugin_id);
-            const required = installed && curated.find((c) => c.id === pkg.plugin_id)?.required;
+            const state = installedStateOf(`curated:${pkg.plugin_id}`);
+            const required = state === "installed" && curated.find((c) => c.id === pkg.plugin_id)?.required;
             return (
-              <div key={pkg.plugin_id} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
+              <div
+                key={pkg.plugin_id}
+                className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3"
+                data-market-card={`curated:${pkg.plugin_id}`}
+                data-installed-state={state}
+              >
                 <div className="flex items-center gap-2">
                   <Package className="h-4 w-4 shrink-0 text-primary/70" />
                   <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={pkg.name}>
@@ -1169,11 +1322,13 @@ export function PluginMarketPanel({
                 <p className="line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">{pkg.description}</p>
                 <div className="mt-auto flex items-center gap-1 pt-1">
                   <span className="flex-1" />
-                  {required ? (
+                  {state === "unknown" ? (
+                    <InstalledUnknownTag label={t("market.installedUnknown", "状态未知")} />
+                  ) : required ? (
                     <Badge variant="outline" className="px-1.5 py-0 text-[10px] text-muted-foreground">
                       {t("market.requiredBadge", "系统内置")}
                     </Badge>
-                  ) : installed ? (
+                  ) : state === "installed" ? (
                     <>
                       <span className="text-[10px] text-muted-foreground">{t("market.installed", "已安装")}</span>
                       <Button
@@ -1236,7 +1391,7 @@ export function PluginMarketPanel({
           {/* 小节标题（工具行统一承载分类筛选与搜索——十四轮 UI 统一）。 */}
           <div className="mb-2 text-xs font-medium text-muted-foreground">
             {piindex
-              ? t("market.onlineLibPiindex", "在线扩展库（Pi Index）")
+              ? t("market.onlineLibPiindex", "在线扩展库")
               : t("market.onlineLib", "在线扩展库")}
           </div>
           {/* Pi Index 目录卡片（主源；npm/git 源都可装——git 卡安装命令尾段即源） */}
@@ -1248,14 +1403,10 @@ export function PluginMarketPanel({
                   const source = entry.npm_package
                     ? "npm:" + entry.npm_package
                     : entry.install_command.replace(/^pi install /, "");
-                  const installed =
-                    !!source &&
-                    onlineInstalled.some((src) =>
-                      source.startsWith("npm:")
-                        ? src === source || src.startsWith(source + "@")
-                        : // git 源 pi 落盘形态可能带 https:// 前缀——归一比对。
-                          src === source || src === source.replace("git:github.com/", "git:https://github.com/"),
-                    );
+                  // 已装判定走统一已装集（注册串带版本 / git 源带 https 前缀都归一）。
+                  // 台账读不到时是「不明」：不给「未安装」的结论，也不出安装入口。
+                  const state = installedStateOf(`pi:${source}`);
+                  const installed = state === "installed";
                   // 评审需求16：系统内置判定——catalog 命中即内置（对齐后端
                   // guard_uninstall_target 的 PI_PACKAGE_PLUGIN_MAP 全集口径；
                   // 修复轮回归收口：此前按「curated required」判，pi-lens 非
@@ -1271,11 +1422,16 @@ export function PluginMarketPanel({
                     const at = rest.lastIndexOf("@");
                     return at > 0 ? rest.slice(0, at) : rest;
                   };
-                  const overrideEntry = !installed && entry.npm_package
+                  const overrideEntry = state === "missing" && entry.npm_package
                     ? piOverrides.find((o) => pkgDirOf(o.source) === entry.npm_package)
                     : undefined;
                   return (
-                    <div key={entry.name + (entry.github_url ?? "")} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
+                    <div
+                      key={entry.name + (entry.github_url ?? "")}
+                      className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3"
+                      data-market-card={`pi:${source}`}
+                      data-installed-state={state}
+                    >
                       <div className="flex items-center gap-2">
                         <Package className="h-4 w-4 shrink-0 text-primary/70" />
                         <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={entry.name}>{entry.name}</span>
@@ -1293,7 +1449,7 @@ export function PluginMarketPanel({
                         {entry.weekly_downloads != null && (
                           <span className="inline-flex items-center gap-0.5" title={t("market.npmWeeklyDownloads", "npm 每周下载量")}>
                             <ArrowDownToLine className="h-3 w-3" />
-                            {formatCount(entry.weekly_downloads)}{t("market.perWeek", "/周")}
+                            {formatCount(entry.weekly_downloads, t)}{t("market.perWeek", "/周")}
                             {entry.download_trend && <span className={trendClass(entry.download_trend)}>{entry.download_trend}</span>}
                           </span>
                         )}
@@ -1325,24 +1481,24 @@ export function PluginMarketPanel({
                             })}
                           </span>
                         )}
-                        {source && installed && (
+                        {state === "installed" && (
                           <>
                             {/* 需求4 D4-8b：已装态界面行（登记簿驱动）+ D4-6
                                 持久入口（新增适配；与引导卡同一预填链）。 */}
                             {(() => {
-                              const entry = extGui.get(pkgKeyOf(source));
+                              const entry = extGui.get(packageKeyOf(source));
                               if (!entry || entry.state === "disabled") return null;
                               const launch = () =>
                                 onLaunchDescribe?.(
-                                  buildGuiAdaptDraft(t, { title: entry.display, packageName: pkgKeyOf(source) }),
+                                  buildGuiAdaptDraft(t, { title: entry.display, packageName: packageKeyOf(source) }),
                                 );
                               return (
                                 <span className="flex items-center gap-1 text-[9px] text-muted-foreground/80">
                                   <span>{t("market.extGuiLabel", "界面")}</span>
                                   {entry.adapters.length > 0 ? (
                                     <>
-                                      <span className="max-w-[160px] truncate underline decoration-dotted" title={entry.adapters.map((a) => a.plugin_id).join("、")}>
-                                        {entry.adapters.map((a) => a.plugin_id).join("、")}
+                                      <span className="max-w-[160px] truncate underline decoration-dotted" title={entry.adapters.map((a) => a.plugin_id).join(t("common.listSeparator", "、"))}>
+                                        {entry.adapters.map((a) => a.plugin_id).join(t("common.listSeparator", "、"))}
                                       </span>
                                       <Button variant="outline" size="sm" className="h-4 px-1.5 text-[9px]" onClick={launch}>
                                         {t("market.addAdaptAction", "新增适配")}
@@ -1391,7 +1547,7 @@ export function PluginMarketPanel({
                                   void (async () => {
                                     // 需求4 D4-8b：卸载双向提示——扩展被适配件
                                     // 使用时先确认（界面将停用）。
-                                    const entry = extGui.get(pkgKeyOf(source));
+                                    const entry = extGui.get(packageKeyOf(source));
                                     if (entry && entry.adapters.length > 0) {
                                       const ok = await confirmDialog({
                                         title: t("market.uninstall", "卸载"),
@@ -1399,7 +1555,7 @@ export function PluginMarketPanel({
                                           t("market.uninstallExtDepsWarn", {
                                             defaultValue: "该扩展被 {{n}} 个界面插件使用：{{names}}——卸载后这些界面将停用",
                                             n: entry.adapters.length,
-                                            names: entry.adapters.map((a) => a.plugin_id).join("、"),
+                                            names: entry.adapters.map((a) => a.plugin_id).join(t("common.listSeparator", "、")),
                                           }),
                                         confirmText: t("market.uninstall", "卸载"),
                                         variant: "destructive",
@@ -1411,11 +1567,10 @@ export function PluginMarketPanel({
                                     try {
                                       await invokeCommand<string>("pi_package_uninstall_online", { source });
                                       await load();
-                                      await refreshInstalled();
                                       await refreshExtGui();
                                       onChanged?.();
                                     } catch (e) {
-                                      setActionError(String(e));
+                                      setActionError(userFacingError(e));
                                     } finally {
                                       setBusyIds((prev) => { const next = new Set(prev); next.delete(source); return next; });
                                     }
@@ -1427,7 +1582,9 @@ export function PluginMarketPanel({
                             )}
                           </>
                         )}
-                        {source && !installed && (
+                        {state === "unknown" ? (
+                          <InstalledUnknownTag label={t("market.installedUnknown", "状态未知")} />
+                        ) : state === "missing" && (
                           <Button
                             size="sm"
                             className="h-6 px-2 text-[10px]"
@@ -1438,69 +1595,38 @@ export function PluginMarketPanel({
                                 setBusyIds((prev) => new Set(prev).add(source));
                                 try {
                                   // 安装走 pi 包管理器（npm/git 装载 + settings.json
-                                  // 注册一步完成，装完 hub 提示启用）。
-                                  const result = await invokeCommand<InstallOnlineOutcome>("pi_package_install_online", { source });
-                                  const dispName = source.replace(/^npm:/, "").replace(/^git:.*\//, "");
-                                  // 需求15 方案 A：工具名冲突（pi 原生拒绝启动，
-                                  // hub 已回滚保健康态）→ 确认卡说明「与已装
-                                  // 能力重叠」，用户选择继续（停用对手并安装）
-                                  // 或取消（保持未装）。
-                                  if (result.status === "conflict" && result.conflicts) {
-                                    const overlap = result.conflicts
-                                      .map((c) => t("market.conflictItem", {
-                                        defaultValue: "「{{opponent}}」（工具 {{tool}}）",
-                                        opponent: c.opponent_display,
-                                        tool: c.tool,
-                                      }))
-                                      .join("、");
-                                    const go = await confirmDialog({
-                                      title: t("market.conflictTitle", { defaultValue: "能力重叠：{{name}}", name: dispName }),
-                                      description: t("market.conflictDesc", {
-                                        defaultValue:
-                                          "该扩展与已装能力重叠：{{items}}。\n继续安装将停用上述扩展（内置项稍后卸载本扩展时自动恢复）；取消则不安装。",
-                                        items: overlap,
-                                      }),
-                                      confirmText: t("market.conflictConfirm", "停用并安装"),
-                                    });
-                                    if (!go) {
-                                      await load();
-                                      return;
-                                    }
-                                    const confirmed = await invokeCommand<{ disabled: Array<{ opponent_display: string }>; }>(
-                                      "pi_package_install_confirmed",
-                                      { source },
-                                    );
-                                    const stopped = confirmed.disabled
-                                      .map((d) => d.opponent_display)
-                                      .join("、");
-                                    const gs = await guiStateFor(source);
-                                    setGuideCard({
-                                      title: dispName,
-                                      kind: "extension",
-                                      description:
-                                        t("market.guideExtensionDesc", "具备后台能力，装后经 GUI 适配生成界面插件") +
-                                        (stopped ? `\n${t("market.conflictStopped", { defaultValue: "已停用：{{items}}（卸载本扩展时自动恢复）", items: stopped })}` : ""),
-                                      packageName: source,
-                                      guiAdaptable: !gs.providedBy && !gs.noneeded,
-                                      providedBy: gs.providedBy,
-                                    });
-                                  } else {
-                                    // v0.9.8 需求4：装后引导卡（扩展源）——GUI 适配入口。
-                                    const gs = await guiStateFor(source);
-                                    setGuideCard({
-                                      title: dispName,
-                                      kind: "extension",
-                                      description: t("market.guideExtensionDesc", "具备后台能力，装后经 GUI 适配生成界面插件"),
-                                      packageName: source,
-                                      guiAdaptable: !gs.providedBy && !gs.noneeded,
-                                      providedBy: gs.providedBy,
-                                    });
+                                  // 注册一步完成，装完 hub 提示启用）。安装与结果判读
+                                  // 都经 installRef——与套装弹层 / 会话推荐卡 / npm
+                                  // 检索兜底卡同一个出口（需求15 方案 A：工具名冲突时
+                                  // 后端回滚并返回待确认，这里弹确认卡，用户选择继续
+                                  //（停用对手并安装）或取消（保持未装））。
+                                  const result = await installRef(`pi:${source}`, undefined, askConflict);
+                                  if (result.kind === "declined") {
+                                    await load();
+                                    return;
                                   }
+                                  // v0.9.8 需求4：装后引导卡（扩展源）——GUI 适配入口。
+                                  const gs = await guiStateFor(source);
+                                  const stopped = result.kind === "installed"
+                                    ? result.stopped.join(t("common.listSeparator", "、"))
+                                    : "";
+                                  setGuideCard({
+                                    title: extensionDisplayName(source),
+                                    kind: "extension",
+                                    description:
+                                      t("market.guideExtensionDesc", "具备后台能力，装后经 GUI 适配生成界面插件") +
+                                      (stopped
+                                        ? `\n${t("market.conflictStopped", { defaultValue: "已停用：{{items}}（卸载本扩展时自动恢复）", items: stopped })}`
+                                        : ""),
+                                    packageName: source,
+                                    guiAdaptable: !gs.providedBy && !gs.noneeded,
+                                    providedBy: gs.providedBy,
+                                  });
                                   refreshExtGui();
                                   await load();
                                   onChanged?.();
                                 } catch (e) {
-                                  setActionError(String(e));
+                                  setActionError(userFacingError(e));
                                 } finally {
                                   setBusyIds((prev) => { const next = new Set(prev); next.delete(source); return next; });
                                 }
@@ -1540,11 +1666,14 @@ export function PluginMarketPanel({
           {online && (
           <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
             {online.slice(0, 12).map((pkg) => {
-              const installed = onlineInstalled.some(
-                (src) => src === "npm:" + pkg.name || src.startsWith("npm:" + pkg.name + "@"),
-              );
+              const state = installedStateOf(`pi:npm:${pkg.name}`);
               return (
-                <div key={pkg.name} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
+                <div
+                  key={pkg.name}
+                  className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3"
+                  data-market-card={`pi:npm:${pkg.name}`}
+                  data-installed-state={state}
+                >
                   <div className="flex items-center gap-2">
                     <Package className="h-4 w-4 shrink-0 text-primary/70" />
                     <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={pkg.name}>
@@ -1559,7 +1688,9 @@ export function PluginMarketPanel({
                     {pkg.publisher && <span>@{pkg.publisher}</span>}
                     {pkg.date && <span>{pkg.date}</span>}
                     <span className="flex-1" />
-                    {installed ? (
+                    {state === "unknown" ? (
+                      <InstalledUnknownTag label={t("market.installedUnknown", "状态未知")} />
+                    ) : state === "installed" ? (
                       <>
                         <span className="text-muted-foreground">{t("market.installed")}</span>
                         <Button
@@ -1577,7 +1708,7 @@ export function PluginMarketPanel({
                                 await invokeCommand<string>("pi_package_uninstall_online", { source: "npm:" + pkg.name });
                                 await load();
                               } catch (e) {
-                                setActionError(String(e));
+                                setActionError(userFacingError(e));
                               } finally {
                                 setBusyIds((prev) => { const next = new Set(prev); next.delete(pkg.name); return next; });
                               }
@@ -1597,24 +1728,30 @@ export function PluginMarketPanel({
                             setActionError(null);
                             setBusyIds((prev) => new Set(prev).add(pkg.name));
                             try {
-                              await invokeCommand<string>("pi_package_install_online", {
-                                source: "npm:" + pkg.name + "@" + pkg.version,
-                              });
+                              const source = "npm:" + pkg.name + "@" + pkg.version;
+                              // 需求15 D15-1：兜底路径同样消费安装结果——撞名弹确认卡，
+                              // 取消则保持未装、不出装后引导卡（修前丢弃返回值直接
+                              // 报装成）。与在线库主路径、执行器同一个出口。
+                              const result = await installRef(`pi:${source}`, undefined, askConflict);
+                              if (result.kind === "declined") {
+                                await load();
+                                return;
+                              }
                               // v0.9.8 需求4：装后引导卡（扩展检索源）——GUI 适配入口
-                              //（D4-8b：已适配重装态改示 providedBy；冲突结果消费归需求15 批）。
-                              const gs = await guiStateFor("npm:" + pkg.name + "@" + pkg.version);
+                              //（D4-8b：已适配重装态改示 providedBy）。
+                              const gs = await guiStateFor(source);
                               setGuideCard({
                                 title: pkg.name,
                                 kind: "extension",
                                 description: pkg.description || t("market.guideExtensionDesc", "具备后台能力，装后经 GUI 适配生成界面插件"),
-                                packageName: "npm:" + pkg.name + "@" + pkg.version,
+                                packageName: source,
                                 guiAdaptable: !gs.providedBy && !gs.noneeded,
                                 providedBy: gs.providedBy,
                               });
                               refreshExtGui();
                               await load();
                             } catch (e) {
-                              setActionError(String(e));
+                              setActionError(userFacingError(e));
                             } finally {
                               setBusyIds((prev) => { const next = new Set(prev); next.delete(pkg.name); return next; });
                             }
@@ -1644,9 +1781,15 @@ export function PluginMarketPanel({
         <>
           <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
             {(skills?.entries ?? []).map((skill) => {
-              const installedVersion = skillInstalled[skill.slug];
+              const state = installedStateOf(`skillhub:${skill.slug}`);
+              const installedVersion = state === "installed" ? skillInstalled[skill.slug] : undefined;
               return (
-                <div key={skill.slug} className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3">
+                <div
+                  key={skill.slug}
+                  className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-background p-3"
+                  data-market-card={`skillhub:${skill.slug}`}
+                  data-installed-state={state}
+                >
                   <div className="flex items-center gap-2">
                     <Bot className="h-4 w-4 shrink-0 text-primary/70" />
                     <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={skill.name}>
@@ -1667,7 +1810,7 @@ export function PluginMarketPanel({
                     {skill.score != null && (
                       <span className="inline-flex items-center gap-0.5">
                         <Star className="h-3 w-3" />
-                        {formatCount(Number(skill.score))}
+                        {formatCount(Number(skill.score), t)}
                       </span>
                     )}
                     {skill.requires_api_key && (
@@ -1686,10 +1829,13 @@ export function PluginMarketPanel({
                     >
                       <Info className="h-3 w-3" />
                     </Button>
-                    {installedVersion ? (
+                    {state === "unknown" ? (
+                      <InstalledUnknownTag label={t("market.installedUnknown", "状态未知")} />
+                    ) : state === "installed" ? (
                       <>
                         <span className="text-[10px] text-muted-foreground">
-                          {t("market.installed")} v{installedVersion}
+                          {t("market.installed")}
+                          {installedVersion ? ` v${installedVersion}` : ""}
                         </span>
                         <Button
                           variant="ghost"
@@ -1764,7 +1910,7 @@ export function PluginMarketPanel({
                   {extDetailEntry.weekly_downloads != null && (
                     <span className="inline-flex items-center gap-0.5 rounded bg-muted px-1.5 py-0.5">
                       <ArrowDownToLine className="h-3 w-3" />
-                      {formatCount(extDetailEntry.weekly_downloads)}{t("market.perWeek", "/周")}
+                      {formatCount(extDetailEntry.weekly_downloads, t)}{t("market.perWeek", "/周")}
                       {extDetailEntry.download_trend && (
                         <span className={trendClass(extDetailEntry.download_trend)}>{extDetailEntry.download_trend}</span>
                       )}
@@ -1845,22 +1991,22 @@ export function PluginMarketPanel({
       {/* 技能安装确认弹窗（useConfirmDialog 契约：须渲染 dialogNode，否则
           confirm() 永不落定——点击安装无反应的根因）。 */}
       {confirmDialogNode}
+      {/* 执行器的撞名确认卡（扩展工具与已装能力重叠时弹出）——与上面同一个
+          确认组件、同一份文案（评审修复轮 R2 / R2-7）。 */}
+      {bundleRunner.conflictDialogNode}
 
       {/* v0.9.8 需求5（合并版）：套装/推荐详情弹层（勾选微调 + 共享执行器
           串行安装 + 汇总/重试/取消——五修全量生效）。 */}
       <Dialog
         open={bundleOpen !== null}
         onOpenChange={(o) => {
-          // 五修①：running 期间禁关 ×（真取消走「取消剩余项」按钮——
-          // 进行中单项任其完成，不留半装态）。
-          if (!o && !bundleRunner.running) {
-            setBundleOpen(null);
-            // v0.9.8 评审修复轮 R1-7：运行结果属于弹层的**这一次打开**——关闭
-            // 即结束本轮（结果清空）。此前结果一直留着：装完一个套装关掉
-            // 再打开任何套装，页脚停在上次的汇总、没有安装入口，「重试失败
-            // 项」重试的还是上一个套装的东西。
-            bundleRunner.reset();
-          }
+          // 打开只经套装卡 / 推荐卡的点击（setBundleOpen），这里只管关。
+          // v0.9.8 评审修复轮 R1-7：运行结果属于弹层的**这一次打开**——关闭即
+          // 结束本轮（结果清空）。此前结果一直留着：装完一个套装关掉再打开任何
+          // 套装，页脚停在上次的汇总、没有安装入口，「重试失败项」重试的还是
+          // 上一个套装的东西。
+          // 二轮评审 P1-1：运行没落定时也让关——见 closeBundle。
+          if (!o) closeBundle();
         }}
       >
         <DialogContent className="max-w-md" data-bundle-dialog="">
@@ -1871,18 +2017,28 @@ export function PluginMarketPanel({
           {/* 五修④：含技能项时的安全说明行（与单品安装披露口径对齐）。 */}
           {bundleOpen?.items.some((i) => i.ref.startsWith("skillhub:")) && (
             <p className="text-[10px] text-muted-foreground/80">
-              {t("equip.skillSafetyNote", "技能项将安装到本地技能目录，已通过完整性校验")}
+              {t("equip.skillSafetyNote", "技能项将安装到本地技能目录，安装时会校验完整性与路径安全")}
+            </p>
+          )}
+          {/* 已装态不明（台账读不到）：弹层盖住了页面的提示，这里也要说。 */}
+          {installedUnknown && renderInstalledNotice("dialog")}
+          {/* 别的套装发起的那一轮还在途：这一批等它落定才能装。 */}
+          {bundleRunning && !runShown && (
+            <p className="text-[10px] text-muted-foreground" data-bundle-busy-another="">
+              {t("market.bundleBusyAnother", "还有别的安装正在进行，完成后才能安装这一批")}
             </p>
           )}
           <div className="flex max-h-72 flex-col gap-1.5 overflow-y-auto">
             {bundleOpen?.items.map((item) => {
               const info = resolveBundleItem(item.ref);
-              const st = bundleRunner.statuses.find((s) => s.ref === item.ref);
+              const st = shownStatuses.find((s) => s.ref === item.ref);
               const runState = st?.state;
               const checked = bundleChecked.has(item.ref);
               return (
                 <label
                   key={item.ref}
+                  data-bundle-item={item.ref}
+                  data-run-state={runState}
                   className={cn(
                     "flex items-center gap-2 rounded-lg border px-2.5 py-2",
                     // 需求15-F6：已装项与不可用项同权重化——勾选框虽 disabled
@@ -1895,8 +2051,12 @@ export function PluginMarketPanel({
                   <input
                     type="checkbox"
                     className="h-3.5 w-3.5 accent-[var(--primary)]"
-                    checked={item.required || checked}
-                    disabled={item.required || info.unavailable || runState === "running" || info.installed}
+                    // 已装态不明的行不显示成勾着的（修前必备项恒显示为勾）。
+                    checked={(item.required || checked) && !info.unknown}
+                    disabled={
+                      item.required || info.unavailable || info.installed || info.unknown ||
+                      runState === "running" || runState === "confirm"
+                    }
                     onChange={(e) =>
                       setBundleChecked((prev) => {
                         const next = new Set(prev);
@@ -1917,8 +2077,16 @@ export function PluginMarketPanel({
                       {info.kindName}
                       {item.required ? ` · ${t("market.bundleRequired", "必备")}` : ""}
                       {info.installed ? ` · ${t("market.installed", "已安装")}` : ""}
+                      {info.unknown ? ` · ${t("market.installedUnknown", "状态未知")}` : ""}
                       {info.unavailable ? ` · ${t("market.bundleUnavailable", "不可用")}` : ""}
+                      {/* 未安装：取消剩余项时没轮到，或撞名确认时取消——不是失败。 */}
+                      {runState === "skipped" ? ` · ${t("market.bundleSkipped", "未安装")}` : ""}
                     </span>
+                    {runState === "confirm" && (
+                      <span className="mt-0.5 block text-[10px] text-amber-600">
+                        {t("market.bundleConfirm", "需确认")}
+                      </span>
+                    )}
                     {/* 五修③：失败原因可见（行内展开，前 200 字符）。 */}
                     {runState === "fail" && st?.error && (
                       <span className="mt-0.5 block max-h-16 overflow-y-auto break-all font-mono text-[9px] text-destructive/80">
@@ -1927,74 +2095,89 @@ export function PluginMarketPanel({
                     )}
                   </span>
                   {runState === "running" && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />}
+                  {runState === "confirm" && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-amber-600" />}
                   {runState === "ok" && <Check className="h-3.5 w-3.5 shrink-0 text-[var(--icon-success)]" />}
                   {runState === "fail" && <X className="h-3.5 w-3.5 shrink-0 text-destructive" />}
+                  {runState === "skipped" && <Minus className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
                 </label>
               );
             })}
           </div>
-          {bundleRunner.statuses.length > 0 && !bundleRunner.running ? (
-            (() => {
-              const okCount = bundleRunner.statuses.filter((s) => s.state === "ok").length;
-              const failed = bundleRunner.statuses.filter((s) => s.state === "fail");
-              return (
-                <div className="flex items-center justify-between gap-2">
+          {(() => {
+            const statuses = shownStatuses;
+            const okCount = statuses.filter((s) => s.state === "ok").length;
+            const failed = statuses.filter((s) => s.state === "fail");
+            const skipped = statuses.filter((s) => s.state === "skipped");
+            // 落定：跑过一轮且当前没有在途安装（取消后在途项落定后才算）。
+            const settled = statuses.length > 0 && !bundleRunning;
+            // 需求15-F7：全部已装时给终态文案，不再是「可点却逐项跳过」的模糊态。
+            const allInstalled =
+              !!bundleOpen &&
+              bundleOpen.items.length > 0 &&
+              bundleOpen.items.every((i) => resolveBundleItem(i.ref).installed);
+            return (
+              <div className="flex items-center justify-between gap-2">
+                {settled ? (
                   <span className="text-xs text-muted-foreground">
-                    {t("market.bundleDone", {
-                      defaultValue: "安装完成：成功 {{ok}} 项、失败 {{fail}} 项",
-                      ok: okCount,
-                      fail: failed.length,
-                    })}
+                    {skipped.length > 0
+                      ? t("market.bundleDoneSkipped", {
+                          defaultValue: "安装完成：成功 {{ok}} 项、失败 {{fail}} 项、未安装 {{skip}} 项",
+                          ok: okCount,
+                          fail: failed.length,
+                          skip: skipped.length,
+                        })
+                      : t("market.bundleDone", {
+                          defaultValue: "安装完成：成功 {{ok}} 项、失败 {{fail}} 项",
+                          ok: okCount,
+                          fail: failed.length,
+                        })}
                   </span>
-                  {/* 五修②：重试保历史（成功 ✓ 保留，仅失败项重置）。 */}
-                  {failed.length > 0 && (
-                    <Button size="sm" className="h-6 px-2 text-[10px]" onClick={() => bundleRunner.retryFailed()}>
-                      {t("market.bundleRetryFailed", "重试失败项")}
-                    </Button>
+                ) : (
+                  <span />
+                )}
+                <span className="flex items-center gap-1.5">
+                  {/* 运行未落定：不接受新一轮（执行器自己也会拦）。弹层关了再打开
+                      别的套装时，这一轮的行状态与「取消」都不属于这里。 */}
+                  {bundleRunning ? (
+                    runShown && statuses.some((s) => s.state === "pending") ? (
+                      /* 五修①：真取消——剩余项不再发起，进行中单项任其完成。只在
+                          还有没轮到的行时才出现（关掉再打开时剩余项已经取消过了）。 */
+                      <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => bundleRunner.cancel()}>
+                        {t("equip.cancelRemaining", "取消剩余项")}
+                      </Button>
+                    ) : null
+                  ) : (
+                    <>
+                      {/* 五修②：重试保历史（成功 ✓ 保留，仅失败项重置）。 */}
+                      {failed.length > 0 && (
+                        <Button size="sm" className="h-6 px-2 text-[10px]" onClick={() => bundleRunner.retryFailed()}>
+                          {t("market.bundleRetryFailed", "重试失败项")}
+                        </Button>
+                      )}
+                      {/* 还能装的选中项（首轮，或上一轮留下「未安装」的行）→ 安装入口。
+                          已装态不明时不出「安装选中项」（连不可点的也不出）：哪些能装
+                          现在说不准，弹层里给的是原因与重试。 */}
+                      {bundleTargets.length > 0 ? (
+                        <Button size="sm" onClick={startBundleRun}>
+                          <Download className="h-3.5 w-3.5" />
+                          <span className="ml-1">{t("market.bundleInstall", "安装选中项")}</span>
+                        </Button>
+                      ) : !settled && !installedUnknown ? (
+                        <Button size="sm" disabled>
+                          <Download className="h-3.5 w-3.5" />
+                          <span className="ml-1">
+                            {allInstalled ? t("market.bundleAllInstalled", "全部已安装") : t("market.bundleInstall", "安装选中项")}
+                          </span>
+                        </Button>
+                      ) : null}
+                    </>
                   )}
-                </div>
-              );
-            })()
-          ) : bundleRunner.running ? (
-            <div className="flex justify-end">
-              {/* 五修①：真取消——剩余项不再发起，进行中单项任其完成。 */}
-              <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => bundleRunner.cancel()}>
-                {t("equip.cancelRemaining", "取消剩余项")}
-              </Button>
-            </div>
-          ) : (
-            <div className="flex justify-end">
-              <Button
-                size="sm"
-                disabled={(() => {
-                  if (!bundleOpen) return true;
-                  const refs = bundleOpen.items
-                    .filter((i) => i.required || bundleChecked.has(i.ref))
-                    .filter((i) => !resolveBundleItem(i.ref).installed && !resolveBundleItem(i.ref).unavailable);
-                  return refs.length === 0;
-                })()}
-                onClick={startBundleRun}
-              >
-                <Download className="h-3.5 w-3.5" />
-                <span className="ml-1">
-                  {(() => {
-                    // 需求15-F7：全部已装时给终态文案，不再是「可点却逐项
-                    // 跳过」的模糊态。
-                    const allInstalled =
-                      !!bundleOpen &&
-                      bundleOpen.items.length > 0 &&
-                      bundleOpen.items.every((i) => resolveBundleItem(i.ref).installed);
-                    return allInstalled
-                      ? t("market.bundleAllInstalled", "全部已安装")
-                      : t("market.bundleInstall", "安装选中项");
-                  })()}
                 </span>
-              </Button>
-            </div>
-          )}
+              </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
-
 
       {/* v0.9.8 需求4：装后引导卡（三源统一，fixed toast 非阻断） */}
       {guideCard && (

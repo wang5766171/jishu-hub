@@ -10,7 +10,7 @@
 
 import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Download, Loader2, Sparkles, X } from "lucide-react";
+import { Check, Download, Loader2, Minus, Sparkles, X } from "lucide-react";
 import { invokeCommand } from "@/hooks/use-invoke";
 import { cn } from "@/lib/utils";
 import {
@@ -23,57 +23,16 @@ import {
   type CatalogEntry,
 } from "@/features/equipment/api";
 import { buildCatalog } from "@/features/equipment/match";
+import { fetchInstalledRefs, isInstalledRef } from "@/features/equipment/installed";
 import { kindNameOf, useEquipmentRunner } from "@/features/equipment/runner";
+// 分段函数与载荷类型在下层（src/lib/equip-segments.ts）：搜索文本也要按同一个分段取。
+// 这里再导出，既有导入方不用改。
+import { extractEquipSegments, type EquipRecommendPayload } from "@/lib/equip-segments";
+export { extractEquipSegments };
+export type { EquipRecommendItem, EquipRecommendPayload, EquipSegment } from "@/lib/equip-segments";
 
 /** 会话 id 供给（MessageView 提供127；TextBlock 深层消费免逐层透传）。 */
 export const EquipSessionContext = createContext<string | null>(null);
-
-const OPEN = "<JISHU-EQUIP-RECOMMEND>";
-const CLOSE = "</JISHU-EQUIP-RECOMMEND>";
-
-export interface EquipRecommendItem {
-  ref: string;
-  reason: string;
-}
-
-export interface EquipRecommendPayload {
-  items: EquipRecommendItem[];
-  profile?: { scene?: string; keywords?: string[] };
-}
-
-export type EquipSegment =
-  | { type: "text"; content: string }
-  | { type: "recommend"; payload: EquipRecommendPayload };
-
-/**
- * 文本 → 段分割（推荐块 + 普通文本）。容错：块内 JSON 非法/缺 items 时
- * 当普通文本（流式半写同理——无闭合标记不切分，闭合后下一渲染帧接管）。
- */
-export function extractEquipSegments(text: string): EquipSegment[] {
-  if (!text.includes(OPEN)) return [{ type: "text", content: text }];
-  const segments: EquipSegment[] = [];
-  let rest = text;
-  for (;;) {
-    const start = rest.indexOf(OPEN);
-    if (start < 0) break;
-    const end = rest.indexOf(CLOSE, start + OPEN.length);
-    if (end < 0) break; // 半写：整段按文本处理（下次渲染重试）
-    const before = rest.slice(0, start);
-    if (before.trim()) segments.push({ type: "text", content: before.trimEnd() });
-    const body = rest.slice(start + OPEN.length, end).trim();
-    try {
-      const payload = JSON.parse(body) as EquipRecommendPayload;
-      if (Array.isArray(payload.items) && payload.items.length > 0) {
-        segments.push({ type: "recommend", payload });
-      }
-    } catch {
-      // JSON 非法：静默丢弃块（设计 §十二：失败静默不渲染，不报错打扰）。
-    }
-    rest = rest.slice(end + CLOSE.length).replace(/^\r?\n[\r\n]*/, "");
-  }
-  if (rest.trim()) segments.push({ type: "text", content: rest.trimEnd() });
-  return segments;
-}
 
 /** ★ 星级渲染（设计内定：卡上可见，兼排序权重）。 */
 function Stars({ n }: { n: number }) {
@@ -130,25 +89,20 @@ export const EquipRecommendCard = memo(function EquipRecommendCard({
           setPhase("limited");
           return;
         }
-        // 目录合并 + 已装态（派生态现场交叉算）。
-        const [curated, tagRows, pluginList, skillInstalled, piSources] = await Promise.all([
+        // 目录合并 + 已装集（三份台账同一处归一——评审修复轮 R2 / R2-6：与市场
+        // 页、输入框建议条同源）。读不到已装集时不出卡：已装态不明不推荐。
+        const [curated, tagRows, installedRefs] = await Promise.all([
           invokeCommand<Array<{ id: string; kind: string; title: string; description: string; required: boolean; tags?: string[]; stars?: number }>>(
             "market_list_curated",
             { scene: null },
           ).catch(() => []),
           fetchEquipmentTags(),
-          invokeCommand<{ plugins: Array<{ id: string }> }>("plugin_list").catch(() => null),
-          invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({})),
-          invokeCommand<string[]>("pi_package_installed_sources").catch(() => []),
+          fetchInstalledRefs(),
         ]);
         if (cancelled) return;
-        const installedRefs = new Set<string>();
-        for (const p of pluginList?.plugins ?? []) installedRefs.add(`curated:${p.id}`);
-        for (const slug of Object.keys(skillInstalled ?? {})) installedRefs.add(`skillhub:${slug}`);
-        for (const src of piSources ?? []) {
-          const at = src.lastIndexOf("@");
-          const base = at > 0 ? src.slice(0, at) : src;
-          installedRefs.add(`pi:${base}`);
+        if (!installedRefs) {
+          setPhase("hidden");
+          return;
         }
         const catalog = buildCatalog(curated ?? [], tagRows);
         const byRef = new Map(catalog.map((c) => [c.ref, c]));
@@ -156,7 +110,7 @@ export const EquipRecommendCard = memo(function EquipRecommendCard({
         const recommended = new Set(await fetchRecommended(sessionId));
         const nextRows: CardRow[] = [];
         for (const item of payload.items) {
-          if (!item.ref || installedRefs.has(item.ref) || recommended.has(item.ref)) continue;
+          if (!item.ref || isInstalledRef(installedRefs, item.ref) || recommended.has(item.ref)) continue;
           const entry =
             byRef.get(item.ref) ??
             ({
@@ -199,16 +153,20 @@ export const EquipRecommendCard = memo(function EquipRecommendCard({
     return { via: "recommend-card", title: row.entry.title, tags: tags.length > 0 ? tags : keywords.slice(0, 3) };
   };
 
-  const pendingRefs = useMemo(
-    () => rows.filter((r) => checked.has(r.ref)).map((r) => r.ref),
-    [rows, checked],
-  );
+  /** 还能装的选中行：勾选且本轮未落定——已成功的不重复装，失败的走「重试失败
+   *  项」；「未安装」的行（取消剩余项、撞名时取消）可以再点。 */
+  const pendingRefs = useMemo(() => {
+    const settled = new Set(
+      runner.statuses.filter((s) => s.state === "ok" || s.state === "fail").map((s) => s.ref),
+    );
+    return rows.filter((r) => checked.has(r.ref) && !settled.has(r.ref)).map((r) => r.ref);
+  }, [rows, checked, runner.statuses]);
 
   if (phase === "hidden" || phase === "loading") return null;
 
   if (phase === "limited") {
     return (
-      <div className="my-1 rounded-[8px] border border-border/40 bg-[var(--tool-card-bg)] px-3 py-2 text-xs text-muted-foreground" data-equip-recommend="limited">
+      <div className="my-1 rounded-[8px] border border-border/40 bg-[var(--tool-card-bg)] px-3 py-2 text-xs text-muted-foreground" data-equip-recommend="limited" data-no-search="">
         {t("equip.recommendAlreadyDone", "本次会话已推荐过插件，可到插件市场查看更多")}
       </div>
     );
@@ -217,11 +175,15 @@ export const EquipRecommendCard = memo(function EquipRecommendCard({
   const done = !runner.running && runner.statuses.length > 0;
   const okCount = runner.statuses.filter((s) => s.state === "ok").length;
   const failed = runner.statuses.filter((s) => s.state === "fail");
+  const skipped = runner.statuses.filter((s) => s.state === "skipped");
 
   return (
     <div
       className="my-1.5 overflow-hidden rounded-[8px] border border-primary/35 bg-[var(--tool-card-bg)] shadow-sm"
       data-equip-recommend="card"
+      // 卡上的标题与理由是异步取回的另一份文字，不属于这条消息的正文：不计入搜索命中
+      //（与标签占位、插件角标同一个标注；二轮评审 R3 P2-11）
+      data-no-search=""
     >
       <div className="flex items-center gap-1.5 bg-primary/10 px-3 py-2">
         <Sparkles className="h-3.5 w-3.5 text-primary" />
@@ -280,24 +242,40 @@ export const EquipRecommendCard = memo(function EquipRecommendCard({
                     )}
                   </span>
                 )}
+                {/* 未安装：取消剩余项时没轮到，或撞名确认时取消——不是失败。 */}
+                {st?.state === "skipped" && (
+                  <span className="mt-0.5 block text-[10px] text-muted-foreground">{t("equip.installSkipped", "未安装")}</span>
+                )}
+                {st?.state === "confirm" && (
+                  <span className="mt-0.5 block text-[10px] text-amber-600">{t("equip.installConfirm", "需确认")}</span>
+                )}
               </span>
               {st?.state === "running" && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />}
+              {st?.state === "confirm" && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-amber-600" />}
               {st?.state === "ok" && <Check className="h-3.5 w-3.5 shrink-0 text-[var(--icon-success)]" />}
               {st?.state === "fail" && <X className="h-3.5 w-3.5 shrink-0 text-destructive" />}
+              {st?.state === "skipped" && <Minus className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
             </label>
           );
         })}
         {/* ④：含技能项时的安全说明行（与单品安装披露口径对齐）。 */}
         {runner.hasSkill && !done && (
           <p className="px-0.5 text-[10px] text-muted-foreground/80">
-            {t("equip.skillSafetyNote", "技能项将安装到本地技能目录，已通过完整性校验")}
+            {t("equip.skillSafetyNote", "技能项将安装到本地技能目录，安装时会校验完整性与路径安全")}
           </p>
         )}
       </div>
       <div className="flex items-center justify-between gap-2 border-t border-border/40 px-3 py-2">
         {done ? (
           <span className="text-xs text-muted-foreground">
-            {t("equip.installDone", { defaultValue: "安装完成：成功 {{ok}} 项、失败 {{fail}} 项", ok: okCount, fail: failed.length })}
+            {skipped.length > 0
+              ? t("equip.installDoneSkipped", {
+                  defaultValue: "安装完成：成功 {{ok}} 项、失败 {{fail}} 项、未安装 {{skip}} 项",
+                  ok: okCount,
+                  fail: failed.length,
+                  skip: skipped.length,
+                })
+              : t("equip.installDone", { defaultValue: "安装完成：成功 {{ok}} 项、失败 {{fail}} 项", ok: okCount, fail: failed.length })}
           </span>
         ) : (
           <span className="text-[10px] text-muted-foreground">
@@ -324,10 +302,10 @@ export const EquipRecommendCard = memo(function EquipRecommendCard({
               </button>
             )
           )}
-          {!done && (
+          {/* 运行中不出安装按钮：点了会对同一批件并行再装一轮（评审修复轮 R2 / M-3）。 */}
+          {!runner.running && pendingRefs.length > 0 && (
             <button
               type="button"
-              disabled={pendingRefs.length === 0}
               className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground disabled:opacity-50"
               onClick={() => {
                 const items = rows.filter((r) => pendingRefs.includes(r.ref)).map((r) => ({ ref: r.ref, meta: metaFor(r) }));
@@ -340,6 +318,8 @@ export const EquipRecommendCard = memo(function EquipRecommendCard({
           )}
         </span>
       </div>
+      {/* 执行器的撞名确认卡（与市场页同一组件、同一份文案）。 */}
+      {runner.conflictDialogNode}
     </div>
   );
 });

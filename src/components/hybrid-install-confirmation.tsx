@@ -251,6 +251,7 @@ export function CliPluginChangeCard() {
   const { t } = useTranslation();
   const [changes, setChanges] = useState<CliPluginChange[]>([]);
   const [syncing, setSyncing] = useState(false);
+  const [syncFailed, setSyncFailed] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -273,9 +274,15 @@ export function CliPluginChangeCard() {
 
   const sync = useCallback(async () => {
     setSyncing(true);
+    setSyncFailed(false);
     try {
       await invokeCommand("plugin_reload");
       setChanges([]);
+    } catch (err) {
+      // v0.9.8 评审修复轮 R2：重载失败要让用户看得见——此前只有 finally，
+      // 失败时卡上没有任何变化，用户不知道这一下点没点成。清单保留，可重试。
+      console.error("plugin_reload failed:", err);
+      setSyncFailed(true);
     } finally {
       setSyncing(false);
     }
@@ -310,6 +317,11 @@ export function CliPluginChangeCard() {
         <p className="text-xs text-muted-foreground">
           {t("cliChange.hint", "同步后插件中心立即应用最新状态。")}
         </p>
+        {syncFailed && (
+          <p className="text-xs text-destructive" role="alert">
+            {t("cliChange.syncFailed")}
+          </p>
+        )}
         <div className="flex justify-end gap-2">
           <button
             type="button"

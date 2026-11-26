@@ -22,14 +22,27 @@ export interface MatchHit {
   hitTags: string[];
 }
 
-/** 标签命中：任务文本包含标签（子串；英文忽略大小写）。 */
+/** 标签命中：中文短语子串即命中（设计 §3.1）；纯英文 / 数字标签须落在词
+ *  边界上——「AI」不命中 said、detail 里的 ai，「PPT」仍命中「PPT模板」
+ *  （汉字不算词内字符）。英文忽略大小写。 */
 function tagHits(text: string, tags: string[]): string[] {
   const lower = text.toLowerCase();
   return tags.filter((t) => {
-    const tag = t.trim();
+    const tag = t.trim().toLowerCase();
     if (!tag) return false;
-    return lower.includes(tag.toLowerCase());
+    return /^[a-z0-9]+$/.test(tag) ? includesWord(lower, tag) : lower.includes(tag);
   });
+}
+
+/** 整词出现：命中处的前后一个字符都不是英文字母 / 数字（首尾算边界）。 */
+function includesWord(text: string, word: string): boolean {
+  const inner = /[a-z0-9]/;
+  for (let at = text.indexOf(word); at >= 0; at = text.indexOf(word, at + 1)) {
+    const before = at === 0 ? "" : text[at - 1];
+    const after = text[at + word.length] ?? "";
+    if (!inner.test(before) && !inner.test(after)) return true;
+  }
+  return false;
 }
 
 function isCandidate(entry: CatalogEntry, installedRefs: Set<string>, officialOnly: boolean): boolean {
