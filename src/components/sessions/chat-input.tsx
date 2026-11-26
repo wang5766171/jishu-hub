@@ -194,16 +194,21 @@ export type StagedCompactionRunner = (
  * 的 `taskLaunch` 带给后端——后端在拉起进程**之前**把任务实例建好并挂在本次
  * 发送的会话键上（登记先于首条 prompt），会话解析后改绑成真实会话号。此前任务
  * 实例等 `session_resolved` 分片到达才建，晚于首条 prompt：引擎首轮来查「是不是
- * 任务会话」常查不到，任务锚点、任务纪律、不询问在首轮全部落空。 */
+ * 任务会话」常查不到，任务锚点、任务纪律、不询问在首轮全部落空。
+ *
+ * 字段名就是后端 `TaskLaunchIntent` 的字段名（下划线）：这是嵌套参数，Tauri 只转换
+ * 顶层参数的键名，嵌套对象原样交给 serde——写法不一致时后端按「invalid args」拒绝，
+ * 每个新任务的第一条消息都发不出去（收口轮在安装包上实跑抓到）。两边的字段名由
+ * `pages/cross-boundary-contract.test.ts` 逐字段对照。 */
 export interface ChatInputTaskLaunch {
   /** 已有任务的任务号；新任务为 null。 */
-  taskId: string | null;
-  skillId: string;
+  task_id: string | null;
+  skill_id: string;
   /** 不带命令前缀的纯目标——建实例时作为标题。 */
   title: string;
   /** 发第一条之前（还没有会话）点下的「不询问」——只对新任务带；已有任务的开关
    * 在实例上、按会话读写，不带。 */
-  noAsk?: boolean;
+  no_ask?: boolean;
 }
 
 interface ChatInputProps {
@@ -235,6 +240,9 @@ interface ChatInputProps {
   /** hub 内建命令当前不可用（面板里不显示）却被手输发送：输入框不清空、
    * 不发送，交给这里给出提示。`hint` 是清单里给出的说明，缺省由页面补。 */
   onSlashCommandUnavailable?: (name: string, hint?: string) => void;
+  /** 这次发送没有成立（附件没存上，或发送调用被当场拒绝）：输入框里的原文还在，
+   *  乐观流已收掉；交给页面把原因提示给用户。 */
+  onSendFailed?: (error: unknown) => void;
   /** 渲染在发送按钮左侧同一行的控件（v0.7.3 需求2：模型选择器+水位圆环）。 */
   trailingControls?: ReactNode;
   onDraftChange?: (value: string) => void;
@@ -314,6 +322,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   slashCommands,
   onSlashCommand,
   onSlashCommandUnavailable,
+  onSendFailed,
   trailingControls,
   onDraftChange,
   onBeforeSend,
@@ -1281,16 +1290,28 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     // send_message 的返回值多一项 task_instance（任务模式下后端登记好的实例）；
     // 类型上就地扩一个可选字段，不去动公共的 ChatSession 类型。
     type ChatSessionWithTask = ChatSession & { task_instance?: TaskLaunchInstanceSummary };
-    const chatSession = await invokeCommand<ChatSessionWithTask>(
-      "send_message",
-      {
-        agentId: agentId ?? "",
-        projectPath,
-        sessionId: pendingId,
-        message: agentMessage,
-        ...(taskLaunch ? { taskLaunch } : {}),
-      },
-    );
+    let chatSession: ChatSessionWithTask;
+    try {
+      chatSession = await invokeCommand<ChatSessionWithTask>(
+        "send_message",
+        {
+          agentId: agentId ?? "",
+          projectPath,
+          sessionId: pendingId,
+          message: agentMessage,
+          ...(taskLaunch ? { taskLaunch } : {}),
+        },
+      );
+    } catch (err) {
+      // 这次发送没有成立：上面刚起的那条乐观流（界面上的「正在赶来」）没有人给它收尾——
+      // 没有回合，永远不会有回合事件来终结它。不收掉的话界面一直停在「正在赶来」、
+      // 停止钮常亮，原因只进了控制台（收口轮在安装包上实跑抓到：任务意图的字段对不上，
+      // 后端当场拒绝，每个新任务的第一条消息都是这样）。谁起的流谁收尾；原文还在
+      // 输入框里（清空发生在发送成立之后），原因由 handleSend 交给页面提示。
+      streamStore.drop(pendingId);
+      setActiveSessionId(null);
+      throw err;
+    }
     if (chatSession.task_instance) {
       // 实例此刻挂的是发送用的临时会话键；会话解析后（session_resolved）事件
       // 管线会按任务号读回带真实会话号的那一份。
@@ -1447,6 +1468,9 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     } catch (err) {
       console.error("Failed to send message:", err);
       setSending(false);
+      // 这次发送没有成立（附件没存上，或发送调用被当场拒绝）：交给页面提示用户原因。
+      // 原文还在输入框里。此前只进控制台——界面上的乐观流没人收，停在「正在赶来」。
+      onSendFailed?.(err);
     }
   };
 

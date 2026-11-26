@@ -16,6 +16,8 @@ const repoRoot = join(__dirname, "..", "..");
 const piindexRs = readFileSync(join(repoRoot, "src-tauri", "src", "agent", "piindex.rs"), "utf-8");
 const marketPageTs = readFileSync(join(repoRoot, "src", "pages", "plugin-market.tsx"), "utf-8");
 const updatesTs = readFileSync(join(repoRoot, "src", "pages", "plugin-market-updates.ts"), "utf-8");
+const sessionBindingRs = readFileSync(join(repoRoot, "src-tauri", "src", "task_launch", "session_binding.rs"), "utf-8");
+const chatInputTs = readFileSync(join(repoRoot, "src", "components", "sessions", "chat-input.tsx"), "utf-8");
 
 /** 提取 Rust struct 的字段名（`pub name: Type,` → name）。 */
 function rustStructFields(rs: string, struct: string): string[] {
@@ -69,5 +71,15 @@ describe("跨端契约：piindex 更新状态字段（snake_case 冻结口径）
     expect(fields).toEqual(["failed", "updated"]);
     const failItem = rustStructFields(piindexRs, "BatchUpdateFailure").sort();
     expect(failItem).toEqual(["error", "name"]);
+  });
+});
+
+describe("跨端契约：任务模式首条消息的任务意图（嵌套参数，键名 Tauri 不做驼峰转换）", () => {
+  it("TaskLaunchIntent：Rust 字段 ↔ 前端放上线路的键 逐字段一致", () => {
+    // 收口轮教训：前端传了驼峰（skillId）、后端要下划线（skill_id），参数校验直接拒绝——每个新任务的第一条
+    // 消息都发不出去，界面停在「正在赶来」。两边各自的替身都自洽，单测全绿；只有把两边的字段名放在一起比才露馅。
+    expect(tsInterfaceFields(chatInputTs, "ChatInputTaskLaunch")).toEqual(
+      rustStructFields(sessionBindingRs, "TaskLaunchIntent"),
+    );
   });
 });

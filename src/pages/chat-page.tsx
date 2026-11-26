@@ -1177,6 +1177,12 @@ export function ChatPage({
     });
   }, [alertDialog, t]);
 
+  // 这次发送没有成立（附件没存上，或发送调用被当场拒绝）：输入框里的原文还在，
+  // 把原因告诉用户。此前原因只进控制台，界面上的乐观流停在「正在赶来」。
+  const handleSendFailed = useCallback((error: unknown) => {
+    void alertDialog({ title: t("sessions.sendFailed"), description: userFacingError(error) });
+  }, [alertDialog, t]);
+
   const workModeOptions = useMemo(() => [
     { value: "chat", label: t("sessions.workMode.chat") },
     { value: "task", label: t("sessions.workMode.task") },
@@ -1779,14 +1785,15 @@ export function ChatPage({
   const getTaskLaunchIntent = useCallback(
     (goal: string): ChatInputTaskLaunch => ({
       // 新建任务对话时这里是 null（= 新建）；已有的任务则只把会话改绑过去。
-      taskId: activeTaskInstanceIdRef.current,
-      skillId: selectedTaskSkillIdRef.current || "jishu-task-runner",
+      // 键名是后端 TaskLaunchIntent 的字段名（下划线）——嵌套参数 Tauri 不转换键名。
+      task_id: activeTaskInstanceIdRef.current,
+      skill_id: selectedTaskSkillIdRef.current || "jishu-task-runner",
       // 需求9 #4 补：建实例即写首条 goal（截断在 Rust 侧）——单步小任务 agent
       // 不调 update_steps，步骤上报链不触发，标题会停在默认「新任务」。
       title: goal,
       // 「不询问」只对新任务带：已有任务的开关在实例上、按会话读写，带过去就是
       // 把用户的决定冲成 false。
-      noAsk: taskLaunchNoAsk(activeTaskInstanceIdRef.current, pendingNoAskRef.current),
+      no_ask: taskLaunchNoAsk(activeTaskInstanceIdRef.current, pendingNoAskRef.current),
     }),
     [],
   );
@@ -2961,6 +2968,7 @@ export function ChatPage({
               trailingControls={modelTrailingControls}
               onSlashCommand={handleSlashCommand}
               onSlashCommandUnavailable={handleSlashCommandUnavailable}
+              onSendFailed={handleSendFailed}
               containerClassName={showStartComposer ? "mx-auto w-full max-w-[var(--message-content-max-width)] px-0 pb-0 pt-0" : undefined}
               panelClassName={showStartComposer ? "rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]" : undefined}
               contextFooter={startComposerFooter}

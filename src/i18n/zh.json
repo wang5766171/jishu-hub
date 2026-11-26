@@ -331,6 +331,7 @@
     "slashNeedSession": "这个命令要在已有会话里使用。",
     "slashNoMatch": "没有匹配的命令",
     "slashUnavailable": "这个命令现在不能用。",
+    "sendFailed": "发送失败",
     "usageContextUsed": "上下文已用 {{percent}}%",
     "usageWatermarkDetail": "已用 {{used}} / {{total}} tokens",
     "toolModeFull": "完全访问",

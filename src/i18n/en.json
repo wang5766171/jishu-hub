@@ -334,6 +334,7 @@
     "slashNeedSession": "Use this command in an existing session.",
     "slashNoMatch": "No matching command",
     "slashUnavailable": "This command can't be used right now.",
+    "sendFailed": "Send failed",
     "usageContextUsed": "Context {{percent}}% used",
     "usageWatermarkDetail": "{{used}} / {{total}} tokens used",
     "toolModeFull": "Full access",
