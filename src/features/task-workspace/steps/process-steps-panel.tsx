@@ -22,6 +22,7 @@ import type {
   RunStatusValue,
 } from "@/features/task-instance/graph/use-task-graph";
 import { isTerminalRunStatus } from "@/features/task-instance/graph/use-task-graph";
+import { runStatusLabel } from "../run-status-label";
 import { computeStepOrder } from "./compute-step-order";
 import { StepItem } from "./step-item";
 
@@ -134,25 +135,8 @@ export const ProcessStepsPanel = memo(function ProcessStepsPanel({
   // 显隐规则 §4.4：无 graph_id 不渲染
   if (!graphId) return null;
 
-  // 运行状态标签
-  const statusLabel = (() => {
-    switch (runStatus) {
-      case "running":
-        return t("task.run.running", "执行中");
-      case "paused":
-        return t("task.run.paused", "已暂停");
-      case "awaiting_human":
-        return t("task.run.awaitingHuman", "等待审批");
-      case "completed":
-        return t("task.run.completed", "已完成");
-      case "failed":
-        return t("task.run.failed", "失败");
-      case "cancelled":
-        return t("task.run.cancelled", "已取消");
-      default:
-        return t("task.run.draft", "待执行");
-    }
-  })();
+  // 运行状态标签（词面单源；有流程图而还没有运行 → 待执行）
+  const statusLabel = runStatusLabel(t, runStatus) ?? t("task.run.draft", "待执行");
 
   const statusColor = (() => {
     switch (runStatus) {

@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { isTerminalRunStatus } from "@/features/task-instance/graph/use-task-graph";
 import type { RunStatusValue, useTaskGraph } from "@/features/task-instance/graph/use-task-graph";
 import type { NodeSessionInfo } from "@/features/task-instance/types";
+import { runStatusLabel } from "../run-status-label";
 import { NodeInspector } from "./node-inspector";
 
 const GraphEditor = lazy(() =>
@@ -109,6 +110,8 @@ export function FlowBoardOverlay({
     ? t("task.flow.modeEdit", "流程编排")
     : t("task.flow.modeBoard", "流程看板");
   const readOnly = mode === "board" || isTerminalRunStatus(runStatus);
+  // 顶栏的运行状态显示产品词面；没有运行状态时不显示
+  const runLabel = runStatusLabel(t, runStatus);
 
   // 节点点击：单击选中，双击进会话
   const lastClickTime = useRef(0);
@@ -157,10 +160,10 @@ export function FlowBoardOverlay({
         <span className="text-xs text-muted-foreground">{modeLabel}</span>
 
         {/* 运行状态 */}
-        {runStatus && (
+        {runLabel && (
           <>
             <div className="ml-2 h-1.5 w-1.5 rounded-full bg-primary/60" />
-            <span className="text-xs text-muted-foreground">{runStatus}</span>
+            <span className="text-xs text-muted-foreground">{runLabel}</span>
           </>
         )}
 
