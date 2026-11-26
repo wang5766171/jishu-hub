@@ -1086,7 +1086,7 @@ export function PluginCreateDialog({
                       <div className="min-w-0 flex-1">
                         {tr("plugins.skillFolderNotice", "文件夹模式：将以目录形式创建插件，整目录携带")}{" "}
                         <span className="font-semibold">{skillFolder.assets}</span>{" "}
-                        {tr("plugins.skillFolderNotice2", "个附属文件（references/scripts 等）；SKILL.md 按下方表单渲染。分发到各 agent 时附件一并落地。")}
+                        {tr("plugins.skillFolderNotice2", "个附属文件（references/scripts 等）；SKILL.md 按下方表单渲染。分发到各智能体时附件一并落地。")}
                         <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground" title={skillFolder.dir}>
                           {skillFolder.dir}
                         </div>
@@ -1173,7 +1173,7 @@ export function PluginCreateDialog({
                           placeholder={"第一步：通读 diff…\n第二步：检查错误处理…"}
                           className="flex w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs font-mono"
                         />
-                        <FieldHelp>{tr("plugins.hSkillBody", "SKILL.md 正文指令；启用后自动分发到各 agent 的 skill 目录（启停即分发/回收）。")}</FieldHelp>
+                        <FieldHelp>{tr("plugins.hSkillBody", "SKILL.md 正文指令；启用后自动分发到各智能体的 skill 目录（启停即分发/回收）。")}</FieldHelp>
                       </Labeled>
                     </div>
                   ))}

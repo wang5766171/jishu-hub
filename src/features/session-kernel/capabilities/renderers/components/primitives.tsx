@@ -386,6 +386,7 @@ rendererRegistry.register({ key: "render.none", component: NonePrimitive, descri
 // { kind: "tool-result", toolName, output }（matchToolResultRenderer 咨询链）。
 
 function ToolResultTablePrimitive({ payload }: RendererComponentProps<SourcePayload>) {
+  const { t } = useTranslation();
   const p = payload as { kind: string; output?: string };
   let parsed: { columns?: unknown[]; rows?: unknown[][] } | null = null;
   try {
@@ -398,7 +399,7 @@ function ToolResultTablePrimitive({ payload }: RendererComponentProps<SourcePayl
     parsed = null;
   }
   if (!parsed) {
-    return <div className="p-2 text-xs text-muted-foreground">非表格 JSON（需含 columns + rows）</div>;
+    return <div className="p-2 text-xs text-muted-foreground">{t("sessionPlugins.toolResult.notTable", "非表格 JSON（需含 columns + rows）")}</div>;
   }
   const heads = (parsed.columns ?? []).map(String);
   return (
@@ -424,13 +425,14 @@ function ToolResultTablePrimitive({ payload }: RendererComponentProps<SourcePayl
 }
 
 function ToolResultImagePrimitive({ payload }: RendererComponentProps<SourcePayload>) {
+  const { t } = useTranslation();
   const p = payload as { kind: string; output?: string };
   const raw = (p.output ?? "").trim();
   const url = raw.startsWith("data:") ? raw : raw.startsWith("<svg") ? `data:image/svg+xml;utf8,${encodeURIComponent(raw)}` : `data:image/png;base64,${raw.replace(/\s+/g, "")}`;
   return (
     <div className="flex max-h-64 items-center justify-center overflow-auto rounded-md border border-border/45 bg-white p-2">
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={url} alt="工具图片输出" className="max-h-60 max-w-full" />
+      <img src={url} alt={t("sessionPlugins.toolResult.imageAlt", "工具图片输出")} className="max-h-60 max-w-full" />
     </div>
   );
 }

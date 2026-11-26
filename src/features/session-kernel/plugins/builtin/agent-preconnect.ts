@@ -16,10 +16,10 @@ import type { SessionPluginDescriptor } from "../types";
 export const agentPreconnectPlugin: SessionPluginDescriptor = {
   id: "session.agent-preconnect",
   displayNameKey: "sessionPlugins.agentPreconnect.name",
-  displayNameFallback: "Agent 预连接",
+  displayNameFallback: "智能体预连接",
   descriptionKey: "sessionPlugins.agentPreconnect.description",
   descriptionFallback:
-    "对当前标签项目预启动 jishu agent 进程，新对话首连免冷启动等待（跟随标签切换，仅对新会话生效）",
+    "对当前标签项目预启动智能体进程，新对话首连免冷启动等待（跟随标签切换，仅对新会话生效）",
   contractVersion: SESSION_PLUGIN_CONTRACT_VERSION,
   source: "builtin",
   permissions: [],

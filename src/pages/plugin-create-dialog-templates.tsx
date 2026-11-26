@@ -369,7 +369,7 @@ export const PLUGIN_TYPES: Array<{
     formKey: "plugins.typeSkillForm",
     formFallback: "总控转发",
     descKey: "plugins.typeSkillDesc",
-    descFallback: "声明 SKILL.md 能力，经解析器分发到 agent skill 目录",
+    descFallback: "声明 SKILL.md 能力，经解析器分发到智能体 skill 目录",
     defaultTemplate: "skill-demo",
   },
   {

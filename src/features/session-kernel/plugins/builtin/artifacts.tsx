@@ -518,7 +518,7 @@ export function ArtifactsSidebar({ ctx }: { ctx: SessionKernelContext }) {
           </span>
           <button
             type="button"
-            title={t("sessionPlugins.artifacts.refresh", "刷新（agent 覆写文件后重读）")}
+            title={t("sessionPlugins.artifacts.refresh", "刷新（智能体覆写文件后重读）")}
             disabled={!current}
             onClick={refresh}
             className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
@@ -672,7 +672,7 @@ export const artifactsPlugin: SessionPluginDescriptor = {
   displayNameFallback: "产物中心",
   descriptionKey: "sessionPlugins.artifacts.description",
   descriptionFallback:
-    "侧边栏预览会话产物（HTML/图片/Markdown/文本）：agent 调 preview_html 自动预览，或手动点选主会话与子节点产出",
+    "侧边栏预览会话产物（HTML/图片/Markdown/文本）：智能体调 preview_html 自动预览，或手动点选主会话与子节点产出",
   contractVersion: SESSION_PLUGIN_CONTRACT_VERSION,
   source: "builtin",
   permissions: ["read:messages", "panel:open"],

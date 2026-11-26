@@ -142,7 +142,7 @@ function TodoBoardPanel({ ctx }: { ctx: SessionKernelContext }) {
   if (!state || state.batches.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center p-4 text-xs text-muted-foreground">
-        {tr("sessionPlugins.todoBoard.empty", "暂无待办——让 agent「创建几条待办并跟踪执行」")}
+        {tr("sessionPlugins.todoBoard.empty", "暂无待办——让智能体「创建几条待办并跟踪执行」")}
       </div>
     );
   }
@@ -245,7 +245,7 @@ export const todoBoardPlugin: SessionPluginDescriptor = {
   displayNameKey: "sessionPlugins.todoBoard.name",
   displayNameFallback: "待办面板",
   descriptionKey: "sessionPlugins.todoBoard.description",
-  descriptionFallback: "右缘待办列表面板（rpiv-todo 快照可视化 + 子代理并行指示；随「待办」插件启停）",
+  descriptionFallback: "右缘待办列表面板（待办快照可视化 + 子代理并行指示；随「待办」插件启停）",
   contractVersion: SESSION_PLUGIN_CONTRACT_VERSION,
   source: "builtin",
   permissions: ["read:messages"],

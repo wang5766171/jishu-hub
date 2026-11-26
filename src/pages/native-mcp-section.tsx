@@ -111,7 +111,7 @@ export function NativeMcpSection() {
         <Server className="h-4 w-4 text-muted-foreground" />
         <span className="text-sm font-medium">{tr("nativeMcp.title", "原生 MCP 服务")}</span>
         <span className="text-[10px] text-muted-foreground">
-          {tr("nativeMcp.subtitle", "jishu 直连的 MCP server（pi 原生）；与下方聚合插件互补")}
+          {tr("nativeMcp.subtitle", "jishu 直连的 MCP server（智能体原生支持）；与下方聚合插件互补")}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={probing} onClick={() => void load(true)}>

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import i18n from "@/i18n";
 
 /**
  * v0.9.5 需求1 测试期（用户实测「系统通知没有效果了」）：桌面通知链路
@@ -108,5 +109,30 @@ describe("桌面通知链路（desktop-notify 清单端到端）", () => {
     // 独立开关不误伤：关掉回合完成，审批通知仍放行。
     hook.onSignal({ type: "approval-request", sessionId: "s1", agentId: "a" }, { sessionId: "s2" });
     expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  /** v0.9.8 评审修复轮 R2 / M-6：通知标题与正文此前写死中文，英文界面下照出中文。 */
+  it("M6-1 英文界面下通知标题与正文是英文", async () => {
+    await i18n.changeLanguage("en");
+    try {
+      const hook = hookOf();
+      hook.onSignal({ type: "turn-complete", sessionId: "session-bg-123456", agentId: "a", error: false }, { sessionId: "other" });
+      hook.onSignal({ type: "turn-complete", sessionId: "s1", agentId: "a", error: true }, { sessionId: "other" });
+      hook.onSignal({ type: "approval-request", sessionId: "s1", agentId: "a" }, { sessionId: "other" });
+      hook.onSignal({ type: "task-run-failed", sessionId: "s1", agentId: "a", title: "数据迁移" }, { sessionId: "other" });
+      const sent = invokeMock.mock.calls.map(([, args]) => args as { title: string; body: string });
+      expect(sent.map((s) => s.title)).toEqual([
+        "Turn complete",
+        "Turn failed",
+        "Approval needed",
+        "Task failed: 数据迁移",
+      ]);
+      // 正文带会话定位（会话 id 前 12 位）
+      expect(sent[0].body).toBe("Session session-bg-1…");
+      expect(sent[2].body).toBe("Session s1…");
+      for (const s of sent) expect(s.body).not.toMatch(/[一-龥]/);
+    } finally {
+      await i18n.changeLanguage("zh");
+    }
   });
 });

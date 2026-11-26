@@ -57,6 +57,9 @@ type AllPluginConfigs = Record<string, PluginConfigValues>;
 
 let cache: AllPluginConfigs | null = null;
 let loadPromise: Promise<AllPluginConfigs> | null = null;
+// 加载序号：配置又变了一次就 +1——只有最新一次发起的加载才落缓存，更早在途
+// 的结果是旧数据。
+let loadSeq = 0;
 const listeners = new Set<() => void>();
 let unlistenStarted = false;
 
@@ -66,10 +69,10 @@ function ensureListening(): void {
   void import("@tauri-apps/api/event")
     .then(({ listen }) =>
       listen<{ pluginId?: string }>("plugins-config-changed", () => {
-        // 保存端（本进程）已先更新缓存；此事件兜底跨窗口/异常路径——统一失效重拉。
-        cache = null;
-        loadPromise = null;
-        for (const fn of listeners) fn();
+        // 配置变了（本进程保存 / 跨窗口 / 命令行）：重新拉取。不先清空——旧快照
+        // 留到新快照到达一次性替换。评审修复轮 R2 / M-4：修前这里只清缓存、
+        // 通知一次、不重拉，已挂载的组件停在默认值，直到有新的订阅碰巧触发加载。
+        void startLoad();
       }),
     )
     // 非 Tauri 环境（vitest/jsdom 无 __TAURI_INTERNALS__）listen 同步抛错——
@@ -77,25 +80,58 @@ function ensureListening(): void {
     .catch(() => undefined);
 }
 
+/** 缓存的唯一写入口：快照变了就通知订阅者。useSyncExternalStore 的约定是
+ *  「快照可能变了就得通知」——不通知，组件就停在上一次渲染读到的值。 */
+function commit(next: AllPluginConfigs): void {
+  cache = next;
+  for (const fn of listeners) fn();
+}
+
+/** 本进程保存后的本地提交。同时作废在途的加载——它读的是保存前的数据，落
+ *  地会盖掉这次保存。 */
+function commitLocal(next: AllPluginConfigs): void {
+  loadSeq += 1;
+  commit(next);
+}
+
+/** 两份全量配置内容是否相同（值都是布尔 / 数字 / 字符串，比一层键值即可）。 */
+function sameConfigs(a: AllPluginConfigs | null, b: AllPluginConfigs): boolean {
+  if (!a) return false;
+  const ids = Object.keys(a);
+  if (ids.length !== Object.keys(b).length) return false;
+  return ids.every((id) => {
+    const va = a[id];
+    const vb = b[id];
+    if (va === vb) return true;
+    if (!va || !vb) return false;
+    const keys = Object.keys(va);
+    return keys.length === Object.keys(vb).length && keys.every((k) => va[k] === vb[k]);
+  });
+}
+
+/** 发起一次加载：结果到达即落缓存并通知（首载完成、失效重拉完成都走这里）。
+ *  读失败按「没有用户配置」处理（走默认值）。内容没变不通知。 */
+function startLoad(): Promise<AllPluginConfigs> {
+  const seq = ++loadSeq;
+  const p: Promise<AllPluginConfigs> = invokeCommand<AllPluginConfigs>("plugin_config_get_all")
+    .then((result) => (result ?? {}) as AllPluginConfigs)
+    .catch((err) => {
+      console.warn("plugin_config_get_all failed, using defaults:", err);
+      return {} as AllPluginConfigs;
+    })
+    .then((data) => {
+      if (loadPromise === p) loadPromise = null;
+      if (seq === loadSeq && !sameConfigs(cache, data)) commit(data);
+      return data;
+    });
+  loadPromise = p;
+  return p;
+}
+
 async function loadAll(): Promise<AllPluginConfigs> {
   ensureListening();
   if (cache) return cache;
-  if (!loadPromise) {
-    loadPromise = invokeCommand<AllPluginConfigs>("plugin_config_get_all")
-      .then((result) => {
-        cache = result ?? {};
-        return cache;
-      })
-      .catch((err) => {
-        console.warn("plugin_config_get_all failed, using defaults:", err);
-        cache = {};
-        return cache;
-      })
-      .finally(() => {
-        loadPromise = null;
-      });
-  }
-  return loadPromise;
+  return loadPromise ?? startLoad();
 }
 
 function subscribe(cb: () => void): () => void {
@@ -106,11 +142,6 @@ function subscribe(cb: () => void): () => void {
 
 function snapshot(): AllPluginConfigs {
   return cache ?? EMPTY;
-}
-
-/** 首载完成通知（subscribe 内调用：缓存就绪即重渲染一次）。 */
-function bump(): void {
-  for (const fn of listeners) fn();
 }
 const EMPTY: AllPluginConfigs = {};
 
@@ -170,6 +201,13 @@ export function setPluginConfigForTest(user: PluginConfigValues, pluginId = "__t
   cache[pluginId] = user;
 }
 
+/** 测试口：清空缓存与在途加载（同一文件内多用例之间隔离模块态）。 */
+export function __resetConfigCacheForTest(): void {
+  cache = null;
+  loadPromise = null;
+  loadSeq += 1;
+}
+
 /** 非 React 消费者（event-hook 等）同步快照——缓存未就绪时回 defaults。 */
 export function getPluginConfig(pluginId: string, schema: PluginConfigField[]): PluginConfigValues {
   return mergeConfig(schema, cache?.[pluginId]);
@@ -203,15 +241,18 @@ export async function setPluginConfig(
   values: PluginConfigValues,
 ): Promise<void> {
   const diff = diffAgainstDefaults(schema, values);
+  // 缓存未就绪（首次加载完成前用户保存）：先等全量配置就绪——本地提交要合在
+  // 完整快照上，否则缓存里只剩这一个插件，行为键也保不住
+  //（setPluginBehavior 同款处理，三轮评审 C23）。
+  if (!cache) await loadAll();
   // 批次3：行为键（ui.*）与 schema 值同槽全量替换——保存 schema 时保留既有
   // 行为键（否则详情页「保存」会清掉使用行为设置）。
   const prevUi = uiKeysOf(cache?.[pluginId]);
   const merged = { ...prevUi, ...diff };
   await invokeCommand("plugin_config_set", { pluginId, values: merged });
-  // Rust 侧也会广播 plugins-config-changed；本进程先行更新缓存让 UI 即时反馈
-  //（事件到达时会整体失效重拉，双路径收敛一致）。
-  cache = cache ? { ...cache, [pluginId]: merged } : { [pluginId]: merged };
-  bump();
+  // Rust 侧随后会广播 plugins-config-changed（触发重拉）；本进程先更新缓存让
+  // UI 即时反馈。重拉回来的内容相同时不再通知（双路径收敛一致）。
+  commitLocal(cache ? { ...cache, [pluginId]: merged } : { [pluginId]: merged });
 }
 
 // ── 使用行为键（v0.9.5 需求1 GUI 改造 批次3/4：管理面设置 → 会话区归置）──
@@ -317,6 +358,5 @@ export async function setPluginBehavior(
   if (behavior.shortcut) ui["ui.shortcut"] = behavior.shortcut;
   const merged = { ...kept, ...ui };
   await invokeCommand("plugin_config_set", { pluginId, values: merged });
-  cache = cache ? { ...cache, [pluginId]: merged } : { [pluginId]: merged };
-  bump();
+  commitLocal(cache ? { ...cache, [pluginId]: merged } : { [pluginId]: merged });
 }

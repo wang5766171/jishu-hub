@@ -396,7 +396,7 @@ function BehaviorSection({
         ) : null}
         {faces.render ? (
           <p className="py-2 text-[10.5px] text-muted-foreground/60">
-            {t("plugins.behaviorRenderPending", "渲染类默认视图/自动渲染开关属后续批次（06 §5.2 block-renderer 行）；作用域已生效。")}
+            {t("plugins.behaviorRenderPending", "渲染类插件目前可设置作用域；默认视图与自动渲染开关暂不提供。")}
           </p>
         ) : null}
       </div>
@@ -712,7 +712,7 @@ export function PluginDetailModal({
               ) : null}
               {plugin.has_mcp ? (
                 <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
-                  {t("plugins.mcpBadge", "MCP")}
+                  {t("plugins.mcpBadge", "MCP 工具")}
                 </Badge>
               ) : null}
               {!plugin.enabled && !plugin.core ? (

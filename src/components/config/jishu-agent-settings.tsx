@@ -386,7 +386,7 @@ export function JishuAgentSettingsBlock({
           <span className="text-[10px] text-muted-foreground/80">
             {t(
               "config.codemodeHint",
-              "模型可在沙箱内写脚本并行编排工具（pi codemode，quickjs 隔离无网络/文件系统）；对全体新会话生效",
+              "模型可在沙箱内写脚本并行编排工具（quickjs 隔离，无网络与文件系统访问）；对全体新会话生效",
             )}
           </span>
         </div>

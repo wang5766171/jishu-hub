@@ -7,6 +7,7 @@
  */
 import { useMemo } from "react";
 import type { ComponentType } from "react";
+import i18n from "@/i18n";
 import { usePluginConfig, type PluginConfigField, type PluginConfigValues } from "../../plugins/config-plane";
 import type { SessionPluginDescriptor, SessionKernelContext, PluginBlock, OverlayPluginContext } from "../../plugins/types";
 import { SESSION_PLUGIN_CONTRACT_VERSION } from "../../plugins/types";
@@ -125,7 +126,12 @@ function RendererShell({
   }
   const reg = rendererRegistry.get(manifest.render!.component);
   if (!reg) {
-    return <div className="p-2 text-xs text-muted-foreground">渲染组件未注册：{manifest.render!.component}</div>;
+    // 面向插件作者的提示，同样走词典（英文界面不露中文）。
+    return (
+      <div className="p-2 text-xs text-muted-foreground">
+        {i18n.t("sessionPlugins.engine.renderUnregistered", { component: manifest.render!.component })}
+      </div>
+    );
   }
   const Comp = reg.component as ComponentType<RendererComponentProps>;
   return <Comp payload={payload} options={values} actions={actions} />;
@@ -157,11 +163,11 @@ function SourceShell({
         return { kind: "aggregate", data: aggregator ? aggregator(ctx.messages) : ctx.messages };
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     // v0.9.8 需求24 续：任务上下文（ctx.task）进依赖。此前漏了它——「源 = 任务」的面板
     //（任务看板）挂载后不再随任务重算：进入带任务图的任务时图还没加载，面板按「没有图」
     // 算了一次，图加载完、执行状态变化它都不动（停在 0/0、没有节点和主会话入口），
     // 只有主会话来了新消息才顺带刷新。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx.messages, ctx.turns, ctx.activeTurnIndex, ctx.task, manifest.source!.type]);
   return <RendererShell manifest={manifest} schema={schema} payload={payload} sessionId={ctx.sessionId} ctx={ctx} fileComponent={fileComponent} />;
 }
@@ -279,11 +285,19 @@ export function buildComposedDescriptor(
           if (action.type === "desktop-notify") {
             const sig = signal as { error?: boolean; title?: string; sessionId?: string };
             const sid = (sig.sessionId ?? ctx.sessionId ?? "").slice(0, 12);
+            // 通知文案走词典（事件钩子不在 React 渲染期，经 i18n 单例取）。修前
+            // 写死中文，英文界面下通知也是中文。
             const title =
-              signalType === "turn-complete" ? (sig.error ? "回合失败" : "回合完成")
-              : signalType === "approval-request" ? "等待审批"
-              : sig.title ? `任务失败：${sig.title}` : "任务失败";
-            const body = sid ? `会话 ${sid}…` : "";
+              signalType === "turn-complete"
+                ? sig.error
+                  ? i18n.t("sessionPlugins.desktopNotify.turnFailed")
+                  : i18n.t("sessionPlugins.desktopNotify.turnDone")
+                : signalType === "approval-request"
+                  ? i18n.t("sessionPlugins.desktopNotify.approvalTitle")
+                  : sig.title
+                    ? i18n.t("sessionPlugins.desktopNotify.taskFailedTitled", { title: sig.title })
+                    : i18n.t("sessionPlugins.desktopNotify.taskFailedTitle");
+            const body = sid ? i18n.t("sessionPlugins.desktopNotify.sessionRef", { id: sid }) : "";
             params.title = title;
             params.body = body;
             params.__options = options;
