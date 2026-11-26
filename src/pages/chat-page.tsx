@@ -40,6 +40,7 @@ import { SessionPluginActions } from "@/features/session-kernel/plugins/mounts/s
 // 5e/5f（v0.9.5 需求1）：插件快捷执行共享（命令面板 / /plugin 命令）。
 import { runPluginQuickAction } from "@/lib/plugin-quick-run";
 import { FlowBoardOverlay } from "@/features/task-workspace/board/flow-board-overlay";
+import { sortTaskSessionsByConversation } from "@/features/task-workspace/task-session-order";
 import { useTaskInstance } from "@/features/task-instance/use-task-instance";
 import { useNodeSession } from "@/features/task-instance/use-node-session";
 import { normalizeAgentId, parseRunnerCard } from "@/features/task-instance/types";
@@ -783,13 +784,17 @@ export function ChatPage({
   } else if (!deferredSearchQuery.trim()) {
     displaySessions = uniqueSessionsById([...optimisticSessions, ...displaySessions]);
   }
-  const displayTaskLaunchSessions = taskLaunchSessions.filter((taskSession) => {
-    const query = deferredSearchQuery.trim().toLocaleLowerCase();
-    if (!query) return true;
-    return `${taskSession.title}\n${taskSession.skill_id}\n${taskSession.status}`
-      .toLocaleLowerCase()
-      .includes(query);
-  });
+  // 2026-11-27 用户裁决：任务行与普通会话同一口径——按任务主会话的最近对话排
+  //（sessions 与普通会话列表同源，last_active 即会话文件最后活动），没有会话
+  // 活动的任务按实例 updated_at 兜底；查看不改变顺序。
+  const displayTaskLaunchSessions = sortTaskSessionsByConversation(taskLaunchSessions, sessions ?? [])
+    .filter((taskSession) => {
+      const query = deferredSearchQuery.trim().toLocaleLowerCase();
+      if (!query) return true;
+      return `${taskSession.title}\n${taskSession.skill_id}\n${taskSession.status}`
+        .toLocaleLowerCase()
+        .includes(query);
+    });
 
   const showStartComposer = !!projectId && (!selectedSession || selectedSession === "new");
   const activeTaskLaunchInstance = useMemo(

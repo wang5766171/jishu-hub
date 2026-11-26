@@ -507,6 +507,29 @@ pub fn sync_run_status(
     let mut instance = store
         .get(task_id)?
         .ok_or_else(|| format!("task instance not found: {task_id}"))?;
+    // 幂等重放：实例已经反映这个 (run, 状态) 时原样返回，一行都不改——尤其不
+    // 动 updated_at（任务列表按它排序，纯查看触发的回写会把行顶到最前）。重放
+    // 的真实来源：打开任务时页面把看板轮询到的运行状态回写实例，每个任务每
+    // 次打开都会来一遍。
+    let already_reflected = match normalized.as_str() {
+        RUN_STATUS_RUNNING => {
+            instance.active_run_id.as_deref() == Some(run_id)
+                && instance.run_status.as_deref() == Some(RUN_STATUS_RUNNING)
+        }
+        RUN_STATUS_PAUSED => {
+            instance.active_run_id.as_deref() == Some(run_id)
+                && instance.run_status.as_deref() == Some(RUN_STATUS_PAUSED)
+        }
+        RUN_STATUS_COMPLETED | RUN_STATUS_FAILED | RUN_STATUS_CANCELLED => {
+            instance.last_run_id.as_deref() == Some(run_id)
+                && instance.active_run_id.is_none()
+                && instance.run_status.as_deref() == Some(normalized.as_str())
+        }
+        _ => return Err(format!("invalid run_status: {run_status}")),
+    };
+    if already_reflected {
+        return Ok(instance);
+    }
     instance.updated_at = now_ms();
     match normalized.as_str() {
         RUN_STATUS_RUNNING => {
@@ -522,9 +545,7 @@ pub fn sync_run_status(
             instance.active_run_id = None;
             instance.run_status = Some(normalized.clone());
         }
-        _ => {
-            return Err(format!("invalid run_status: {run_status}"));
-        }
+        _ => unreachable!("normalized 已在上面校验过"),
     }
     store.upsert(&instance)?;
     Ok(instance)
@@ -605,5 +626,80 @@ fn normalize_run_status(status: &str) -> String {
         "Failed" | "failed" => RUN_STATUS_FAILED.into(),
         "Cancelled" | "cancelled" => RUN_STATUS_CANCELLED.into(),
         _ => status.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_project(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "jishu-task-instance-store-{label}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 让两次写入之间的时间差跨过毫秒精度（updated_at 是毫秒时间戳）。
+    fn tick() {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+
+    /// 任务列表按 updated_at 排序，而打开任务时页面会把看板轮询到的运行状态回
+    /// 写实例（每个任务每次打开都会来一遍）。同一个 (run, 状态) 的重放必须原样
+    /// 返回：不改一行、尤其不动 updated_at——否则「点开看看」就把这一行顶到列
+    /// 表最前（2026-11-27 用户反馈：点击查看任务会话就跳位置）。
+    #[test]
+    fn sync_run_status_replay_keeps_updated_at() {
+        let root = temp_project("replay");
+        let root = root.to_string_lossy().to_string();
+        let created =
+            mark_task_session(&root, None, "s1", "skill-x", Some("标题")).unwrap();
+        let task_id = created.task_id.clone();
+
+        let running = sync_run_status(&root, &task_id, "run_1", "running").unwrap();
+        assert_eq!(running.run_status.as_deref(), Some("running"));
+        assert_eq!(running.active_run_id.as_deref(), Some("run_1"));
+        tick();
+        let running_replay = sync_run_status(&root, &task_id, "run_1", "running").unwrap();
+        assert_eq!(
+            running_replay.updated_at, running.updated_at,
+            "running 重放不应改 updated_at"
+        );
+
+        let done = sync_run_status(&root, &task_id, "run_1", "completed").unwrap();
+        assert_eq!(done.run_status.as_deref(), Some("completed"));
+        assert!(
+            done.updated_at > running.updated_at,
+            "真实状态变化仍要写 updated_at"
+        );
+        tick();
+        let done_replay = sync_run_status(&root, &task_id, "run_1", "completed").unwrap();
+        assert_eq!(
+            done_replay.updated_at, done.updated_at,
+            "终态重放不应改 updated_at"
+        );
+        // 重放返回的是实例现状，字段一个不差
+        assert_eq!(done_replay.run_status.as_deref(), Some("completed"));
+        assert!(done_replay.active_run_id.is_none());
+        assert_eq!(done_replay.last_run_id.as_deref(), Some("run_1"));
+
+        // 新的一轮照常推进（不同 run_id 不是重放）
+        let again = sync_run_status(&root, &task_id, "run_2", "running").unwrap();
+        assert_eq!(again.active_run_id.as_deref(), Some("run_2"));
+        assert!(again.updated_at > done.updated_at);
+    }
+
+    /// 幂等不等于放松校验：不认识的取值仍然拒绝（不能静默落库成任意字符串）。
+    #[test]
+    fn sync_run_status_still_rejects_unknown_status() {
+        let root = temp_project("validate");
+        let root = root.to_string_lossy().to_string();
+        let created = mark_task_session(&root, None, "s1", "skill-x", None).unwrap();
+        assert!(sync_run_status(&root, &created.task_id, "run_1", "bogus").is_err());
     }
 }
