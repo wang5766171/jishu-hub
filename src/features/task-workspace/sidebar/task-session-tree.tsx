@@ -7,8 +7,11 @@
  *   常规会话（由 chat-page 渲染，不在本组件）
  *   ─────────────
  *   任务会话
- *     ├─ 任务 A（标题 + 阶段徽标 + 运行状态灯）
+ *     ├─ 任务 A（行首会话状态点 + 标题）
  *     └─ 任务 B
+ *
+ * 2026-11-27 用户裁决：会话列表不显示流程运行结果标记（completed 一类）——
+ * 行首会话状态点是会话执行情况的唯一状态信号；流程结果在看板里看。
  *
  * 交互：
  * - 点任务 → 进入任务工作台（阶段会话）；子任务会话**不再在本列表展示**，
@@ -89,7 +92,6 @@ const TaskRow = memo(function TaskRow({
   sessionUnreadOf,
 }: TaskRowProps) {
   const { t } = useTranslation();
-  const phase = task.run_status ?? "";
 
   return (
     <ContextMenu>
@@ -144,11 +146,6 @@ const TaskRow = memo(function TaskRow({
             <span className="min-w-0 flex-1 truncate text-left leading-none pt-[1px] pb-[2px]">
               {task.title}
             </span>
-            {phase && (
-              <span className="shrink-0 rounded-full bg-primary/10 px-1 py-0.5 text-[9px] font-medium leading-none text-primary">
-                {phase}
-              </span>
-            )}
             {task.run_status === "running" && onCancelTask ? (
               <span
                 role="button"
