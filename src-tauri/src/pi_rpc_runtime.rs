@@ -5,9 +5,14 @@
 //! ①事件归一化 → [`normalize`]（normalize_pi_agent_event 与用量/压缩归因）；
 //! ②问答卡协议翻译 → [`protocol`]（rpiv-ask 哨兵/多选还原/自动应答静态表）；
 //! ③hub_invoke 分发 → [`hub_invoke`]（桥接命令与 HUB_APP_HANDLE）。
-//! 主文件保留连接循环（LoopState 状态机 + 三看门狗 + 合批 flush——按 §12
-//! 边界问强耦合状态机整体保留）与测试模块。子模块项经本文件根 `pub(crate)
-//! use` 重导出，`crate::pi_rpc_runtime::X` 外部路径不变。
+//! v0.9.8 评审修复轮 R2 再拆三处：④发送簿记与扩展命令识别 → [`prompts`]
+//!（请求号、发送登记、压缩停止的收尾期限、回合发起前与账本对账）；⑤审批型
+//! confirm 的策略链路由 → [`approval`]（自连接循环纯移出）；⑥看门狗的窗口与
+//! 判定 → [`watchdog`]（不持有循环状态的纯函数）。主文件保留连接循环
+//!（LoopState 状态机 + 三看门狗的调度 + 合批 flush——按 §12 边界问强耦合状态机
+//! 整体保留）；测试已文件化到 `tests.rs`（先例 `acp_runtime/tests.rs`）。子模块
+//! 项经本文件根 `pub(crate) use` 重导出，`crate::pi_rpc_runtime::X` 外部路径不变
+//!（`watchdog` 的项只在本模块树内可见）。
 //!
 //! Pi's RPC mode uses simple JSON-line commands/responses rather than
 //! JSON-RPC 2.0. This module translates between Pi's native protocol
@@ -18,28 +23,53 @@
 //! - Responses (stdout): `{"type":"response","command":"prompt","success":true}`
 //! - Events (stdout):   AgentEvent objects (`message_update`, `tool_execution_*`, …)
 
+mod approval;
 mod hub_invoke;
 mod normalize;
+mod prompts;
 mod protocol;
+#[cfg(test)]
+mod tests;
+mod watchdog;
 
-// 子模块项经根重导出：外部 `crate::pi_rpc_runtime::X` 路径与文件内 tests 的
+// 子模块项经根重导出：外部 `crate::pi_rpc_runtime::X` 路径与 tests.rs 的
 // `super::X` 引用均保持拆分前形态（§12：原 pub 项经根 pub use 重导出）。
 // allow：部分名字的消费面是 #[cfg(test)] tests 模块——lib check 时未编译。
 #[allow(unused_imports)]
-pub(crate) use hub_invoke::{handle_hub_invoke, HUB_APP_HANDLE};
+pub(crate) use approval::route_tool_approval;
+#[allow(unused_imports)]
+pub(crate) use hub_invoke::{
+    answer_hub_invoke, handle_hub_invoke, runner_capability_plugins, HUB_APP_HANDLE,
+};
 #[allow(unused_imports)]
 pub(crate) use normalize::{
     normalize_pi_agent_event, pi_compaction_record, pi_segment_usage, pi_turn_usage,
 };
 #[allow(unused_imports)]
+pub(crate) use prompts::{
+    apply_resolved_session_prompt_injection, await_extension_commands, compaction_settle_due,
+    compaction_settle_events, compaction_settle_timeout, extension_command_name,
+    extension_command_names, finalize_stale_sent_before_turn, finalize_turn_prompt,
+    is_extension_command, next_line, request_id, request_seq, side_prompt_index,
+    take_prompt_record, unattributable_failure, write_prompt, PromptRecord, Receipt, RequestIds,
+    COMPACTION_SETTLE_MESSAGE, DUPLICATE_COMPACT_HINT, ERR_INTERACTION_STALE, REQUEST_ID_COMMANDS,
+    REQUEST_ID_COMPACT, REQUEST_ID_PROMPT,
+};
+// 仅供连接循环内部使用（签名里有循环私有的看门狗相位类型），不对外重导出。
+use prompts::resend_buffered_prompt;
+// 仅测试用：回合发起前对账的替身证据守卫（tests 模块经 `super::` 引用）。
+#[cfg(test)]
+use prompts::PersistedUserAtGuard;
+#[allow(unused_imports)]
 pub(crate) use protocol::{
-    convert_extension_ui_request, interaction_auto_answer, interaction_sentinels,
-    is_sentinel_option, migrate_auto_answer_key, multi_select_requests, rewrite_multiselect_input,
-    rewrite_multiselect_response, rewrite_sentinel_response, strip_sentinel_option,
-    take_interaction_auto_answer, PiToolApproval, PROTOCOL_TABLE_LIMIT,
+    convert_extension_ui_request, engine_error_message, interaction_auto_answer,
+    interaction_sentinels, is_sentinel_option, migrate_auto_answer_key, multi_select_requests,
+    rewrite_multiselect_input, rewrite_multiselect_response, rewrite_sentinel_response,
+    strip_sentinel_option, take_interaction_auto_answer, PiToolApproval, PROTOCOL_TABLE_LIMIT,
 };
 
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -337,62 +367,9 @@ enum LoopState {
     },
 }
 
-/// v0.9.6 需求6 F2：回合分级看门狗相位。
-/// 取代 v0.9.5 的单闹钟 `prompt_ack_at`（20s，response 到达即解除——实测该
-/// 等价不成立：pi 的 prompt response success 只代表 preflight「started」，
-/// 回合真正启动（压缩预检/before_agent_start/LLM 首请求）之前的静默无人
-/// 看护，命中即永停 Prompting、前端永「思考中」且消息不落盘）。
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum WatchdogPhase {
-    /// prompt 已写 stdin，等 rpc response。response 之前 pi 可能先跑自动压缩
-    /// 预检（summarize 的 LLM chunk 不外发 stdout——对 hub 整段静默，大上下文
-    /// +思考模型分钟级且无 transport 上限约束）+ auth 刷新（≤15s）+
-    /// before_agent_start 钩子（内置 MCP ≤10s；第三方理论无界）→ 宽窗。
-    AwaitResponse,
-    /// response(started) 已到，等首个回合事件。started→agent_start/turn_start
-    /// 之间无 I/O（仅扩展微任务链，MCP 重连秒级）→ 紧凑窗。
-    AwaitTurnStart,
-}
-
-/// v0.9.6 需求6 F2：各相位窗口（依据见 WatchdogPhase 注释；触发均出
-/// recoverable Error 引导重发，devlog 留证可调窗）。
-const WATCHDOG_AWAIT_RESPONSE: Duration = Duration::from_secs(300);
-const WATCHDOG_AWAIT_TURN_START: Duration = Duration::from_secs(15);
-
-/// v0.9.6 需求6 F2：窗口选择（纯函数，供单测）。
-/// v0.9.6 需求9 哲学修正（2026-11-07 评审 P2-1 清理）：原 in_compaction
-/// 宽窄窗参数随 InTurn 相位废除而失去消费者——删除死参数，窗口仅由相位决定。
-fn turn_watchdog_window(phase: WatchdogPhase) -> Duration {
-    match phase {
-        WatchdogPhase::AwaitResponse => WATCHDOG_AWAIT_RESPONSE,
-        WatchdogPhase::AwaitTurnStart => WATCHDOG_AWAIT_TURN_START,
-    }
-}
-
-/// v0.9.6 需求6 F2：事件驱动的相位转移（纯函数，供单测）。
-/// （需求9 哲学修正前的旧语义「升 InTurn/宽窄窗」已废除——见下方裁决注释。）
-/// v0.9.6 需求9 用户哲学裁决（2026-11-06）：「当时永远思考中不是 pi 死了，
-/// 更像是消息没到 pi……坚决的相信 pi 没问题」。看门狗职责收窄为**投递确认**
-/// ——回合一旦启动（首个回合事件到达）= 投递成功铁证，解除看门狗，此后
-/// 无条件信任 pi 直到收口（agent_settled/turn_complete）或进程退出（EOF）。
-/// 回合内的长静默（LLM 思考/工具执行/等待作答）全部是 pi 的正常形态，
-/// hub 不再猜测、不再判死（InTurn 相位废除——它按「pi 可能挂死」的假设
-/// 设计，实际病根在 hub 投递链路，且已两度误杀：等待作答/长构建）。
-fn watchdog_phase_on_event(_phase: WatchdogPhase, _event_type: &str) -> Option<WatchdogPhase> {
-    None // 调用点据此解除看门狗（见事件处理处）
-}
-
-/// v0.9.8 需求7 补充轮：空闲回收判定——状态 Idle、引擎没有在压缩、且本轮到期
-/// 的正是空闲期限。压缩期间引擎静默（摘要生成可持续数分钟），状态虽是 Idle
-/// 但不是空闲：不回收。
-fn idle_reap_due(
-    is_idle: bool,
-    in_compaction: bool,
-    idle_deadline: tokio::time::Instant,
-    next_deadline: tokio::time::Instant,
-) -> bool {
-    is_idle && !in_compaction && idle_deadline <= next_deadline
-}
+// 回合看门狗的相位、窗口与判定（纯函数）在 `watchdog.rs`；仅供连接循环及其
+// 子模块使用（子模块经 `super::*` 取），不对外重导出。
+use watchdog::{idle_reap_due, turn_watchdog_window, watchdog_phase_on_event, WatchdogPhase};
 
 /// CancelPending（abort 后）收尾 watchdog——pi 滞留时 agent_settled 永不到
 ///（停止不了的兜底）——超时杀进程终结流。
@@ -418,17 +395,6 @@ const PI_STATE_HANDSHAKE_BUDGET: Duration = Duration::from_secs(150);
 /// 握手等待进度日志步长。
 const PI_STATE_HANDSHAKE_LOG_STEP: Duration = Duration::from_secs(30);
 
-pub(crate) fn apply_resolved_session_prompt_injection(
-    message: String,
-    session_id: &str,
-    injection: Option<&ResolvedSessionPromptInjection>,
-) -> String {
-    match injection {
-        Some(injection) => injection.apply(&message, session_id),
-        None => message,
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn pi_rpc_connection_loop(
     emit: AcpEventEmit,
@@ -448,10 +414,15 @@ async fn pi_rpc_connection_loop(
     child_pid: Option<u32>,
 ) -> Result<(), String> {
     // v0.9.8 评审修复轮 R1-1：首条 prompt 携带的防丢账身份（与消息同体
-    // 传入——prompt 真正写入 stdin 时按它结算入口账）。
-    let (first_message, first_entries) = match first_message {
-        Some(payload) => (Some(payload.message), payload.pending_entries),
-        None => (None, Vec::new()),
+    // 传入——prompt 真正写入 stdin 时按它结算入口账）。R2：用户原文一并
+    // 带入——首条是不是扩展命令，以引擎的命令清单为准，按原文转发。
+    let (first_message, first_user_text, first_entries) = match first_message {
+        Some(payload) => (
+            Some(payload.message),
+            payload.user_text,
+            payload.pending_entries,
+        ),
+        None => (None, None, Vec::new()),
     };
     // 1. stdout reader sub-task
     let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel(64);
@@ -459,6 +430,13 @@ async fn pi_rpc_connection_loop(
 
     // 2. Get session ID via get_state command
     send_pi_command(&stdin_arc, &json!({"type": "get_state"})).await?;
+    // 评审修复轮 R2（C1）：扩展命令清单紧随 get_state 发出——引擎按输入顺序
+    // 处理命令、按同一顺序回响应，所以它的响应就排在 get_state 响应之后。
+    send_pi_command(
+        &stdin_arc,
+        &json!({ "type": "get_commands", "id": request_id(REQUEST_ID_COMMANDS, 0) }),
+    )
+    .await?;
 
     // Read lines until we get the get_state response
     let mut context_window: Option<u64> = None;
@@ -570,6 +548,12 @@ async fn pi_rpc_connection_loop(
     // 与登记键不同源，新会话场景（两 id 不同）清扫恒 miss。
     migrate_auto_answer_key(&pending_session_id, &session_id);
 
+    // 解析回调先于 SessionResolved 事件（评审修复轮 R3 / P1-1）：调用方在这个
+    // 回调里把「挂在临时会话键上的东西」迁到真实会话号——进程表登记、工具集、
+    // 防丢账、任务实例的会话键。前端收到 SessionResolved 就会按真实会话号来读
+    // 这些状态（比如按任务号读回实例），所以迁移必须先做完，再告诉它。
+    on_session_resolved(&session_id);
+
     // Emit SessionResolved
     emit(
         &[NormalizedEvent::SessionResolved {
@@ -624,7 +608,6 @@ async fn pi_rpc_connection_loop(
             log::debug!("Pi RPC applied hub auto compaction at spawn: {pref}");
         }
     }
-    on_session_resolved(&session_id);
 
     // v0.9.6 需求6 F2：回合分级看门狗状态（相位 + 绝对时刻，事件到达刷新）：
     // - turn_watchdog：AwaitResponse（等 response，宽窗——response 前可能先跑
@@ -643,36 +626,74 @@ async fn pi_rpc_connection_loop(
     // 点停止取消压缩不是失败——compact 响应到达时据此把结果归为「已取消」。
     let mut compaction_aborted = false;
     let mut cancel_settle_at: Option<tokio::time::Instant> = None;
+    // v0.9.8 评审修复轮 R2：压缩中点过停止之后的收尾期限（见
+    // COMPACTION_SETTLE_TIMEOUT）；compaction_start / compaction_end 都会解除。
+    let mut compaction_settle_at: Option<tokio::time::Instant> = None;
+
+    // 评审修复轮 R2（C1）：本会话引擎的扩展命令名集合——是不是扩展命令以它
+    // 为准。清单请求已随握手发出；首条消息以 `/` 开头时必须先拿到清单才能
+    // 决定这条怎么发，其余情况不等（响应到了在主循环里落进来）。
+    let first_user_text = first_user_text
+        .clone()
+        .or_else(|| first_message.clone())
+        .unwrap_or_default();
+    // 等清单期间替主循环收下的行（评审修复轮 R3 / P2-6：此前直接丢掉）——
+    // 主循环读行时先把它们按先后交还。
+    let mut held_lines: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let mut extension_commands = if first_user_text.starts_with('/') {
+        let (names, held) = await_extension_commands(&mut stdout_rx).await;
+        held_lines.extend(held);
+        names
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    // 评审修复轮 R2：hub → 引擎的请求号；每次发送登记一笔（认回执）。
+    // - turn_prompt：当前回合由哪次发送启动（首条 / 空闲直发 / 缓冲重发），
+    //   回合结束即清；
+    // - side_prompts：回合进行中转发出去的扩展命令——它们不拥有回合，引擎
+    //   的回执到了就销账。
+    let mut request_ids = RequestIds::default();
+    let mut turn_prompt: Option<PromptRecord> = None;
+    let mut side_prompts: Vec<PromptRecord> = Vec::new();
 
     // 3. Send first prompt. v0.8.0 需求1 A5：resume-fork 形态传 None——不发
     // prompt，连接停在 Idle 等待 ForkSession（历史会话静默分支，零历史污染）。
     let mut state = LoopState::Idle;
     if let Some(entry_message) = first_message {
-        let first_message = apply_resolved_session_prompt_injection(
-            entry_message,
-            &session_id,
-            resolved_session_prompt_injection.as_ref(),
-        );
-        send_pi_command(
+        // 扩展命令按用户原文交给引擎：命令不进模型，工具说明块、会话注入这些
+        // 给模型看的后缀对它没有意义，而且引擎靠「`/名字` + 空格」识别命令，
+        // 后面跟着注入块就认不出来。
+        let is_extension = is_extension_command(&extension_commands, &first_user_text);
+        let outgoing = if is_extension {
+            first_user_text.clone()
+        } else {
+            apply_resolved_session_prompt_injection(
+                entry_message,
+                &session_id,
+                resolved_session_prompt_injection.as_ref(),
+            )
+        };
+        let seq = request_ids.next();
+        // 评审修复轮 R2：与下方空闲直发是同一处入口——先把上一代遗留的落地账
+        // 了结（按会话文件对账），不让它抢走首条消息的落盘回执。
+        finalize_stale_sent_before_turn(&session_id, &first_entries).await;
+        // 交回的身份代表这次发送：没带入口账时是落地时新记的那一行。
+        let first_entries = write_prompt(
             &stdin_arc,
-            &json!({"type": "prompt", "message": first_message}),
+            seq,
+            &outgoing,
+            &session_id,
+            &agent_id,
+            &first_entries,
         )
         .await?;
         log::debug!("Pi RPC sent first prompt");
-        // v0.9.6 需求6 F3 / v0.9.8 评审修复轮 R1-1：prompt 已写入 pi stdin
-        // ——按身份把发送入口记的防丢账结算为落地账（内容 = 实际发给 pi 的
-        // 文本，与 message_end(user) 落盘回执的内容匹配口径一致）。身份随
-        // 首条消息带来，与会话键的迁移时序无关。
-        crate::pending_messages::confirm_entries(
-            &first_entries,
-            &session_id,
-            &agent_id,
-            &first_message,
-        );
         turn_watchdog = Some((
             WatchdogPhase::AwaitResponse,
             tokio::time::Instant::now() + turn_watchdog_window(WatchdogPhase::AwaitResponse),
         ));
+        turn_prompt = Some(PromptRecord::new(seq, first_entries, is_extension));
         state = LoopState::Prompting;
     }
     // v0.8.0 需求10：经 Steer 命令注入的文本登记——用于区分 pi 回显的
@@ -703,10 +724,12 @@ async fn pi_rpc_connection_loop(
     // Pi may run awaited agent_end handlers and queue another core run after the
     // final turn_end, so keep the GUI stream alive until agent_settled.
     let mut pending_turn_complete: Option<NormalizedEvent> = None;
-    // 需求1 A3：进行中的 compact 请求回填通道（响应到达时 resolve IPC）。
-    let mut pending_compact: Option<
+    // 需求1 A3：进行中的 compact 请求回填通道（响应到达时 resolve IPC）。评审
+    // 修复轮 R2：按请求号登记——响应按号路由，不再靠「谁在等就给谁」。
+    let mut pending_compacts: std::collections::HashMap<
+        u64,
         tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
-    > = None;
+    > = HashMap::new();
     // 需求1 A5（v0.8.0）：fork 会话两段式回填。clone 响应不携带新会话 id，
     // 需再发一次 get_state 取 data.sessionId（clone → get_state → resolve IPC）。
     // 元组第一项标记已进入第二段（等待 get_state 响应）。
@@ -736,6 +759,7 @@ async fn pi_rpc_connection_loop(
             Some(idle_deadline),
             turn_watchdog.map(|(_, deadline)| deadline),
             cancel_settle_at,
+            compaction_settle_at,
             flush_deadline,
         ]
         .into_iter()
@@ -748,39 +772,90 @@ async fn pi_rpc_connection_loop(
                 match cmd {
                     Some(AcpCommand::Prompt(prompt)) => {
                         log::info!("Pi RPC loop received Prompt command (state={})", loop_state_name(&state));
-                        let msg = prompt.message;
-                        let pending_entries = prompt.pending_entries;
+                        let PromptPayload {
+                            message: msg,
+                            user_text,
+                            pending_entries,
+                        } = prompt;
+                        // 用户原文：发送入口带了的用它，没带的就是 message 本身。
+                        let user_text_opt = user_text;
+                        let user_text = user_text_opt.clone().unwrap_or_else(|| msg.clone());
                         match &mut state {
                             LoopState::Idle => {
-                                let msg = apply_resolved_session_prompt_injection(
-                                    msg,
-                                    &session_id,
-                                    resolved_session_prompt_injection.as_ref(),
-                                );
-                                send_pi_command(&stdin_arc, &json!({
-                                    "type": "prompt",
-                                    "message": msg
-                                })).await?;
-                                log::info!("Pi RPC prompt sent to Pi ({} bytes)", msg.len());
-                                // v0.9.6 需求6 F3 / R1-1：落地即按身份结算
-                                // 入口账（同 spawn 首条）。
-                                crate::pending_messages::confirm_entries(
-                                    &pending_entries,
+                                // 评审修复轮 R2（C1）：扩展命令按用户原文交给
+                                // 引擎——命令不进模型，注入后缀对它没有意义，而且
+                                // 会让引擎认不出这是命令。引擎空闲时执行扩展命令
+                                // 同样由 hub 起一个「回合」：引擎回「已处理」就
+                                // 合成回合结束（见响应分支的 handled）。
+                                let seq = request_ids.next();
+                                let is_extension =
+                                    is_extension_command(&extension_commands, &user_text);
+                                let outgoing = if is_extension {
+                                    user_text.clone()
+                                } else {
+                                    apply_resolved_session_prompt_injection(
+                                        msg,
+                                        &session_id,
+                                        resolved_session_prompt_injection.as_ref(),
+                                    )
+                                };
+                                // 评审修复轮 R2：先把上一代遗留的落地账了结（按会话
+                                // 文件对账，对不上的才落终态）——免得它们抢走这一
+                                // 条的落盘回执。
+                                finalize_stale_sent_before_turn(&session_id, &pending_entries)
+                                    .await;
+                                // 交回的身份代表这次发送：没带入口账时是落地时新记
+                                // 的那一行。
+                                let pending_entries = write_prompt(
+                                    &stdin_arc,
+                                    seq,
+                                    &outgoing,
                                     &session_id,
                                     &agent_id,
-                                    &msg,
-                                );
+                                    &pending_entries,
+                                )
+                                .await?;
+                                log::info!("Pi RPC prompt sent to Pi ({} bytes)", outgoing.len());
                                 turn_watchdog = Some((
                                     WatchdogPhase::AwaitResponse,
                                     tokio::time::Instant::now()
                                         + turn_watchdog_window(WatchdogPhase::AwaitResponse),
                                 ));
+                                turn_prompt =
+                                    Some(PromptRecord::new(seq, pending_entries, is_extension));
                                 state = LoopState::Prompting;
                                 devlog(
                                     "info",
                                     "Prompt 直发 pi（Prompting，AwaitResponse 看门狗武装）",
                                     &session_id,
-                                    json!({ "bytes": msg.len() }),
+                                    json!({ "bytes": outgoing.len() }),
+                                );
+                            }
+                            // 评审修复轮 R2（C1）：回合进行中（含停止善中期）收到
+                            // 扩展命令——引擎对扩展命令是立即执行的，不起新回合、
+                            // 不碰正在跑的那个回合（原生 TUI 里输出过程中发命令
+                            // 也是立即执行）。所以直接转发：回合状态不动、不发
+                            // 回合结束、不并进缓冲消息；引擎的回执到了只销账。
+                            // 非扩展命令落到下面两个分支，行为不变。
+                            LoopState::Prompting | LoopState::CancelPending { .. }
+                                if is_extension_command(&extension_commands, &user_text) =>
+                            {
+                                let seq = request_ids.next();
+                                let pending_entries = write_prompt(
+                                    &stdin_arc,
+                                    seq,
+                                    &user_text,
+                                    &session_id,
+                                    &agent_id,
+                                    &pending_entries,
+                                )
+                                .await?;
+                                side_prompts.push(PromptRecord::new(seq, pending_entries, true));
+                                devlog(
+                                    "info",
+                                    "回合进行中收到扩展命令：立即转发引擎（不动当前回合）",
+                                    &session_id,
+                                    json!({ "bytes": user_text.len() }),
                                 );
                             }
                             LoopState::Prompting => {
@@ -819,7 +894,11 @@ async fn pi_rpc_connection_loop(
                                 cancel_settle_at =
                                     Some(tokio::time::Instant::now() + CANCEL_SETTLE_TIMEOUT);
                                 state = LoopState::CancelPending {
-                                    pending_prompt: Some(PromptPayload { message: msg, pending_entries }),
+                                    pending_prompt: Some(PromptPayload {
+                                        message: msg,
+                                        user_text: user_text_opt,
+                                        pending_entries,
+                                    }),
                                 };
                                 devlog(
                                     "warn",
@@ -844,12 +923,21 @@ async fn pi_rpc_connection_loop(
                                         );
                                         PromptPayload {
                                             message: format!("{}\n{}", prev.message, msg),
+                                            // 用户原文同样拼接（扩展命令不走这条缓冲，
+                                            // 拼起来的只会是普通消息）。
+                                            user_text: prev.user_text.zip(user_text_opt).map(
+                                                |(prev_text, text)| format!("{prev_text}\n{text}"),
+                                            ),
                                             // 多条缓冲消息拼成一条 prompt 发出：各自的
                                             // 入口账身份一并带上，落地时结算为一条落地账。
                                             pending_entries: [prev.pending_entries, pending_entries].concat(),
                                         }
                                     }
-                                    None => PromptPayload { message: msg, pending_entries },
+                                    None => PromptPayload {
+                                        message: msg,
+                                        user_text: user_text_opt,
+                                        pending_entries,
+                                    },
                                 });
                                 devlog(
                                     "warn",
@@ -886,21 +974,40 @@ async fn pi_rpc_connection_loop(
                     Some(AcpCommand::Compact { instructions, response }) => {
                         // 需求1 A3：手动压缩。Pi 压缩期间排队消息、完成后经
                         // compact 响应回填结果（见 stdout 分支）。
-                        let mut payload = json!({ "type": "compact" });
-                        let has_instructions = instructions.is_some();
-                        if let Some(instr) = instructions {
-                            payload["customInstructions"] = json!(instr);
+                        // 评审修复轮 R2：同一时刻只放一个压缩过去。此前第二个
+                        // 请求直接覆盖第一个的回填通道——第一个调用方拿到「通道
+                        // 已关闭」的内部英文报错，而引擎的响应又按到达顺序回给
+                        // 等着的那一个，两个调用方各拿到对方的结果。
+                        if !pending_compacts.is_empty() {
+                            let hint = DUPLICATE_COMPACT_HINT;
+                            log::info!("Pi RPC compact rejected: another compaction is in flight");
+                            devlog(
+                                "info",
+                                "压缩请求被拒：已有压缩在进行",
+                                &session_id,
+                                json!({}),
+                            );
+                            let _ = response.send(Err(hint.to_string()));
+                            false
+                        } else {
+                            let mut payload = json!({ "type": "compact" });
+                            let has_instructions = instructions.is_some();
+                            if let Some(instr) = instructions {
+                                payload["customInstructions"] = json!(instr);
+                            }
+                            let seq = request_ids.next();
+                            payload["id"] = json!(request_id(REQUEST_ID_COMPACT, seq));
+                            send_pi_command(&stdin_arc, &payload).await?;
+                            pending_compacts.insert(seq, response);
+                            log::info!("Pi RPC compact requested");
+                            devlog(
+                                "info",
+                                "压缩请求已发给引擎（等待引擎的完成、取消或失败）",
+                                &session_id,
+                                json!({ "custom_instructions": has_instructions }),
+                            );
+                            false
                         }
-                        send_pi_command(&stdin_arc, &payload).await?;
-                        pending_compact = Some(response);
-                        log::info!("Pi RPC compact requested");
-                        devlog(
-                            "info",
-                            "压缩请求已发给引擎（等待引擎的完成、取消或失败）",
-                            &session_id,
-                            json!({ "custom_instructions": has_instructions }),
-                        );
-                        false
                     }
                     Some(AcpCommand::SetAutoCompaction {
                         enabled,
@@ -934,7 +1041,7 @@ async fn pi_rpc_connection_loop(
                             log::info!("Pi RPC clone requested for session {}", session_id);
                         } else {
                             let _ = response.send(Err(
-                                "Cannot fork while the session is streaming — wait for the turn to finish".to_string(),
+                                "会话正在输出，等这一轮结束后再创建分支".to_string(),
                             ));
                         }
                         false
@@ -1001,6 +1108,13 @@ async fn pi_rpc_connection_loop(
                                         "type": "abort"
                                     }))
                                     .await;
+                                    // 评审修复轮 R2：与回合取消的收尾看门狗对称——
+                                    // 引擎点了停止却不收尾时，到期限由 hub 收场
+                                    // （见 COMPACTION_SETTLE_TIMEOUT）。compaction_end
+                                    // 一到即解除，正常取消不会走到期限。
+                                    compaction_settle_at = Some(
+                                        tokio::time::Instant::now() + compaction_settle_timeout(),
+                                    );
                                     log::info!(
                                         "Pi RPC cancel sent during compaction (session {session_id})"
                                     );
@@ -1044,9 +1158,9 @@ async fn pi_rpc_connection_loop(
                                 &session_id,
                                 json!({ "stale_id": id }),
                             );
-                            let _ = response.send(Err(
-                                "该交互已过期（回合已结束或会话重启），请重新触发提问".to_string(),
-                            ));
+                            let _ = response.send(Err(format!(
+                                "{ERR_INTERACTION_STALE} 该交互已过期（回合已结束或会话重启），请重新触发提问"
+                            )));
                             false
                         } else {
                             let result = send_pi_command(&stdin_arc, &json!({
@@ -1104,7 +1218,8 @@ async fn pi_rpc_connection_loop(
                     }
                 }
             }
-            line = stdout_rx.recv() => {
+            // 先交还等命令清单期间替主循环收下的行，再读通道（保持先后）。
+            line = next_line(&mut stdout_rx, &mut held_lines) => {
                 match line {
                     Some(line) => {
                         if line.trim().is_empty() { continue; }
@@ -1118,11 +1233,81 @@ async fn pi_rpc_connection_loop(
                             if cmd == "response" {
                                 let response_cmd = msg.get("command").and_then(|v| v.as_str()).unwrap_or_default();
                                 let success = msg.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+                                // 评审修复轮 R2：引擎原样回带的请求号（按号认回执）。
+                                let response_id = msg.get("id").and_then(|v| v.as_str());
                                 let disposition = msg
                                     .get("data")
                                     .and_then(|d| d.get("disposition"))
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("");
+
+                                // 评审修复轮 R2（C1）：引擎回「这条消息已被扩展命令
+                                // 处理」——不起回合、不落用户消息。此前 hub 只把它
+                                // 当成「解除看门狗」，状态机停在「回合进行中」，会话
+                                // 从此一直「处理中」，点停止也救不回来（发版前评审
+                                // P0）。现在 hub 起的这个回合到此为止：按身份销账 →
+                                // 合成回合结束 → 回空闲。回合进行中转发的扩展命令
+                                // 不拥有回合：只销账，不动正在跑的回合。
+                                if success && response_cmd == "prompt" && disposition == "handled" {
+                                    let seq = request_seq(response_id, REQUEST_ID_PROMPT);
+                                    let (record, owns_turn) =
+                                        take_prompt_record(seq, &mut turn_prompt, &mut side_prompts);
+                                    if let Some(record) = record {
+                                        crate::pending_messages::ack_handled(&record.entries);
+                                        // hub 为这条消息起的回合还没收口，才需要 hub
+                                        // 来收。命令处理器里自己又跑了一轮的扩展
+                                        // 命令，那一轮收口时回合已经结束，这里只销账。
+                                        if owns_turn && !matches!(state, LoopState::Idle) {
+                                            turn_watchdog = None;
+                                            cancel_settle_at = None;
+                                            pending_turn_complete = None;
+                                            // 停止善中期才到的「已处理」：缓冲着的
+                                            // 后继消息照常送出（同回合收口）。
+                                            let buffered = match std::mem::replace(
+                                                &mut state,
+                                                LoopState::Idle,
+                                            ) {
+                                                LoopState::CancelPending { pending_prompt } => {
+                                                    pending_prompt
+                                                }
+                                                _ => None,
+                                            };
+                                            buf.push(NormalizedEvent::TurnComplete {
+                                                reason: TurnEndReason::Handled,
+                                                usage: None,
+                                            });
+                                            flush_buf(&emit, &session_id, &mut buf);
+                                            last_flush = std::time::Instant::now();
+                                            if let Some(payload) = buffered {
+                                                let seq = request_ids.next();
+                                                resend_buffered_prompt(
+                                                    &stdin_arc,
+                                                    payload,
+                                                    seq,
+                                                    &session_id,
+                                                    &agent_id,
+                                                    resolved_session_prompt_injection.as_ref(),
+                                                    &mut turn_watchdog,
+                                                    &mut turn_prompt,
+                                                )
+                                                .await?;
+                                                state = LoopState::Prompting;
+                                            }
+                                        }
+                                        devlog(
+                                            "info",
+                                            if owns_turn {
+                                                "扩展命令已由引擎处理（不起回合、不落用户消息）：合成回合结束，回 Idle"
+                                            } else {
+                                                "回合进行中转发的扩展命令已由引擎处理（不动当前回合）"
+                                            },
+                                            &session_id,
+                                            json!({}),
+                                        );
+                                        continue;
+                                    }
+                                }
+
                                 // v0.9.6 需求6 F2：response 不再「到达即解除」——
                                 // pi 的 prompt response success 只代表 preflight
                                 // 「started」（回合真正启动之前：压缩预检/
@@ -1132,9 +1317,9 @@ async fn pi_rpc_connection_loop(
                                 //   后未开工」，started→首个回合事件无 I/O）
                                 // - prompt+queued（pi 原生排队，hub 当前策略不触发）
                                 //   → 挂 InTurn 窗（等当前回合事件流）
-                                // - prompt+handled（扩展吃掉，无回合）→ 解除
                                 // - steer/follow_up（注入当前回合不起新回合）→ 仅刷新
                                 // - 失败（Error+TurnComplete 已终结名单）→ 解除
+                                // - handled：上方已处理并 continue
                                 if success && response_cmd == "prompt" {
                                     turn_watchdog = match disposition {
                                         "started" => Some((
@@ -1146,7 +1331,7 @@ async fn pi_rpc_connection_loop(
                                         // pi 语义保证回合事件流会继续，信任 pi 不设
                                         // 看门狗（v0.9.6 需求9 哲学修正，原 InTurn）。
                                         "queued" => None,
-                                        _ => None, // handled / n/a：无回合将启动
+                                        _ => None, // n/a：无回合将启动
                                     };
                                 } else if success
                                     && (response_cmd == "steer" || response_cmd == "follow_up")
@@ -1190,6 +1375,59 @@ async fn pi_rpc_connection_loop(
                                                 .get("error")
                                                 .and_then(|v| v.as_str())
                                                 .unwrap_or("Unknown prompt error");
+                                            let failed_seq = request_seq(response_id, REQUEST_ID_PROMPT);
+
+                                            // 评审修复轮 R3（P2-10）：引擎不回带请求号，
+                                            // 而当前回合的发送与转发出去的命令都在等回
+                                            // 执——这条失败认不出属于谁，不猜：只报一条
+                                            // 可恢复错误，不动回合、不动账。此前按「先
+                                            // 认当前回合的那一次」落笔，会把正在跑的回
+                                            // 合记成失败。
+                                            if unattributable_failure(failed_seq, &turn_prompt, &side_prompts) {
+                                                log::warn!(
+                                                    "Pi RPC prompt rejected without a request id while a turn and a forwarded command are both in flight; not guessing which one failed: {err_msg}"
+                                                );
+                                                buf.push(NormalizedEvent::Error {
+                                                    message: engine_error_message(err_msg),
+                                                    recoverable: true,
+                                                });
+                                                flush_buf(&emit, &session_id, &mut buf);
+                                                last_flush = std::time::Instant::now();
+                                                continue;
+                                            }
+
+                                            // 评审修复轮 R2（C1）：回合进行中转发的扩展
+                                            // 命令失败——它不拥有回合。只报一条可恢复
+                                            // 错误，不动正在跑的回合；这笔账确定未送达。
+                                            if let Some(index) =
+                                                side_prompt_index(failed_seq, &turn_prompt, &side_prompts)
+                                            {
+                                                let record = side_prompts.remove(index);
+                                                crate::pending_messages::mark_unsent(&record.entries);
+                                                log::warn!(
+                                                    "Pi RPC side-forwarded prompt rejected (seq={}): {err_msg}",
+                                                    record.seq
+                                                );
+                                                buf.push(NormalizedEvent::Error {
+                                                    message: engine_error_message(err_msg),
+                                                    recoverable: true,
+                                                });
+                                                flush_buf(&emit, &session_id, &mut buf);
+                                                last_flush = std::time::Instant::now();
+                                                continue;
+                                            }
+
+                                            // 评审修复轮 R2（C2）：这次发送被引擎拒收——
+                                            // 确定未送达，落成终态。不然它会一直占着
+                                            // 「等回执」的位置，把下一条发送成功的回执
+                                            // 抢走。
+                                            if failed_seq.map_or(true, |seq| {
+                                                turn_prompt.as_ref().is_some_and(|record| record.seq == seq)
+                                            }) {
+                                                if let Some(record) = turn_prompt.take() {
+                                                    crate::pending_messages::mark_unsent(&record.entries);
+                                                }
+                                            }
 
                                             // v0.9.6 需求9 F3：already processing 对账——
                                             // 该错误说明 hub 状态机与 pi 实际态失同步
@@ -1231,8 +1469,11 @@ async fn pi_rpc_connection_loop(
                                                 continue;
                                             }
 
+                                            // 评审修复轮 R2：引擎的英文原话不直接上屏
+                                            //（需求15 F1 同类）——已知错误换成中文，
+                                            // 原话已在上方 log::error 留痕。
                                             buf.push(NormalizedEvent::Error {
-                                                message: err_msg.to_string(),
+                                                message: engine_error_message(err_msg),
                                                 recoverable: false,
                                             });
                                             buf.push(NormalizedEvent::TurnComplete {
@@ -1320,7 +1561,21 @@ async fn pi_rpc_connection_loop(
                                         // 不是失败——按「已取消」正常返回（引擎的
                                         // compact 响应不带这个区分，取紧邻其前的
                                         // compaction_end 事件里的 aborted）。
-                                        if let Some(tx) = pending_compact.take() {
+                                        // 评审修复轮 R2：按请求号找到这一次压缩的
+                                        // 回填通道。引擎回带了 hub 的请求号就只认这一个
+                                        // ——对不上在等的请求（过期、乱到的响应）一律
+                                        // 丢弃，不能回给别的调用方。只有引擎没回带
+                                        // 请求号时才退回「在等的那一个」（同一时刻至多
+                                        // 一个，见 Compact 分支）。
+                                        let echoed = response_id
+                                            .is_some_and(|id| id.starts_with(REQUEST_ID_COMPACT));
+                                        let key = if echoed {
+                                            request_seq(response_id, REQUEST_ID_COMPACT)
+                                                .filter(|seq| pending_compacts.contains_key(seq))
+                                        } else {
+                                            pending_compacts.keys().next().copied()
+                                        };
+                                        if let Some(tx) = key.and_then(|key| pending_compacts.remove(&key)) {
                                             let result = if success {
                                                 Ok(msg
                                                     .get("data")
@@ -1329,13 +1584,26 @@ async fn pi_rpc_connection_loop(
                                             } else if compaction_aborted {
                                                 Ok(serde_json::json!({ "cancelled": true }))
                                             } else {
-                                                Err(msg
+                                                let raw = msg
                                                     .get("error")
                                                     .and_then(|v| v.as_str())
-                                                    .unwrap_or("compaction failed")
-                                                    .to_string())
+                                                    .unwrap_or("compaction failed");
+                                                Err(engine_error_message(raw))
                                             };
                                             let _ = tx.send(result);
+                                        }
+                                        continue;
+                                    }
+                                    // 评审修复轮 R2（C1）：扩展命令清单——握手后取
+                                    // 一次、每回合结束刷新。成功就换上新的集合；失败
+                                    // 或引擎不认这条命令时保留上一次的集合，不向界面
+                                    // 发错误（它不是用户发起的操作）。
+                                    "get_commands" => {
+                                        match extension_command_names(&msg) {
+                                            Some(names) => extension_commands = names,
+                                            None => log::debug!(
+                                                "Pi RPC get_commands response unusable (success={success})"
+                                            ),
                                         }
                                         continue;
                                     }
@@ -1353,11 +1621,11 @@ async fn pi_rpc_connection_loop(
                                                 pending_fork = Some((true, tx));
                                                 log::info!("Pi RPC clone succeeded, resolving branch session id");
                                             } else {
-                                                let err = msg
+                                                let raw = msg
                                                     .get("error")
                                                     .and_then(|v| v.as_str())
                                                     .unwrap_or("fork failed");
-                                                let _ = tx.send(Err(err.to_string()));
+                                                let _ = tx.send(Err(engine_error_message(raw)));
                                             }
                                         }
                                         continue;
@@ -1397,7 +1665,7 @@ async fn pi_rpc_connection_loop(
                                                 }
                                                 None => {
                                                     let _ = tx.send(Err(
-                                                        "fork succeeded but branch session id is unknown"
+                                                        "分支创建成功，但没有拿到新会话的编号——请重新打开会话"
                                                             .to_string(),
                                                     ));
                                                 }
@@ -1417,7 +1685,7 @@ async fn pi_rpc_connection_loop(
                                     let error_msg = msg.get("error").and_then(|v| v.as_str()).unwrap_or("Unknown Pi RPC error");
                                     log::warn!("Pi RPC error response for {}: {}", response_cmd, error_msg);
                                     buf.push(NormalizedEvent::Error {
-                                        message: error_msg.to_string(),
+                                        message: engine_error_message(error_msg),
                                         recoverable: false,
                                     });
                                     buf.push(NormalizedEvent::TurnComplete {
@@ -1460,143 +1728,32 @@ async fn pi_rpc_connection_loop(
                             let title = msg.get("title").and_then(|v| v.as_str()).unwrap_or("");
 
                             // ── v0.8.0 需求1 P-2：审批型 confirm（jishu-tool-approval
-                            // 扩展）。标题格式 "[jishu-tool-approval]<mode>|<tool>"。
-                            // 先过策略链（Phase 2 挂载点的 Pi 版）：Allow/Deny 直接
-                            // extension_ui_response 回写；Delegate 转 ApprovalRequest
-                            // 走前端审批弹窗（复用 resolve_chat_permission 回写路径）。
+                            // 扩展）→ 策略链。Allow/Deny 由路由直接回写引擎；Delegate
+                            // 转标准 ApprovalRequest 走前端审批弹窗（复用
+                            // resolve_chat_permission 回写路径）。评审修复轮 R2 自循环体
+                            // 纯移出到 approval.rs，循环里只留这一处调用。
                             if method == "confirm" && title.starts_with("[jishu-tool-approval") {
-                                let request_id = msg
-                                    .get("id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let meta = title
-                                    .strip_prefix("[jishu-tool-approval]")
-                                    .unwrap_or("");
-                                let (_mode, tool) = meta.split_once('|').unwrap_or(("", meta));
-                                let message = msg
-                                    .get("message")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or_default()
-                                    .to_string();
-                                // 档位选链（v0.8.1 修复：完全访问模式仍弹审批窗）：
-                                // 权威档位是 hub 侧 per-agent 工具档（前端访问菜单写入
-                                // hub state，并联动同步 Pi settings），扩展标题里回传的
-                                // mode 只是参考显示——此前按标题 mode 二分
-                                // ask_always/其它，完全访问（full）落进智能链导致
-                                // 插件 bash 仍弹审批。统一走 for_session_tool_mode：
-                                // full→[AlwaysAllow]、full-approve/readonly→[LowRisk]、
-                                // smart-approve→[Once, LowRisk]。
-                                let hub_mode = crate::hub::load_agent_tool_mode(&agent_id)
-                                    .unwrap_or_else(|| "full".to_string());
-                                let approval_ctx = crate::agent::policy::ApprovalContext {
-                                    channel: crate::agent::policy::DecisionChannel::Interactive,
-                                    kind: crate::agent::policy::ApprovalKindWire::Other,
-                                    session_id: session_id.clone(),
-                                    tool: Some(tool.to_string()),
-                                    payload: serde_json::json!({
-                                        "tool": tool,
-                                        "summary": message,
-                                        "mode": hub_mode,
-                                    }),
-                                    payload_declares: false,
-                                    high_risk: false,
-                                };
-                                let approval_chain =
-                                    crate::agent::policy::for_session_tool_mode(&agent_id, &session_id);
-                                match approval_chain.evaluate(&approval_ctx) {
-                                    crate::agent::policy::ChainOutcome::Allow(policy_id) => {
-                                        let _ = send_pi_command(
-                                            &stdin_arc,
-                                            &json!({
-                                                "type": "extension_ui_response",
-                                                "id": request_id,
-                                                "confirmed": true
-                                            }),
-                                        )
-                                        .await;
-                                        log::info!(
-                                            "Pi tool approval auto-allowed by policy {policy_id} (session {session_id})"
-                                        );
-                                    }
-                                    crate::agent::policy::ChainOutcome::Deny(policy_id) => {
-                                        let _ = send_pi_command(
-                                            &stdin_arc,
-                                            &json!({
-                                                "type": "extension_ui_response",
-                                                "id": request_id,
-                                                "confirmed": false
-                                            }),
-                                        )
-                                        .await;
-                                        log::info!(
-                                            "Pi tool approval auto-denied by policy {policy_id} (session {session_id})"
-                                        );
-                                    }
-                                    crate::agent::policy::ChainOutcome::Delegate => {
-                                        // 登记待审批表（ResolvePermission 回写用）并
-                                        // 转标准 ApprovalRequest 事件给前端弹窗；
-                                        // 到达上下文按 request_id 登记——「始终允许」
-                                        // 取回同形状回写 Once 记忆（见 chat.rs）。
-                                        crate::agent::policy::register_arrival_context(
-                                            &request_id,
-                                            &approval_ctx,
-                                        );
-                                        pending_tool_approvals
-                                            .insert(request_id.clone(), PiToolApproval);
-                                        buf.push(NormalizedEvent::ApprovalRequest {
-                                            request_id,
-                                            // 审批类型按工具名分类（bash→命令执行，
-                                            // write/edit→文件写入），弹窗显示正确类型。
-                                            approval_kind:
-                                                crate::agent::normalized::ApprovalKind::for_tool(tool),
-                                            payload: serde_json::json!({
-                                                "tool": tool,
-                                                "summary": message,
-                                                "mode": hub_mode,
-                                                "origin": "jishu-tool-approval",
-                                            }),
-                                        });
-                                        flush_buf(&emit, &session_id, &mut buf);
-                                        last_flush = std::time::Instant::now();
-                                    }
+                                if let Some(approval) = route_tool_approval(
+                                    &stdin_arc,
+                                    &msg,
+                                    &agent_id,
+                                    &session_id,
+                                    &mut pending_tool_approvals,
+                                )
+                                .await
+                                {
+                                    buf.push(approval);
+                                    flush_buf(&emit, &session_id, &mut buf);
+                                    last_flush = std::time::Instant::now();
                                 }
                                 continue;
                             }
 
+                            // hub_invoke 桥接：扩展经 select 通道编码调用 hub 后端
+                            // 命令，hub 直接执行并把结果写回引擎（不经过前端）。分发与
+                            // 回写都在 hub_invoke.rs（评审修复轮 R2 自循环体纯移出）。
                             if method == "select" && title.starts_with("\x00hub_invoke:") {
-                                let payload_str = title
-                                    .strip_prefix("\x00hub_invoke:")
-                                    .unwrap_or("{}");
-                                let request_id = msg
-                                    .get("id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let payload: serde_json::Value = serde_json::from_str(payload_str)
-                                    .unwrap_or_else(|_| serde_json::json!({}));
-                                let command = payload
-                                    .get("command")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-                                let params = payload
-                                    .get("params")
-                                    .cloned()
-                                    .unwrap_or_else(|| serde_json::json!({}));
-                                let result = handle_hub_invoke(command, &params);
-                                let response_value = match result {
-                                    Ok(data) => serde_json::json!({
-                                        "type": "extension_ui_response",
-                                        "id": request_id,
-                                        "value": serde_json::json!({ "success": true, "data": data }).to_string()
-                                    }),
-                                    Err(err) => serde_json::json!({
-                                        "type": "extension_ui_response",
-                                        "id": request_id,
-                                        "value": serde_json::json!({ "success": false, "error": err }).to_string()
-                                    }),
-                                };
-                                let _ = send_pi_command(&stdin_arc, &response_value).await;
+                                answer_hub_invoke(&stdin_arc, title, &msg).await;
                                 continue;
                             }
 
@@ -1693,27 +1850,22 @@ async fn pi_rpc_connection_loop(
 
                         // v0.9.6 需求6 F3：pi 在 message_end(role=user) 时把用户
                         // 消息 append 落盘（agent-session appendMessage）——这是
-                        // 「消息真实落盘」的权威信号，据此清除 hub 侧 pending
-                        // 记录（record 时为注入后文本，两侧内容一致精确对账）。
-                        if event_type == "message_end" {
-                            let role = msg
+                        // 「消息真实落盘」的权威信号，据此销掉 hub 侧的落地账。
+                        // 评审修复轮 R2（C2）：按顺序销最早一笔，不比文本——
+                        // 技能命令、提示模板展开后才落盘，回执文本与发送文本
+                        // 本就不同（见 pending_messages::ack_persisted）。
+                        // 评审修复轮 R3（P2-12）：回执到过这件事记在这次发送
+                        // 上——销账没落库时，回合收口据此再销一次而不是落终态。
+                        if event_type == "message_end"
+                            && msg
                                 .get("message")
                                 .and_then(|m| m.get("role"))
-                                .and_then(|v| v.as_str());
-                            if role == Some("user") {
-                                let text = msg
-                                    .get("message")
-                                    .and_then(|m| m.get("content"))
-                                    .and_then(|c| c.as_array())
-                                    .map(|blocks| {
-                                        blocks
-                                            .iter()
-                                            .filter_map(|b| b.get("text").and_then(|v| v.as_str()))
-                                            .collect::<Vec<_>>()
-                                            .join("")
-                                    })
-                                    .unwrap_or_default();
-                                crate::pending_messages::ack_persisted(&session_id, &text);
+                                .and_then(|v| v.as_str())
+                                == Some("user")
+                        {
+                            let settled = crate::pending_messages::ack_persisted(&session_id);
+                            if let Some(record) = turn_prompt.as_mut() {
+                                record.receipt_arrived(settled);
                             }
                         }
 
@@ -1738,6 +1890,9 @@ async fn pi_rpc_connection_loop(
                             "compaction_start" => {
                                 in_compaction = true;
                                 compaction_aborted = false;
+                                // 评审修复轮 R2：新一轮压缩开始，上一轮点过停止
+                                // 留下的收尾期限不再适用。
+                                compaction_settle_at = None;
                                 devlog(
                                     "info",
                                     "上下文压缩开始（引擎事件）",
@@ -1753,6 +1908,9 @@ async fn pi_rpc_connection_loop(
                                     .get("aborted")
                                     .and_then(|v| v.as_bool())
                                     .unwrap_or(false);
+                                // 评审修复轮 R2：引擎收尾了，停止后的收尾期限解除
+                                // （正常取消不会走到期限）。
+                                compaction_settle_at = None;
                                 devlog(
                                     "info",
                                     "上下文压缩结束（引擎事件）",
@@ -1894,6 +2052,15 @@ async fn pi_rpc_connection_loop(
                             // v0.9.6 需求6 F2：回合收口（settle）——回合看门狗
                             // 解除（Idle 态的兜底职责归 IDLE_TIMEOUT 回收）。
                             turn_watchdog = None;
+                            // 评审修复轮 R2（C2）：回合都收口了，这次发送还没有落盘
+                            // 回执（回合没启动就被停止、或引擎受理后自行中止）——
+                            // 确定未送达，落成终态，不再占「等回执」的位置。扩展
+                            // 命令例外：它本来就不落用户消息，账等引擎的「已处理」
+                            // 回执来销（命令处理器里自己又跑了一轮的话，回执排在
+                            // 收口之后）。
+                            if !turn_prompt.as_ref().is_some_and(|record| record.extension) {
+                                finalize_turn_prompt(&mut turn_prompt, &session_id);
+                            }
                             if matches!(state, LoopState::CancelPending { .. }) {
                                 pending_turn_complete = Some(NormalizedEvent::TurnComplete {
                                     reason: TurnEndReason::Aborted,
@@ -1954,32 +2121,25 @@ async fn pi_rpc_connection_loop(
                             state = if let LoopState::CancelPending { pending_prompt } = &mut state {
                                 let buffered = pending_prompt.take();
                                 if let Some(payload) = buffered {
-                                    let msg = apply_resolved_session_prompt_injection(
-                                        payload.message,
-                                        &session_id,
-                                        resolved_session_prompt_injection.as_ref(),
-                                    );
-                                    send_pi_command(&stdin_arc, &json!({
-                                        "type": "prompt",
-                                        "message": msg
-                                    })).await?;
-                                    // v0.9.6 需求6 F3 / R1-1：缓冲消息送达，
-                                    // 按身份结算其入口账（同 Idle 直发）。
-                                    crate::pending_messages::confirm_entries(
-                                        &payload.pending_entries,
+                                    // v0.9.6 需求6 F3 / R1-1：缓冲消息送达，按
+                                    // 身份结算其入口账（同 Idle 直发）；评审修复轮
+                                    // R2：登记为当前回合的发送。
+                                    let seq = request_ids.next();
+                                    resend_buffered_prompt(
+                                        &stdin_arc,
+                                        payload,
+                                        seq,
                                         &session_id,
                                         &agent_id,
-                                        &msg,
-                                    );
+                                        resolved_session_prompt_injection.as_ref(),
+                                        &mut turn_watchdog,
+                                        &mut turn_prompt,
+                                    )
+                                    .await?;
                                     // v0.9.6 需求6 F2：settle 后重发的 prompt 同样
                                     // 纳入分级看门狗（与 Idle 直发一致，AwaitResponse
                                     // 宽窗起）——滞留回合恢复后 pi 若再次无响应，
                                     // 兜底终结而非永挂。
-                                    turn_watchdog = Some((
-                                        WatchdogPhase::AwaitResponse,
-                                        tokio::time::Instant::now()
-                                            + turn_watchdog_window(WatchdogPhase::AwaitResponse),
-                                    ));
                                     resent_buffered = true;
                                     LoopState::Prompting
                                 } else {
@@ -1998,6 +2158,16 @@ async fn pi_rpc_connection_loop(
                                 &session_id,
                                 json!({ "resent_buffered": resent_buffered, "aborted": settled_aborted }),
                             );
+                            // 评审修复轮 R2（C1）：每回合结束刷新扩展命令清单——
+                            // 扩展可能在回合中装上、卸掉。失败不打扰回合收尾。
+                            let _ = send_pi_command(
+                                &stdin_arc,
+                                &json!({
+                                    "type": "get_commands",
+                                    "id": request_id(REQUEST_ID_COMMANDS, request_ids.next())
+                                }),
+                            )
+                            .await;
                         } else if buf.len() >= 32
                             || last_flush.elapsed() >= EVENT_FLUSH_INTERVAL
                         {
@@ -2060,16 +2230,8 @@ async fn pi_rpc_connection_loop(
                     last_flush = std::time::Instant::now();
                 }
                 // v0.9.8 需求7 补充轮：空闲期限到期但引擎在压缩——不是空闲，不回收
-                // （循环下一轮重新起算空闲期限）。
-                if matches!(state, LoopState::Idle)
-                    && idle_deadline <= next_deadline
-                    && in_compaction
-                {
-                    log::info!(
-                        "Pi RPC idle deadline reached while compacting — keeping session {session_id}"
-                    );
-                    false
-                } else if idle_reap_due(
+                // （idle_reap_due 内判定；循环下一轮重新起算空闲期限）。
+                if idle_reap_due(
                     matches!(state, LoopState::Idle),
                     in_compaction,
                     idle_deadline,
@@ -2116,6 +2278,40 @@ async fn pi_rpc_connection_loop(
                     }
                     terminal_events.push(NormalizedEvent::TurnComplete { reason: TurnEndReason::Aborted, usage: None });
                     emit(&terminal_events, &session_id);
+                    if let Some(pid) = child_pid {
+                        let _ = crate::process_control::terminate_process_tree(pid);
+                    }
+                    // 评审修复轮 R2（C2）：进程被杀，这一回合不可能再有落盘
+                    // 回执——这次发送的账落成终态。
+                    finalize_turn_prompt(&mut turn_prompt, &session_id);
+                    true
+                } else if compaction_settle_due(
+                    compaction_settle_at,
+                    tokio::time::Instant::now(),
+                ) {
+                    // 评审修复轮 R2：压缩中点了停止，引擎到期限仍不收尾
+                    // （compaction_end 永不到）。压缩期间空闲回收是关掉的，没有
+                    // 任何机制来收场，「压缩中」会一直挂到重启。与上面回合取消
+                    // 的收尾看门狗对称：杀进程终结流。用户点了停止、引擎只是没
+                    // 收尾，语义上是「已取消」——压缩请求按「已取消」正常返回，
+                    // 界面收到与引擎响应停止时同形的一对事件（终态分隔线 →
+                    // 压缩结束）收口；原因只进日志。只在点过停止之后才武装——
+                    // 引擎自己跑的压缩不受此限。
+                    compaction_settle_at = None;
+                    log::warn!(
+                        "[watchdog] Pi RPC compaction cancel unsettled (session {session_id}) — {COMPACTION_SETTLE_MESSAGE}"
+                    );
+                    devlog(
+                        "error",
+                        &format!("压缩停止超时：{COMPACTION_SETTLE_MESSAGE}"),
+                        &session_id,
+                        json!({ "window_secs": compaction_settle_timeout().as_secs() }),
+                    );
+                    for (_, tx) in pending_compacts.drain() {
+                        let _ = tx.send(Ok(serde_json::json!({ "cancelled": true })));
+                    }
+                    flush_buf(&emit, &session_id, &mut buf);
+                    emit(&compaction_settle_events(), &session_id);
                     if let Some(pid) = child_pid {
                         let _ = crate::process_control::terminate_process_tree(pid);
                     }
@@ -2290,1541 +2486,4 @@ fn flush_buf(emit: &AcpEventEmit, session_id: &str, buf: &mut Vec<NormalizedEven
     }
     emit(buf, session_id);
     buf.clear();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::handle_hub_invoke;
-
-    /// v0.9.5 需求5 测试期 T1：rpiv-ask 哨兵行判定——精确匹配
-    /// "N. Type something."（N 为纯数字），其他形态（含正常选项）不命中。
-    #[test]
-    fn sentinel_option_detection() {
-        assert!(super::is_sentinel_option("4. Type something."));
-        assert!(super::is_sentinel_option("1. Type something."));
-        assert!(!super::is_sentinel_option("1. 红 — 红色选项"));
-        assert!(!super::is_sentinel_option("Type something."));
-        assert!(!super::is_sentinel_option("x. Type something."));
-        assert!(!super::is_sentinel_option("12. Type something. extra"));
-    }
-
-    /// T1 ①：select 末项哨兵剥离 + 登记；非 select / 无哨兵原样返回。
-    #[test]
-    fn strip_sentinel_from_select_request() {
-        let msg = serde_json::json!({
-            "type": "extension_ui_request",
-            "method": "select",
-            "id": "t1-strip",
-            "title": "颜色？",
-            "options": ["1. 红 — 红", "2. 绿 — 绿", "3. Type something."]
-        });
-        let stripped = super::strip_sentinel_option(msg.clone());
-        let options = stripped["options"].as_array().unwrap();
-        assert_eq!(options.len(), 2);
-        assert_eq!(options[0].as_str().unwrap(), "1. 红 — 红");
-        // 登记可取回（取用即消费）
-        {
-            let mut reg = super::interaction_sentinels()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            assert_eq!(
-                reg.remove("t1-strip").as_deref(),
-                Some("3. Type something.")
-            );
-        }
-        // 无哨兵：原样
-        let plain = serde_json::json!({
-            "method": "select", "id": "t1-plain", "options": ["a", "b"]
-        });
-        assert_eq!(super::strip_sentinel_option(plain.clone()), plain);
-        // input 方法：不动
-        let input = serde_json::json!({"method": "input", "id": "t1-in", "title": "q"});
-        assert_eq!(super::strip_sentinel_option(input.clone()), input);
-    }
-
-    /// v0.9.5 需求5 测试期 T5：多选题 input 还原——题干含序号选项块 +
-    /// 英文序号说明 → 改写 multiSelect（题干=问句、选项=序号行）；非该
-    /// 形态（普通 input / 选项块非全序号 / select）原样返回。
-    #[test]
-    fn multiselect_input_restored_from_rpc_fallback() {
-        let msg = serde_json::json!({
-            "type": "extension_ui_request",
-            "method": "input",
-            "id": "t5-multi",
-            "title": "[多选题] 哪些鸟不会飞？
-
-1. 企鹅 — 南极
-2. 鸵鸟 — 最大
-3. 天鹅 — 会飞
-
-Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a custom answer as plain text.",
-            "placeholder": "1,3"
-        });
-        let rewritten = super::rewrite_multiselect_input(msg);
-        assert_eq!(rewritten["method"].as_str().unwrap(), "multiSelect");
-        assert_eq!(
-            rewritten["title"].as_str().unwrap(),
-            "[多选题] 哪些鸟不会飞？"
-        );
-        let options = rewritten["options"].as_array().unwrap();
-        assert_eq!(options.len(), 3);
-        assert_eq!(options[0].as_str().unwrap(), "1. 企鹅 — 南极");
-        assert!(super::multi_select_requests()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove("t5-multi"));
-
-        // 普通 input（无英文说明）不动
-        let plain =
-            serde_json::json!({"method": "input", "id": "t5-plain", "title": "随便说点什么"});
-        assert_eq!(super::rewrite_multiselect_input(plain.clone()), plain);
-        // 选项块含非序号行 → 不还原（防误伤含空行的题干）
-        let bad = serde_json::json!({
-            "method": "input", "id": "t5-bad",
-            "title": "问题
-
-1. 企鹅 — 南极
-补充说明一行
-
-Enter the numbers of all that apply, comma-separated (e.g. \"1,3\"), or type a custom answer as plain text."
-        });
-        assert_eq!(super::rewrite_multiselect_input(bad.clone()), bad);
-        // select 方法不动
-        let sel = serde_json::json!({"method": "select", "id": "t5-sel", "title": "x", "options": ["1. a"]});
-        assert_eq!(super::rewrite_multiselect_input(sel.clone()), sel);
-    }
-
-    /// T5 ②：多选卡应答翻译——选中序号行 → "1,3"；纯自定义文本透传；
-    /// 未登记的请求原样返回。
-    #[test]
-    fn multiselect_response_translated_to_indices() {
-        {
-            let mut reg = super::multi_select_requests()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            reg.insert("t5-rw".to_string());
-        }
-        let interaction = serde_json::json!({
-            "selected_options": ["1. 企鹅 — 南极", "3. 天鹅 — 会飞"]
-        });
-        assert_eq!(
-            super::rewrite_multiselect_response(
-                "t5-rw",
-                "1. 企鹅 — 南极
-3. 天鹅 — 会飞",
-                Some(&interaction)
-            ),
-            "1,3"
-        );
-        // 已消费：再答原样
-        assert_eq!(
-            super::rewrite_multiselect_response("t5-rw", "再来", Some(&interaction)),
-            "再来"
-        );
-        // 纯自定义（无选中）透传
-        {
-            let mut reg = super::multi_select_requests()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            reg.insert("t5-custom".to_string());
-        }
-        let custom = serde_json::json!({"selected_options": []});
-        assert_eq!(
-            super::rewrite_multiselect_response("t5-custom", "鹦鹉不会飞", Some(&custom)),
-            "鹦鹉不会飞"
-        );
-        // 未登记请求不动
-        assert_eq!(
-            super::rewrite_multiselect_response("t5-unknown", "1. a", Some(&interaction)),
-            "1. a"
-        );
-    }
-
-    /// 四轮评审 P2-1：resolve 键迁移——pending 键的挂起应答随迁到真实 id；
-    /// 真实键已有值时保守不覆盖；同 id 不动。
-    #[test]
-    fn auto_answer_key_migration_on_resolve() {
-        {
-            let mut reg = super::interaction_auto_answer()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            reg.insert("p21-pending".to_string(), "答案A".to_string());
-        }
-        super::migrate_auto_answer_key("p21-pending", "p21-real");
-        {
-            let reg = super::interaction_auto_answer()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            assert!(reg.get("p21-pending").is_none());
-            assert_eq!(reg.get("p21-real").map(String::as_str), Some("答案A"));
-        }
-        // 真实键已有值：保守不覆盖（迁移值丢弃）
-        {
-            let mut reg = super::interaction_auto_answer()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            reg.insert("p21-pending2".to_string(), "旧答案".to_string());
-            reg.insert("p21-real2".to_string(), "已有答案".to_string());
-        }
-        super::migrate_auto_answer_key("p21-pending2", "p21-real2");
-        {
-            let reg = super::interaction_auto_answer()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            assert_eq!(reg.get("p21-real2").map(String::as_str), Some("已有答案"));
-            assert!(reg.get("p21-pending2").is_none());
-        }
-        // 同 id：无操作（不丢已有值）
-        super::migrate_auto_answer_key("p21-real", "p21-real");
-        {
-            let reg = super::interaction_auto_answer()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            assert_eq!(reg.get("p21-real").map(String::as_str), Some("答案A"));
-        }
-        // 清理（全局静态表，防污染其他用例）
-        {
-            let mut reg = super::interaction_auto_answer()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            reg.remove("p21-real");
-            reg.remove("p21-real2");
-        }
-    }
-
-    /// T1 ②：应答改写——无选中项纯文本 + 挂有哨兵 → 回传哨兵并暂存文本；
-    /// 有选中项 / 未挂哨兵 → 原样。
-    #[test]
-    fn sentinel_response_rewrite_rules() {
-        // 准备登记（本测试独立 key）
-        {
-            let mut reg = super::interaction_sentinels()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            reg.insert("t2-rw".to_string(), "3. Type something.".to_string());
-        }
-        let interaction = serde_json::json!({"selected_options": []});
-        let rewritten = super::rewrite_sentinel_response(
-            "t2-rw",
-            "t2-session",
-            "自定义：蓝色",
-            Some(&interaction),
-        );
-        assert_eq!(rewritten, "3. Type something.");
-        // 暂存文本可取（消费式）
-        {
-            let mut stash = super::interaction_auto_answer()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            assert_eq!(stash.remove("t2-session").as_deref(), Some("自定义：蓝色"));
-        }
-        // 已消费（登记被取走）：再次应答原样返回
-        assert_eq!(
-            super::rewrite_sentinel_response("t2-rw", "t2-session", "再来一次", Some(&interaction)),
-            "再来一次"
-        );
-        // 有选中项（普通选项点击）：即使挂哨兵也不改写
-        {
-            let mut reg = super::interaction_sentinels()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            reg.insert("t2-opt".to_string(), "3. Type something.".to_string());
-        }
-        let with_selection = serde_json::json!({"selected_options": ["1. 红 — 红"]});
-        assert_eq!(
-            super::rewrite_sentinel_response("t2-opt", "s", "1. 红 — 红", Some(&with_selection)),
-            "1. 红 — 红"
-        );
-    }
-
-    // v0.9.2 测试期：plugin_preview_html 校验阶梯——文件存在性/扩展名/大小
-    // 逐级拒绝；合法文件在无 Hub 句柄的测试环境落到「界面未就绪」分支
-    //（证明前两级校验已通过）。
-    #[test]
-    fn plugin_preview_html_rejects_missing_file() {
-        let err = handle_hub_invoke(
-            "plugin_preview_html",
-            &serde_json::json!({"file": "Z:/definitely/not/there.html"}),
-        )
-        .unwrap_err();
-        assert!(err.contains("不存在"), "unexpected: {err}");
-    }
-
-    // v0.9.3 测试期（前端项目预览）：url 模式回环校验——仅本机
-    // localhost/127.0.0.1/[::1] 的 http/https 放行，其余（外网/内网/非
-    // http scheme）拒绝；合法 url 在无 Hub 句柄环境落到「界面未就绪」。
-    #[test]
-    fn plugin_preview_html_url_loopback_ladder() {
-        for bad in [
-            "http://example.com:5173",
-            "http://192.168.1.10:3000",
-            "file://localhost/x",
-            "ftp://localhost",
-            "http://localhost.evil.com",
-        ] {
-            let err = handle_hub_invoke("plugin_preview_html", &serde_json::json!({"url": bad}))
-                .unwrap_err();
-            // 各级拒绝（scheme/回环）皆可，断言核心：到不了「界面未就绪」
-            //（即校验全部放行的路径）。
-            assert!(
-                !err.contains("未就绪"),
-                "url={bad} should be rejected: {err}"
-            );
-        }
-        for ok in [
-            "http://localhost:5173",
-            "http://127.0.0.1:3000/index.html",
-            "https://localhost",
-        ] {
-            let err = handle_hub_invoke("plugin_preview_html", &serde_json::json!({"url": ok}))
-                .unwrap_err();
-            assert!(
-                err.contains("未就绪"),
-                "url={ok} should pass validation: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn plugin_preview_html_rejects_non_html_extension() {
-        let md = std::env::temp_dir().join(format!("jishu-hub-preview-{}.md", std::process::id()));
-        std::fs::write(&md, "x").unwrap();
-        let err = handle_hub_invoke(
-            "plugin_preview_html",
-            &serde_json::json!({"file": md.to_string_lossy()}),
-        )
-        .unwrap_err();
-        assert!(err.contains(".html"), "unexpected: {err}");
-        let _ = std::fs::remove_file(&md);
-    }
-
-    #[test]
-    fn plugin_preview_html_valid_file_reaches_hub_gate() {
-        let html =
-            std::env::temp_dir().join(format!("jishu-hub-preview-{}.html", std::process::id()));
-        std::fs::write(&html, "<!DOCTYPE html><html></html>").unwrap();
-        // 测试环境未注册 HUB_APP_HANDLE：合法文件应越过存在性/扩展名校验，
-        // 落到「Hub 界面未就绪」而非文件错误。
-        let err = handle_hub_invoke(
-            "plugin_preview_html",
-            &serde_json::json!({"file": html.to_string_lossy()}),
-        )
-        .unwrap_err();
-        assert!(err.contains("未就绪"), "unexpected: {err}");
-        let _ = std::fs::remove_file(&html);
-    }
-
-    /// 真实形态回归：写小说场景的分段（thinking + text + toolCall=write +
-    /// toolResults），验证分段记账的精确字段与内容归因。
-    #[test]
-    fn pi_segment_usage_attributes_realistic_turn_end() {
-        let event = serde_json::json!({
-            "type": "turn_end",
-            "message": {
-                "role": "assistant",
-                "stopReason": "toolUse",
-                "content": [
-                    {"type": "thinking", "thinking": "规划第一章结构", "thinkingSignature": "sig"},
-                    {"type": "text", "text": "我先写入第一章。"},
-                    {"type": "toolCall", "id": "call_1", "name": "write",
-                     "arguments": {"path": "novel.md", "content": "第一章 雾夜坠楼。江州的雾，是有脾气的。"}}
-                ],
-                "usage": {
-                    "input": 1166, "output": 1380, "cacheRead": 113472,
-                    "cacheWrite": 0, "totalTokens": 116018,
-                    "cost": {"total": 0.0123}
-                }
-            },
-            "toolResults": [
-                {"role": "toolResult", "toolCallId": "call_1", "toolName": "write",
-                 "content": [{"type": "text", "text": "Written 42 lines."}]}
-            ]
-        });
-        let seg = pi_segment_usage(&event, Some(1_000_000)).unwrap();
-        assert_eq!(seg.stop_reason, "toolUse");
-        assert_eq!(seg.input_tokens, 1166);
-        assert_eq!(seg.output_tokens, 1380);
-        assert_eq!(seg.cache_read, 113_472);
-        assert_eq!(seg.total_tokens, 116_018);
-        assert!((seg.total_cost - 0.0123).abs() < 1e-9);
-        assert_eq!(seg.context_remaining, Some(1_000_000 - 116_018));
-        // 归因：三块皆有值；工具调用一次（MCP 无标志并入工具桶）。
-        assert!(seg.est_thinking > 0);
-        assert!(seg.est_text > 0);
-        assert!(seg.est_builtin_tool > 0);
-        assert_eq!(seg.est_mcp_tool, 0);
-        assert_eq!(seg.tool_calls, 1);
-        assert_eq!(seg.mcp_calls, 0);
-        assert!(seg.est_tool_results > 0);
-    }
-
-    /// 真实形态回归：compaction_end（threshold 触发，含 CompactionResult）。
-    #[test]
-    fn pi_compaction_record_extracts_result_fields() {
-        let event = serde_json::json!({
-            "type": "compaction_end",
-            "reason": "threshold",
-            "aborted": false,
-            "result": {
-                "summary": "## Goal
-        - 用户要求写 20 万字小说",
-                "firstKeptEntryId": "entry-42",
-                "tokensBefore": 118_910,
-                "estimatedTokensAfter": 62_389,
-                "usage": {"input": 110_000, "output": 6_340, "totalTokens": 116_340,
-                          "cost": {"total": 0.08}}
-            }
-        });
-        let rec = pi_compaction_record(&event);
-        assert_eq!(rec.reason, "threshold");
-        assert!(!rec.aborted);
-        assert_eq!(rec.tokens_before, 118_910);
-        assert_eq!(rec.tokens_after, 62_389);
-        assert_eq!(rec.first_kept_entry_id.as_deref(), Some("entry-42"));
-        assert_eq!(rec.summary_input, 110_000);
-        assert_eq!(rec.summary_output, 6_340);
-        assert!((rec.summary_cost - 0.08).abs() < 1e-9);
-        assert!(rec.est_summary > 0);
-
-        // result 缺失（压缩失败）——字段全缺省，不 panic。
-        let empty = pi_compaction_record(&serde_json::json!({
-            "type": "compaction_end", "reason": "manual", "aborted": true
-        }));
-        assert!(empty.aborted);
-        assert_eq!(empty.tokens_before, 0);
-        assert_eq!(empty.first_kept_entry_id, None);
-    }
-
-    #[test]
-    fn pi_turn_usage_maps_turn_end_usage_with_watermark() {
-        let event = serde_json::json!({
-            "type": "turn_end",
-            "message": {
-                "stopReason": "end_turn",
-                "usage": {
-                    "input": 1000,
-                    "output": 300,
-                    "cacheRead": 60000,
-                    "cacheWrite": 0,
-                    "totalTokens": 61300,
-                    "cost": { "total": 0.05 }
-                }
-            }
-        });
-        let usage = pi_turn_usage(&event, Some(128_000)).unwrap();
-        assert_eq!(usage.input_tokens, Some(1000));
-        assert_eq!(usage.output_tokens, Some(300));
-        assert_eq!(usage.total_cost, Some(0.05));
-        assert_eq!(usage.context_window_total, Some(128_000));
-        // totalTokens 优先（对齐 pi calculateContextTokens），remaining = 128k - 61.3k
-        assert_eq!(usage.context_remaining, Some(128_000 - 61_300));
-
-        // totalTokens 缺省时回退四项求和
-        let event2 = serde_json::json!({
-            "message": { "usage": { "input": 10, "output": 5, "cacheRead": 5, "cacheWrite": 0 } }
-        });
-        let usage2 = pi_turn_usage(&event2, Some(100)).unwrap();
-        assert_eq!(usage2.context_remaining, Some(80));
-
-        // 无 usage / 全空 → None
-        assert!(pi_turn_usage(&serde_json::json!({ "message": {} }), Some(100)).is_none());
-        // ctx 未知 → remaining/total 为 None，in/out 仍上报
-        let usage3 = pi_turn_usage(&event2, None).unwrap();
-        assert_eq!(usage3.context_remaining, None);
-        assert_eq!(usage3.input_tokens, Some(10));
-    }
-
-    #[test]
-    fn turn_end_maps_usage_into_turn_complete() {
-        let event = serde_json::json!({
-            "type": "turn_end",
-            "message": {
-                "stopReason": "end_turn",
-                "usage": { "input": 10, "output": 2, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 12, "cost": { "total": 0.01 } }
-            }
-        });
-        let events = normalize_pi_agent_event(&event, Some(1000), &mut Vec::new());
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            NormalizedEvent::TurnComplete { usage, .. } => {
-                let u = usage.as_ref().unwrap();
-                assert_eq!(u.context_window_total, Some(1000));
-                assert_eq!(u.context_remaining, Some(988));
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-    }
-
-    /// v0.9.1 需求14：auto_retry_start/end 归一化——字段透传 + end 失败
-    /// 携最终原因。
-    #[test]
-    fn auto_retry_events_normalize_to_status() {
-        let mut steers = Vec::new();
-        let start = normalize_pi_agent_event(
-            &serde_json::json!({
-                "type": "auto_retry_start",
-                "attempt": 2,
-                "maxAttempts": 10,
-                "delayMs": 4000,
-                "errorMessage": "provider 503"
-            }),
-            None,
-            &mut steers,
-        );
-        assert_eq!(start.len(), 1);
-        match &start[0] {
-            NormalizedEvent::AutoRetryStatus {
-                active,
-                attempt,
-                max_attempts,
-                delay_ms,
-                error_message,
-                success,
-                final_error,
-            } => {
-                assert!(active);
-                assert_eq!((*attempt, *max_attempts, *delay_ms), (2, 10, 4000));
-                assert_eq!(error_message, "provider 503");
-                assert!(!success);
-                assert!(final_error.is_none());
-            }
-            other => panic!("unexpected {other:?}"),
-        }
-
-        let end = normalize_pi_agent_event(
-            &serde_json::json!({
-                "type": "auto_retry_end",
-                "success": false,
-                "attempt": 10,
-                "finalError": "all retries exhausted"
-            }),
-            None,
-            &mut steers,
-        );
-        match &end[0] {
-            NormalizedEvent::AutoRetryStatus {
-                active,
-                success,
-                final_error,
-                ..
-            } => {
-                assert!(!active);
-                assert!(!success);
-                assert_eq!(final_error.as_deref(), Some("all retries exhausted"));
-            }
-            other => panic!("unexpected {other:?}"),
-        }
-    }
-
-    /// v0.9.1 需求3 #2：compaction_end 三态呈现——成功「已压缩」、aborted
-    /// 「已取消」、errorMessage「失败 + Error(recoverable)」。字段形态对齐
-    /// pi agent-session catch 分支（errorMessage 仅非 abort 失败时下发）。
-    #[test]
-    fn compaction_end_renders_success_aborted_and_failure_states() {
-        let success = normalize_pi_agent_event(
-            &serde_json::json!({
-                "type": "compaction_end", "reason": "threshold",
-                "result": {"tokensBefore": 100, "estimatedTokensAfter": 50},
-                "aborted": false
-            }),
-            None,
-            &mut Vec::new(),
-        );
-        assert!(matches!(
-            success.as_slice(),
-            [
-                NormalizedEvent::PhaseDivider { title, .. },
-                NormalizedEvent::CompactionStatus { active: false, .. }
-            ] if title == "上下文已压缩"
-        ));
-
-        let aborted = normalize_pi_agent_event(
-            &serde_json::json!({
-                "type": "compaction_end", "reason": "manual",
-                "result": null, "aborted": true
-            }),
-            None,
-            &mut Vec::new(),
-        );
-        assert!(matches!(
-            aborted.as_slice(),
-            [
-                NormalizedEvent::PhaseDivider { title, .. },
-                NormalizedEvent::CompactionStatus { active: false, .. }
-            ] if title == "上下文压缩已取消"
-        ));
-
-        let failed = normalize_pi_agent_event(
-            &serde_json::json!({
-                "type": "compaction_end", "reason": "manual",
-                "result": null, "aborted": false,
-                "errorMessage": "Compaction failed: provider 500"
-            }),
-            None,
-            &mut Vec::new(),
-        );
-        assert!(matches!(
-            failed.as_slice(),
-            [
-                NormalizedEvent::PhaseDivider { title, .. },
-                NormalizedEvent::CompactionStatus { active: false, .. },
-                NormalizedEvent::Error { message, recoverable: true }
-            ] if title == "上下文压缩失败" && message.contains("provider 500")
-        ));
-    }
-
-    /// v0.9.8 需求7 补充轮 UC-11：引擎的摘要生成重试（压缩期间摘要调用失败后
-    /// 重试）归一为既有的重试状态——界面显示「第 N/M 次重试（原因）」；重试
-    /// 结束只清横幅、不带失败原因（成败由随后的 compaction_end 呈现）。
-    #[test]
-    fn summarization_retry_events_normalize_to_retry_status() {
-        let scheduled = normalize_pi_agent_event(
-            &serde_json::json!({
-                "type": "summarization_retry_scheduled",
-                "attempt": 2, "maxAttempts": 3, "delayMs": 4000,
-                "errorMessage": "529 overloaded"
-            }),
-            None,
-            &mut Vec::new(),
-        );
-        assert!(matches!(
-            scheduled.as_slice(),
-            [NormalizedEvent::AutoRetryStatus {
-                active: true, attempt: 2, max_attempts: 3, delay_ms: 4000,
-                ref error_message, success: false, final_error: None
-            }] if error_message.as_str() == "529 overloaded"
-        ));
-
-        let finished = normalize_pi_agent_event(
-            &serde_json::json!({ "type": "summarization_retry_finished" }),
-            None,
-            &mut Vec::new(),
-        );
-        assert!(matches!(
-            finished.as_slice(),
-            [NormalizedEvent::AutoRetryStatus {
-                active: false,
-                success: false,
-                final_error: None,
-                ..
-            }]
-        ));
-
-        // 重试开始事件不产生界面事件（横幅已在 scheduled 时显示）。
-        assert!(normalize_pi_agent_event(
-            &serde_json::json!({
-                "type": "summarization_retry_attempt_start",
-                "source": "compaction", "reason": "manual"
-            }),
-            None,
-            &mut Vec::new(),
-        )
-        .is_empty());
-    }
-
-    use super::*;
-
-    #[test]
-    fn waits_for_agent_settled_before_completing_prompt() {
-        assert!(!pi_prompt_is_settled("agent_end"));
-        assert!(!pi_prompt_is_settled("turn_end"));
-        assert!(pi_prompt_is_settled("agent_settled"));
-    }
-
-    /// R4 root cause, pinned so a future change cannot silently undo it.
-    ///
-    /// A `turn_end` carrying `stopReason == "toolUse"` yields no events at all --
-    /// intentionally, so a mid-turn tool call cannot make the GUI drop its
-    /// streaming state early.  The consequence is that a tool returning
-    /// `terminate: true` produces *no* TurnComplete anywhere, which is why the
-    /// settle branch in `run_loop` has to synthesise one (B2.5 T3).
-    ///
-    /// v0.9.4 需求8：tool_execution_update → ToolUseProgress（partialResult
-    /// 透传不解析；无 callId 丢弃）。
-    #[test]
-    fn tool_execution_update_maps_to_progress() {
-        let events = normalize_pi_agent_event(
-            &json!({
-                "type": "tool_execution_update",
-                "toolCallId": "call-1",
-                "toolName": "bash",
-                "partialResult": {
-                    "content": [{ "type": "text", "text": "step 3/45 done" }],
-                    "details": { "fullOutputPath": null }
-                }
-            }),
-            None,
-            &mut Vec::new(),
-        );
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            NormalizedEvent::ToolUseProgress {
-                call_id,
-                partial_output,
-            } => {
-                assert_eq!(call_id, "call-1");
-                assert_eq!(partial_output, "step 3/45 done");
-            }
-            other => panic!("Expected ToolUseProgress, got {other:?}"),
-        }
-
-        // 兜底形状（output 直出）：也能提取。
-        let events = normalize_pi_agent_event(
-            &json!({
-                "type": "tool_execution_update",
-                "toolCallId": "call-1b",
-                "toolName": "bash",
-                "partialResult": { "output": "legacy shape" }
-            }),
-            None,
-            &mut Vec::new(),
-        );
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            NormalizedEvent::ToolUseProgress { partial_output, .. } => {
-                assert_eq!(partial_output, "legacy shape");
-            }
-            other => panic!("Expected ToolUseProgress, got {other:?}"),
-        }
-
-        // 无 callId：丢弃（防御）。
-        let events = normalize_pi_agent_event(
-            &json!({
-                "type": "tool_execution_update",
-                "toolName": "bash",
-                "partialResult": { "output": "x" }
-            }),
-            None,
-            &mut Vec::new(),
-        );
-        assert!(events.is_empty(), "no callId should be dropped: {events:?}");
-    }
-
-    #[test]
-    fn tool_use_turn_end_yields_no_events() {
-        let events = normalize_pi_agent_event(
-            &json!({
-                "type": "turn_end",
-                "message": { "stopReason": "toolUse" }
-            }),
-            None,
-            &mut Vec::new(),
-        );
-        assert!(
-            events.is_empty(),
-            "toolUse turn_end must stay suppressed, got {events:?}"
-        );
-    }
-
-    /// Counterpart to the above: a normal turn boundary does produce the
-    /// completion that `agent_settled` later forwards.
-    #[test]
-    fn normal_turn_end_yields_turn_complete() {
-        let events = normalize_pi_agent_event(
-            &json!({
-                "type": "turn_end",
-                "message": { "stopReason": "end_turn" }
-            }),
-            None,
-            &mut Vec::new(),
-        );
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, NormalizedEvent::TurnComplete { .. })),
-            "expected TurnComplete, got {events:?}"
-        );
-    }
-
-    #[test]
-    fn ignores_request_user_input_tool_start_until_extension_ui_request_arrives() {
-        let events = normalize_pi_agent_event(
-            &json!({
-                "type": "tool_execution_start",
-                "toolCallId": "call-1",
-                "toolName": "request_user_input",
-                "args": {
-                    "question": "请选择发布方式",
-                    "options": ["A", "B"]
-                }
-            }),
-            None,
-            &mut Vec::new(),
-        );
-
-        assert!(events.is_empty());
-    }
-
-    #[test]
-    fn detects_custom_role_phase_enter_marker() {
-        let events = normalize_pi_agent_event(
-            &json!({
-                "type": "message_start",
-                "message": {
-                    "role": "custom",
-                    "customType": "jishu-conductor:phase-enter:plan",
-                    "content": "进入流程规划阶段",
-                    "display": true,
-                    "timestamp": 0
-                }
-            }),
-            None,
-            &mut Vec::new(),
-        );
-
-        match events.as_slice() {
-            [NormalizedEvent::PhaseDivider { phase, title }] => {
-                assert_eq!(phase, "plan");
-                assert_eq!(title, "流程规划");
-            }
-            other => panic!("expected phase divider, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn surfaces_user_role_message_start_as_steer_injected() {
-        // Pi 对每条送达的用户消息都回显 message_start(role=user)——只有
-        // 经 Steer 命令注入（连接循环登记进 pending_steers）的才是真引导。
-        let event = json!({
-            "type": "message_start",
-            "message": {
-                "role": "user",
-                "content": [{ "type": "text", "text": "改用 TypeScript 实现" }],
-                "timestamp": 0
-            }
-        });
-
-        // 登记过的 steer 文本 → SteerInjected（并消费登记）。
-        let mut steers = vec!["改用 TypeScript 实现".to_string()];
-        let events = normalize_pi_agent_event(&event, None, &mut steers);
-        match events.as_slice() {
-            [NormalizedEvent::SteerInjected { content }] => {
-                assert_eq!(content, "改用 TypeScript 实现");
-            }
-            other => panic!("expected [SteerInjected], got {other:?}"),
-        }
-        assert!(steers.is_empty(), "steer 登记应被消费");
-
-        // 未登记（普通 prompt / 压缩前排队的消息回显）→ 不产生事件，
-        // 否则用户消息会被误标「已引导」并重复渲染（v0.8.0 需求10 修复）。
-        let events = normalize_pi_agent_event(
-            &json!({
-                "type": "message_start",
-                "message": {
-                    "role": "user",
-                    "content": [{ "type": "text", "text": "继续" }],
-                    "timestamp": 0
-                }
-            }),
-            None,
-            &mut Vec::new(),
-        );
-        assert!(
-            events.is_empty(),
-            "prompt 回显不应产生 steer 事件: {events:?}"
-        );
-    }
-
-    #[test]
-    fn ignores_assistant_role_message_start() {
-        // Assistant content arrives via message_update, so the assistant
-        // message_start must not be surfaced (it carries no steer).
-        let events = normalize_pi_agent_event(
-            &json!({
-                "type": "message_start",
-                "message": {
-                    "role": "assistant",
-                    "content": [{ "type": "text", "text": "" }],
-                    "timestamp": 0
-                }
-            }),
-            None,
-            &mut Vec::new(),
-        );
-        assert!(events.is_empty());
-    }
-
-    #[test]
-    fn ignores_message_end_for_steer() {
-        // Only message_start is converted; message_end is a duplicate marker.
-        let events = normalize_pi_agent_event(
-            &json!({
-                "type": "message_end",
-                "message": {
-                    "role": "user",
-                    "content": [{ "type": "text", "text": "steer text" }],
-                    "timestamp": 0
-                }
-            }),
-            None,
-            &mut Vec::new(),
-        );
-        assert!(events.is_empty());
-    }
-
-    #[test]
-    fn applies_resolved_session_prompt_injection_before_prompt_is_sent() {
-        let injection = crate::agent::ResolvedSessionPromptInjection {
-            open_tag: "<jishu-runtime-context>".into(),
-            close_tag: "</jishu-runtime-context>".into(),
-            session_id_field: "session_id".into(),
-            guidance: "直接使用该 session_id，不要扫描 session 文件。".into(),
-        };
-
-        let message = apply_resolved_session_prompt_injection(
-            "用户原始消息".to_string(),
-            "sid-real",
-            Some(&injection),
-        );
-
-        assert!(message.starts_with("<jishu-runtime-context>"));
-        assert!(message.contains("session_id: sid-real"));
-        assert!(message.contains("直接使用该 session_id"));
-        assert!(message.ends_with("用户原始消息"));
-    }
-
-    #[test]
-    fn converts_extension_ui_select_to_interaction_request() {
-        let event = convert_extension_ui_request(&json!({
-            "type": "extension_ui_request",
-            "id": "req-uuid-1",
-            "method": "select",
-            "title": "请选择实现方案",
-            "options": ["方案A", "方案B", "方案C"]
-        }))
-        .expect("select should convert");
-
-        match event {
-            NormalizedEvent::InteractionRequest {
-                request_id,
-                prompt,
-                options,
-                allow_multiple,
-                allow_custom_text,
-                required,
-                transport,
-                origin,
-                delivery_hint,
-                correlation,
-            } => {
-                assert_eq!(request_id, "req-uuid-1");
-                assert_eq!(prompt, "请选择实现方案");
-                assert_eq!(options.len(), 3);
-                assert_eq!(options[0].label, "方案A");
-                assert!(!allow_multiple);
-                assert!(allow_custom_text);
-                assert!(required);
-                // Pi extension_ui is the production mid-turn baseline.
-                assert_eq!(transport, InteractionTransport::PiRpc);
-                assert_eq!(origin, InteractionOrigin::ExtensionUi);
-                assert_eq!(delivery_hint, InteractionDeliveryHint::MidTurn);
-                assert!(correlation.is_none());
-            }
-            _ => panic!("expected InteractionRequest"),
-        }
-    }
-
-    #[test]
-    fn converts_extension_ui_multi_select_to_interaction_request() {
-        let event = convert_extension_ui_request(&json!({
-            "type": "extension_ui_request",
-            "id": "req-multi-1",
-            "method": "multiSelect",
-            "title": "选择功能",
-            "options": ["登录", "注册"]
-        }))
-        .expect("multiSelect should convert");
-
-        match event {
-            NormalizedEvent::InteractionRequest {
-                request_id,
-                options,
-                allow_multiple,
-                ..
-            } => {
-                assert_eq!(request_id, "req-multi-1");
-                assert_eq!(options.len(), 2);
-                assert!(allow_multiple);
-            }
-            _ => panic!("expected InteractionRequest"),
-        }
-    }
-
-    #[test]
-    fn converts_extension_ui_input_to_interaction_request() {
-        let event = convert_extension_ui_request(&json!({
-            "type": "extension_ui_request",
-            "id": "req-uuid-2",
-            "method": "input",
-            "title": "补充说明",
-            "placeholder": "可选"
-        }))
-        .expect("input should convert");
-
-        match event {
-            NormalizedEvent::InteractionRequest {
-                request_id,
-                prompt,
-                options,
-                allow_custom_text,
-                ..
-            } => {
-                assert_eq!(request_id, "req-uuid-2");
-                assert_eq!(prompt, "补充说明");
-                assert!(options.is_empty());
-                assert!(allow_custom_text);
-            }
-            _ => panic!("expected InteractionRequest"),
-        }
-    }
-
-    #[test]
-    fn ignores_fire_and_forget_extension_ui_requests() {
-        assert!(convert_extension_ui_request(&json!({
-            "type": "extension_ui_request",
-            "id": "x",
-            "method": "notify",
-            "message": "hello"
-        }))
-        .is_none());
-        assert!(convert_extension_ui_request(&json!({
-            "type": "extension_ui_request",
-            "id": "y",
-            "method": "setStatus",
-            "statusKey": "progress",
-            "statusText": "50%"
-        }))
-        .is_none());
-    }
-
-    // ---- v0.9.6 需求6 F2：回合分级看门狗纯函数 ----
-
-    #[test]
-    fn watchdog_windows_delivery_scope() {
-        use super::*;
-        // v0.9.6 需求9 哲学修正后看门狗只剩投递确认两相位：紧凑窗 < 宽窗。
-        let ar = turn_watchdog_window(WatchdogPhase::AwaitResponse);
-        let ats = turn_watchdog_window(WatchdogPhase::AwaitTurnStart);
-        assert!(
-            ats < ar,
-            "AwaitTurnStart 紧凑窗 < AwaitResponse 宽窗: {ats:?} < {ar:?}"
-        );
-    }
-
-    #[test]
-    fn watchdog_disarms_on_turn_events() {
-        use super::*;
-        // v0.9.6 需求9 哲学裁决：回合事件=投递成功铁证 → 解除看门狗（返回
-        // None），此后无条件信任 pi；非回合事件也不武装（None）。
-        for ev in [
-            "agent_start",
-            "turn_start",
-            "message_start",
-            "message_end",
-            "tool_execution_start",
-            "tool_execution_end",
-            "agent_end",
-            "agent_settled",
-            "compaction_start",
-            "extension_ui_request",
-            "thinking_level_changed",
-        ] {
-            assert_eq!(
-                watchdog_phase_on_event(WatchdogPhase::AwaitTurnStart, ev),
-                None,
-                "事件 {ev} 应解除看门狗（信任 pi）"
-            );
-        }
-    }
-
-    /// v0.9.8 需求7 补充轮 UC-10：空闲回收判定——引擎在压缩时不回收（压缩期间
-    /// 引擎静默、状态是 Idle，但不是空闲）。
-    #[test]
-    fn idle_reap_skipped_while_compacting() {
-        use super::*;
-        let now = tokio::time::Instant::now();
-        assert!(
-            idle_reap_due(true, false, now, now),
-            "空闲且空闲期限到期 → 回收"
-        );
-        assert!(
-            !idle_reap_due(true, true, now, now),
-            "空闲期限到期但引擎在压缩 → 不回收"
-        );
-        assert!(
-            !idle_reap_due(false, false, now, now),
-            "回合进行中 → 不回收"
-        );
-        assert!(
-            !idle_reap_due(true, false, now + std::time::Duration::from_secs(1), now),
-            "到期的不是空闲期限 → 不回收"
-        );
-    }
-
-    /// v0.9.8 需求1（生产事故回归，用例 A1/A2）：陈旧交互提交被拒不退出
-    /// 连接循环 + 并行交互各自登记可答。假 pi（node -e）收到 prompt 后发出
-    /// 两个 extension_ui_request；测试先提交陈旧 id（应报错且循环存活——
-    /// 此前该分支误用 return Ok(()) 杀掉整个会话进程），再依次应答两个真实
-    /// id（均应成功——此前单槽只记最后一个 id，先到的卡必被误判陈旧），
-    /// 最后核对假 pi 真正收到了两条 extension_ui_response 回写。
-    #[tokio::test]
-    async fn stale_reject_keeps_loop_alive_and_concurrent_interactions_answerable() {
-        let node_ok = tokio::process::Command::new("node")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !node_ok {
-            eprintln!("node 不可用，跳过假 pi 循环级回归测试");
-            return;
-        }
-
-        let out_path = std::env::temp_dir().join(format!(
-            "fake_pi_out_{}_{}.jsonl",
-            std::process::id(),
-            "stale_reject"
-        ));
-        let _ = std::fs::remove_file(&out_path);
-        let out_str = out_path.to_string_lossy().to_string();
-
-        // 注意：脚本内禁用反斜杠转义（\n 等）——构建环境的 shell 会吃转义，
-        // 写入文件变成真换行破坏 JS 语法；换行统一用 String.fromCharCode(10)。
-        let script = r#"
-const fs = require('fs');
-const NL = String.fromCharCode(10);
-const rl = require('readline').createInterface({ input: process.stdin });
-const send = (obj) => process.stdout.write(JSON.stringify(obj) + NL);
-const out = process.env.FAKE_PI_OUT;
-const log = (s) => fs.appendFileSync(out, s + NL);
-rl.on('line', (line) => {
-  log('RECV ' + line);
-  let msg; try { msg = JSON.parse(line); } catch { return; }
-  if (msg.type === 'get_state') {
-    send({ type: 'response', command: 'get_state', success: true, data: { sessionId: 'fake-session-1', model: { contextWindow: 200000 }, thinkingLevel: 'high', autoCompactionEnabled: true } });
-  } else if (msg.type === 'prompt') {
-    send({ type: 'response', command: 'prompt', success: true, data: { disposition: 'started' } });
-    send({ type: 'agent_start' });
-    send({ type: 'extension_ui_request', id: 'id-1', method: 'select', title: 'Q1', options: ['A', 'B'] });
-    send({ type: 'extension_ui_request', id: 'id-2', method: 'select', title: 'Q2', options: ['C', 'D'] });
-  } else if (msg.type === 'extension_ui_response') {
-    log(JSON.stringify(msg));
-  }
-});
-"#;
-
-        let child = tokio::process::Command::new("node")
-            .arg("-e")
-            .arg(script)
-            .env("FAKE_PI_OUT", &out_str)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn fake pi");
-
-        let seen: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let seen_clone = seen.clone();
-        let emit: crate::acp_runtime::AcpEventEmit = std::sync::Arc::new(
-            move |events: &[crate::agent::normalized::NormalizedEvent], _sid: &str| {
-                let mut guard = seen_clone.lock().unwrap();
-                for event in events {
-                    if let crate::agent::normalized::NormalizedEvent::InteractionRequest {
-                        request_id,
-                        ..
-                    } = event
-                    {
-                        guard.push(request_id.clone());
-                    }
-                }
-            },
-        );
-
-        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let finished_clone = finished.clone();
-        let control = super::spawn_pi_rpc_session_inner(
-            emit,
-            super::noop_dev_log_emitter(),
-            "jishu-self".to_string(),
-            "pending-stale-test".to_string(),
-            child,
-            Some("hello".to_string().into()),
-            None,
-            None,
-            None,
-            move || finished_clone.store(true, std::sync::atomic::Ordering::SeqCst),
-            |_sid: &str| {},
-        );
-
-        // 等两个交互请求到达（10s 上限）
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            if seen.lock().unwrap().len() >= 2 {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "假 pi 未发出两个交互请求；OUT={:?}",
-                std::fs::read_to_string(&out_path).unwrap_or_default()
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-
-        // 陈旧 id：报错但循环必须存活（BUG-1 回归）
-        let stale = control
-            .respond_to_input("stale-id".to_string(), "x".to_string())
-            .await;
-        assert!(stale.is_err(), "陈旧 id 应被拒绝");
-        assert!(
-            !finished.load(std::sync::atomic::Ordering::SeqCst),
-            "拒绝陈旧提交不得退出连接循环"
-        );
-
-        // 两个真实 id 依次可答（BUG-2 回归：单槽只记最后一个，id-1 应被误判陈旧）
-        control
-            .respond_to_input("id-1".to_string(), "A".to_string())
-            .await
-            .expect("第一张卡应答成功");
-        control
-            .respond_to_input("id-2".to_string(), "C".to_string())
-            .await
-            .expect("第二张卡应答成功");
-
-        // 假 pi 收到两条 extension_ui_response 回写（5s 上限）
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let responses = loop {
-            let content = std::fs::read_to_string(&out_path).unwrap_or_default();
-            let count = content
-                .lines()
-                .filter(|l| l.contains("extension_ui_response"))
-                .count();
-            if count >= 2 {
-                break content;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "假 pi 未收到两条回写：{content}"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        };
-        assert!(
-            responses.contains("\"id\":\"id-1\"") && responses.contains("\"id\":\"id-2\""),
-            "两条回写应分别命中 id-1/id-2"
-        );
-
-        control.shutdown().await;
-        let _ = std::fs::remove_file(&out_path);
-        crate::pending_messages::drop_session("pending-stale-test");
-    }
-
-    /// v0.9.8 评审修复轮 R1-1（假引擎端到端）：带注入的消息从发送入口到
-    /// 引擎回报「用户消息已落盘」，账本清空、不留幽灵。
-    /// 修前：入口按用户原文记账，引擎侧按「原文 + 注入块」的文本去找这笔账
-    /// 销账——两段文本永不相等，原文账永远销不掉，重开会话即多出一条
-    /// 「未送达」。现在入口账带身份到引擎侧，落地时按身份改写。
-    #[tokio::test]
-    async fn entry_ledger_settles_by_identity_through_engine_persist_receipt() {
-        let node_ok = tokio::process::Command::new("node")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !node_ok {
-            eprintln!("node 不可用，跳过假 pi 账本回归测试");
-            return;
-        }
-        let _guard = crate::agent::manifest::env_test_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-
-        // 发送入口：按用户原文记账，拿到这笔账的身份。
-        let entry_key = "pending-ledger-e2e";
-        let entry = crate::pending_messages::record(
-            entry_key,
-            "jishu-self",
-            "帮我看看这个报错 @[jishu CLI 工具]",
-        )
-        .expect("入口账身份");
-        // 入口原文 ≠ 引擎侧实际发出的文本（追加工具说明块 + 会话注入）。
-        let persisted = String::from(
-            "<jishu-session>ledger-e2e</jishu-session>\n\n帮我看看这个报错 @[jishu CLI 工具]\n\n<jishu-tools>…</jishu-tools>",
-        );
-
-        // 注意：脚本内禁用反斜杠转义（同上）；pi 收到 prompt 即把它作为
-        // 用户消息落盘并回报 message_end(role=user)。
-        let script = r#"
-const NL = String.fromCharCode(10);
-const rl = require('readline').createInterface({ input: process.stdin });
-const send = (obj) => process.stdout.write(JSON.stringify(obj) + NL);
-rl.on('line', (line) => {
-  let msg; try { msg = JSON.parse(line); } catch { return; }
-  if (msg.type === 'get_state') {
-    send({ type: 'response', command: 'get_state', success: true, data: { sessionId: 'fake-ledger-session', model: { contextWindow: 200000 }, thinkingLevel: 'high', autoCompactionEnabled: true } });
-  } else if (msg.type === 'prompt') {
-    send({ type: 'response', command: 'prompt', success: true, data: { disposition: 'started' } });
-    send({ type: 'agent_start' });
-    send({ type: 'message_start', message: { role: 'user', content: [] } });
-    send({ type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: msg.message }] } });
-    send({ type: 'agent_end' });
-  }
-});
-"#;
-        let child = tokio::process::Command::new("node")
-            .arg("-e")
-            .arg(script)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn fake pi");
-        let emit: crate::acp_runtime::AcpEventEmit = std::sync::Arc::new(|_events, _sid| {});
-        let control = super::spawn_pi_rpc_session_inner(
-            emit,
-            super::noop_dev_log_emitter(),
-            "jishu-self".to_string(),
-            entry_key.to_string(),
-            child,
-            Some(PromptPayload {
-                message: persisted.clone(),
-                pending_entries: vec![entry],
-            }),
-            None,
-            None,
-            None,
-            || {},
-            |_sid: &str| {},
-        );
-
-        // 引擎回报落盘 → 账本清空（10s 上限；修前此处恒剩一条原文幽灵）。
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            let unsent = [
-                crate::pending_messages::dedupe_against("fake-ledger-session", &[]),
-                crate::pending_messages::dedupe_against(entry_key, &[]),
-            ]
-            .concat();
-            if unsent.is_empty() {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "引擎已回报落盘，账本仍有未送达残留：{unsent:?}"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-
-        control.shutdown().await;
-        crate::pending_messages::drop_session("fake-ledger-session");
-        crate::pending_messages::drop_session(entry_key);
-    }
-
-    async fn node_available() -> bool {
-        tokio::process::Command::new("node")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-
-    async fn wait_for_event(
-        seen: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-        want: &str,
-        what: &str,
-    ) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            if seen.lock().unwrap().iter().any(|s| s == want) {
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "hub 未收到 {what}：{:?}",
-                seen.lock().unwrap().clone()
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    }
-
-    /// v0.9.8 需求7 补充轮 UC-8/UC-9：假引擎的压缩流程（node -e）。
-    /// - mode = "ok"：收到 compact → 发 compaction_start → 发成功的
-    ///   compaction_end → 回成功响应；
-    /// - mode = "fail"：发带 errorMessage 的 compaction_end → 回错误响应；
-    /// - mode = "cancel"：发 compaction_start 后等 hub 的 abort → 发
-    ///   compaction_end(aborted) → 回错误响应。
-    ///
-    /// cancel = true：hub 收到 compaction_start 后发停止命令。
-    /// 返回（compact 的结果、假引擎收到的全部命令行、hub 归一化后的事件）。
-    async fn run_fake_compaction(
-        mode: &'static str,
-        cancel: bool,
-    ) -> (
-        Result<serde_json::Value, String>,
-        String,
-        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    ) {
-        let out_path = std::env::temp_dir().join(format!(
-            "fake_pi_out_{}_compact_{mode}.jsonl",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&out_path);
-        // 注意：脚本内禁用反斜杠转义（同上）。
-        let script = r#"
-const NL = String.fromCharCode(10);
-const fs = require('fs');
-const rl = require('readline').createInterface({ input: process.stdin });
-const send = (obj) => process.stdout.write(JSON.stringify(obj) + NL);
-const out = process.env.FAKE_PI_OUT;
-const mode = process.env.FAKE_PI_MODE;
-const log = (s) => fs.appendFileSync(out, s + NL);
-let compactId = null;
-rl.on('line', (line) => {
-  let msg; try { msg = JSON.parse(line); } catch { return; }
-  if (msg.type === 'get_state') {
-    send({ type: 'response', command: 'get_state', success: true, data: { sessionId: 'fake-compact-session', model: { contextWindow: 200000 }, thinkingLevel: 'high', autoCompactionEnabled: true } });
-  } else if (msg.type === 'compact') {
-    log('RECV ' + line);
-    compactId = msg.id;
-    if (mode === 'fail') {
-      send({ type: 'compaction_end', reason: 'manual', result: null, aborted: false, willRetry: false, errorMessage: 'Compaction failed: provider 500' });
-      send({ type: 'response', id: msg.id, command: 'compact', success: false, error: 'Compaction failed: provider 500' });
-      return;
-    }
-    send({ type: 'compaction_start', reason: 'manual' });
-    if (mode === 'ok') {
-      send({ type: 'compaction_end', reason: 'manual', result: { summary: 's', firstKeptEntryId: 'k', tokensBefore: 10, estimatedTokensAfter: 5 }, aborted: false, willRetry: false });
-      send({ type: 'response', id: msg.id, command: 'compact', success: true, data: { summary: 's', firstKeptEntryId: 'k', tokensBefore: 10, estimatedTokensAfter: 5 } });
-    }
-  } else if (msg.type === 'abort') {
-    log('RECV ' + line);
-    if (mode === 'cancel') {
-      send({ type: 'compaction_end', reason: 'manual', result: null, aborted: true, willRetry: false });
-      send({ type: 'response', id: compactId, command: 'compact', success: false, error: 'Compaction cancelled' });
-    }
-  }
-});
-"#;
-        let child = tokio::process::Command::new("node")
-            .arg("-e")
-            .arg(script)
-            .env("FAKE_PI_OUT", out_path.to_string_lossy().to_string())
-            .env("FAKE_PI_MODE", mode)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn fake pi");
-
-        let seen: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let seen_clone = seen.clone();
-        let emit: crate::acp_runtime::AcpEventEmit = std::sync::Arc::new(
-            move |events: &[crate::agent::normalized::NormalizedEvent], _sid: &str| {
-                let mut guard = seen_clone.lock().unwrap();
-                for event in events {
-                    let tag = match event {
-                        crate::agent::normalized::NormalizedEvent::PhaseDivider {
-                            title, ..
-                        } => {
-                            format!("divider:{title}")
-                        }
-                        crate::agent::normalized::NormalizedEvent::CompactionStatus {
-                            active,
-                            ..
-                        } => format!("status:{active}"),
-                        crate::agent::normalized::NormalizedEvent::Error { message, .. } => {
-                            format!("error:{message}")
-                        }
-                        _ => continue,
-                    };
-                    guard.push(tag);
-                }
-            },
-        );
-        let control = super::spawn_pi_rpc_session_inner(
-            emit,
-            super::noop_dev_log_emitter(),
-            "jishu-self".to_string(),
-            format!("compact-{mode}-test"),
-            child,
-            None,
-            None,
-            None,
-            None,
-            || {},
-            |_sid: &str| {},
-        );
-        let control_for_compact = control.clone();
-        let compact_task = tokio::spawn(async move { control_for_compact.compact(None).await });
-
-        if cancel {
-            wait_for_event(&seen, "status:true", "compaction_start").await;
-            control.send_cancel().await;
-        }
-        let result = tokio::time::timeout(std::time::Duration::from_secs(10), compact_task)
-            .await
-            .expect("compact 未在 10 秒内返回（停止没有送达引擎时即卡在这里）")
-            .expect("compact 任务异常退出");
-        let engine_in = std::fs::read_to_string(&out_path).unwrap_or_default();
-        control.shutdown().await;
-        let _ = std::fs::remove_file(&out_path);
-        (result, engine_in, seen)
-    }
-
-    /// v0.9.8 需求7 补充轮 UC-8 + UC-9（取消）：纯压缩期间（hub 状态是 Idle）
-    /// 点停止 → hub 把 abort 送给引擎；引擎回 compaction_end(aborted) 后，compact
-    /// 以「已取消」正常返回。
-    /// 修前：Idle 分支丢弃停止命令——引擎收不到 abort，compact 永不返回。
-    #[tokio::test]
-    async fn cancel_during_compaction_reaches_engine_and_settles_as_cancelled() {
-        if !node_available().await {
-            eprintln!("node 不可用，跳过假 pi 压缩回归测试");
-            return;
-        }
-        let (result, engine_in, seen) = run_fake_compaction("cancel", true).await;
-        assert!(
-            engine_in
-                .lines()
-                .any(|l| l.starts_with("RECV ") && l.contains(r#""type":"abort""#)),
-            "引擎应收到停止命令：{engine_in}"
-        );
-        let result = result.expect("用户取消的压缩不是失败");
-        assert_eq!(result, serde_json::json!({ "cancelled": true }));
-        let seen = seen.lock().unwrap().clone();
-        assert!(
-            seen.contains(&"divider:上下文压缩已取消".to_string()),
-            "{seen:?}"
-        );
-    }
-
-    /// v0.9.8 需求7 补充轮 UC-9（成功 / 失败）：结果口径不变——成功返回引擎的
-    /// 结果对象，失败返回错误消息（此时引擎的 compaction_end 未被中止）。
-    #[tokio::test]
-    async fn compact_success_and_failure_keep_their_outcomes() {
-        if !node_available().await {
-            eprintln!("node 不可用，跳过假 pi 压缩回归测试");
-            return;
-        }
-        let (result, _, seen) = run_fake_compaction("ok", false).await;
-        assert_eq!(result.expect("成功")["summary"], serde_json::json!("s"));
-        let seen = seen.lock().unwrap().clone();
-        assert!(
-            seen.contains(&"divider:上下文已压缩".to_string()),
-            "{seen:?}"
-        );
-
-        let (result, _, seen) = run_fake_compaction("fail", false).await;
-        let err = result.expect_err("失败的压缩返回错误");
-        assert!(err.contains("provider 500"), "{err}");
-        let seen = seen.lock().unwrap().clone();
-        assert!(
-            seen.contains(&"divider:上下文压缩失败".to_string()),
-            "{seen:?}"
-        );
-    }
 }

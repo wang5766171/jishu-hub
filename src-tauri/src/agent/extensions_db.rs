@@ -73,6 +73,9 @@ pub fn ensure_schema() -> Result<(), String> {
               disabled_at INTEGER NOT NULL,
               PRIMARY KEY (plugin_id, pkg_key)
             );
+            -- v0.9.8 评审修复轮 R2：schema 版本落 user_version（DEVELOP_READ
+            -- §9：schema 版本化）。今后改表结构时递增，并在这里写迁移。
+            PRAGMA user_version = 1;
             "#,
         )
     })
@@ -168,24 +171,30 @@ pub fn sync_registry_face(
 }
 
 /// 关系表重建（真源=插件 [[adapt]] 声明）：事务内全量重算。
+///
+/// v0.9.8 评审修复轮 R2：把文档一直写着的事务落到实处。此前先 DELETE 再
+/// 逐条 INSERT、每条语句各自提交，中途任何一条失败就留下一张空表或半张
+/// 表——所有适配件的「基于」关系当场消失。现在失败整体回滚，表里还是重建
+/// 前的那一版。
 pub fn rebuild_adaptations(
     decls: &[(String, Vec<(String, Option<Vec<String>>)>)], // (plugin_id, [(extension, tools)])
 ) -> Result<(), String> {
     with_conn(|conn| {
-        conn.execute("DELETE FROM plugin_adaptations", [])?;
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM plugin_adaptations", [])?;
         for (plugin_id, sections) in decls {
             for (extension, tools) in sections {
                 let tools_json = tools
                     .as_ref()
                     .map(|t| serde_json::to_string(t).unwrap_or_else(|_| "[]".into()));
-                conn.execute(
+                tx.execute(
                     "INSERT OR REPLACE INTO plugin_adaptations (plugin_id, pkg_key, tools)
                      VALUES (?1, ?2, ?3)",
                     rusqlite::params![plugin_id, extension, tools_json],
                 )?;
             }
         }
-        Ok(())
+        tx.commit()
     })
 }
 
@@ -331,6 +340,19 @@ fn set_plugin_enabled_for_extension(plugin_id: &str, enabled: bool) -> Result<()
     }
 }
 
+/// 适配件能不能被级联停用。核心件与 required 件按规则不可禁用（「必装」的
+/// 用户裁决，`set_plugin_enabled` 的入口守卫必拒）——级联不去撞这道墙：对
+/// 它们不尝试、不记台账，它们保持启用。
+///
+/// v0.9.8 评审修复轮 R2：此前每个适配件都照试，撞墙只留一条告警。内置的
+/// 待办清单扩展预置适配指向 required 的任务看板，于是只要它处于停用态，每次
+/// 注册表重建触发的对账都再失败一遍、再告警一遍（「级联停用永败」）。
+/// 只约束适配件：内置 pi 扩展包的启停闸门走内部写入，不受这条约束（R1-0）。
+pub(crate) fn adapter_cascadable(plugin_id: &str) -> bool {
+    !crate::agent::plugin::CORE_PLUGIN_IDS.contains(&plugin_id)
+        && !crate::agent::plugin::market::is_required_plugin(plugin_id)
+}
+
 /// 级联停用：停用依赖 pkg_key 的全部**当前启用中**的适配件并记台账
 /// （用户此前已手动停的不重复记——恢复时不动它们）。
 ///
@@ -353,6 +375,15 @@ fn cascade_disable(pkg_key: &str) -> Result<Vec<String>, String> {
     for plugin_id in plugins {
         if disabled_now.contains(&plugin_id) {
             continue; // 用户已手动停——不记台账，恢复时不碰。
+        }
+        // 适配件里按规则不可禁用的（核心 / required）：不尝试、不记台账。
+        if !crate::agent::plugin::is_pi_package_plugin(&plugin_id)
+            && !adapter_cascadable(&plugin_id)
+        {
+            log::debug!(
+                "[extensions-db] {plugin_id} 按规则不可禁用（核心 / 默认安装集），不参与级联停用"
+            );
+            continue;
         }
         match set_plugin_enabled_for_extension(&plugin_id, false) {
             Ok(_) => {
@@ -688,10 +719,12 @@ pub fn sync_all() {
 pub fn apply_builtin_verdict_presets() -> Result<(), String> {
     for (pkg_key, verdict, note) in crate::agent::jishu_self::builtin_gui_verdicts() {
         with_conn(|conn| {
-            // R3 修正：builtin.json 是 hub 权威数据（与代码同版本演进）——
-            // 始终刷新（旧版预置的 noneeded 需随升级更新为逐件判定）；
-            // 用户改判后下一次 sync 会被覆盖回预置——「重新判定」语义是
-            // 给用户看当前判定依据+触发 agent 重评，非永久覆盖 hub 预置。
+            // R3 修正：只落仍是 pending 的内置行（下方 SQL 的条件）——用户
+            // 改判过的结论不会被预置冲掉。本函数只在 M-1 迁移时调用一次（见
+            // migrations/v0_9_8_extensions_db.rs），对账 sync 不再调用它：
+            // builtin.json 随版本演进的判定，只在行回到 pending 之后才落。
+            // v0.9.8 评审修复轮 R2：此前这里的注释写「始终刷新、下次 sync 会
+            // 覆盖回预置」，与 SQL 和调用点都对不上。
             conn.execute(
                 "UPDATE extensions SET gui_verdict = ?2, verdict_note = ?3, updated_at = ?4
                  WHERE pkg_key = ?1 AND gui_verdict = 'pending'",
@@ -765,7 +798,7 @@ mod tests {
     /// 适配件用内置 session.outline（known ids 恒含，无需扫真实目录）。
     #[test]
     fn cascade_disable_restore_with_adapter() {
-        let guard = crate::agent::manifest::env_test_lock()
+        let _guard = crate::agent::manifest::env_test_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
@@ -813,7 +846,7 @@ mod tests {
     /// 恢复走显式 enable 或 reconcile 的 disabled 分支——此处锁停用事实）。
     #[test]
     fn cascade_disable_adapters_for_uninstall() {
-        let guard = crate::agent::manifest::env_test_lock()
+        let _guard = crate::agent::manifest::env_test_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
@@ -978,6 +1011,160 @@ mod tests {
         assert_eq!(list[0].adapters.len(), 2);
         let deps = plugin_deps().unwrap();
         assert_eq!(deps.len(), 2);
+        std::env::remove_var("JISHU_EXTENSIONS_DB");
+    }
+
+    /// v0.9.8 评审修复轮 R2：extensions.db 的 schema 版本落 user_version
+    /// （DEVELOP_READ §9）；重复建表幂等。
+    #[test]
+    fn schema_version_is_stamped() {
+        let guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _tmp = test_db(&guard);
+        ensure_schema().unwrap();
+        let version = || -> i64 {
+            with_conn(|conn| conn.query_row("PRAGMA user_version", [], |row| row.get(0))).unwrap()
+        };
+        assert_eq!(version(), 1);
+        ensure_schema().unwrap();
+        assert_eq!(version(), 1, "重复建表不改版本");
+        std::env::remove_var("JISHU_EXTENSIONS_DB");
+    }
+
+    /// v0.9.8 评审修复轮 R2：关系表重建是事务——重建到一半失败，表里还是
+    /// 重建前的那一版。修前 DELETE 与每条 INSERT 各自提交，失败即留空表或
+    /// 半张表（所有适配件的「基于」关系消失）。
+    #[test]
+    fn rebuild_adaptations_is_atomic() {
+        let guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _tmp = test_db(&guard);
+        ensure_schema().unwrap();
+        rebuild_adaptations(&[
+            (
+                "session.usage".to_string(),
+                vec![("npm:keep-a".to_string(), None)],
+            ),
+            (
+                "sidebar.usage".to_string(),
+                vec![("npm:keep-b".to_string(), None)],
+            ),
+        ])
+        .unwrap();
+        let adapters = || -> Vec<String> {
+            let mut rows: Vec<String> = with_conn(|conn| {
+                let mut stmt = conn.prepare("SELECT plugin_id FROM plugin_adaptations")?;
+                let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+                Ok(rows.filter_map(|r| r.ok()).collect())
+            })
+            .unwrap();
+            rows.sort();
+            rows
+        };
+        // 让「坏插件」那一条插入失败：重建进行到一半必然报错。
+        with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER reject_bad_adapter BEFORE INSERT ON plugin_adaptations
+                 WHEN NEW.plugin_id = 'bad'
+                 BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let err = rebuild_adaptations(&[
+            ("good".to_string(), vec![("npm:new".to_string(), None)]),
+            ("bad".to_string(), vec![("npm:new".to_string(), None)]),
+        ])
+        .expect_err("触发器应让重建失败");
+        assert!(err.contains("boom"), "{err}");
+        assert_eq!(
+            adapters(),
+            vec!["session.usage".to_string(), "sidebar.usage".to_string()],
+            "失败的重建不得动已有的关系表"
+        );
+        // 去掉触发器后重建成功，表里只剩新的一版。
+        with_conn(|conn| {
+            conn.execute_batch("DROP TRIGGER reject_bad_adapter;")?;
+            Ok(())
+        })
+        .unwrap();
+        rebuild_adaptations(&[("good".to_string(), vec![("npm:new".to_string(), None)])]).unwrap();
+        assert_eq!(adapters(), vec!["good".to_string()]);
+        std::env::remove_var("JISHU_EXTENSIONS_DB");
+    }
+
+    /// v0.9.8 评审修复轮 R2：级联停用不去撞「核心 / required 件不可禁用」的
+    /// 墙——required 的适配件不尝试、不记台账、保持启用；启停闸门与其它适配
+    /// 件照常级联。内置的待办清单扩展预置适配指向 required 的任务看板，此前
+    /// 只要它停用，每次对账都再失败一遍、再告警一遍。
+    #[test]
+    fn cascade_disable_skips_protected_adapters_but_still_closes_gate() {
+        let guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        let _tmp = test_db(&guard);
+        let pi = tmp.path().join("pi.json");
+        std::fs::write(&pi, r#"{"packages": ["npm:pi-web-access@0.32.0"]}"#).unwrap();
+        std::env::set_var("JISHU_PI_SETTINGS", &pi);
+
+        // 前置：任务看板确实是 required——否则这条用例测不到要测的东西。
+        assert!(crate::agent::plugin::market::is_required_plugin(
+            "session.task-board"
+        ));
+        assert!(!adapter_cascadable("session.task-board"));
+        assert!(!adapter_cascadable("jishu-self"), "核心引擎不可禁用");
+        assert!(adapter_cascadable("session.usage"));
+
+        ensure_schema().unwrap();
+        sync_registry_face(&[], &["npm:pi-web-access@0.32.0".to_string()], None).unwrap();
+        rebuild_adaptations(&[
+            (
+                "session.task-board".to_string(),
+                vec![("npm:pi-web-access".to_string(), None)],
+            ),
+            (
+                "session.usage".to_string(),
+                vec![("npm:pi-web-access".to_string(), None)],
+            ),
+        ])
+        .unwrap();
+
+        let cascaded =
+            set_extension_disabled("npm:pi-web-access@0.32.0", "联网搜索", "npm:x/y").unwrap();
+        let mut cascaded = cascaded;
+        cascaded.sort();
+        assert_eq!(
+            cascaded,
+            vec!["pi-web-access".to_string(), "session.usage".to_string()],
+            "闸门与普通适配件级联停用；required 的任务看板不在其中"
+        );
+        let disabled = crate::agent::plugin::load_plugin_config().disabled;
+        assert!(disabled.iter().any(|x| x == "pi-web-access"));
+        assert!(disabled.iter().any(|x| x == "session.usage"));
+        assert!(
+            !disabled.iter().any(|x| x == "session.task-board"),
+            "required 件保持启用"
+        );
+        // 对账重跑：没有可再停的，结果不变。
+        reconcile_cascade().unwrap();
+        let disabled = crate::agent::plugin::load_plugin_config().disabled;
+        assert!(disabled.iter().any(|x| x == "pi-web-access"));
+        assert!(!disabled.iter().any(|x| x == "session.task-board"));
+        // 恢复：精确反启联动停的那两个；任务看板从头到尾没动过。
+        let (_, restored) = set_extension_active("npm:pi-web-access").unwrap();
+        let mut restored = restored;
+        restored.sort();
+        assert_eq!(
+            restored,
+            vec!["pi-web-access".to_string(), "session.usage".to_string()]
+        );
+
+        std::env::remove_var("JISHU_HUB_HOME");
+        std::env::remove_var("JISHU_PI_SETTINGS");
         std::env::remove_var("JISHU_EXTENSIONS_DB");
     }
 }

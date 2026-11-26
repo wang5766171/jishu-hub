@@ -358,3 +358,55 @@ pub(crate) fn convert_extension_ui_request(msg: &serde_json::Value) -> Option<No
         _ => None,
     }
 }
+
+// ---------------------------------------------------------------------------
+// 引擎报错原话 → 界面文案（v0.9.8 评审修复轮 R2）
+// ---------------------------------------------------------------------------
+
+/// 引擎报错原话 → 给用户看的一句话。已知错误换成中文（原话由调用方记进
+/// 日志）；不认识的原话前面加一句中文引导再原样带上——用户至少知道这是
+/// 引擎返回的错误，而不是界面自己出了故障。
+///
+/// 此前引擎的英文原话直接上屏（需求15 F1 同类）：压缩进行中发消息会被
+/// 引擎拒收，界面原样显示 "Cannot submit a prompt while compaction is in
+/// progress…"。标记串取自引擎 agent-session.ts 的报错原文。
+pub(crate) fn engine_error_message(raw: &str) -> String {
+    if let Some(reason) = raw.strip_prefix("Compaction failed: ") {
+        // 失败原因来自模型服务（各家文案不同，无法穷举），保留原话供排查。
+        return format!("上下文压缩失败：{reason}");
+    }
+    let known: &[(&str, &str)] = &[
+        (
+            "Cannot submit a prompt while compaction is in progress",
+            "上下文正在压缩，这条消息没有被处理。请等压缩结束后重新发送。",
+        ),
+        (
+            "Agent is already processing",
+            "智能体还在处理上一条消息，这条消息没有被处理。请等它结束，或先点停止再重新发送。",
+        ),
+        (
+            "No model selected",
+            "还没有选择模型。请先在模型选择器里选一个模型，再重新发送。",
+        ),
+        (
+            "No API key found for",
+            "当前模型还没有配置访问密钥。请先在设置里完成模型的授权，再重新发送。",
+        ),
+        (
+            "Authentication failed for",
+            "模型登录已失效或网络不可用。请重新登录后再发送。",
+        ),
+        (
+            "Extension failed, blocking execution",
+            "扩展拦截了这条消息（扩展自身报错）。请查看日志中心，或停用相关扩展后重试。",
+        ),
+        ("Already compacted", "上下文刚刚压缩过，不需要再压缩。"),
+        ("Nothing to compact", "会话内容还不多，暂时不需要压缩。"),
+    ];
+    for (marker, zh) in known {
+        if raw.contains(marker) {
+            return (*zh).to_string();
+        }
+    }
+    format!("智能体返回了错误：{raw}")
+}

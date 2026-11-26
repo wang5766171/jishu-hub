@@ -235,12 +235,14 @@ async fn install_runtime_locked(
         Err(e) => log::warn!("[agent-runtime] MCP native entry ensure deferred: {e}"),
     }
     match crate::agent::jishu_self::JishuSelfAgent::ensure_pi_extensions_installed().await {
-        Ok(installed) if !installed.is_empty() => {
-            log::info!("[agent-runtime] pi extensions installed: {:?}", installed);
-            crate::task_plan::ensure_subagents_runtime_config();
-            crate::agent::plugin::sync_pi_packages_with_plugins();
+        Ok(outcome) => {
+            if !outcome.installed.is_empty() {
+                log::info!("[agent-runtime] pi extensions installed: {:?}", outcome.installed);
+            }
+            // 评审修复轮 R2：只要装上了包就同步——部分包失败不再让装成了的
+            // 那几个跳过注册同步。
+            crate::agent::jishu_self::JishuSelfAgent::apply_install_outcome(&outcome);
         }
-        Ok(_) => {}
         Err(e) => log::warn!("[agent-runtime] pi extensions install deferred: {e}"),
     }
 

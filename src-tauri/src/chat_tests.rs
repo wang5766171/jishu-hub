@@ -81,12 +81,13 @@ mod tests {
         )
     }
 
-    /// compose_tool_message 核心序列的纯函数复刻（迁移→读取→过滤→渲染）。
+    /// compose_tool_message 核心序列的纯函数复刻（读取→过滤→渲染）。
     /// v0.9.0 需求3 方案 C：前端不再嵌 [JISHU-TOOLS] 文本标记，净化步骤
     /// 已删除（compose 只做 原文直拼 + 块后缀）。
     /// v0.9.5 重构：注入块后缀追加（用户消息在前）。
+    /// v0.9.8 评审修复轮 R2：原第一步「新会话暂存键 → 本条会话」的迁移已删
+    /// （暂存键自评审修复轮 R1-5 起没有写入方）。
     fn compose_core(session_id: &str, message: &str, pool: &[tp::ToolPlugin]) -> String {
-        tp::migrate_session_tools(tp::STAGING_SESSION_KEY, session_id);
         let ids = tp::get_session_tools(session_id);
         if ids.is_empty() {
             return message.to_string();
@@ -111,17 +112,18 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner())
     }
 
+    /// 首条消息（临时键）按本条会话键下的工具集注入。
+    /// v0.9.8 评审修复轮 R2：原用例断言「输入框勾选落暂存键 → 首条消息迁到
+    /// pending 键」——评审修复轮 R1-5 起发送入口直接把本条消息的工具集写在
+    /// 本条会话键下，暂存键已无写入方，那段迁移随之删除。
     #[test]
-    fn compose_first_message_migrates_staging_and_injects() {
+    fn compose_first_message_injects_session_tools() {
         let _g = lock();
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
-        // 新会话：用户在输入框勾选（落暂存键）→ 首条消息（pending id）
+        // 发送入口（apply_turn_tool_set）已把本条消息的工具集写在首条消息的键下。
         let mut map = std::collections::HashMap::new();
-        map.insert(
-            tp::STAGING_SESSION_KEY.to_string(),
-            vec!["gh-cli".to_string()],
-        );
+        map.insert("pending-1000".to_string(), vec!["gh-cli".to_string()]);
         tp::set_session_tools_map_for_test(&map);
 
         let pool = vec![injectable_plugin(), pi_only_plugin()];
@@ -135,8 +137,7 @@ mod tests {
         let (clean, ids) = ip::extract_tool_snapshot(&out);
         assert_eq!(clean, "列出我的仓库");
         assert_eq!(ids, vec!["gh-cli".to_string()]);
-        // 暂存键已清空、内容已迁移到 pending
-        assert!(tp::get_session_tools(tp::STAGING_SESSION_KEY).is_empty());
+        // 本条会话键下的工具集原样保留（compose 只读不迁）。
         assert_eq!(
             tp::get_session_tools("pending-1000"),
             vec!["gh-cli".to_string()]

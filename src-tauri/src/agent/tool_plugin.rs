@@ -138,10 +138,10 @@ pub fn set_session_tools_map_for_test(map: &std::collections::HashMap<String, Ve
 }
 
 /// 读取会话启用的工具 id 集合（按装载顺序稳定排序）。
-/// 新会话（尚无真实 session id）的工具选择暂存 key——前端在 sessionId 为
-/// null 时用它读写；send_message 首条消息时迁移到真实 pending id 后清空。
-pub const STAGING_SESSION_KEY: &str = "__new_session__";
-
+///
+/// v0.9.8 评审修复轮 R2：原「新会话暂存键」`__new_session__` 常量已删——评审
+/// 修复轮 R1-5 起前端不再往它写工具集（本条消息带哪些工具由发送入口解析并
+/// 写入本条会话键），它已无任何写入方。
 pub fn get_session_tools(session_id: &str) -> Vec<String> {
     let map = load_session_tools_map();
     map.get(session_id).cloned().unwrap_or_default()
@@ -175,11 +175,13 @@ pub fn set_session_tools(session_id: &str, tool_ids: &[String]) -> Result<(), St
 }
 
 /// 迁移会话工具集：`from` 存在则并入（并集去重）`to` 并删除 `from` 条目。
-/// 两个挂载点（M0）：
-/// 1. send_message 注入前：STAGING_SESSION_KEY → 本条 sessionId——新会话在
-///    输入框勾选的工具（暂存键）随首条消息落到 pending/真实键；
-/// 2. 会话 id 解析回调：pending-<ts> → 真实 session id——首条消息解析出
-///    真实 id 后工具集跟着搬家，第二条消息起按真实键命中注入。
+/// 挂载点（M0）：会话 id 解析回调——pending-<ts> → 真实 session id。首条消息
+/// 以临时键发送时，发送入口已把本条消息的工具集写在 pending 键下；解析出
+/// 真实 id 后工具集跟着搬家，第二条消息起按真实键命中注入。
+///
+/// v0.9.8 评审修复轮 R2：原第二个挂载点（send_message 注入前把新会话暂存键
+/// 迁到本条会话键）已删——评审修复轮 R1-5 起前端不再写暂存键，那次迁移
+/// 永远迁不到内容。
 ///
 /// from == to 或 from 不存在时为无操作（幂等）。
 pub fn migrate_session_tools(from: &str, to: &str) {
@@ -691,18 +693,18 @@ usage = "u"
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
         // 直接写 map 文件绕过 unknown-id 校验（迁移逻辑只操作 map）
         let mut map = std::collections::HashMap::new();
-        map.insert("__new_session__".to_string(), vec!["tool-a".to_string()]);
+        map.insert("pending-1000".to_string(), vec!["tool-a".to_string()]);
         map.insert("target-session".to_string(), vec!["tool-b".to_string()]);
         save_session_tools_map(&map);
 
-        migrate_session_tools(STAGING_SESSION_KEY, "target-session");
+        migrate_session_tools("pending-1000", "target-session");
         let merged = get_session_tools("target-session");
         assert!(merged.contains(&"tool-a".to_string()));
         assert!(merged.contains(&"tool-b".to_string()));
-        assert!(get_session_tools(STAGING_SESSION_KEY).is_empty());
+        assert!(get_session_tools("pending-1000").is_empty());
 
         // 幂等：from 不存在时无操作
-        migrate_session_tools(STAGING_SESSION_KEY, "target-session");
+        migrate_session_tools("pending-1000", "target-session");
         assert_eq!(get_session_tools("target-session").len(), 2);
 
         // from == to 无操作
@@ -718,13 +720,11 @@ usage = "u"
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
         let mut map = std::collections::HashMap::new();
         map.insert("pending-1787962861840".to_string(), vec!["a".to_string()]);
-        map.insert("__new_session__".to_string(), vec!["b".to_string()]);
         map.insert("real-session".to_string(), vec!["c".to_string()]);
         save_session_tools_map(&map);
 
         cleanup_stale_pending_sessions();
         assert!(get_session_tools("pending-1787962861840").is_empty());
-        assert_eq!(get_session_tools("__new_session__"), vec!["b".to_string()]);
         assert_eq!(get_session_tools("real-session"), vec!["c".to_string()]);
         std::env::remove_var("JISHU_HUB_HOME");
     }

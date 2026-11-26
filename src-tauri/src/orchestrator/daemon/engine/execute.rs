@@ -22,6 +22,7 @@ pub(super) async fn execute_node(
             false,
         ));
     };
+    let on_session_resolved = once_session_resolved(on_session_resolved);
 
     match payload {
         ExecutablePayload::Shell { .. }
@@ -95,6 +96,8 @@ pub(super) async fn execute_node(
                 prompt: resolved_prompt.clone(),
                 timeout_ms: node.policy.timeout_ms.unwrap_or(600_000),
                 cancellation: cancellation.clone(),
+                // 真实会话号在连接循环的解析回调里就落库（早于首条 prompt 写出）。
+                on_session_resolved: on_session_resolved.clone(),
             };
             let mut output =
                 execute_agent(runtime, prepared, request, context, on_session_resolved).await?;
@@ -118,6 +121,7 @@ pub(super) async fn execute_node(
                 prompt: resolved_prompt.clone(),
                 timeout_ms: node.policy.timeout_ms.unwrap_or(600_000),
                 cancellation,
+                on_session_resolved: on_session_resolved.clone(),
             };
             let mut output =
                 execute_agent(runtime, prepared, request, context, on_session_resolved).await?;
@@ -125,6 +129,28 @@ pub(super) async fn execute_node(
             Ok(output)
         }
     }
+}
+
+/// 把调度层的「会话号落库」回调包成只生效一次。
+///
+/// v0.9.8 评审修复轮 R3（P1-1）：节点会话号此前只在这个引擎任务收到事件流里
+/// 的 `SessionResolved` 时才落库——事件要经两跳通道才到这里，而连接循环发完
+/// SessionResolved 紧接着就把首条 prompt 写给引擎，引擎首轮来查「是不是任务
+/// 会话」时登记可能还没落库。现在 PiRpc 通道在连接循环的解析回调里同步调用
+/// 它（早于首条 prompt 写出）；事件流里到达时再调一次就被这里挡掉。阻塞通道
+/// 没有解析回调这个时机，仍然只有事件流这一处。两条路谁先到谁调，只调一次。
+pub(super) fn once_session_resolved(
+    callback: Option<Arc<dyn Fn(String) + Send + Sync + 'static>>,
+) -> Option<crate::orchestrator::runtime_bridge::SessionResolvedHook> {
+    let callback = callback?;
+    let done = Arc::new(AtomicBool::new(false));
+    Some(crate::orchestrator::runtime_bridge::SessionResolvedHook(
+        Arc::new(move |session_id: String| {
+            if !done.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                callback(session_id);
+            }
+        }),
+    ))
 }
 
 pub(super) struct ApprovalRequirement {
@@ -376,7 +402,7 @@ pub(super) async fn execute_agent(
     prepared: PreparedAgentExecution,
     request: RuntimeInvocationRequest,
     context: RuntimeEventContext,
-    on_session_resolved: Option<Arc<dyn Fn(String) + Send + Sync + 'static>>,
+    on_session_resolved: Option<crate::orchestrator::runtime_bridge::SessionResolvedHook>,
 ) -> Result<NodeExecutionOutput, AttemptError> {
     let mut handle = runtime
         .invoke(request)
@@ -415,9 +441,12 @@ pub(super) async fn execute_agent(
                     ..
                 } => {
                     session_id = Some(resolved.clone());
-                    // 立即落库，使运行中即可进入节点会话实时查看（Issue 2）。
-                    if let Some(cb) = &on_session_resolved {
-                        cb(resolved);
+                    // 落库，使运行中即可进入节点会话实时查看（Issue 2）。PiRpc
+                    // 通道此时已经在连接循环的解析回调里落过库（早于首条 prompt
+                    // 写出），回调只生效一次，这里再调就被挡掉；阻塞通道只有这
+                    // 一处。
+                    if let Some(hook) = &on_session_resolved {
+                        (hook.0)(resolved);
                     }
                 }
                 RuntimeFact::Completed {

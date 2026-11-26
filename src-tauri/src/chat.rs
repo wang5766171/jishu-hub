@@ -14,6 +14,11 @@ pub struct ChatSession {
     pub agent_id: String,
     pub session_id: String,
     pub process_id: u32,
+    /// 任务模式下这次发送登记的任务实例（评审修复轮 R3 / P1-1：登记先于首条
+    /// prompt）。此刻它挂的会话键是发送用的临时键，会话解析后由后端换成真实
+    /// 会话号。非任务模式没有这一项。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_instance: Option<crate::task_launch::TaskLaunchInstance>,
 }
 
 #[derive(Clone)]
@@ -390,7 +395,10 @@ fn compose_tool_message(
     // 图片委派块紧随其后（直指上方附件行），工具块 / MCP 提示殿后。历史格式
     // （v0.9.5 前的前缀/小写标记）不做剥离兼容（版本级裁决）。
     let message = append_image_dispatch_hint(&message);
-    agent::tool_plugin::migrate_session_tools(agent::tool_plugin::STAGING_SESSION_KEY, session_id);
+    // v0.9.8 评审修复轮 R2：此处原有「新会话暂存键 → 本条会话」的工具集迁移，
+    // 已删——评审修复轮 R1-5 起「本条消息带哪些工具」由发送入口按消息文本
+    // 解析并写入本条会话键（见 commands::agents::apply_turn_tool_set），前端
+    // 不再往暂存键 `__new_session__` 写任何东西，那次迁移永远迁不到内容。
     let tool_ids = agent::tool_plugin::get_session_tools(session_id);
     let Ok(s) = state.lock() else {
         return message;
@@ -411,11 +419,25 @@ fn compose_tool_message(
             for t in tools.iter() {
                 installed_curated.push(t.id().to_string());
             }
-            let installed_skillhub: Vec<String> =
-                agent::skillhub::skillhub_installed().keys().cloned().collect();
-            let ws_scene = agent::workspace_scene::detect_workspace_scene(std::path::Path::new(project_path))
-                .map(|r| r.scene);
-            agent::equipment_db::catalog_block(&installed_curated, &installed_skillhub, cfg.third_party, ws_scene.as_deref())
+            // 技能台账读不出来 = 已装态不明：不给推荐清单（会把已装的又推荐
+            // 一遍），照常发消息（评审修复轮 R3，与「已装清单读不到时推荐区
+            // 不出」同一个口径）。
+            let installed_skillhub: Vec<String> = match agent::skillhub::skillhub_installed() {
+                Ok(installed) => installed.keys().cloned().collect(),
+                Err(e) => {
+                    log::warn!("[equip-recommend] 技能安装台账读不出来，这一条不带推荐清单: {e}");
+                    return String::new();
+                }
+            };
+            let ws_scene =
+                agent::workspace_scene::detect_workspace_scene(std::path::Path::new(project_path))
+                    .map(|r| r.scene);
+            agent::equipment_db::catalog_block(
+                &installed_curated,
+                &installed_skillhub,
+                cfg.third_party,
+                ws_scene.as_deref(),
+            )
         }
     };
     let mut out = message;
@@ -459,6 +481,10 @@ pub async fn send_message(
     // `@[名]` 引用解析（所有出口的默认）；编辑重发显式传入（文本之外还
     // 带着「编辑态保留的工具」这一意图）。
     tool_ids: Option<Vec<String>>,
+    // 任务模式的发送意图（v0.9.8 评审修复轮 R3 / P1-1）：有它，后端在拉起进程
+    // 之前就把任务实例建好并挂在本次发送的会话键上，会话解析后换成真实会话号
+    // ——登记先于首条 prompt，引擎首轮来查「是不是任务会话」就查得到。
+    task_launch: Option<crate::task_launch::TaskLaunchIntent>,
 ) -> Result<ChatSession, String> {
     // v0.9.7 需求5 E2：project_root 兜底换算（空 → 默认空间；正常路径不受影响）。
     let project_path = crate::project::resolve_project_root_or_default(&project_path);
@@ -508,8 +534,8 @@ pub async fn send_message(
     // +删除出口（复用 F2 既有机制，零新 UI）。
     // 评审修复轮 R1-1：记账得到这笔账的**身份**，随发送请求带到引擎侧；
     // prompt 真正写入引擎时按身份把入口账结算为落地账（见
-    // pending_messages::confirm_entries）。销账三层：prompt 落地时按身份
-    // 结算 / 引擎落盘回执 ack_persisted（内容匹配）/ 用户手动 dismiss。
+    // pending_messages::confirm_entries）。销账见 pending_messages 模块说明
+    //（评审修复轮 R2：按身份与顺序，不比文本）。
     // 同步 Err（进程表/路径等罕见失败）留账——「未送达」事实成立。
     let pending_entry = if tracks_delivery {
         session_id
@@ -570,11 +596,24 @@ pub async fn send_message(
                     tool_ids.clone(),
                 );
                 let outgoing = compose_tool_message(&state, sid, &project_path, message.clone());
+                // 任务模式：会话已经在，登记只需把任务挂到这个会话上（没有
+                // 「解析出会话号」这一步，也就不需要改绑）。
+                let (task_binding, task_instance) = match &task_launch {
+                    Some(intent) => {
+                        let (binding, instance) =
+                            crate::task_launch::bind_task_session(&project_path, intent, sid)
+                                .map_err(|e| format!("任务登记失败：{e}"))?;
+                        crate::commands::task::emit_task_instance_changed(&app, &project_path);
+                        (Some(binding), Some(instance))
+                    }
+                    None => (None, None),
+                };
                 match acp
-                    .send_prompt(crate::acp_runtime::PromptPayload {
-                        message: outgoing,
-                        pending_entries: pending_entries.clone(),
-                    })
+                    .send_prompt(crate::acp_runtime::PromptPayload::composed(
+                        outgoing,
+                        message.clone(),
+                        pending_entries.clone(),
+                    ))
                     .await
                 {
                     Ok(()) => {
@@ -582,10 +621,19 @@ pub async fn send_message(
                             agent_id,
                             session_id: sid.clone(),
                             process_id: process.process_id,
+                            task_instance,
                         });
                     }
                     Err(_) => {
                         log::info!("ACP connection closed for session {}, respawning", sid);
+                        // 这次没发出去、下面改走重新拉起（那里会再登记一次）：先
+                        // 撤销这次的登记，不撤的话新任务会建出两份。
+                        undo_task_binding(
+                            &app,
+                            &project_path,
+                            crate::task_launch::TaskBindingSlot::new(task_binding, true).abandon(),
+                            "这次发送没发出去",
+                        );
                         remove_process_entries(&app, Some(process.process_id), Some(sid))?;
                     }
                 }
@@ -603,6 +651,9 @@ pub async fn send_message(
     // 在这个所有出口的必经点解析，自动发送/停止后重发等出口不再各发各的
     // 原文。
     crate::commands::agents::apply_turn_tool_set(&state, &pending_session_id, &message, tool_ids);
+    // 用户原文随请求一起带走：组装后的文本是给模型看的，扩展命令要的是原文
+    //（见 PromptPayload::user_text）。
+    let user_text = message.clone();
     let message = compose_tool_message(&state, &pending_session_id, &project_path, message);
 
     // v0.9.7 需求5 E5：新会话真实 id 解析回调里确保会话子目录（project_path
@@ -623,9 +674,45 @@ pub async fn send_message(
                 timeout_secs: 0,
                 model_override,
                 pending_entry,
+                user_text: Some(user_text),
             },
         )?
     };
+
+    // v0.9.8 评审修复轮 R3（P1-1）：任务模式下**登记先于首条 prompt**。此前任务
+    // 实例由前端在 session_resolved 分片到达后才建，hub 这边发完 SessionResolved
+    // 紧接着就把首条 prompt 写给引擎——引擎跑 before_agent_start 来查「是不是
+    // 任务会话」时登记常常还没落库，首轮的任务锚点、任务纪律、不询问全部落空；
+    // 实例不存在，发第一条之前开关也无处可记。现在：
+    //   拉起之前  → 以发送用的临时会话键建实例（或把已有任务改绑过来）；
+    //   解析回调  → 早于首条 prompt 写出，把会话键换成真实会话号；
+    //   拉起失败 / 进程没解析出会话号就退出 → 撤销这次登记，不留没有会话的任务。
+    // 登记做不成按发送失败处理——不带任务态硬发首条，比发不出去更糟。
+    //
+    // 这次登记的去向（改绑 / 撤销）由 TaskBindingSlot 管：只有发送键是临时键
+    // （新会话，会话还没诞生）时，进程没解析出会话号才撤销；续接已有会话时
+    // 会话早就存在，进程退出时不能撤——进程被空闲回收是常事。
+    let (task_binding, task_instance) = match &task_launch {
+        Some(intent) => {
+            let (binding, instance) = crate::task_launch::bind_task_session(
+                &project_path_for_resolve,
+                intent,
+                &pending_session_id,
+            )
+            .map_err(|e| format!("任务登记失败：{e}"))?;
+            crate::commands::task::emit_task_instance_changed(&app, &project_path_for_resolve);
+            (Some(binding), Some(instance))
+        }
+        None => (None, None),
+    };
+    let task_binding_slot = Arc::new(crate::task_launch::TaskBindingSlot::new(
+        task_binding,
+        crate::agent::command_config::is_transient_session_id(&pending_session_id),
+    ));
+    let task_binding_for_finish = task_binding_slot.clone();
+    let task_binding_for_resolve = task_binding_slot.clone();
+    let project_path_for_finish = project_path_for_resolve.clone();
+    let project_path_for_rollback = project_path_for_resolve.clone();
 
     let cleanup_pid = Arc::new(Mutex::new(None::<u32>));
     let cleanup_pid_for_finish = cleanup_pid.clone();
@@ -636,7 +723,7 @@ pub async fn send_message(
     let sid_for_resolve = pending_session_id.clone();
 
     let spawn_signature = agent_runtime::acp_turn_signature(&prepared).unwrap_or_default();
-    let handle = agent_runtime::start_gui_turn(
+    let handle = match agent_runtime::start_gui_turn(
         app.clone(),
         prepared,
         move || {
@@ -645,8 +732,34 @@ pub async fn send_message(
                 .unwrap_or_else(|e| e.into_inner())
                 .to_owned();
             let _ = remove_process_entries(&app_for_finish, pid, Some(&sid_for_finish));
+            // 新会话的进程退出了却始终没解析出会话号：会话没有诞生，撤销这次
+            // 任务登记（续接已有会话的发送不撤，见 TaskBindingSlot）。
+            undo_task_binding(
+                &app_for_finish,
+                &project_path_for_finish,
+                task_binding_for_finish.finished(),
+                "新会话的进程没有解析出会话号",
+            );
         },
         move |real_id: &str| {
+            // v0.9.8 评审修复轮 R3（P1-1）：这个回调早于首条 prompt 写出，也早于
+            // SessionResolved 事件——先把任务挂的会话键换成真实会话号，引擎首轮来
+            // 查、前端收到事件来读时都已经按真实会话号登记。号没变（续接已有
+            // 会话、引擎没给出号）时它什么都不动。
+            match task_binding_for_resolve.resolved(real_id, &sid_for_resolve) {
+                Ok(None) => {}
+                Ok(Some(_)) => crate::commands::task::emit_task_instance_changed(
+                    &app_for_resolve,
+                    &project_path_for_resolve,
+                ),
+                Err(e) => {
+                    log::warn!("任务改绑到真实会话号失败: {e}");
+                    crate::commands::task::emit_task_instance_changed(
+                        &app_for_resolve,
+                        &project_path_for_resolve,
+                    );
+                }
+            }
             if real_id == sid_for_resolve {
                 return;
             }
@@ -670,7 +783,20 @@ pub async fn send_message(
             );
         },
     )
-    .await?;
+    .await
+    {
+        Ok(handle) => handle,
+        Err(e) => {
+            // 拉起失败：没有会话会诞生，撤销这次任务登记。
+            undo_task_binding(
+                &app,
+                &project_path_for_rollback,
+                task_binding_slot.abandon(),
+                "拉起失败",
+            );
+            return Err(e);
+        }
+    };
 
     {
         let mut pid = cleanup_pid.lock().unwrap_or_else(|e| e.into_inner());
@@ -704,7 +830,30 @@ pub async fn send_message(
         agent_id: handle.agent_id,
         session_id: handle.session_id,
         process_id: handle.process_id,
+        task_instance,
     })
+}
+
+/// 撤销一次任务登记之后的通知（v0.9.8 评审修复轮 R3 / P1-1）：动过登记就广播
+/// 一次，让任务列表与页面按 hub 的现状刷新。撤销失败也算动过——登记已经从
+/// 待办里取走了，界面手里的快照不能再当真。
+fn undo_task_binding(
+    app: &tauri::AppHandle,
+    project_path: &str,
+    undone: Result<bool, String>,
+    what: &str,
+) {
+    let touched = match undone {
+        Ok(false) => false,
+        Ok(true) => true,
+        Err(e) => {
+            log::warn!("任务登记撤销失败（{what}）: {e}");
+            true
+        }
+    };
+    if touched {
+        crate::commands::task::emit_task_instance_changed(app, project_path);
+    }
 }
 
 /// 按当前配置重建该会话的启动签名（纯构建，无副作用；与进程记录的
@@ -728,6 +877,7 @@ fn current_spawn_signature(
             // 发送的漂移检测才能触发按新模型重拉进程。
             model_override: crate::session_models::get_session_model(session_id),
             pending_entry: None,
+            user_text: None,
         },
     )
     .ok()?;
@@ -923,7 +1073,7 @@ pub async fn steer_chat(app: AppHandle, session_id: String, message: String) -> 
             .processes
             .get(&session_id)
             .and_then(|process| process.acp.clone())
-            .ok_or_else(|| format!("No active ACP session found for {session_id}"))?
+            .ok_or_else(|| no_active_session_error())?
     };
     acp.steer(message).await
 }
@@ -1032,7 +1182,7 @@ pub async fn compact_agent_session(
             process
                 .acp
                 .clone()
-                .ok_or_else(|| format!("No active ACP session found for {session_id}"))?,
+                .ok_or_else(|| no_active_session_error())?,
             process.agent_id.clone(),
         ),
         // 无进程（重启/闲置回收）→ 先连接：静默拉起仅 resume 的进程再压缩。
@@ -1159,6 +1309,7 @@ async fn spawn_resume_session_process(
                 timeout_secs: 0,
                 model_override: None,
                 pending_entry: None,
+                user_text: None,
             },
         )?
     };
@@ -1351,7 +1502,7 @@ pub async fn resolve_chat_permission(
         let process = state
             .processes
             .get(&session_id)
-            .ok_or_else(|| format!("No active ACP session found for {session_id}"))?;
+            .ok_or_else(|| no_active_session_error())?;
         (process.acp.clone(), process.agent_id.clone())
     };
 
@@ -1364,7 +1515,7 @@ pub async fn resolve_chat_permission(
             crate::agent::policy::remember_for_session(&arrival.session_id, &arrival);
         }
     }
-    acp.ok_or_else(|| format!("No active ACP session found for {session_id}"))?
+    acp.ok_or_else(|| no_active_session_error())?
         .resolve_permission(request_id, approved)
         .await
 }
@@ -1390,7 +1541,7 @@ pub async fn respond_chat_interaction(
         let process = chat
             .processes
             .get(&session_id)
-            .ok_or_else(|| format!("No active ACP session found for {session_id}"))?;
+            .ok_or_else(|| no_active_session_error())?;
         (
             process.acp.clone(),
             process.agent_id.clone(),
@@ -1698,6 +1849,18 @@ pub fn dismiss_pending_message(session_id: String, sent_at: i64) -> Result<(), S
     crate::pending_messages::dismiss(&session_id, sent_at)
 }
 
+/// 「没有活动会话」的结构化错误（v0.9.8 评审修复轮 R2 / C5）。会话进程不
+/// 在了（闲置回收、崩溃、重启后）时，引导、压缩、分支、审批与交互应答
+/// 都从这里报同一个错。前端按前缀 `[no_active_session]` 判断并撤卡、把答案
+/// 改走后续消息——此前靠英文子串猜。
+///
+/// 前缀之后只有一句人话（评审修复轮 R3 / P2-8）：这个错在引导路径上会直接
+/// 给用户看，不带英文原文和会话号——内部代号不上界面，同 R-7。显示前把前
+/// 缀剥掉是前端的事。
+fn no_active_session_error() -> String {
+    "[no_active_session] 会话连接已不在，请重新打开会话后再试".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1710,6 +1873,24 @@ mod tests {
             "message": { "role": role, "content": [{ "type": "text", "text": text }] },
         })
         .to_string()
+    }
+
+    /// v0.9.8 评审修复轮 R2（C5）：「没有活动会话」带机器可读前缀。
+    /// 评审修复轮 R3（P2-8）：前缀之后只有一句人话——不带英文原文、不带会话
+    /// 号（这句会直接给用户看）。
+    #[test]
+    fn no_active_session_error_is_prefix_plus_plain_words() {
+        let err = no_active_session_error();
+        let rest = err
+            .strip_prefix("[no_active_session] ")
+            .unwrap_or_else(|| panic!("应带结构化前缀：{err}"));
+        assert!(!rest.trim().is_empty(), "前缀之后保留人话：{err}");
+        assert!(rest.contains("重新打开会话"), "{err}");
+        assert!(
+            rest.chars().all(|ch| !ch.is_ascii()),
+            "人话里不留英文残片：{err}"
+        );
+        assert!(!err.contains("No active ACP session"), "{err}");
     }
 
     /// 需求13：截断定位与校验——从尾向前找 user 行、文本 startsWith 校验、

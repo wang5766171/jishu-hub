@@ -275,12 +275,20 @@ async fn install_internal_jishu_agent(app: tauri::AppHandle) -> Result<String, S
             Err(e) => format!("{output}\nMCP native entry ensure skipped: {e}"),
         };
     match crate::agent::jishu_self::JishuSelfAgent::ensure_pi_extensions_installed().await {
-        Ok(installed) if !installed.is_empty() => {
-            crate::task_plan::ensure_subagents_runtime_config();
-            crate::agent::plugin::sync_pi_packages_with_plugins();
-            summary = format!("{summary}\npi extensions installed: {:?}", installed);
+        Ok(outcome) => {
+            if !outcome.installed.is_empty() {
+                summary = format!("{summary}\npi extensions installed: {:?}", outcome.installed);
+            }
+            if !outcome.failed.is_empty() {
+                summary = format!(
+                    "{summary}\npi extensions install partially deferred: {}",
+                    outcome.failed.join("; ")
+                );
+            }
+            // 评审修复轮 R2：只要装上了包就同步（部分包失败不再让装成了的那
+            // 几个跳过注册同步）。
+            crate::agent::jishu_self::JishuSelfAgent::apply_install_outcome(&outcome);
         }
-        Ok(_) => {}
         Err(e) => summary = format!("{summary}\npi extensions install skipped: {e}"),
     }
     // v0.9.7 需求1：手动安装成功即写版本记录（状态命令立刻 Ready）。
@@ -417,12 +425,19 @@ pub fn run_install_agent_cli() -> i32 {
             match tauri::async_runtime::block_on(
                 crate::agent::jishu_self::JishuSelfAgent::ensure_pi_extensions_installed(),
             ) {
-                Ok(installed) if !installed.is_empty() => {
-                    eprintln!("[install-agent] pi extensions installed: {:?}", installed);
-                    crate::task_plan::ensure_subagents_runtime_config();
-                    crate::agent::plugin::sync_pi_packages_with_plugins();
+                Ok(outcome) => {
+                    if !outcome.installed.is_empty() {
+                        eprintln!("[install-agent] pi extensions installed: {:?}", outcome.installed);
+                    }
+                    if !outcome.failed.is_empty() {
+                        eprintln!(
+                            "[install-agent] pi extensions install partially deferred: {}",
+                            outcome.failed.join("; ")
+                        );
+                    }
+                    // 评审修复轮 R2：只要装上了包就同步。
+                    crate::agent::jishu_self::JishuSelfAgent::apply_install_outcome(&outcome);
                 }
-                Ok(_) => {}
                 Err(e) => eprintln!("[install-agent] pi extensions install skipped: {e}"),
             }
             // v0.9.7 需求1：写版本记录（与 GUI 链路一致）。

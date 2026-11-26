@@ -67,6 +67,11 @@ async fn fetch_once() -> Result<Vec<PiSlashCommand>, String> {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
+    // v0.9.8 评审修复轮 R2：探针绝不常驻——等待响应的 future 被丢弃（调用方
+    // 取消 / 超时提前返回）时，靠 drop 兜底杀掉子进程。此前只靠函数走到末尾
+    // 的 `child.kill()`：中途返回就留下孤儿引擎进程（每次挂载命令面板探一次）。
+    // 与 verify_engine_boot / precheck_extension 的探针同款。
+    cmd.kill_on_drop(true);
     #[cfg(target_os = "windows")]
     crate::process_command::tokio_no_window(&mut cmd);
 

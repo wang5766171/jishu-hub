@@ -273,26 +273,38 @@ fn installed_registry_path() -> PathBuf {
     crate::agent::manifest::hub_home().join("skillhub-installed.json")
 }
 
-fn load_installed() -> BTreeMap<String, String> {
-    std::fs::read_to_string(installed_registry_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+/// 读安装台账。文件不存在 = 空台账（一个技能都没装）；读不了、或读出来不是
+/// 合法的 JSON → Err——调用方据此区分「没装」和「不知道」，也不许在读不出来
+/// 的台账上继续写（那会把别的条目冲掉）。
+///
+/// v0.9.8 评审修复轮 R3：此前两种失败都吞成空表——台账文件坏掉时前端分不出
+/// 「读不到」和「一个都没装」，照常推荐、照常安装；安装 / 卸载的收尾在坏台账
+/// 上写入，等于把其余条目全部清空。与「已装扩展来源读失败返回错误」同口径。
+fn load_installed() -> Result<BTreeMap<String, String>, String> {
+    let path = installed_registry_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(e) => return Err(format!("读取技能安装台账失败：{e}")),
+    };
+    serde_json::from_str(&content).map_err(|e| format!("技能安装台账不是合法的 JSON：{e}"))
 }
 
 fn save_installed(map: &BTreeMap<String, String>) {
     let path = installed_registry_path();
     if let Ok(json) = serde_json::to_string_pretty(map) {
         // 评审 P2：台账原子写（对齐 piindex.rs 磁盘缓存同款 atomic_write）
-        // ——半写文件会被 load_installed 静默吞成空台账，已装态全丢。
+        // ——半写文件读不出来。评审修复轮 R3 起 load_installed 把它报成错误，
+        // 不再当成空台账。
         if let Err(e) = crate::util::atomic_write(&path, json.as_bytes()) {
             log::warn!("[skillhub] 安装台账写入失败: {e}");
         }
     }
 }
 
-/// 已安装技能台账（市场「已安装」态）。
-pub fn skillhub_installed() -> BTreeMap<String, String> {
+/// 已安装技能台账（市场「已装」态）。读不了 / 解析不了 → Err（见
+/// [`load_installed`]）：调用方按「已装态不明」处理，不当成「一个都没装」。
+pub fn skillhub_installed() -> Result<BTreeMap<String, String>, String> {
     load_installed()
 }
 
@@ -450,7 +462,11 @@ pub async fn skillhub_install(slug: &str) -> Result<String, String> {
     let plugin_root = crate::agent::manifest::hub_home()
         .join("plugins")
         .join(slug);
-    let ledger_had = load_installed().contains_key(slug);
+    // 台账读不出来就不往下装：分不清「首装」还是「更新」，装完也没法在不冲掉
+    // 其它条目的前提下登记（评审修复轮 R3）。
+    let ledger_had = load_installed()
+        .map_err(|e| format!("技能安装台账读不出来，未做安装：{e}"))?
+        .contains_key(slug);
     if plugin_root.join("plugin.toml").exists() && ledger_had {
         // 更新（目录源「文件即权威」语义）：覆写 skills/<slug>/，manifest 不动。
         let skill_dir = plugin_root.join("skills").join(slug);
@@ -510,7 +526,9 @@ pub async fn skillhub_install(slug: &str) -> Result<String, String> {
     // 分发同步（命令层 rebuild_registry 也会触发，此处覆盖批量更新等
     // 直调路径——幂等）。
     let _ = super::skill_deploy::sync_skill_deployments(false);
-    let mut installed = load_installed();
+    let mut installed = load_installed().map_err(|e| {
+        format!("技能文件已装好，但安装台账读不出来、没能登记（为避免冲掉其它条目未写入）：{e}")
+    })?;
     installed.insert(slug.to_string(), version.clone());
     save_installed(&installed);
     Ok(format!("{slug}@{version} 已安装并注册到 jishu hub"))
@@ -558,7 +576,9 @@ pub fn skillhub_uninstall(slug: &str) -> Result<String, String> {
             }
         }
     }
-    let mut installed = load_installed();
+    let mut installed = load_installed().map_err(|e| {
+        format!("技能文件已移除，但安装台账读不出来、没能销账（为避免冲掉其它条目未写入）：{e}")
+    })?;
     installed.remove(slug);
     save_installed(&installed);
     Ok(format!("{slug} 已卸载"))
@@ -566,11 +586,17 @@ pub fn skillhub_uninstall(slug: &str) -> Result<String, String> {
 
 /// 仅清台账条目（CLI `plugins remove` 等统一卸载链的收尾——对齐 GUI 卸载链
 /// 「先 plugin_remove 后清台账」语义；幂等，无条目无操作）。
-pub fn skillhub_forget(slug: &str) {
-    let mut installed = load_installed();
+///
+/// 台账读不出来 → Err、什么都不写：卸载链调用它时插件目录已经删了，这时再把
+/// 读不出来的台账当成空表写回去，等于清空全部条目（评审修复轮 R3）。
+pub fn skillhub_forget(slug: &str) -> Result<(), String> {
+    let mut installed = load_installed().map_err(|e| {
+        format!("技能已移除，但安装台账读不出来、没能销账（为避免冲掉其它条目未写入）：{e}")
+    })?;
     if installed.remove(slug).is_some() {
         save_installed(&installed);
     }
+    Ok(())
 }
 
 fn common_top_dir<'a>(names: &[&'a str]) -> Option<String> {
@@ -670,17 +696,51 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("JISHU_HUB_HOME", tmp.path());
-        let mut ledger = super::load_installed();
+        let mut ledger = super::load_installed().unwrap();
         ledger.insert("demo".to_string(), "1.0.0".to_string());
         super::save_installed(&ledger);
         assert_eq!(
-            super::skillhub_installed().get("demo").map(String::as_str),
+            super::skillhub_installed()
+                .unwrap()
+                .get("demo")
+                .map(String::as_str),
             Some("1.0.0")
         );
-        super::skillhub_forget("demo");
-        assert!(!super::skillhub_installed().contains_key("demo"));
+        super::skillhub_forget("demo").unwrap();
+        assert!(!super::skillhub_installed().unwrap().contains_key("demo"));
         // 幂等：重复清无副作用。
-        super::skillhub_forget("demo");
+        super::skillhub_forget("demo").unwrap();
+        std::env::remove_var("JISHU_HUB_HOME");
+    }
+
+    /// 评审修复轮 R3（追加）：台账读不了、或读出来不是合法 JSON → Err——
+    /// 调用方分得出「没装」和「不知道」；文件不存在才是空表。修前两种失败都
+    /// 吞成空表。
+    #[test]
+    fn unreadable_ledger_is_an_error_not_empty() {
+        let _guard = crate::agent::manifest::env_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("JISHU_HUB_HOME", tmp.path());
+        // 文件不存在：空台账，不是错误。
+        assert!(super::skillhub_installed().unwrap().is_empty());
+
+        let ledger = super::installed_registry_path();
+        std::fs::write(&ledger, "{ not json").unwrap();
+        let err = super::skillhub_installed().expect_err("坏文件应报错");
+        assert!(err.contains("JSON"), "{err}");
+        // 读不了（路径位置被一个目录占着）。
+        std::fs::remove_file(&ledger).unwrap();
+        std::fs::create_dir(&ledger).unwrap();
+        let err = super::skillhub_installed().expect_err("读不了应报错");
+        assert!(err.contains("读取"), "{err}");
+        std::fs::remove_dir(&ledger).unwrap();
+
+        // 读不出来时不许在它上面写：卸载收尾 / 销账都报错，坏文件原样留着。
+        std::fs::write(&ledger, "{ broken").unwrap();
+        assert!(super::skillhub_forget("demo").is_err());
+        std::assert_eq!(std::fs::read_to_string(&ledger).unwrap(), "{ broken");
         std::env::remove_var("JISHU_HUB_HOME");
     }
 

@@ -123,6 +123,8 @@ pub fn conductor_dispatch_to_node(
                     content,
                     None, // v0.9.5 需求2 B-4：节点模型声明接入后此处传节点声明值
                     None, // 工具集按消息文本解析（评审修复轮 R1-5）
+                    // 续的是已登记的节点会话：任务登记早在它诞生时做过，这里不带意图。
+                    None,
                 )
                 .await
                 {

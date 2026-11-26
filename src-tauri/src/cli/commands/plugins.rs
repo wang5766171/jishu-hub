@@ -816,7 +816,10 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
             // 评审十：skillhub 台账收尾——对齐 GUI 卸载链「先 plugin_remove
             // 后清台账」语义（skillhub_install 注册的 hub 插件目录形态，
             // id 即台账 slug；无条目幂等无操作）。
-            agent::skillhub::skillhub_forget(id);
+            // 评审修复轮 R3：台账读不出来时它不写（写等于清空），如实提示。
+            if let Err(e) = agent::skillhub::skillhub_forget(id) {
+                eprintln!("warn: {e}");
+            }
             // 04-R3：卸载后刷新 agent-tool 物化清单（防幽灵工具残留）。
             agent::plugin::materialize_agent_tools();
             if ctx.json {
@@ -847,7 +850,10 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
                 CliError::InvalidArg(format!("cannot remove {}: {e}", composed_dir.display()))
             })?;
             // 评审十：skillhub 台账收尾（同上——卸载链先删目录后清台账）。
-            agent::skillhub::skillhub_forget(id);
+            // 评审修复轮 R3：台账读不出来时它不写（写等于清空），如实提示。
+            if let Err(e) = agent::skillhub::skillhub_forget(id) {
+                eprintln!("warn: {e}");
+            }
             // 04-R3：卸载后刷新 agent-tool 物化清单（防幽灵工具残留）。
             agent::plugin::materialize_agent_tools();
             if ctx.json {
@@ -895,7 +901,9 @@ fn remove(id: &str, ctx: &ExecutionContext) -> Result<(), CliError> {
     agent::plugin::forget_plugin_disabled(id); // 清 disabled 引用（T16：id 已离 known 集时 set_enabled 静默失败残留死键）
                                                // 评审十：skillhub 台账收尾——对齐 GUI 卸载链「先 plugin_remove 后清
                                                // 台账」语义（无条目幂等无操作）。
-    agent::skillhub::skillhub_forget(id);
+    if let Err(e) = agent::skillhub::skillhub_forget(id) {
+        eprintln!("warn: {e}");
+    }
     // 04-R3：卸载后刷新 agent-tool 物化清单（防幽灵工具残留——CLI 跨进程
     // 无法借 GUI 侧启停联动刷新，必须自带；GUI 两链同款收口）。
     agent::plugin::materialize_agent_tools();
@@ -932,7 +940,6 @@ fn set_enabled(id: &str, enabled: bool, ctx: &ExecutionContext) -> Result<(), Cl
 
 /// CLI 启停变更标记（累积数组；GUI `cli_plugin_changed_poll` 消费后删除）。
 fn record_cli_plugin_change(id: &str, action: &str) {
-    use std::io::Write as _;
     let marker = agent::manifest::hub_home().join(".cli-plugin-changed");
     let mut changes: Vec<serde_json::Value> = std::fs::read_to_string(&marker)
         .ok()
@@ -1712,9 +1719,13 @@ mount = "block-renderer"
             format!(r#"{{"{id}": "1.0.0"}}"#),
         )
         .unwrap();
-        assert!(agent::skillhub::skillhub_installed().contains_key(id));
+        assert!(agent::skillhub::skillhub_installed()
+            .unwrap()
+            .contains_key(id));
         remove(id, &ctx()).expect("remove ok");
-        assert!(!agent::skillhub::skillhub_installed().contains_key(id));
+        assert!(!agent::skillhub::skillhub_installed()
+            .unwrap()
+            .contains_key(id));
         std::env::remove_var("JISHU_HUB_HOME");
     }
 }

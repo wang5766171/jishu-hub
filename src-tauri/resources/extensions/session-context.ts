@@ -44,12 +44,23 @@ function sessionWorkspaceLine(sessionId: string): string | null {
   return `session_workspace: ${workspace}\n默认空间会话中，你生成的文件默认放在 session_workspace 指向的目录（即环境变量 JISHU_SESSION_WORKSPACE），各会话互不混放。\n引用链接注意：产物引用路径从项目根算起——本会话的文件引用需带 sessions/${sessionId}/ 前缀（如 jishu-artifact://sessions/${sessionId}/docs/结果.html）；一律正斜杠相对路径，禁止绝对路径与反斜杠（含空格用 %20）。`;
 }
 
+/** 需求22（v0.9.8 评审修复轮 R2）：产物引用格式，**所有会话通用**。
+ * 此前这条规则由任务执行器扩展注入，而执行器对所有会话常驻——收口「任务
+ * 纪律只注入任务会话」之后，这条通用规则改由本扩展给每个会话（默认空间的
+ * 会话由上面那段更具体的指引覆盖，不重复）。CommonMark 会吞「反斜杠+标点」
+ * 里的反斜杠（C:\Users\name\.jishu-hub\… → name.jishu-hub，文件必不存在，
+ * 用户实测「全地址路径打不开」即此），所以强调相对路径 + 正斜杠。
+ * 不写进 system prompt 之外的任何地方（不落用户消息）。 */
+const CITATION_RULE =
+  "【引用格式】jishu-artifact:// 后只能跟**项目相对路径 + 正斜杠**（如 jishu-artifact://docs/结果.html）；禁止绝对路径、禁止反斜杠；路径含空格用 %20。";
+
 export default function sessionContextExtension(pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
     const workspaceLine = sessionWorkspaceLine(sessionId);
     const lines = [`session_id: ${sessionId}`];
-    if (workspaceLine) lines.push(workspaceLine);
+    // 默认空间会话的那段指引里已经带了引用格式（带会话前缀的更具体版本）。
+    lines.push(workspaceLine ?? CITATION_RULE);
     const block =
       `<jishu-runtime-context>\n${lines.join("\n")}\n${GUIDANCE}\n</jishu-runtime-context>`;
     return { systemPrompt: `${event.systemPrompt}\n\n${block}` };

@@ -124,6 +124,32 @@ pub const PROMPT_EQUIP_CATALOG: VersionedPrompt = VersionedPrompt {
     body: include_str!("../../resources/prompts/equip-catalog.md"),
 };
 
+/// 登记在册的全部内部提示词。启动时的版本锚点日志、登记健全性测试、台账
+/// 对账都从这里取——新增话术只改这一处。
+///
+/// v0.9.8 评审修复轮 R2：此前锚点日志和健全性测试各手抄一份清单，装备目录
+/// 话术（equip-catalog）加进来时两处都漏了：锚点少一项、测试少测一个。
+pub fn registered_prompts() -> &'static [&'static VersionedPrompt] {
+    &[
+        &PROMPT_MCP_HINT,
+        &PROMPT_IMAGE_DISPATCH,
+        &PROMPT_TOOL_HEADER,
+        &PROMPT_EXEC_CONTRACT,
+        &PROMPT_MCP_SECTION,
+        &PROMPT_EQUIP_CATALOG,
+    ]
+}
+
+/// 版本锚点一行（`<id> v<版本>` 逗号分隔）。启动日志打印它；历史会话剥离
+/// 异常时，先核对这一行与 `resources/prompts/CHANGELOG.md` 是否对得上账。
+pub fn version_anchor_line() -> String {
+    registered_prompts()
+        .iter()
+        .map(|prompt| format!("{} v{}", prompt.id, prompt.version))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 // ---------------------------------------------------------------------------
 // 回放剥离链（消息载荷面唯一入口）
 // ---------------------------------------------------------------------------
@@ -140,13 +166,19 @@ pub fn strip_internal_prompts(text: &str) -> String {
 /// 回放派生（v0.9.0 需求3 方案 C）：剥全部注入块 + 从工具块 `## <id> — <desc>`
 /// 头提取本条消息的工具 id 快照。注入块随 compose 后 prompt 持久化进各家原生
 /// JSONL，是每条消息工具快照的唯一保真来源。无工具块时其余注入块照剥。
+///
+/// 工具块可能不止一段（引擎取消善期多条缓冲消息拼成一条 prompt，每条各带
+/// 一套）：每一段里的工具 id 都取（评审修复轮 R3 / P2-7，此前只看第一段）。
 pub fn extract_tool_snapshot(text: &str) -> (String, Vec<String>) {
-    let Some(start) = text.find(TOOL_BLOCK_OPEN) else {
-        return (strip_internal_prompts(text), Vec::new());
-    };
     let mut ids: Vec<String> = Vec::new();
-    if let Some(end_rel) = text[start..].find(TOOL_BLOCK_CLOSE) {
-        let block = &text[start..start + end_rel];
+    let mut rest = text;
+    while let Some(start) = rest.find(TOOL_BLOCK_OPEN) {
+        let from_open = &rest[start..];
+        // 未闭合（异常半写）：后面没有完整的工具块了。
+        let Some(end_rel) = from_open.find(TOOL_BLOCK_CLOSE) else {
+            break;
+        };
+        let block = &from_open[..end_rel];
         for line in block.lines() {
             if let Some(rest) = line.strip_prefix("## ") {
                 if let Some((id, _)) = rest.split_once(" — ") {
@@ -157,97 +189,101 @@ pub fn extract_tool_snapshot(text: &str) -> (String, Vec<String>) {
                 }
             }
         }
+        rest = &from_open[end_rel + TOOL_BLOCK_CLOSE.len()..];
     }
     (strip_internal_prompts(text), ids)
+}
+
+/// 剥离一对标记之间的注入块（回放不可见的统一实现，五种标记共用）。
+///
+/// - 块在末尾（后缀注入的常态）：只留标记之前的内容。
+/// - 块在中间——引擎取消善期多条缓冲消息拼成一条 prompt，前一条消息的注入块
+///   夹在两条消息之间：前后两段之间保留一个空行，它们本来就是两条消息。
+///   v0.9.8 评审修复轮 R2：此前把块后面的换行全部吃掉，两段之间只剩下前一段
+///   结尾处恰好留下的换行；前一段以单个换行收尾时（图片派发块紧跟消息），
+///   剥完两段之间只剩一个换行，回放里连成「第一条第二条」。
+/// - 同一种块出现不止一次（同样是缓冲合并的形态，每条消息各带一套后缀）：
+///   逐个剥到不再出现（评审修复轮 R3 / P2-7，此前只剥第一个，第二个原样
+///   留在回放里）。
+/// - 未闭合（异常半写）：丢弃其后内容，保守清理。
+///
+/// `keep_blank_prefix`：标记之前只有空白时要不要原样保留。工具块自 v0.9.5 起
+/// 就是「前缀原样保留」的写法，其余四种一直是不保留；各自既有行为这里不改。
+fn strip_block(text: &str, open: &str, close: &str, keep_blank_prefix: bool) -> Option<String> {
+    let mut current = text.to_string();
+    let mut stripped = false;
+    while let Some(next) = strip_first_block(&current, open, close, keep_blank_prefix) {
+        current = next;
+        stripped = true;
+    }
+    stripped.then_some(current)
+}
+
+/// 剥掉文本里第一个 `open…close` 块；没有起始标记 → None。
+fn strip_first_block(
+    text: &str,
+    open: &str,
+    close: &str,
+    keep_blank_prefix: bool,
+) -> Option<String> {
+    let start = text.find(open)?;
+    let prefix = &text[..start];
+    let mut head = String::new();
+    if keep_blank_prefix || !prefix.trim().is_empty() {
+        head.push_str(prefix);
+    }
+    let after = match text[start..].find(close) {
+        Some(end_rel) => &text[start + end_rel + close.len()..],
+        // 未闭合（异常半写）：丢弃其后内容，保守清理。
+        None => "",
+    };
+    let tail = after.trim_start_matches(['\r', '\n']);
+    let result = if tail.is_empty() {
+        head
+    } else if head.trim().is_empty() {
+        if keep_blank_prefix {
+            format!("{head}{tail}")
+        } else {
+            tail.to_string()
+        }
+    } else if after.starts_with(['\r', '\n']) || head.ends_with(['\r', '\n']) {
+        // 块独占一行：前后两段之间保留一个空行。
+        format!("{}\n\n{tail}", head.trim_end())
+    } else {
+        // 块嵌在一行中间（用户手输了标记）：直接拼接。
+        format!("{head}{tail}")
+    };
+    Some(result.trim_end().to_string())
 }
 
 /// 剥离 <JISHU-EXEC-CONTRACT>…</JISHU-EXEC-CONTRACT>（orchestrator 节点执行
 /// 契约）：标记与契约正文一并移除（机器契约，正文不展示）。
 fn strip_exec_contract_block(text: &str) -> String {
-    let Some(start) = text.find(EXEC_CONTRACT_OPEN) else {
-        return text.to_string();
-    };
-    let mut result = String::new();
-    let prefix = &text[..start];
-    if !prefix.trim().is_empty() {
-        result.push_str(prefix);
-    }
-    if let Some(end_rel) = text[start..].find(EXEC_CONTRACT_CLOSE) {
-        let after = &text[start + end_rel + EXEC_CONTRACT_CLOSE.len()..];
-        result.push_str(after.trim_start_matches(['\r', '\n']));
-    }
-    result.trim_end().to_string()
+    strip_block(text, EXEC_CONTRACT_OPEN, EXEC_CONTRACT_CLOSE, false)
+        .unwrap_or_else(|| text.to_string())
 }
 
 /// 剥离 <JISHU-TOOL-PLUGINS>…</JISHU-TOOL-PLUGINS>（工具插件注入块）。
 fn strip_plugins_block(text: &str) -> String {
-    let Some(start) = text.find(TOOL_BLOCK_OPEN) else {
-        return text.to_string();
-    };
-    let mut result = String::new();
-    result.push_str(&text[..start]);
-    if let Some(end_rel) = text[start..].find(TOOL_BLOCK_CLOSE) {
-        let after = &text[start + end_rel + TOOL_BLOCK_CLOSE.len()..];
-        // 块与消息之间的分隔空行（含 CRLF 序列）一并吃掉，避免残留空行。
-        result.push_str(after.trim_start_matches(['\r', '\n']));
-    } else {
-        // 未闭合（异常半写）：丢弃其后内容，保守清理。
-    }
-    // 剥离后的尾部空白（块在末尾时——后缀注入形态）。
-    result.trim_end().to_string()
+    strip_block(text, TOOL_BLOCK_OPEN, TOOL_BLOCK_CLOSE, true).unwrap_or_else(|| text.to_string())
 }
 
 /// 剥离 <JISHU-MCP-HINT>…</JISHU-MCP-HINT>（MCP 解析服务提示，展示面不可见）。
-/// 标记前的纯空白前缀与标记后的换行分隔一并清理，避免剥后残留空行。
 fn strip_mcp_hint_block(text: &str) -> String {
-    let Some(start) = text.find(MCP_HINT_OPEN) else {
-        return text.to_string();
-    };
-    let mut result = String::new();
-    let prefix = &text[..start];
-    if !prefix.trim().is_empty() {
-        result.push_str(prefix);
-    }
-    if let Some(end_rel) = text[start..].find(MCP_HINT_CLOSE) {
-        let after = &text[start + end_rel + MCP_HINT_CLOSE.len()..];
-        result.push_str(after.trim_start_matches(['\r', '\n']));
-    }
-    result.trim_end().to_string()
+    strip_block(text, MCP_HINT_OPEN, MCP_HINT_CLOSE, false).unwrap_or_else(|| text.to_string())
 }
 
 /// 剥离 <JISHU-IMAGE-DISPATCH>…</JISHU-IMAGE-DISPATCH>（图片委派提示，展示面不可见）。
 fn strip_image_dispatch_block(text: &str) -> String {
-    let Some(start) = text.find(IMAGE_DISPATCH_OPEN) else {
-        return text.to_string();
-    };
-    let mut result = String::new();
-    let prefix = &text[..start];
-    if !prefix.trim().is_empty() {
-        result.push_str(prefix);
-    }
-    if let Some(end_rel) = text[start..].find(IMAGE_DISPATCH_CLOSE) {
-        let after = &text[start + end_rel + IMAGE_DISPATCH_CLOSE.len()..];
-        result.push_str(after.trim_start_matches(['\r', '\n']));
-    }
-    result.trim_end().to_string()
+    strip_block(text, IMAGE_DISPATCH_OPEN, IMAGE_DISPATCH_CLOSE, false)
+        .unwrap_or_else(|| text.to_string())
 }
 
 /// 剥离 <JISHU-EQUIP-CATALOG>…</JISHU-EQUIP-CATALOG>（装备目录注入块，
 /// 需求5 合并版：agent 信息供给，展示面不可见）。
 fn strip_equip_catalog_block(text: &str) -> String {
-    let Some(start) = text.find(EQUIP_CATALOG_OPEN) else {
-        return text.to_string();
-    };
-    let mut result = String::new();
-    let prefix = &text[..start];
-    if !prefix.trim().is_empty() {
-        result.push_str(prefix);
-    }
-    if let Some(end_rel) = text[start..].find(EQUIP_CATALOG_CLOSE) {
-        let after = &text[start + end_rel + EQUIP_CATALOG_CLOSE.len()..];
-        result.push_str(after.trim_start_matches(['\r', '\n']));
-    }
-    result.trim_end().to_string()
+    strip_block(text, EQUIP_CATALOG_OPEN, EQUIP_CATALOG_CLOSE, false)
+        .unwrap_or_else(|| text.to_string())
 }
 
 #[cfg(test)]
@@ -275,13 +311,8 @@ mod tests {
 
     #[test]
     fn registry_bodies_sane() {
-        for prompt in [
-            &PROMPT_MCP_HINT,
-            &PROMPT_IMAGE_DISPATCH,
-            &PROMPT_TOOL_HEADER,
-            &PROMPT_EXEC_CONTRACT,
-            &PROMPT_MCP_SECTION,
-        ] {
+        // v0.9.8 评审修复轮 R2：清单从登记处取（此前手抄一份，漏了 equip-catalog）。
+        for prompt in registered_prompts() {
             let body = prompt.body();
             assert!(!body.trim().is_empty(), "{} 正文为空", prompt.id);
             for marker in [
@@ -289,6 +320,7 @@ mod tests {
                 MCP_HINT_OPEN,
                 IMAGE_DISPATCH_OPEN,
                 EXEC_CONTRACT_OPEN,
+                EQUIP_CATALOG_OPEN,
             ] {
                 assert!(
                     !body.contains(marker),
@@ -429,5 +461,133 @@ mod tests {
         let once = strip_internal_prompts(&suffix);
         assert_eq!(once, "hi");
         assert_eq!(strip_internal_prompts(&once), once);
+    }
+
+    // ── v0.9.8 评审修复轮 R2 ──
+
+    /// 注入块夹在两条消息中间（取消善期多条缓冲消息拼成一条 prompt）：剥离后
+    /// 两段之间保留一个空行。修前把块后面的换行全部吃掉，前一段以单个换行
+    /// 收尾时两段连成「第一条第二条」。五种标记逐个验，紧凑 / 宽松 / CRLF。
+    #[test]
+    fn block_between_two_messages_keeps_paragraph_break() {
+        let blocks = [
+            (TOOL_BLOCK_OPEN, tool_block(&[("gh", "GitHub CLI")])),
+            (MCP_HINT_OPEN, mcp("MCP 提示")),
+            (IMAGE_DISPATCH_OPEN, dispatch("识图路由话术")),
+            (
+                EXEC_CONTRACT_OPEN,
+                format!("{EXEC_CONTRACT_OPEN}契约正文{EXEC_CONTRACT_CLOSE}"),
+            ),
+            (
+                EQUIP_CATALOG_OPEN,
+                format!("{EQUIP_CATALOG_OPEN}目录正文{EQUIP_CATALOG_CLOSE}"),
+            ),
+        ];
+        for (open, block) in &blocks {
+            let expected = "第一条\n\n第二条";
+            let tight = format!("第一条\n{block}\n第二条");
+            assert_eq!(
+                strip_internal_prompts(&tight),
+                expected,
+                "块 {open} 夹在中间（紧凑）"
+            );
+            assert_eq!(extract_tool_snapshot(&tight).0, expected);
+            let loose = format!("第一条\n\n{block}\n\n第二条");
+            assert_eq!(
+                strip_internal_prompts(&loose),
+                expected,
+                "块 {open} 夹在中间（宽松）"
+            );
+            let crlf = format!("第一条\r\n{block}\r\n第二条");
+            assert_eq!(
+                strip_internal_prompts(&crlf),
+                expected,
+                "块 {open} 夹在中间（CRLF）"
+            );
+        }
+        // 块嵌在一行中间（用户手输了标记）：块本身剥掉、前后直接拼接，不插入空行。
+        assert_eq!(
+            strip_internal_prompts(&format!("前 {TOOL_BLOCK_OPEN}块{TOOL_BLOCK_CLOSE} 后")),
+            "前  后"
+        );
+    }
+
+    /// 评审修复轮 R3（P2-7）：缓冲合并后每条消息各带一套后缀——同一种块出现
+    /// 两次（分别跟在两条消息后面，或挨着排在一起），两处都剥掉，两条消息
+    /// 之间保留一个空行。修前只剥第一个，第二个原样留在回放里。
+    #[test]
+    fn repeated_block_is_stripped_wherever_it_sits() {
+        let blocks = [
+            (TOOL_BLOCK_OPEN, tool_block(&[("gh", "GitHub CLI")])),
+            (MCP_HINT_OPEN, mcp("MCP 提示")),
+            (IMAGE_DISPATCH_OPEN, dispatch("识图路由话术")),
+            (
+                EXEC_CONTRACT_OPEN,
+                format!("{EXEC_CONTRACT_OPEN}契约正文{EXEC_CONTRACT_CLOSE}"),
+            ),
+            (
+                EQUIP_CATALOG_OPEN,
+                format!("{EQUIP_CATALOG_OPEN}目录正文{EQUIP_CATALOG_CLOSE}"),
+            ),
+        ];
+        for (open, block) in &blocks {
+            // 真实形态：第一条消息带后缀块，换行，第二条消息带同一个后缀块。
+            let merged = format!("第一条\n\n{block}\n第二条\n\n{block}");
+            let stripped = strip_internal_prompts(&merged);
+            assert_eq!(stripped, "第一条\n\n第二条", "块 {open} 出现两次");
+            assert!(!stripped.contains(open), "块 {open} 不留裸露的标记");
+            // 两个块挨在一起（两条消息的后缀排到一处）。
+            let adjacent = format!("第一条\n\n{block}\n{block}\n\n第二条");
+            assert_eq!(
+                strip_internal_prompts(&adjacent),
+                "第一条\n\n第二条",
+                "块 {open} 挨着出现两次"
+            );
+            assert_eq!(extract_tool_snapshot(&merged).0, "第一条\n\n第二条");
+        }
+    }
+
+    /// 评审修复轮 R3（P2-7）：缓冲合并的两条消息各带一段工具块——两段里的
+    /// 工具 id 都取到（修前只看第一段）。
+    #[test]
+    fn tool_ids_are_collected_from_every_block() {
+        let first = tool_block(&[("gh", "GitHub CLI")]);
+        let second = tool_block(&[("gh", "GitHub CLI"), ("npm:ext-b", "乙扩展")]);
+        let (text, ids) = extract_tool_snapshot(&format!("第一条\n\n{first}\n第二条\n\n{second}"));
+        assert_eq!(text, "第一条\n\n第二条");
+        assert_eq!(
+            ids,
+            vec!["gh".to_string(), "npm:ext-b".to_string()],
+            "第二段里的工具也要取到，重复的不多记"
+        );
+    }
+
+    /// 版本锚点行列出登记在册的每一个话术（装备目录也在——修前漏掉）。
+    #[test]
+    fn version_anchor_line_lists_every_registered_prompt() {
+        let line = version_anchor_line();
+        for prompt in registered_prompts() {
+            let item = format!("{} v{}", prompt.id, prompt.version);
+            assert!(line.contains(&item), "锚点缺 {item}：{line}");
+        }
+        assert!(line.contains(&format!(
+            "{} v{}",
+            PROMPT_EQUIP_CATALOG.id, PROMPT_EQUIP_CATALOG.version
+        )));
+    }
+
+    /// 话术三件套缺一件不算落地：登记在册的每个话术，台账的占位符表里都得有
+    /// 「id | 版本」这一行。
+    #[test]
+    fn registry_matches_prompt_changelog() {
+        let changelog = include_str!("../../resources/prompts/CHANGELOG.md");
+        for prompt in registered_prompts() {
+            let row = format!("| {} | {} |", prompt.id, prompt.version);
+            assert!(
+                changelog.contains(&row),
+                "台账缺行或版本对不上：{row:?}（话术 {}）",
+                prompt.id
+            );
+        }
     }
 }

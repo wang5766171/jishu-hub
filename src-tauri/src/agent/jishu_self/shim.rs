@@ -144,7 +144,9 @@ pub fn diagnose() -> String {
     } else {
         dir.join("jishu")
     };
-    let _ = dir.join("jishu"); // Windows 下另有 git-bash 通道（同目录无扩展脚本）
+    // Windows 下另有 git-bash 通道：同目录的无扩展名脚本 jishu（这里不检查它，
+    // 只看 cmd 入口）。v0.9.8 评审修复轮 R2：此前此处有一句只构造路径、不
+    // 做任何事的语句，已删。
     if shim_valid(&shim, &cli) {
         format!("正常：jishu 命令就绪（{}）", shim.display())
     } else {

@@ -20,6 +20,22 @@ use crate::agent::{AgentInfo, ChatRequest, ResolvedSessionPromptInjection};
 use crate::project_config::ProjectSettings;
 use std::path::PathBuf;
 
+/// 测试可缩短安装类子进程的期限（毫秒；0 = 用默认值）。生产代码不含这段。
+#[cfg(test)]
+static INSTALL_COMMAND_TIMEOUT_MS_FOR_TEST: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn install_command_timeout() -> std::time::Duration {
+    #[cfg(test)]
+    {
+        let millis = INSTALL_COMMAND_TIMEOUT_MS_FOR_TEST.load(std::sync::atomic::Ordering::Relaxed);
+        if millis > 0 {
+            return std::time::Duration::from_millis(millis);
+        }
+    }
+    crate::process_command::INSTALL_COMMAND_TIMEOUT
+}
+
 pub struct JishuSelfAgent;
 
 impl JishuSelfAgent {
@@ -221,10 +237,18 @@ impl JishuSelfAgent {
         #[cfg(target_os = "windows")]
         crate::process_command::tokio_no_window(&mut cmd);
 
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| format!("Failed to run pi {action} {source}: {e}"))?;
+        // 评审修复轮 R3：安装子进程有期限——到期没结束就结束它的进程树、报错。
+        let what = match action {
+            "install" => format!("安装 {source}"),
+            "uninstall" => format!("卸载 {source}"),
+            other => format!("pi {other} {source}"),
+        };
+        let spawn_action = action.to_string();
+        let spawn_source = source.to_string();
+        let output = Self::run_install_command(cmd, &what, move |e| {
+            format!("Failed to run pi {spawn_action} {spawn_source}: {e}")
+        })
+        .await?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -234,6 +258,24 @@ impl JishuSelfAgent {
                 String::from_utf8_lossy(&output.stderr)
             ))
         }
+    }
+
+    /// `pi install`、预检与回滚的 `npm install` / `npm uninstall`：跑安装类子
+    /// 进程并带期限（规则见 [`crate::process_command::run_bounded_command`]，
+    /// 期限见 [`crate::process_command::INSTALL_COMMAND_TIMEOUT`]）。测试可以缩
+    /// 短期限（[`install_command_timeout`]）。
+    async fn run_install_command(
+        cmd: tokio::process::Command,
+        what: &str,
+        spawn_error: impl FnOnce(String) -> String,
+    ) -> Result<std::process::Output, String> {
+        crate::process_command::run_bounded_command(
+            cmd,
+            what,
+            spawn_error,
+            install_command_timeout(),
+        )
+        .await
     }
 
     /// v0.9.8 需求15-F2：在线扩展安装后的引擎启动自检探针。
@@ -399,11 +441,17 @@ impl JishuSelfAgent {
     /// 幂等补注册）；`Ok(Some(pairs))` = 冲突（**文件保留**——确认后
     /// 复用；取消路径由调用方 `npm uninstall` 清理）；`Err` = 预检自身
     /// 失败（文件已回滚）。
-    pub(crate) async fn precheck_extension(pkg: &str) -> Result<Option<Vec<ConflictPair>>, String> {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
-        const PRECHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-
+    ///
+    /// `pkg` 是包目录名（冲突分类、回滚卸载、池内定位都用它），`spec` 是交给
+    /// npm 的安装源（见 [`npm_precheck_spec`]）。v0.9.8 评审修复轮 R2：预检
+    /// 必须**与正式安装装同一个版本**——此前调用方把版本号剥掉再交给预检，
+    /// `npm install <包名>` 装的是最新版，随后正式 `pi install npm:pkg@1.2.3`
+    /// 装的是钉定版；预检结论是对另一个版本做的（冲突面随版本而异），「无
+    /// 冲突」的可信度打折。源里没带版本时两者相同。
+    pub(crate) async fn precheck_extension(
+        pkg: &str,
+        spec: &str,
+    ) -> Result<Option<Vec<ConflictPair>>, String> {
         let Some(agent_dir) = pi_config_dir() else {
             return Err("无法定位 pi 运行数据目录".to_string());
         };
@@ -416,7 +464,7 @@ impl JishuSelfAgent {
             "npm",
             vec![
                 "install".to_string(),
-                pkg.to_string(),
+                spec.to_string(),
                 "--prefix".to_string(),
                 npm_root.to_string_lossy().to_string(),
                 "--legacy-peer-deps".to_string(),
@@ -426,16 +474,42 @@ impl JishuSelfAgent {
         );
         #[cfg(target_os = "windows")]
         crate::process_command::tokio_no_window(&mut npm);
-        let npm_out = npm
-            .output()
-            .await
-            .map_err(|e| format!("npm 不可用（{e}）——与插件安装同环境要求"))?;
+        // 评审修复轮 R3：安装子进程有期限（见 INSTALL_COMMAND_TIMEOUT）。
+        let npm_out = Self::run_install_command(npm, &format!("安装 {spec}"), |e| {
+            format!("npm 不可用（{e}）——与插件安装同环境要求")
+        })
+        .await?;
         if !npm_out.status.success() {
             return Err(format!(
                 "安装失败：{}",
                 String::from_utf8_lossy(&npm_out.stderr).trim()
             ));
         }
+
+        // 2) 自此文件已经在共享池里：之后无论哪一步失败——找不到入口、引擎
+        //    拉不起来、读写出错、超时、装载失败且与冲突无关——都先把文件撤掉
+        //    再返回，「Err = 文件已回滚」只在这一处保证。评审修复轮 R2：此前
+        //    只有超时和非冲突的装载失败两条路径回滚，入口缺失等路径直接 `?`
+        //    返回，包文件留在池里没人认领（下次预检/卸载才清）。
+        match Self::probe_extension_entry(pkg, &npm_root).await {
+            Ok(outcome) => Ok(outcome),
+            Err(reason) => {
+                Self::rollback_npm_files(pkg).await;
+                Err(reason)
+            }
+        }
+    }
+
+    /// 预检的后半程：文件已在池里，探测入口并做装载试运行。只返回「预检自身
+    /// 失败」的原因，回滚由 [`Self::precheck_extension`] 统一做——每个失败
+    /// 出口都回滚这件事不靠各出口自觉。
+    async fn probe_extension_entry(
+        pkg: &str,
+        npm_root: &std::path::Path,
+    ) -> Result<Option<Vec<ConflictPair>>, String> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        const PRECHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
         // 2) 探测包入口（package.json main → 常见形态回退）。
         let pkg_dir = npm_root.join("node_modules").join(pkg);
@@ -524,7 +598,6 @@ impl JishuSelfAgent {
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                Self::rollback_npm_files(pkg).await;
                 return Err("预检超时（扩展装载未在限时内完成）".to_string());
             }
             match tokio::time::timeout(remaining, reader.next_line()).await {
@@ -558,7 +631,6 @@ impl JishuSelfAgent {
                         // 冲突：文件保留（确认流复用；取消方清理）。
                         return Ok(Some(involved));
                     }
-                    Self::rollback_npm_files(pkg).await;
                     return Err("预检失败：扩展无法装载（与工具名冲突无关）".to_string());
                 }
                 Err(_) => continue,
@@ -585,58 +657,56 @@ impl JishuSelfAgent {
         );
         #[cfg(target_os = "windows")]
         crate::process_command::tokio_no_window(&mut npm);
-        if let Err(e) = npm.output().await {
+        // 回滚同样有期限（评审修复轮 R3）：预检失败后的卸载挂住，用户一样困在
+        // 「在途」里。
+        let pkg = pkg.to_string();
+        if let Err(e) = Self::run_install_command(npm, &format!("回滚卸载 {pkg}"), |e| e).await
+        {
             log::warn!("[precheck] 回滚卸载 {pkg} 失败: {e}");
         }
     }
 
-    /// v0.9.5 需求5：4 个 pi 扩展包逐个幂等安装（缺哪个装哪个；单包失败
-    /// 记 warn 继续下一个，Err 汇总失败清单——启动自愈下轮重试，不阻断
-    /// hub 启动）。探测与 mcp 同口径（node_modules 目录名含 scoped 包的
-    /// @scope/ 层级）且**校验版本**：pi resolve 对「已注册但版本不匹配」
-    /// 的包判 needsInstall，PI_OFFLINE 下静默跳过 → 扩展整个不装载——故
-    /// 装了旧版本也必须重装到钉定版本。
-    pub async fn ensure_pi_extensions_installed() -> Result<Vec<&'static str>, String> {
+    /// v0.9.5 需求5：内置 pi 扩展包逐个幂等安装（缺哪个装哪个；单包失败
+    /// 记 warn 继续下一个——启动自愈下轮重试，不阻断 hub 启动）。探测与 mcp
+    /// 同口径（node_modules 目录名含 scoped 包的 @scope/ 层级）且**校验版本**：
+    /// pi resolve 对「已注册但版本不匹配」的包判 needsInstall，PI_OFFLINE 下
+    /// 静默跳过 → 扩展整个不装载——故装了旧版本也必须重装到钉定版本。
+    ///
+    /// v0.9.8 评审修复轮 R2：装成了哪些、哪些失败了，分开放进返回值。此前
+    /// 有任一个包失败就整体返回 Err，装成了的那几个包的信息随之丢失，调用方
+    /// 当作「什么都没装」跳过注册同步——被冲突确认停用的内置包，注册表会被
+    /// 下一次同步悄悄补回。只有连运行数据目录都定位不到才是 Err。
+    pub async fn ensure_pi_extensions_installed() -> Result<PiExtensionsInstallOutcome, String> {
         let Some(base) = pi_config_dir() else {
             return Err("cannot resolve ~/.jishu-agent/agent directory".to_string());
         };
         let root = std::path::Path::new(&base).join("npm").join("node_modules");
-        let mut installed: Vec<&'static str> = Vec::new();
-        let mut failed: Vec<String> = Vec::new();
+        let mut results: Vec<(&'static str, Result<String, String>)> = Vec::new();
         for (source, dir_name, _display) in builtin_extensions() {
-            let target = root.join(dir_name);
-            // 第三轮评审修复：经 parse_npm_source 解析（rsplit 对 scoped
-            // 无版本源会解出 "scope/pkg" 当版本——此处消费钉定源恒带版本，
-            // 换 helper 防未来加无版本源时引爆同款）。
-            let pinned_ver = parse_npm_source(source).1;
-            let up_to_date = target.exists()
-                && std::fs::read_to_string(target.join("package.json"))
-                    .ok()
-                    .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
-                    .and_then(|p| {
-                        p.get("version")
-                            .and_then(|v| v.as_str())
-                            .map(str::to_string)
-                    })
-                    .is_some_and(|v| v == pinned_ver);
-            if up_to_date {
+            if builtin_package_up_to_date(&root, dir_name, source) {
                 continue;
             }
-            match Self::run_pi_package_command("install", source).await {
-                Ok(_) => {
-                    log::info!("[pi-ext] installed {source}");
-                    installed.push(source);
-                }
-                Err(e) => {
-                    log::warn!("[pi-ext] install {source} deferred: {e}");
-                    failed.push(format!("{source}: {e}"));
-                }
-            }
+            results.push((
+                source,
+                Self::run_pi_package_command("install", source).await,
+            ));
         }
-        if failed.is_empty() {
-            Ok(installed)
-        } else {
-            Err(failed.join("; "))
+        Ok(summarize_install_results(results))
+    }
+
+    /// 自愈结果的后处理：只要装上了任何包，就同步运行时配置与注册表；有
+    /// 失败的包只告警（下轮启动自愈重试）。三处调用方（启动自愈、手动安装、
+    /// 安装器的 install-agent）共用这一处。
+    pub fn apply_install_outcome(outcome: &PiExtensionsInstallOutcome) {
+        if !outcome.installed.is_empty() {
+            crate::task_plan::ensure_subagents_runtime_config();
+            crate::agent::plugin::sync_pi_packages_with_plugins();
+        }
+        if !outcome.failed.is_empty() {
+            log::warn!(
+                "[pi-ext] 部分内置扩展包安装推迟（下次启动自愈重试）: {}",
+                outcome.failed.join("; ")
+            );
         }
     }
 
@@ -649,6 +719,54 @@ impl JishuSelfAgent {
             .find(|(_, dir, _)| dir == name)
             .map(|(source, _, _)| source.as_str())
     }
+}
+
+/// [`JishuSelfAgent::ensure_pi_extensions_installed`] 的结果：装成了哪些、
+/// 哪些失败了，分开给——调用方据前者决定要不要同步注册，据后者决定怎么
+/// 告警，两者互不吞并。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PiExtensionsInstallOutcome {
+    /// 这次真正装上（或升到钉定版本）的包，钉定源。
+    pub installed: Vec<&'static str>,
+    /// 没装上的包及原因（`源: 原因`）。
+    pub failed: Vec<String>,
+}
+
+/// 池里这个内置包是不是已经在钉定版本上。经 parse_npm_source 取钉定版本
+///（第三轮评审修复：rsplit 对 scoped 无版本源会解出 "scope/pkg" 当版本——
+/// 此处消费钉定源恒带版本，换 helper 防未来加无版本源时引爆同款）。
+fn builtin_package_up_to_date(root: &std::path::Path, dir_name: &str, source: &str) -> bool {
+    let pinned_ver = parse_npm_source(source).1;
+    root.join(dir_name).exists()
+        && std::fs::read_to_string(root.join(dir_name).join("package.json"))
+            .ok()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+            .and_then(|p| {
+                p.get("version")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .is_some_and(|v| v == pinned_ver)
+}
+
+/// 逐包结果汇总（纯函数）：装成的进 `installed`、失败的进 `failed`。
+fn summarize_install_results(
+    results: Vec<(&'static str, Result<String, String>)>,
+) -> PiExtensionsInstallOutcome {
+    let mut outcome = PiExtensionsInstallOutcome::default();
+    for (source, result) in results {
+        match result {
+            Ok(_) => {
+                log::info!("[pi-ext] installed {source}");
+                outcome.installed.push(source);
+            }
+            Err(e) => {
+                log::warn!("[pi-ext] install {source} deferred: {e}");
+                outcome.failed.push(format!("{source}: {e}"));
+            }
+        }
+    }
+    outcome
 }
 
 pub(crate) fn pi_agent_dir() -> Option<String> {
@@ -956,6 +1074,188 @@ mod tests {
             .resolved_session_prompt_injection()
             .is_none());
     }
+
+    /// v0.9.8 评审修复轮 R2：内置包自愈的结果把「装成了哪些」和「哪些失败了」
+    /// 分开给。修前任一包失败就整体返回 Err——装成了的包随之丢失，调用方当作
+    /// 什么都没装、跳过注册同步。
+    #[test]
+    fn partial_install_failure_still_reports_installed() {
+        let outcome = summarize_install_results(vec![
+            ("npm:a@1", Ok("installed a".to_string())),
+            ("npm:b@1", Err("network down".to_string())),
+            ("npm:c@1", Ok(String::new())),
+        ]);
+        assert_eq!(
+            outcome.installed,
+            vec!["npm:a@1", "npm:c@1"],
+            "装成的两个不能被失败的那个吞掉"
+        );
+        assert_eq!(outcome.failed, vec!["npm:b@1: network down".to_string()]);
+        // 调用方的决策口径：装了任何包就要同步。
+        assert!(!outcome.installed.is_empty() && !outcome.failed.is_empty());
+
+        let all_failed = summarize_install_results(vec![("npm:b@1", Err("x".to_string()))]);
+        assert!(all_failed.installed.is_empty());
+        assert_eq!(all_failed.failed.len(), 1);
+        let all_ok = summarize_install_results(vec![("npm:a@1", Ok(String::new()))]);
+        assert!(all_ok.failed.is_empty());
+        assert_eq!(
+            summarize_install_results(Vec::new()),
+            PiExtensionsInstallOutcome::default()
+        );
+    }
+
+    /// v0.9.8 评审修复轮 R2：预检用的 npm 安装源——版本号/版本范围原样保留，
+    /// 预检装的因此就是正式安装要装的那一个；包目录名与注册表寻址同口径。
+    #[test]
+    fn npm_precheck_spec_keeps_version_for_precheck() {
+        let spec = |source: &str| npm_precheck_spec(source);
+        assert_eq!(
+            spec("npm:pi-fireworks@0.1.2"),
+            Some(("pi-fireworks".to_string(), "pi-fireworks@0.1.2".to_string()))
+        );
+        assert_eq!(
+            spec("npm:@juicesharp/rpiv-todo@2.11.0"),
+            Some((
+                "@juicesharp/rpiv-todo".to_string(),
+                "@juicesharp/rpiv-todo@2.11.0".to_string()
+            ))
+        );
+        // scoped 无版本：首 @ 是名字的一部分，不能当版本分隔剥掉。
+        assert_eq!(
+            spec("npm:@juicesharp/rpiv-todo"),
+            Some((
+                "@juicesharp/rpiv-todo".to_string(),
+                "@juicesharp/rpiv-todo".to_string()
+            ))
+        );
+        assert_eq!(
+            spec("npm:pi-fireworks"),
+            Some(("pi-fireworks".to_string(), "pi-fireworks".to_string()))
+        );
+        assert_eq!(spec("git:github.com/owner/repo"), None);
+    }
+
+    // ── 评审修复轮 R3：安装类子进程有期限 ───────────────────────────────────
+
+    /// 测试期间缩短安装类子进程的期限（毫秒），离开作用域恢复默认。
+    struct InstallTimeoutGuard;
+
+    impl InstallTimeoutGuard {
+        fn arm(millis: u64) -> Self {
+            INSTALL_COMMAND_TIMEOUT_MS_FOR_TEST.store(millis, std::sync::atomic::Ordering::Relaxed);
+            Self
+        }
+    }
+
+    impl Drop for InstallTimeoutGuard {
+        fn drop(&mut self) {
+            INSTALL_COMMAND_TIMEOUT_MS_FOR_TEST.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// 假的安装进程：拉起一个子进程，把两个进程号写进 `pid_file`，然后一直
+    /// 不退出（网络不通、安装源在等凭据时的样子）。
+    fn hanging_installer(pid_file: &std::path::Path) -> tokio::process::Command {
+        let pid_file = serde_json::to_string(&pid_file).unwrap();
+        let script = format!(
+            "const cp = require('child_process'); const fs = require('fs'); \
+             const grand = cp.spawn(process.execPath, ['-e', 'setTimeout(function () {{}}, 600000)'], {{ stdio: 'ignore' }}); \
+             fs.writeFileSync({pid_file}, process.pid + ' ' + grand.pid); \
+             setTimeout(function () {{}}, 600000);"
+        );
+        let mut command = tokio::process::Command::new("node");
+        command.arg("-e").arg(script);
+        command
+    }
+
+    /// 评审修复轮 R3：安装子进程挂住——到期限就结束它的整棵进程树，报一条中
+    /// 文错误，「在途」到此为止。修前没有期限，这个等待永远不返回。
+    #[tokio::test]
+    async fn install_command_that_hangs_is_killed_with_its_tree_and_reported() {
+        let _guard = InstallTimeoutGuard::arm(400);
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pids");
+
+        let started = std::time::Instant::now();
+        let command = hanging_installer(&pid_file);
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            JishuSelfAgent::run_install_command(command, "安装 假的包", |e| e),
+        )
+        .await
+        .expect("安装子进程必须有期限：挂住时到期返回，不能一直等");
+
+        let err = outcome.expect_err("挂住的安装到期限应报错");
+        assert!(err.contains("安装 假的包"), "{err}");
+        assert!(err.contains("已强制结束"), "{err}");
+        assert!(err.contains("网络"), "报错要说清最可能的原因：{err}");
+        assert!(err.contains("仍未结束"), "{err}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(8),
+            "到期即返回：{:?}",
+            started.elapsed()
+        );
+
+        // 进程树确实被结束：假安装进程和它拉起的子进程都不在了。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !pid_file.exists() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let pids: Vec<u32> = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 2, "假安装进程应记下自己和子进程的号");
+        for pid in pids {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while crate::process_control::is_process_running(pid)
+                && std::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            assert!(
+                !crate::process_control::is_process_running(pid),
+                "进程 {pid} 应随进程树一起被结束"
+            );
+        }
+    }
+
+    /// 期限内结束的安装子进程：输出原样交回（成功与失败两种退出码）。
+    #[tokio::test]
+    async fn install_command_that_finishes_in_time_returns_its_output() {
+        let _guard = InstallTimeoutGuard::arm(10_000);
+        let mut command = tokio::process::Command::new("node");
+        command.args(["-e", "console.log('installed')"]);
+        let ok = JishuSelfAgent::run_install_command(command, "安装 假的包", |e| e)
+            .await
+            .unwrap();
+        assert!(ok.status.success());
+        assert!(String::from_utf8_lossy(&ok.stdout).contains("installed"));
+
+        let mut command = tokio::process::Command::new("node");
+        command.args(["-e", "console.error('boom'); process.exit(3)"]);
+        let failed = JishuSelfAgent::run_install_command(command, "安装 假的包", |e| e)
+            .await
+            .unwrap();
+        assert_eq!(failed.status.code(), Some(3));
+        assert!(String::from_utf8_lossy(&failed.stderr).contains("boom"));
+    }
+
+    /// 程序起不来：按调用方的说法报错（不吞成「超时」）。
+    #[tokio::test]
+    async fn install_command_that_cannot_start_reports_the_callers_message() {
+        let err = JishuSelfAgent::run_install_command(
+            tokio::process::Command::new("jishu-no-such-installer-xyz"),
+            "安装 假的包",
+            |e| format!("安装程序不可用（{e}）"),
+        )
+        .await
+        .expect_err("起不来应报错");
+        assert!(err.starts_with("安装程序不可用（"), "{err}");
+        assert!(!err.contains("超"), "{err}");
+    }
 }
 
 impl SessionAdapter for JishuSelfAgent {
@@ -1219,6 +1519,12 @@ impl crate::agent::config_roles::McpIntegration for JishuSelfAgent {
 /// Windows 下追加 pi 可选原生 powershell 工具（与 bash 并存，pi
 /// docs/windows.md 的对比用法；`!`/`!!` 编辑器命令仍走 bash）。编译期平台
 /// 隔离，非 Windows 产物不含该工具名。
+///
+/// 需求17 起这就是核心工具清单的唯一去处：引擎 `settings.json` 的
+/// `defaultTools`（首次启动幂等写入全量清单，已有显式值不覆盖）。常规
+/// 模式 spawn 不再传 `--tools`；只读模式是唯一例外（见 spawn 处的
+/// readonly 分支）。条款见 DEVELOP_READ §16.10「工具可见性对齐引擎原生
+/// 管理」。
 fn template_default_tools(extra: &[&'static str]) -> Vec<&'static str> {
     let mut tools: Vec<&'static str> = vec![
         "read",
@@ -1226,11 +1532,10 @@ fn template_default_tools(extra: &[&'static str]) -> Vec<&'static str> {
         "edit",
         "write",
         // v0.9.7 需求2（R1 生产实测 issue #4）：任务执行器（jishu-task-runner
-        // 扩展）registerTool 注册的三工具——pi 的 --tools 是硬白名单，不进
-        // 名单则 agent 不可见（实测复现）。runner 是任务模式底座，与
+        // 扩展）registerTool 注册的三工具是任务模式的底座能力，与
         // read/bash 同级常驻，不挂任何插件 toml 声明（task-plan 需求3 后
-        // 可能未物化，不能依赖它）。白名单例外条款见 DEVELOP_READ §16.4a
-        //（评审成文）。
+        // 可能未物化，不能依赖它）——所以进核心工具清单，而不是靠某个
+        // 插件启用才出现。
         "update_steps",
         "ask_user",
         "dispatch_to_node",
@@ -1240,83 +1545,6 @@ fn template_default_tools(extra: &[&'static str]) -> Vec<&'static str> {
         tools.push("powershell");
     }
     tools
-}
-
-/// v0.9.8 需求10-③ P1 修复：把 plugin-invoke 物化的 [[agent-tool]] 工具名
-/// 并入 spawn 白名单基集。pi 的 `--tools` 是硬白名单——不进名单的扩展
-/// 工具 agent 不可见（v0.9.7 需求2 issue #4 同型坑：当时修了 task-runner
-/// 三工具但漏了本通道，[[agent-tool]] 物化通道自 v0.9.5 引入起在任何 pi
-/// 版本下都不可见，v0.9.8 装入首个声明件后现形）。去重合并，纯函数可单测。
-fn merge_agent_tool_names(mut base: Vec<String>) -> Vec<String> {
-    for entry in crate::agent::plugin::load_agent_tools() {
-        if !base.iter().any(|n| n == &entry.name) {
-            base.push(entry.name);
-        }
-    }
-    base
-}
-
-/// v0.9.1 需求13：settings 未配置 defaultTools 时向 spawn 参数追加
-/// `--tools <全集>`（Windows 含 powershell）。纯函数可单测。
-fn ensure_default_tools_arg(
-    args: &mut Vec<String>,
-    cfg: &Result<serde_json::Value, Box<dyn std::error::Error>>,
-    pi_extension_tools: &[String],
-) {
-    // v0.9.2 需求7：扩展工具按"插件已启用"聚合注入（热插拔闸门，见
-    // plugin::enabled_pi_extension_tools）。pi 的 --tools 是硬白名单——不在
-    // 名单的扩展工具连 conductor 阶段 setActiveTools 也救不回（测试期实证），
-    // 故必须显式进名单。
-    let unset = cfg
-        .as_ref()
-        .ok()
-        .map(|c| c.get("defaultTools").is_none())
-        .unwrap_or(true);
-    if unset {
-        let mut tools: Vec<String> = template_default_tools(&[])
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        tools.extend_from_slice(pi_extension_tools);
-        // 需求11 追加四三轮：追加 MCP 通配模式——pi 1.1.0 的 --tools 绝对
-        // 名单会把 direct 暴露的 MCP 工具滤出 schema（实测复现：名单无此
-        // 模式时模型无 mcp__ 工具）；mcp__* 通配只放行已 direct 的工具
-        //（codemode 的不进 schema），随 toolExposure 配置自适应。
-        tools.push("mcp__*".to_string());
-        args.push("--tools".to_string());
-        args.push(tools.join(","));
-        return;
-    }
-    // 已配置 defaultTools 的用户：配置清单原样生效，仅追加已启用扩展工具。
-    if let Some(list) = cfg
-        .as_ref()
-        .ok()
-        .and_then(|c| c.get("defaultTools"))
-        .and_then(|v| v.as_array())
-    {
-        let mut names: Vec<String> = list
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect();
-        for tool in pi_extension_tools {
-            if !names.iter().any(|n| n == tool) {
-                names.push(tool.to_string());
-            }
-        }
-        // v0.9.7 需求2（issue #4）：已配置路径同样保证 runner 三工具在场
-        //（底座能力不依赖用户配置清单）。
-        for tool in ["update_steps", "ask_user", "dispatch_to_node"] {
-            if !names.iter().any(|n| n == tool) {
-                names.push(tool.to_string());
-            }
-        }
-        // 同上（需求11 追加四三轮）：已配置清单同样追加 MCP 通配。
-        if !names.iter().any(|n| n == "mcp__*") {
-            names.push("mcp__*".to_string());
-        }
-        args.push("--tools".to_string());
-        args.push(names.join(","));
-    }
 }
 
 /// （v0.9.5 需求11 退役留痕）pi-mcp-adapter 最后钉定源——pi 1.1.0 原生
@@ -1348,6 +1576,20 @@ pub(crate) fn parse_npm_source(source: &str) -> (String, String) {
         Some((n, v)) if !n.is_empty() && !v.is_empty() => (n.to_string(), v.to_string()),
         _ => (body.to_string(), String::new()),
     }
+}
+
+/// v0.9.8 评审修复轮 R2：在线安装源 → (包目录名, 交给 npm 的安装源)。
+///
+/// 包目录名用于冲突分类、回滚卸载与池内定位（与 `pi_registry::package_dir_of`
+/// 同口径）；安装源就是去掉 `npm:` 前缀的余下部分——版本号、版本范围原样
+/// 保留，预检装的因此就是正式安装要装的那一个。不是 npm 源 → None。
+pub(crate) fn npm_precheck_spec(source: &str) -> Option<(String, String)> {
+    let body = source.strip_prefix("npm:")?.trim();
+    let (name, _version) = parse_npm_source(body);
+    if name.is_empty() {
+        return None;
+    }
+    Some((name, body.to_string()))
 }
 
 /// v0.9.5 需求5：随包初始化安装的 pi 扩展（钉定版本，与 mcp 同策略——
@@ -1576,40 +1818,6 @@ fn spawn_env_overrides(
 #[cfg(test)]
 mod mcp_tests {
     use super::{builtin_extensions, pi_package_args};
-
-    /// v0.9.1 需求13：未配置 defaultTools → 追加 --tools 全集；已配置 → 不动。
-    #[test]
-    fn default_tools_spawn_arg_only_when_unset() {
-        use serde_json::json;
-        let mut args = vec!["--mode".to_string(), "rpc".to_string()];
-        let ext = vec![
-            "request_user_input".to_string(),
-            "lock_requirement".to_string(),
-        ];
-        super::ensure_default_tools_arg(&mut args, &Ok(json!({})), &ext);
-        assert_eq!(args[2], "--tools");
-        assert!(args[3].starts_with("read,bash,edit,write"));
-        // v0.9.2 需求7：聚合的扩展工具随默认集注入（热插拔闸门的下游）
-        for tool in &ext {
-            assert!(args[3].split(',').any(|t| t == tool), "missing {tool}");
-        }
-        // v0.9.7 需求2（issue #4）：runner 三工具底座常驻（两条路径都在场）
-        for tool in ["update_steps", "ask_user", "dispatch_to_node"] {
-            assert!(args[3].split(',').any(|t| t == tool), "missing {tool}");
-        }
-
-        let mut args2 = vec!["--mode".to_string(), "rpc".to_string()];
-        super::ensure_default_tools_arg(&mut args2, &Ok(json!({"defaultTools": ["read"]})), &ext);
-        // 已配置清单照常生效，追加已启用扩展工具 + runner 底座三工具 + MCP 通配
-        assert_eq!(
-            args2[3],
-            "read,request_user_input,lock_requirement,update_steps,ask_user,dispatch_to_node,mcp__*"
-        );
-
-        let mut args3 = vec![];
-        super::ensure_default_tools_arg(&mut args3, &Err("io".into()), &ext);
-        assert_eq!(args3.len(), 2, "读失败按未配置处理");
-    }
 
     /// v0.9.1 需求12 补充：hubSpawnEnv 提取——字符串键值对；非字符串值跳过；
     /// 空值合法（置空覆盖）；缺键/读失败 → 空。
@@ -1942,8 +2150,8 @@ impl TerminalAdapter for JishuSelfAgent {
 }
 
 #[cfg(test)]
-mod agent_tool_whitelist_tests {
-    use super::{extract_conflict_pairs, merge_agent_tool_names, pkg_dir_from_path};
+mod conflict_pair_tests {
+    use super::{extract_conflict_pairs, pkg_dir_from_path};
 
     /// 需求15 方案 A v2：冲突对提取——双向（self/opponent）+路径→包名。
     #[test]
@@ -1976,41 +2184,5 @@ mod agent_tool_whitelist_tests {
             Some("@scope/pkg")
         );
         assert!(extract_conflict_pairs("all good").is_empty());
-    }
-
-    /// v0.9.8 需求10-③ P1 回归锚点：[[agent-tool]] 物化名并入 spawn 白名单
-    /// （pi --tools 硬白名单不进名单则 agent 不可见——修复前该通道全断）。
-    /// 去重合并 + 空物化不添噪声。
-    #[test]
-    fn merge_agent_tool_names_dedupes_and_appends() {
-        let merged = merge_agent_tool_names(vec!["read".to_string(), "bash".to_string()]);
-        // 当前物化清单为空（测试环境无 [[agent-tool]] 件）——空清单原样返回
-        assert!(merged.iter().all(|n| n == "read" || n == "bash"));
-        // 物化清单非空时并入（读真实 agent-tools.json——测试隔离下由
-        // JISHU_HUB_HOME 指向临时目录；此处验证合并行为本身：注入临时清单）
-        let dir = std::env::temp_dir().join("jishu-test-agent-tools-merge");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("agent-tools.json"),
-            r#"[{"plugin_id":"p1","name":"probe_a","description":"d"},{"plugin_id":"p2","name":"read","description":"d"}]"#,
-        )
-        .unwrap();
-        let _guard = crate::agent::manifest::env_test_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("JISHU_HUB_HOME", &dir);
-        let merged = merge_agent_tool_names(vec!["read".to_string()]);
-        std::env::remove_var("JISHU_HUB_HOME");
-        let _ = std::fs::remove_dir_all(&dir);
-        // probe_a 新并入；read 已在基集不重复
-        assert!(
-            merged.iter().any(|n| n == "probe_a"),
-            "agent-tool 未进白名单"
-        );
-        assert_eq!(
-            merged.iter().filter(|n| *n == "read").count(),
-            1,
-            "重复并入"
-        );
     }
 }

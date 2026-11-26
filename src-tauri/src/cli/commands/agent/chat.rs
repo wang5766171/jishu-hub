@@ -73,6 +73,7 @@ fn send(
             timeout_secs: 600,
             model_override: None,
             pending_entry: None,
+            user_text: None,
         },
         None,
     )

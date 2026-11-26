@@ -41,7 +41,10 @@ fn ext_of(name: &str) -> String {
 /// 分析工作区场景（顶层扫描；无定论返回 None）。
 pub fn detect_workspace_scene(dir: &Path) -> Option<WorkspaceScene> {
     let entries = std::fs::read_dir(dir).ok()?;
-    // 下标常量（声明顺序即平分优先序：代码 > 视频 > 数据 > 办公 > 内容）。
+    // 场景常量。下标是各处累加分数用的，**不要调整顺序**；声明顺序同时就是
+    // 平分时的优先序：代码 > 办公 > 视频 > 数据 > 内容（见下方排序处）。
+    // v0.9.8 评审修复轮 R2：此前两处注释写的是「代码 > 视频 > 数据 > 办公 >
+    // 内容」，与这里的实际顺序对不上；以实现为准更正注释，排序行为未动。
     const SCENE: [&str; 5] = ["programming", "office", "video", "data", "content"];
     let mut scores: Vec<(u32, &str, Vec<String>)> = SCENE.map(|n| (0u32, n, Vec::new())).to_vec();
     let mut code_files = 0u32;
@@ -111,8 +114,9 @@ pub fn detect_workspace_scene(dir: &Path) -> Option<WorkspaceScene> {
         }
     }
 
-    // 分高者胜（≥2 才成立）；平分按 programming > video > data > office > content
-    // （声明顺序即优先序——代码目录里夹个 xlsx 很常见，反向则不然）。
+    // 分高者胜（≥2 才成立）；平分按声明顺序，先声明的赢——代码 > 办公 > 视频 >
+    // 数据 > 内容（代码目录里夹个 xlsx 很常见，反向则不然，所以代码在最前）。
+    // `sort_by` 是稳定排序：分数相同的保持声明顺序。
     scores.sort_by(|a, b| b.0.cmp(&a.0));
     let (score, scene, basis) = scores.into_iter().next()?;
     if score < 2 {
@@ -169,6 +173,22 @@ mod tests {
     #[test]
     fn code_ext_accumulation() {
         let (_t, p) = dir_with(&["main.py", "util.py", "app.py"]);
+        assert_eq!(detect_workspace_scene(&p).unwrap().scene, "programming");
+    }
+
+    /// v0.9.8 评审修复轮 R2：平分按声明顺序——把实际行为钉住，注释与实现
+    /// 不再各说各话（此前注释写的顺序与数组对不上）。分数更高的场景照常
+    /// 胜出，与声明顺序无关。
+    #[test]
+    fn tie_follows_declaration_order() {
+        // 办公 2 : 视频 2 ——平分，先声明的「办公」赢。
+        let (_t, p) = dir_with(&["a.xlsx", "b.docx", "v1.mp4", "v2.mov"]);
+        assert_eq!(detect_workspace_scene(&p).unwrap().scene, "office");
+        // 办公 2 : 视频 3 ——视频分高，照常胜出。
+        let (_t, p) = dir_with(&["a.xlsx", "b.docx", "v1.mp4", "v2.mov", "v3.mkv"]);
+        assert_eq!(detect_workspace_scene(&p).unwrap().scene, "video");
+        // 代码与任何场景平分：代码在最前。
+        let (_t, p) = dir_with(&["a.py", "b.py", "a.xlsx", "b.docx"]);
         assert_eq!(detect_workspace_scene(&p).unwrap().scene, "programming");
     }
 }

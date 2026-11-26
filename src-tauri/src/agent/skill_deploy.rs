@@ -988,6 +988,22 @@ body",
         assert_eq!(k.split_once(':'), Some(("jishu-self", "my-skill")));
     }
 
+    /// 内置能力 skill 的内容自洽断言。v0.9.8 评审修复轮 R2：断言不依赖换行符
+    /// ——内嵌资源随工作区换行符走（仓库没有 .gitattributes，Windows 上
+    /// autocrlf 检出即 CRLF，全新克隆上原断言 `starts_with("---\n")` 必红）。
+    /// 比较前把 CRLF 归一成 LF；守的东西不变：frontmatter 与常量同步（description
+    /// 是系统提示词里的路由层）、分层核心内容在位。
+    fn assert_builtin_capability_skill_content(raw: &str) {
+        let content = raw.replace("\r\n", "\n");
+        assert!(content.starts_with("---\n"));
+        assert!(content.contains(&format!("name: {BUILTIN_CAPABILITY_SKILL_DIR}\n")));
+        assert!(content.contains(&format!("description: {BUILTIN_CAPABILITY_SKILL_DESC}")));
+        // 分层核心内容在位：mermaid 默认通道 + preview_html 反向指引 + MCP 前缀规则。
+        assert!(content.contains("```mermaid"));
+        assert!(content.contains("不适用：纯图表展示"));
+        assert!(content.contains("插件id__"));
+    }
+
     /// v0.9.3 需求9：内置能力 skill——内容自洽（frontmatter 与常量同步、
     /// 含分层决策表与 preview_html 反向指引）、随清单分发且幂等。
     #[test]
@@ -1002,14 +1018,10 @@ body",
         assert_eq!(decls.len(), 2); // capabilities + plugin-authoring（4a）
         let content = &decls[0].content;
 
-        // frontmatter 与常量同步（description 是系统提示词里的路由层）。
-        assert!(content.starts_with("---\n"));
-        assert!(content.contains(&format!("name: {BUILTIN_CAPABILITY_SKILL_DIR}\n")));
-        assert!(content.contains(&format!("description: {BUILTIN_CAPABILITY_SKILL_DESC}")));
-        // 分层核心内容在位：mermaid 默认通道 + preview_html 反向指引 + MCP 前缀规则。
-        assert!(content.contains("```mermaid"));
-        assert!(content.contains("不适用：纯图表展示"));
-        assert!(content.contains("插件id__"));
+        assert_builtin_capability_skill_content(content);
+        // 换行符无关：同一份内容换成 CRLF 也必须通过（模拟 autocrlf 检出）。
+        let as_crlf = content.replace("\r\n", "\n").replace('\n', "\r\n");
+        assert_builtin_capability_skill_content(&as_crlf);
 
         // 部署 + 幂等（内容一致 → Skipped）。
         let report = sync_with(decls.clone(), &targets, true);

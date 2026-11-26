@@ -17,7 +17,11 @@ pub(crate) fn task_launch_list_sessions(
 
 /// v0.9.2 需求6：任务实例创建/更新后向 webview 广播，前端即时刷新任务
 /// 列表并在会话模式下关联当前会话的任务实例（替代 4.8s 一次性发现窗口）。
-fn emit_task_instance_changed(app: &tauri::AppHandle, project_root: &str) {
+///
+/// v0.9.8 评审修复轮 R3（P1-1）：任务实例的创建点移到了发送入口（`chat::
+/// send_message` 在拉起进程之前建、会话解析后改绑、拉起失败撤销），那里也经
+/// 这一处广播。
+pub(crate) fn emit_task_instance_changed(app: &tauri::AppHandle, project_root: &str) {
     let _ = app.emit(
         "task-instance-changed",
         serde_json::json!({
@@ -145,28 +149,29 @@ pub(crate) fn runner_load_task_state(
     task_launch::runner_load_task_state(&project_root, &task_id)
 }
 
-// ── 需求2 追加：任务不询问模式（v0.9.7 评审裁决收窄：仅任务会话内生效，
-// 开启后本任务会话 agent 不再提问、全部按推荐执行；普通对话不受影响——
-// 判定在 jishu-tool-approval 扩展的 isTaskSession）──
-// 存储：Pi settings.json 的 taskNoAsk 布尔键（与 toolApproval 同文件）——
-// 三个消费方同源读取：① runner 扩展（hubInvoke runner_capability_plugins
-// 透出）ask_user 自动放行；② jishu-tool-approval 扩展跳过逐次确认；
-// ③ 前端开关 UI。orchestrator 审批 gate 早已全自动（T8-P1b），无需接。
+// ── v0.9.8 需求22（评审修复轮 R2 / C4）：任务「不询问」按会话 ──
+// 开关记在任务实例上（见 task_launch::TaskLaunchInstance::no_ask）：该任务的
+// 主会话与它派发出去的节点会话生效，别的会话（含普通对话）一律不生效。
+// 三个消费方同源——前端开关（这两个命令）、执行器扩展、工具审批扩展都按
+// 「会话号 → hub 的任务登记」向同一个出处查询（扩展走 hubInvoke 的
+// runner_capability_plugins）。此前的全局键 `taskNoAsk` 不再读：不迁移、
+// 不清理，留在配置文件里没有任何作用。
 
 #[tauri::command]
-pub(crate) fn get_task_no_ask() -> Result<bool, String> {
-    let cfg = crate::agent::jishu_self::config::load_jishu_config().map_err(|e| e.to_string())?;
-    Ok(cfg
-        .get("taskNoAsk")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false))
+pub(crate) fn task_get_no_ask(
+    session_id: String,
+    // 可选：调用方知道项目根就带上，省去「会话号 → 项目」的定位；不带也能查。
+    project_root: Option<String>,
+) -> Result<bool, String> {
+    task_launch::no_ask_for_session(project_root.as_deref(), &session_id)
 }
 
+/// 返回设置后的值。会话不是任务会话 → Err（开关只对任务会话有意义）。
 #[tauri::command]
-pub(crate) fn set_task_no_ask(enabled: bool) -> Result<bool, String> {
-    let mut cfg =
-        crate::agent::jishu_self::config::load_jishu_config().map_err(|e| e.to_string())?;
-    cfg["taskNoAsk"] = serde_json::json!(enabled);
-    crate::agent::jishu_self::config::save_jishu_config(&cfg).map_err(|e| e.to_string())?;
-    Ok(enabled)
+pub(crate) fn task_set_no_ask(
+    session_id: String,
+    enabled: bool,
+    project_root: Option<String>,
+) -> Result<bool, String> {
+    task_launch::set_no_ask_for_session(project_root.as_deref(), &session_id, enabled)
 }

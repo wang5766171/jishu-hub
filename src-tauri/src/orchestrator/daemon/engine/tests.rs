@@ -163,6 +163,7 @@ async fn agent_interaction_pauses_without_fake_completion_progress() {
             prompt: "plan".into(),
             timeout_ms: 1_000,
             cancellation: Arc::new(AtomicBool::new(false)),
+            on_session_resolved: None,
         },
         RuntimeEventContext {
             run_id: "run-1".into(),
@@ -179,6 +180,165 @@ async fn agent_interaction_pauses_without_fake_completion_progress() {
     let interaction = output.interaction.expect("interaction should be captured");
     assert_eq!(interaction.request_id, "request-1");
     assert_eq!(interaction.options.len(), 2);
+}
+
+/// 评审修复轮 R3（P1-1）：通道拿到请求后，先在「连接循环的会话解析回调」这
+/// 个位置把真实会话号交出去（那里早于首条 prompt 写出），再让事件流里的
+/// `SessionResolved` 到达执行侧。`calls_loop_hook = false` 模拟没有这个时机的
+/// 阻塞通道。
+struct SessionRegisteringAgentRuntime {
+    calls_loop_hook: bool,
+}
+
+impl TaskAgentRuntime for SessionRegisteringAgentRuntime {
+    fn resolve_agent(
+        &self,
+        _node: &GraphNode,
+        role_id: &str,
+        _default_agent_id: Option<&str>,
+    ) -> Result<(crate::orchestrator::domain::run::AgentAssignment, String), String> {
+        Ok((
+            crate::orchestrator::domain::run::AgentAssignment {
+                agent_id: "jishu-self".into(),
+                role_id: role_id.into(),
+                adapter_capability_snapshot: vec!["rpc_bidirectional".into()],
+            },
+            "pi_rpc".into(),
+        ))
+    }
+
+    fn invoke(
+        &self,
+        request: RuntimeInvocationRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<InvocationHandle, String>> + Send>>
+    {
+        let calls_loop_hook = self.calls_loop_hook;
+        Box::pin(async move {
+            if calls_loop_hook {
+                if let Some(hook) = &request.on_session_resolved {
+                    (hook.0)("node-session-real".to_string());
+                }
+            }
+            let invocation_id = request.invocation_id.clone();
+            Ok(materialize_handle(
+                invocation_id,
+                Ok(AgentTurnOutput {
+                    events: vec![
+                        NormalizedEvent::SessionResolved {
+                            session_id: "node-session-real".into(),
+                        },
+                        NormalizedEvent::TurnComplete {
+                            reason: TurnEndReason::Complete,
+                            usage: None,
+                        },
+                    ],
+                    exit_success: true,
+                    exit_code: Some(0),
+                }),
+            ))
+        })
+    }
+}
+
+/// 评审修复轮 R3（P1-1）：节点会话号在首条 prompt 写出之前已经落库——通道在
+/// 解析回调位同步调用，事件流里再到达一次也不重复落库（回调只生效一次）。
+#[tokio::test]
+async fn node_session_is_registered_before_the_first_prompt() {
+    let registered = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = registered.clone();
+    let persist: Arc<dyn Fn(String) + Send + Sync> =
+        Arc::new(move |session_id: String| sink.lock().unwrap().push(session_id));
+    let once = execute::once_session_resolved(Some(persist));
+
+    let output = execute_agent(
+        &SessionRegisteringAgentRuntime {
+            calls_loop_hook: true,
+        },
+        PreparedAgentExecution {
+            assignment: crate::orchestrator::domain::run::AgentAssignment {
+                agent_id: "jishu-self".into(),
+                role_id: "planner".into(),
+                adapter_capability_snapshot: vec!["rpc_bidirectional".into()],
+            },
+            transport: "pi_rpc".into(),
+        },
+        RuntimeInvocationRequest {
+            invocation_id: "inv-node".into(),
+            agent_id: "jishu-self".into(),
+            role_id: "planner".into(),
+            project_path: ".".into(),
+            session_id: None,
+            prompt: "去把登录页改成深色".into(),
+            timeout_ms: 1_000,
+            cancellation: Arc::new(AtomicBool::new(false)),
+            on_session_resolved: once.clone(),
+        },
+        RuntimeEventContext {
+            run_id: "run-1".into(),
+            node_run_id: "node-run-1".into(),
+            attempt_id: "attempt-1".into(),
+        },
+        once,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(output.session_id.as_deref(), Some("node-session-real"));
+    assert_eq!(
+        registered.lock().unwrap().as_slice(),
+        ["node-session-real".to_string()],
+        "落库恰好一次：解析回调位那一次，事件流里的那次被挡掉"
+    );
+}
+
+/// 阻塞通道没有解析回调这个时机：会话号仍然在事件流里的 `SessionResolved`
+/// 到达时落库，也恰好一次。
+#[tokio::test]
+async fn blocking_transport_registers_the_session_when_the_event_arrives() {
+    let registered = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = registered.clone();
+    let persist: Arc<dyn Fn(String) + Send + Sync> =
+        Arc::new(move |session_id: String| sink.lock().unwrap().push(session_id));
+    let once = execute::once_session_resolved(Some(persist));
+
+    let output = execute_agent(
+        &SessionRegisteringAgentRuntime {
+            calls_loop_hook: false,
+        },
+        PreparedAgentExecution {
+            assignment: crate::orchestrator::domain::run::AgentAssignment {
+                agent_id: "jishu-self".into(),
+                role_id: "planner".into(),
+                adapter_capability_snapshot: vec!["stream_text_delta".into()],
+            },
+            transport: "acp".into(),
+        },
+        RuntimeInvocationRequest {
+            invocation_id: "inv-node-acp".into(),
+            agent_id: "jishu-self".into(),
+            role_id: "planner".into(),
+            project_path: ".".into(),
+            session_id: None,
+            prompt: "去把登录页改成深色".into(),
+            timeout_ms: 1_000,
+            cancellation: Arc::new(AtomicBool::new(false)),
+            on_session_resolved: once.clone(),
+        },
+        RuntimeEventContext {
+            run_id: "run-1".into(),
+            node_run_id: "node-run-1".into(),
+            attempt_id: "attempt-1".into(),
+        },
+        once,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(output.session_id.as_deref(), Some("node-session-real"));
+    assert_eq!(
+        registered.lock().unwrap().as_slice(),
+        ["node-session-real".to_string()]
+    );
 }
 
 #[test]

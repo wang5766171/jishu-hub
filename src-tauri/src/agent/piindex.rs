@@ -633,7 +633,9 @@ pub struct SkillUpdateStatus {
 }
 
 pub async fn skillhub_check_updates() -> Result<Vec<SkillUpdateStatus>, String> {
-    let installed: BTreeMap<String, String> = super::skillhub::skillhub_installed();
+    // 台账读不出来是「不知道装了什么」，不是「什么都没装」（评审修复轮 R3）。
+    let installed: BTreeMap<String, String> =
+        super::skillhub::skillhub_installed().map_err(|e| format!("无法检查技能更新：{e}"))?;
     let futures: Vec<_> = installed
         .iter()
         .map(|(slug, ver)| {
@@ -706,7 +708,8 @@ pub async fn extension_check_update(package: &str) -> Result<ExtensionUpdateStat
 
 /// 单技能检测更新（已安装页卡片独立检查）。
 pub async fn skillhub_check_update(slug: &str) -> Result<SkillUpdateStatus, String> {
-    let installed = super::skillhub::skillhub_installed();
+    let installed =
+        super::skillhub::skillhub_installed().map_err(|e| format!("无法检查技能更新：{e}"))?;
     let ver = installed
         .get(slug)
         .ok_or_else(|| format!("未安装: {slug}"))?

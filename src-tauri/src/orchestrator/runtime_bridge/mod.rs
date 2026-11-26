@@ -100,6 +100,24 @@ pub struct RuntimeInvocationRequest {
     pub prompt: String,
     pub timeout_ms: u64,
     pub cancellation: Arc<AtomicBool>,
+    /// 会话解析回调（v0.9.8 评审修复轮 R3 / P1-1）：把这次调用的真实会话号落
+    /// 库。PiRpc 通道在连接循环的解析回调里**同步**调用——那个时机早于首条
+    /// prompt 写出，节点会话号在那一时刻已经落库，引擎首轮来查「是不是任务
+    /// 会话」就查得到。此前只由执行侧在事件流里看到 `SessionResolved` 时调用，
+    /// 那要经过两跳通道，与首条 prompt 有先后问题。阻塞通道没有解析回调这个
+    /// 时机，仍走事件流。执行侧给回调包了「只生效一次」，两条路谁先到谁调。
+    pub on_session_resolved: Option<SessionResolvedHook>,
+}
+
+/// 会话解析回调（见 [`RuntimeInvocationRequest::on_session_resolved`]）。
+/// 闭包没法派生 Debug，这里只报有没有。
+#[derive(Clone)]
+pub struct SessionResolvedHook(pub Arc<dyn Fn(String) + Send + Sync + 'static>);
+
+impl std::fmt::Debug for SessionResolvedHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad("SessionResolvedHook")
+    }
 }
 
 pub trait TaskAgentRuntime: Send + Sync {
@@ -340,6 +358,9 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                 };
 
                 // Spawn the persistent session. Returns immediately with AcpControl.
+                // 会话解析回调交给连接循环的解析位：它在首条 prompt 写出之前被调
+                // （见 RuntimeInvocationRequest::on_session_resolved）。
+                let resolve_hook = request.on_session_resolved.clone();
                 let acp_control = crate::pi_rpc_runtime::spawn_pi_rpc_session_with_emitter(
                     emit,
                     usage_agent_id,
@@ -348,7 +369,11 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                     Some(request.prompt.into()),
                     agent.resolved_session_prompt_injection(),
                     on_session_resolved,
-                    |_sid| {},
+                    move |sid: &str| {
+                        if let Some(hook) = &resolve_hook {
+                            (hook.0)(sid.to_string());
+                        }
+                    },
                 );
                 *acp_slot.lock().map_err(|e| e.to_string())? = Some(acp_control.clone());
 
@@ -417,6 +442,7 @@ impl TaskAgentRuntime for DefaultTaskAgentRuntime {
                             timeout_secs: (timeout_ms.saturating_add(999) / 1000).max(1),
                             model_override: None,
                             pending_entry: None,
+                            user_text: None,
                         },
                         None,
                         Some(cancellation),
@@ -751,6 +777,21 @@ pub fn map_normalized_event(context: &RuntimeEventContext, event: &NormalizedEve
                         },
                     }
                 }
+                // v0.9.8 评审修复轮 R2：消息被扩展命令吃掉、没起回合——节点
+                // 什么都没干，不能记成「完成」。换一条消息才会不一样，所以是
+                // 确定性失败、不重试（原样重发只会再被吃掉一次）。
+                TurnEndReason::Handled => RuntimeFact::Failed {
+                    context: context.clone(),
+                    error: AttemptError {
+                        category: ErrorCategory::Deterministic,
+                        // 评审修复轮 R3（P2-13）：这句会原样显示在节点上——写人话，
+                        // 不写内部代号。
+                        message: "这条消息被扩展命令直接处理了，节点没有执行任何工作".to_string(),
+                        retryable: false,
+                        retry_after_ms: None,
+                        provider_detail: None,
+                    },
+                },
             }
         }
         NormalizedEvent::Error {
@@ -993,6 +1034,46 @@ mod tests {
                 assert_eq!(usage.cost_usd, 0.25);
             }
             _ => panic!("expected completed runtime fact"),
+        }
+    }
+
+    /// v0.9.8 评审修复轮 R2（C1）：消息被引擎的扩展命令直接处理（Handled）
+    /// ——节点什么都没干，不能记成「完成」；换一条消息结果才会不同，所以是
+    /// 确定性失败、不重试。
+    ///
+    /// 评审修复轮 R3（P2-13）：这句报错会原样显示在节点上——是人话，不带内部
+    /// 代号。
+    #[test]
+    fn runtime_bridge_maps_handled_turn_end() {
+        let context = RuntimeEventContext {
+            run_id: "run1".into(),
+            node_run_id: "node-run1".into(),
+            attempt_id: "attempt1".into(),
+        };
+        let fact = map_normalized_event(
+            &context,
+            &NormalizedEvent::TurnComplete {
+                reason: TurnEndReason::Handled,
+                usage: None,
+            },
+        );
+        match fact {
+            RuntimeFact::Failed { error, .. } => {
+                assert_eq!(error.category, ErrorCategory::Deterministic);
+                assert!(!error.retryable, "原样重发只会再被吃掉一次");
+                assert!(
+                    error.message.contains("扩展命令")
+                        && error.message.contains("没有执行任何工作"),
+                    "报错要说清发生了什么：{}",
+                    error.message
+                );
+                assert!(
+                    error.message.chars().all(|ch| !ch.is_ascii()),
+                    "节点上的报错不带内部代号：{}",
+                    error.message
+                );
+            }
+            _ => panic!("expected failed runtime fact for Handled"),
         }
     }
 

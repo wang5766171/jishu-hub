@@ -52,9 +52,16 @@ const ASK_TOOLS = new Set([
 
 export default function taskRunnerExtension(pi: ExtensionAPI) {
   let state: RunnerState = emptyState();
-  // 需求2 追加：不询问模式（每轮 before_agent_start 经 capability 查询刷新；
-  // ask_user 执行期读缓存——工具执行无法直接起 hubInvoke 的 ctx 通道）。
+  // 需求22（v0.9.8 评审修复轮 R2）：本会话是不是任务会话、开没开「不询问」，
+  // 以 hub 的任务登记为准——每轮 before_agent_start 带会话号向 hub 查一次，
+  // 工具执行期读这份缓存（执行期不再起一次桥接）。
+  // 此前「不询问」读的是全局配置里的一个键：任一会话打开，所有会话（包括
+  // 普通对话）一起生效、关不掉；任务锚点和纪律也是对所有会话无条件注入。
+  let isTaskSession = false;
   let noAskMode = false;
+  /** 最近一次有依据的「是不是任务会话」（null = hub 还没回答过、也没从会话
+   * 恢复出任务号）。hub 没回答的那一轮沿用它（评审修复轮 R3 P2-11）。 */
+  let taskSessionKnown: boolean | null = null;
 
   const persist = (): void => {
     pi.appendEntry("jishu-task-runner", state);
@@ -228,15 +235,51 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
     }
   });
 
-  // ── 每轮注入：呈现纪律 + 隔离锚点 + 能力插件提示 ──
+  // ── 每轮注入：隔离锚点 + 呈现纪律 + 能力插件提示（只给任务会话）──
 
   pi.on("before_agent_start", async (event, ctx) => {
-    // 能力插件联动：启用「需求澄清/计划拆解」时提示为可用能力（非阶段强制）。
-    // 需求9 #5：hubInvoke 前移——旧序先组纪律文本后刷新 noAskMode，开启
-    // 不询问后的第一轮注入的仍是上一轮的询问版纪律。
-    const caps = await hubInvoke(ctx, "runner_capability_plugins", {}, 3000);
-    const capData = caps?.data as { enabled?: string[]; noAsk?: boolean } | undefined;
-    noAskMode = capData?.noAsk === true;
+    // 需求9 #5：先问 hub 再组纪律文本——旧序先组纪律后刷新，开启不询问后
+    // 的第一轮注入的仍是上一轮的询问版纪律。
+    // 需求22：带会话号问 hub「本会话是不是任务会话、开没开不询问」。hub 按
+    // 自己的任务登记回答——不靠执行器手里的任务编号判断，那个编号要等模型
+    // 第一次上报步骤之后才有，单步小任务可能一直都没有。
+    const caps = await hubInvoke(
+      ctx,
+      "runner_capability_plugins",
+      {
+        session_id: ctx.sessionManager.getSessionId(),
+        project_root: process.cwd(),
+      },
+      3000,
+    );
+    const capData = caps?.data as
+      | { enabled?: string[]; taskSession?: boolean; taskId?: string; noAsk?: boolean }
+      | undefined;
+    // hub 回答了「是不是任务会话」就听 hub 的，并记住这次回答。没回答（桥超
+    // 时 / 出错 / 回答不了）时沿用最近一次有依据的判定：hub 说过是、或上一轮
+    // 留下任务号的会话据此刻意是任务会话——任务隔离锚点不能因为 hub 一时没
+    // 答就丢（评审修复轮 R3 P2-11；修前锚点是无条件注入的）；hub 说过不是
+    // 的，也不会因为一次没回答又变回去。「不询问」只认 hub 的肯定回答，没回
+    // 答一律按关。
+    const hubAnswered = caps?.success === true && typeof capData?.taskSession === "boolean";
+    isTaskSession = hubAnswered
+      ? capData?.taskSession === true
+      : (taskSessionKnown ?? Boolean(state.taskId));
+    taskSessionKnown = isTaskSession;
+    // 「不询问」每轮整体重算（评审修复轮 R3 P1-2）：此前只在 hub 说「是任务
+    // 会话」时才重新赋值——上一轮为真、这一轮 hub 说「不是任务会话」或没回
+    // 答，它保持真值，ask_user 仍不弹、提问类工具仍被拦。
+    noAskMode =
+      isTaskSession && capData?.taskSession === true && capData?.noAsk === true;
+    // hub 的任务号先于模型上报到位：任务卡、隔离闸门、派发从第一轮起就有
+    // 真实的任务号可用（此前锚点写的是占位的 draft，要等第一次上报步骤）。
+    if (isTaskSession && !state.taskId && capData?.taskId) {
+      state.taskId = capData.taskId;
+    }
+    // 需求22：任务锚点、任务纪律、能力提示只注入任务会话。普通对话（包括
+    // hub 没回答、手里也没有任务号的情况）什么都不注入——此前普通对话每轮
+    // 都被写进任务纪律，不询问一旦打开，连普通对话也不再向用户提问。
+    if (!isTaskSession) return;
     const lines: string[] = [taskAnchor()];
     if (state.goal) {
       lines.push(`【任务目标】${state.goal}`);
@@ -258,14 +301,8 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
           "产物落盘后在回复里带 jishu-artifact:// 引用链接；" +
           "破坏性操作（删除/覆盖/安装/提交）先 ask_user 征得同意。",
     );
-    // 需求9 #2：引用路径形态硬约束——CommonMark 会吞「反斜杠+标点」里的
-    // 反斜杠（C:\Users\name\.jishu-hub\… → name.jishu-hub，文件必不存在，
-    // 用户实测「全地址路径打不开」即此），一律相对路径+正斜杠。
-    lines.push(
-      "【引用格式】jishu-artifact:// 后只能跟**项目相对路径 + 正斜杠**（如 " +
-        "jishu-artifact://tasks/<task_id>/out/report.html）；禁止绝对路径、" +
-        "禁止反斜杠；路径含空格用 %20。",
-    );
+    // 需求22：引用格式（jishu-artifact:// 相对路径 + 正斜杠）是所有会话通用
+    // 的规则，不随任务纪律走——由 session-context 扩展注入每个会话。
     const enabled = capData?.enabled ?? [];
     if (enabled.includes("task-requirements")) {
       lines.push("【可用能力】需求澄清：需求模糊时先用它把需求聊清楚、产出结构化需求文档（成果卡呈现，无确认关卡）。");
@@ -289,11 +326,12 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
   // ── 工具闸门：任务隔离硬闸门（保留；阶段白名单已随阶段概念退场）──
 
   pi.on("tool_call", async (event) => {
-    if (!state.taskId) return;
     // 需求9 #5：不询问模式硬拦截 npm 扩展的 ask_user_question——原硬放行
     // 只挂 runner 自注册的 ask_user，问答卡实际多来自
     // @juicesharp/rpiv-ask-user-question（含「N. Type something.」追加输入
     // 协议），纪律提示是软约束拦不住它。
+    // 需求22：noAskMode 只在本会话是任务会话、且该任务开了开关时为真（hub
+    // 每轮回答）——普通会话不会被拦。
     if (noAskMode && ASK_TOOLS.has(event.toolName)) {
       return {
         block: true,
@@ -301,6 +339,7 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
           "不询问模式已开启：不要向用户提问（含 ask_user/ask_user_question），按自己的最优判断继续执行，结果中说明理由。",
       };
     }
+    if (!state.taskId) return;
     const input = (event as { input?: Record<string, unknown> }).input;
     const pathViolation = taskIsolationViolation(
       typeof input?.path === "string" ? input.path : undefined,
@@ -409,8 +448,9 @@ export default function taskRunnerExtension(pi: ExtensionAPI) {
       ),
     }),
     execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-      // 不询问模式（需求2 追加）：不弹问答——按 agent 首个推荐项（或其
-      // 自行判断）直接放行，工具结果说明已自动决策。
+      // 不询问模式（需求22：按会话——本任务是任务会话且开了开关，hub 每轮
+      // 回答）：不弹问答——按 agent 首个推荐项（或其自行判断）直接放行，
+      // 工具结果说明已自动决策。
       if (noAskMode) {
         return toolText(`（不询问模式）已按你的推荐执行：${params.options?.[0] ?? "自行判断"}`);
       }

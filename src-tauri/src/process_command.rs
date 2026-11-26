@@ -70,6 +70,64 @@ pub fn extend_path_for_child_tokio(
     command.env("PATH", joined);
     command
 }
+
+/// 安装类子进程的期限：`pi install`、预检与回滚的 `npm install` / `npm uninstall`、
+/// 安装器的 powershell / sh（见 [`run_bounded_command`]）。
+///
+/// v0.9.8 评审修复轮 R3：此前这几条子进程没有期限。网络不通、git 源要凭据时
+/// 子进程无限期挂住，前端那边「在途安装不落定就关不掉弹层」，用户被困在模
+/// 态里只能重启应用。「在途」必须有上界。
+///
+/// 取 10 分钟，与运行时更新的安装链同口径：一件 npm 包正常 10 秒到 1 分钟装
+/// 完；冷缓存、依赖多、网络慢时会到几分钟——10 分钟覆盖正常耗时的上限并留
+/// 足余量，再久基本只剩「挂住」这一种解释（引擎自检探针那条是 60 秒：它只
+/// 起一次引擎，不下载）。
+pub const INSTALL_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// 跑一条子进程并等它结束，输出照 `Command::output()` 的形状交回。到期没结
+/// 束：结束它的**整棵进程树**（npm 会再拉起 git、生命周期脚本），报一条中文
+/// 错误——「在途」到此为止。
+///
+/// 等待放进独立任务：到期时由这里显式结束进程树、再回收输出。直接给
+/// `cmd.output()` 套超时的话，future 被丢下的那一刻进程句柄也跟着没了，既
+/// 拿不到进程号、也管不到它的子进程。标准输入接空：安装源要凭据时得到的是
+/// 「没有输入」，而不是无人应答的无限等待。
+///
+/// - `what`：这件事的人话说法，进报错（「安装 xxx」）。
+/// - `spawn_error`：程序起不来时的报错（调用方各自的说法）。
+/// - `limit`：期限。
+pub async fn run_bounded_command(
+    mut cmd: tokio::process::Command,
+    what: &str,
+    spawn_error: impl FnOnce(String) -> String,
+    limit: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    let child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| spawn_error(e.to_string()))?;
+    let pid = child.id();
+    let waiter = tokio::spawn(async move { child.wait_with_output().await });
+    match tokio::time::timeout(limit, waiter).await {
+        Ok(joined) => joined
+            .map_err(|e| format!("{what}的等待异常结束：{e}"))?
+            .map_err(|e| format!("{what}没有正常结束：{e}")),
+        Err(_) => {
+            if let Some(pid) = pid {
+                if let Err(e) = crate::process_control::terminate_process_tree(pid) {
+                    log::warn!("[install] 结束超时的进程树失败（{what}，pid {pid}）: {e}");
+                }
+            }
+            Err(format!(
+                "{what}超过 {} 秒仍未结束，已强制结束——多半是网络不通，或安装源在等待输入凭据。请检查网络或凭据后重试。",
+                limit.as_secs()
+            ))
+        }
+    }
+}
+
 /// 收集用户级 PATH 目录（返回 &str 引用，避免在 hot path 重复分配）。
 fn collect_user_paths() -> Vec<String> {
     let mut dirs = Vec::new();

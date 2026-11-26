@@ -99,66 +99,61 @@ pub async fn run_install_command(
             "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; {}",
             command
         );
-        let dir = current_dir.map(std::path::Path::to_path_buf);
-        // 评审 P2 补齐：阻塞 .output() 移入 spawn_blocking——async fn 内裸
-        // 阻塞会占死 tokio worker（外层 timeout 放弃等待后线程仍被占用，
-        // 多次超时可累积耗尽 worker 池；对齐 run_powershell_capture 形态）。
-        let execution = tauri::async_runtime::spawn_blocking(move || {
-            let mut installer = StdCommand::new("powershell");
-            installer.args(["-NoProfile", "-Command", &prefixed]);
-            if let Some(d) = dir {
-                installer.current_dir(d);
-            }
-            // v0.9.7 收版反馈：安装/更新子进程补用户级 PATH（winget/npm 等）。
-            let installer = crate::process_command::extend_path_for_child_std(&mut installer);
-            crate::process_command::std_no_window(installer).output()
-        });
-        let output = execution
-            .await
-            .map_err(|e| format!("install task failed: {e}"))?
-            .map_err(|e| format!("Failed to spawn powershell: {}", e))?;
-
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            // npm/winget often write failure detail to stdout rather than
-            // stderr; prefer stderr but fall back to stdout, and always
-            // include the exit code so the error is never empty.
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let detail = if !stderr.is_empty() { stderr } else { stdout };
-            Err(format!(
-                "command failed (exit {:?}): {}",
-                output.status.code(),
-                detail
-            ))
+        // v0.9.8 评审修复轮 R3：安装器跑的安装命令（npm 全局安装 / winget）此前
+        // 没有期限——挂住时安装弹层一直等。改为 tokio 的异步进程并带期限（规则
+        // 见 process_command::run_bounded_command）：等待不再占线程，到期还能
+        // 结束整棵进程树（原先 future 被丢下就管不到子进程了）。
+        let mut installer = tokio::process::Command::new("powershell");
+        installer.args(["-NoProfile", "-Command", &prefixed]);
+        if let Some(dir) = current_dir {
+            installer.current_dir(dir);
         }
+        // v0.9.7 收版反馈：安装/更新子进程补用户级 PATH（winget/npm 等）。
+        crate::process_command::extend_path_for_child_tokio(&mut installer);
+        crate::process_command::tokio_no_window(&mut installer);
+        let output = crate::process_command::run_bounded_command(
+            installer,
+            &format!("安装命令 {command}"),
+            |e| format!("Failed to spawn powershell: {e}"),
+            crate::process_command::INSTALL_COMMAND_TIMEOUT,
+        )
+        .await?;
+        install_output(output)
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let mut installer = StdCommand::new("sh");
+        // 评审修复轮 R3：同上，带期限。
+        let mut installer = tokio::process::Command::new("sh");
         installer.args(["-c", command]);
         if let Some(dir) = current_dir {
             installer.current_dir(dir);
         }
-
-        let output = crate::process_command::std_no_window(&mut installer)
-            .output()
-            .map_err(|e| format!("Failed to spawn sh: {}", e))?;
-
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let detail = if !stderr.is_empty() { stderr } else { stdout };
-            Err(format!(
-                "command failed (exit {:?}): {}",
-                output.status.code(),
-                detail
-            ))
-        }
+        let output = crate::process_command::run_bounded_command(
+            installer,
+            &format!("安装命令 {command}"),
+            |e| format!("Failed to spawn sh: {e}"),
+            crate::process_command::INSTALL_COMMAND_TIMEOUT,
+        )
+        .await?;
+        install_output(output)
     }
+}
+
+/// 安装命令的退出结果：成功 → stdout；失败 → 带退出码的报错（npm / winget 常
+/// 把失败详情写到 stdout 而不是 stderr——优先 stderr，空了用 stdout，退出码
+/// 始终在，报错不会是空的）。
+fn install_output(output: std::process::Output) -> Result<String, String> {
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() { stderr } else { stdout };
+    Err(format!(
+        "command failed (exit {:?}): {}",
+        output.status.code(),
+        detail
+    ))
 }
 
 // -------------------- powershell 捕获执行（runtime_update 共用） --------------------

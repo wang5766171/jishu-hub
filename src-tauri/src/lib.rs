@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn strip_session_dir_wrap_boundaries() {
         for (input, expected) in [
-            ("--C--Users-51743--", "C--Users-51743"), // 常规包裹
+            ("--C--Users-tester--", "C--Users-tester"), // 常规包裹
             ("--D--foo---", "D--foo-"),               // 路径自身尾部 '-'（trim_matches 会误剥）
             ("--a--", "a"),                           // 最短完整包裹
             ("--abc", "--abc"),                       // 只有前缀无后缀——原样返回
@@ -431,20 +431,13 @@ pub fn run() {
             // （发送中断未迁移的占位条目，防跨草稿会话串扰）。
             agent::tool_plugin::cleanup_stale_pending_sessions();
             // v0.9.5：内部提示词版本锚点（resources/prompts/ 台账对账——
-            // 历史会话剥离异常时先核对此行与话术版本是否匹配）。三轮评审 C14：
-            // 补全全部五个话术（修前漏 exec-contract，台账与锚点对不上账）。
+            // 历史会话剥离异常时先核对此行与话术版本是否匹配）。v0.9.8 评审
+            // 修复轮 R2：清单改从登记处取（internal_prompts::registered_prompts）
+            // ——此前在这里手抄一份，装备目录话术加进来时漏了，锚点比登记
+            // 少一项。
             log::info!(
-                "[startup] internal prompts: {} v{}, {} v{}, {} v{}, {} v{}, {} v{}",
-                agent::internal_prompts::PROMPT_MCP_HINT.id,
-                agent::internal_prompts::PROMPT_MCP_HINT.version,
-                agent::internal_prompts::PROMPT_IMAGE_DISPATCH.id,
-                agent::internal_prompts::PROMPT_IMAGE_DISPATCH.version,
-                agent::internal_prompts::PROMPT_TOOL_HEADER.id,
-                agent::internal_prompts::PROMPT_TOOL_HEADER.version,
-                agent::internal_prompts::PROMPT_EXEC_CONTRACT.id,
-                agent::internal_prompts::PROMPT_EXEC_CONTRACT.version,
-                agent::internal_prompts::PROMPT_MCP_SECTION.id,
-                agent::internal_prompts::PROMPT_MCP_SECTION.version,
+                "[startup] internal prompts: {}",
+                agent::internal_prompts::version_anchor_line()
             );
             // v0.8.1 M6：装载期预热工具插件安装探测（PATH where/which 与
             // --version）——compose_tool_message 持 AppState 锁渲染说明块时
@@ -802,8 +795,8 @@ pub fn run() {
             commands::task::task_launch_delete_task,
             commands::task::runner_load_task_state,
             commands::task::runner_update_steps,
-            commands::task::get_task_no_ask,
-            commands::task::set_task_no_ask,
+            commands::task::task_get_no_ask,
+            commands::task::task_set_no_ask,
             commands::native_mcp::native_mcp_list,
             commands::native_mcp::native_mcp_upsert,
             commands::native_mcp::native_mcp_remove,

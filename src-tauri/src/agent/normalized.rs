@@ -500,6 +500,11 @@ pub enum TurnEndReason {
     Aborted,
     Error,
     MaxTokens,
+    /// v0.9.8 评审修复轮 R2（C1）：这条消息被引擎的扩展命令直接处理了——
+    /// 不起回合、不落用户消息（与引擎原生 TUI 一致：命令自己画自己的界面，
+    /// 对话里不留用户气泡）。hub 收到引擎的「已处理」回执后合成这一个回合
+    /// 结束，让界面把这条消息的流收走。
+    Handled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

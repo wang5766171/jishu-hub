@@ -162,56 +162,97 @@ pub(crate) fn load_pi_session_messages(
         if path.extension().map(|ext| ext == "jsonl").unwrap_or(false) {
             if let Some(session) = load_pi_session(&path) {
                 if session.id == session_id {
-                    // v0.9.6 需求4 补充⑤③：解析缓存命中（mtime/size 未变）——
-                    // 跳过 JSONL 全量重解析，直接用缓存消息（切标签秒回）。
-                    // 注意：缓存的是**纯 JSONL 解析结果**（不含 F3 pending 并入
-                    // 条目——pending 对账每次照跑，避免 ack 后缓存残留）。
-                    let mut messages = match session_parse_cache_get(&path) {
-                        Some(cached) => cached,
-                        None => {
-                            session_parse_cache_put(&path, session.messages.clone());
-                            session.messages
-                        }
-                    };
-                    // v0.9.6 需求6 F3：与 hub 侧 pending 记录对账——已落盘的
-                    // pending 清除（ack 丢失兜底）；未落盘的（pi 受理后回合未
-                    // 启动：压缩预检/钩子挂死、进程被杀）并入消息列表尾部，
-                    // 重启后用户消息不丢。
-                    let persisted_user_texts: Vec<String> = messages
-                        .iter()
-                        .filter(|m| m.role == "user")
-                        .map(|m| {
-                            m.content
-                                .iter()
-                                .filter_map(|b| match b {
-                                    crate::session::ContentBlock::Text { text, .. } => {
-                                        Some(text.clone())
-                                    }
-                                    _ => None,
-                                })
-                                .collect::<Vec<_>>()
-                                .join("")
-                        })
-                        .collect();
-                    for pending in
-                        crate::pending_messages::dedupe_against(session_id, &persisted_user_texts)
-                    {
-                        messages.push(crate::session::Message {
-                            role: "user".to_string(),
-                            content: vec![crate::session::ContentBlock::Text {
-                                text: pending.content,
-                                tool_ids: Vec::new(),
-                            }],
-                            timestamp: Some(pending.sent_at),
-                            unsent: Some(true),
-                        });
-                    }
-                    return Ok(messages);
+                    return Ok(session_messages_with_pending(session_id, &path, session));
                 }
             }
         }
     }
     Err(format!("Pi session not found: {session_id}"))
+}
+
+/// 会话文件 → 界面消息列表：解析结果（缓存命中则复用）+ 账本里仍未送达的
+/// 消息。与账本对账的入口只此一处——按会话号找文件是它唯一的不可测部分，
+/// 所以拆在外面，这里只吃「已找到的文件」。
+pub(crate) fn session_messages_with_pending(
+    session_id: &str,
+    path: &Path,
+    session: crate::session::Session,
+) -> Vec<crate::session::Message> {
+    // v0.9.6 需求4 补充⑤③：解析缓存命中（mtime/size 未变）——跳过 JSONL
+    // 全量重解析，直接用缓存消息（切标签秒回）。注意：缓存的是**纯 JSONL
+    // 解析结果**（不含 F3 pending 并入条目——pending 对账每次照跑，避免 ack
+    // 后缓存残留）。
+    let mut messages = match session_parse_cache_get(path) {
+        Some(cached) => cached,
+        None => {
+            session_parse_cache_put(path, session.messages.clone());
+            session.messages
+        }
+    };
+    // v0.9.6 需求6 F3：与 hub 侧 pending 记录对账——已有落盘回执的清除
+    // （ack 丢失兜底）；未落盘的（pi 受理后回合未启动：压缩预检/钩子挂死、
+    // 进程被杀）并入消息列表尾部，重启后用户消息不丢。
+    // v0.9.8 评审修复轮 R2（C2）：对账按**顺序与时间**，不比文本——技能
+    // 命令、提示模板是展开后才落盘，按文本相等去认账，每发一条就多一条
+    // 销不掉的「未送达」。这里给出的是会话文件里用户消息的落盘时刻。
+    let persisted_user_at = persisted_user_message_at(&messages);
+    for pending in crate::pending_messages::dedupe_against(session_id, &persisted_user_at) {
+        messages.push(crate::session::Message {
+            role: "user".to_string(),
+            content: vec![crate::session::ContentBlock::Text {
+                text: pending.content,
+                tool_ids: Vec::new(),
+            }],
+            timestamp: Some(pending.sent_at),
+            unsent: Some(true),
+        });
+    }
+    messages
+}
+
+/// 会话文件里**用户消息**的落盘时刻（毫秒）。账本拿它认回执（见
+/// `pending_messages::dedupe_against` 与回合发起前的对账），所以哪些条目算
+/// 「用户消息落盘」必须卡准：
+/// - 只认引擎记的 role=user 消息。工具结果在界面模型里也归在用户名下
+///   （`parse_pi_message` 把 role 映射成 "user"，渲染在用户气泡下），但它不是
+///   用户消息的落盘回执——算进来会把还在等回执的账错销掉。助手消息、失败
+///   尝试（模型限流 429 这类 errorMessage-only 记录）更不是。
+/// - 时刻取**消息自己的** `timestamp`（引擎写进 `message.timestamp` 的毫秒，
+///   与 hub 记账同为本机墙钟）；条目的 timestamp 只在消息自己没带时才用
+///   （`parse_pi_message` 的回退）。引擎的重试/报错条目上两者可能不同。
+fn persisted_user_message_at(messages: &[crate::session::Message]) -> Vec<i64> {
+    messages
+        .iter()
+        .filter(|message| message.role == "user" && !is_tool_result_message(message))
+        .filter_map(|message| message.timestamp)
+        .collect()
+}
+
+/// 界面模型里由工具结果条目变来的那条「user」消息（内容只有一块工具结果）。
+fn is_tool_result_message(message: &crate::session::Message) -> bool {
+    matches!(
+        message.content.first(),
+        Some(crate::session::ContentBlock::ToolResult { .. })
+    )
+}
+
+/// 按会话号取会话文件里用户消息的落盘时刻（给回合发起前的对账用；找不到
+/// 文件 / 读不了 → 空，调用方按「没有证据」处理）。
+pub(crate) fn persisted_user_message_at_for_session(session_id: &str) -> Vec<i64> {
+    let Ok(agent_dir) = super::paths::agent_dir() else {
+        return Vec::new();
+    };
+    persisted_user_message_at_in_agent_dir(&agent_dir, session_id)
+}
+
+pub(crate) fn persisted_user_message_at_in_agent_dir(
+    agent_dir: &Path,
+    session_id: &str,
+) -> Vec<i64> {
+    find_pi_session_file_in_agent_dir(agent_dir, session_id)
+        .and_then(|path| load_pi_session(&path))
+        .map(|session| persisted_user_message_at(&session.messages))
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,6 +310,75 @@ pub(crate) fn find_pi_session_location_in_agent_dir(
     }
 
     Err(format!("Pi session not found: {session_id}"))
+}
+
+/// v0.9.8 需求22（评审修复轮 R2）：按会话号定位会话所在的项目（会话头里的
+/// `cwd`），给「只带会话号」的调用方用——任务「不询问」开关的命令按跨端契约
+/// 不带项目根。找不到 → None。
+pub(crate) fn locate_pi_session_project(session_id: &str) -> Option<String> {
+    let agent_dir = super::paths::agent_dir().ok()?;
+    locate_pi_session_project_in_agent_dir(&agent_dir, session_id)
+}
+
+pub(crate) fn locate_pi_session_project_in_agent_dir(
+    agent_dir: &Path,
+    session_id: &str,
+) -> Option<String> {
+    let path = find_pi_session_file_in_agent_dir(agent_dir, session_id)?;
+    read_session_header(&path).map(|(_, cwd)| cwd)
+}
+
+/// 按会话号找会话文件。pi 的会话文件名恒为 `<时间戳>_<会话号>.jsonl`（引擎
+/// 建文件就这么命名，分叉出来的新会话同理）：先按文件名后缀筛，再只读命中
+/// 文件的首行核对会话号——文件名像、会话头不是的不算。找不到 → None。
+pub(crate) fn find_pi_session_file_in_agent_dir(
+    agent_dir: &Path,
+    session_id: &str,
+) -> Option<PathBuf> {
+    let sessions_root = agent_dir.join("sessions");
+    if !sessions_root.is_dir() {
+        return None;
+    }
+    let suffix = format!("_{session_id}.jsonl");
+    for project_entry in fs::read_dir(&sessions_root).ok()? {
+        let project_dir = project_entry.ok()?.path();
+        if !project_dir.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(&project_dir).ok()? {
+            let path = entry.ok()?.path();
+            let name = path.file_name().and_then(|name| name.to_str());
+            if !name.is_some_and(|name| name.ends_with(&suffix)) {
+                continue;
+            }
+            if read_session_header(&path).is_some_and(|(id, _)| id == session_id) {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+/// 会话文件首行（会话头）。只读这一行，不把整个文件读进来。
+fn read_session_header(path: &Path) -> Option<(String, String)> {
+    let mut first_line = String::new();
+    std::io::BufRead::read_line(
+        &mut std::io::BufReader::new(fs::File::open(path).ok()?),
+        &mut first_line,
+    )
+    .ok()?;
+    parse_session_header(&first_line)
+}
+
+/// 会话文件首行（会话头）：`{"type":"session","id":…,"cwd":…}` → (会话号, 项目根)。
+fn parse_session_header(line: &str) -> Option<(String, String)> {
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    if value.get("type").and_then(|v| v.as_str()) != Some("session") {
+        return None;
+    }
+    let id = value.get("id")?.as_str()?.to_string();
+    let cwd = value.get("cwd")?.as_str()?.to_string();
+    Some((id, cwd))
 }
 
 pub(crate) fn persist_pi_interaction_blocks(
@@ -1232,19 +1342,18 @@ fn file_modified_utc(path: &Path) -> Option<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::session::ContentBlock;
+    use serde_json::json;
     use std::fs;
 
     #[test]
     fn builds_project_scoped_session_dir() {
-        let dir = pi_session_dir_for_home(
-            Path::new(r"C:\Users\tester"),
-            r"D:\MyCodes\unified-auth-system",
-        );
+        let dir =
+            pi_session_dir_for_home(Path::new(r"C:\Users\tester"), r"D:\MyCodes\demo-project");
 
         assert_eq!(
             dir,
             PathBuf::from(
-                r"C:\Users\tester\.jishu-agent\agent\sessions\--D--MyCodes-unified-auth-system--"
+                r"C:\Users\tester\.jishu-agent\agent\sessions\--D--MyCodes-demo-project--"
             )
         );
     }
@@ -1704,10 +1813,228 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// v0.9.8 需求22（评审修复轮 R2）：按会话号定位会话所在项目——只读会话
+    /// 文件首行；会话头里的会话号对不上的不算。
+    #[test]
+    fn locates_session_project_from_header_only() {
+        let root = std::env::temp_dir().join(format!(
+            "jishu-pi-session-project-test-{}",
+            std::process::id()
+        ));
+        let agent_dir = root.join(".jishu-agent").join("agent");
+        let project_path = r"D:\Work\app";
+        let session_dir = agent_dir
+            .join("sessions")
+            .join(pi_encode_cwd(Path::new(project_path)));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("20260601_sid-loc.jsonl"),
+            [
+                r#"{"type":"session","version":3,"id":"sid-loc","timestamp":"2026-06-01T00:00:00.000Z","cwd":"D:\\Work\\app"}"#,
+                r#"{"type":"message_start","id":"u1","parentId":null,"timestamp":"2026-06-01T00:00:01.000Z","message":{"role":"user","content":"hello","timestamp":1780272001000}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        // 文件名后缀像，但会话头是另一个会话：不能认。
+        fs::write(
+            session_dir.join("20260602_sid-decoy.jsonl"),
+            r#"{"type":"session","version":3,"id":"sid-decoy-inner","cwd":"D:\\Other"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            locate_pi_session_project_in_agent_dir(&agent_dir, "sid-loc").as_deref(),
+            Some(project_path)
+        );
+        assert_eq!(
+            locate_pi_session_project_in_agent_dir(&agent_dir, "sid-decoy"),
+            None,
+            "会话头里的会话号对不上不算命中"
+        );
+        assert_eq!(
+            locate_pi_session_project_in_agent_dir(&agent_dir, "sid-missing"),
+            None
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn rfc3339(millis: i64) -> String {
+        chrono::DateTime::from_timestamp_millis(millis)
+            .unwrap()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    }
+
+    /// v0.9.8 评审修复轮 R2（主控提醒）：认回执的时刻取**消息自己的** timestamp
+    /// （引擎写进 `message.timestamp` 的毫秒，与 hub 记账同为墙钟）；条目的
+    /// timestamp 只在消息自己没带时才用——引擎的重试/报错条目上两者可能不同。
+    #[test]
+    fn receipt_time_is_the_message_own_timestamp() {
+        let own = 1_764_055_320_500_i64;
+        let entry_only = own + 7_000;
+        let entry = |id: &str, message_timestamp: Option<i64>| {
+            let mut message =
+                json!({ "role": "user", "content": [{ "type": "text", "text": id }] });
+            if let Some(at) = message_timestamp {
+                message["timestamp"] = json!(at);
+            }
+            json!({
+                "type": "message",
+                "id": id,
+                "timestamp": rfc3339(entry_only),
+                "message": message,
+            })
+            .to_string()
+        };
+        let jsonl = [
+            r#"{"type":"session","version":3,"id":"sid-times","cwd":"D:\\Work\\demo"}"#.to_string(),
+            entry("u1", Some(own)),
+            entry("u2", None),
+        ]
+        .join("\n");
+        let session = parse_pi_session_jsonl(Path::new("test.jsonl"), &jsonl).expect("parse");
+        assert_eq!(
+            persisted_user_message_at(&session.messages),
+            vec![own, entry_only],
+            "消息自己带时刻就用它；没带才退到条目的时刻"
+        );
+    }
+
+    /// 主控提醒：只有「用户消息落盘」才算回执。工具结果在界面模型里也归在用户
+    /// 名下（role 被映射成 "user"）——靠 role 过滤挡不住它；助手消息、模型限流
+    /// （429）的报错条目更不是回执。纯图片的用户消息也是一条用户消息，算。
+    #[test]
+    fn only_user_text_messages_count_as_receipts() {
+        let base = 1_764_055_320_500_i64;
+        let mut lines = vec![
+            r#"{"type":"session","version":3,"id":"sid-receipts","cwd":"D:\\Work\\demo"}"#.to_string(),
+            json!({
+                "type": "message", "id": "u1", "timestamp": rfc3339(base),
+                "message": { "role": "user", "content": [{ "type": "text", "text": "第一问" }], "timestamp": base },
+            })
+            .to_string(),
+            json!({
+                "type": "message", "id": "a1", "timestamp": rfc3339(base + 1_000),
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "type": "toolCall", "id": "call1", "name": "read", "arguments": {} }],
+                    "timestamp": base + 1_000,
+                },
+            })
+            .to_string(),
+            json!({
+                "type": "message", "id": "t1", "timestamp": rfc3339(base + 4_000),
+                "message": {
+                    "role": "toolResult", "toolCallId": "call1",
+                    "content": [{ "type": "text", "text": "ok" }], "isError": false, "timestamp": base + 4_000,
+                },
+            })
+            .to_string(),
+        ];
+        for retry in 0..5 {
+            let at = base + 10_000 + retry * 1_000;
+            lines.push(
+                json!({
+                    "type": "message", "id": format!("e{retry}"), "timestamp": rfc3339(at),
+                    "message": {
+                        "role": "assistant", "content": [],
+                        "errorMessage": "429 Too Many Requests", "timestamp": at,
+                    },
+                })
+                .to_string(),
+            );
+        }
+        lines.push(
+            json!({
+                "type": "message", "id": "u2", "timestamp": rfc3339(base + 50_000),
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "image", "data": "AAEC", "mimeType": "image/png" }],
+                    "timestamp": base + 50_000,
+                },
+            })
+            .to_string(),
+        );
+        let session =
+            parse_pi_session_jsonl(Path::new("test.jsonl"), &lines.join("\n")).expect("parse");
+        assert_eq!(
+            session.messages.iter().filter(|m| m.role == "user").count(),
+            3,
+            "前置：工具结果在界面模型里也被归到用户名下"
+        );
+        assert_eq!(
+            persisted_user_message_at(&session.messages),
+            vec![base, base + 50_000],
+            "只有用户消息算回执：工具结果、报错条目都不算"
+        );
+    }
+
+    /// 回合发起前对账用的那份证据：按会话号找到会话文件，取里面用户消息的
+    /// 落盘时刻。文件名像、会话头不是的不认；找不到给空。
+    #[test]
+    fn reads_persisted_user_times_from_session_file_by_id() {
+        let root = std::env::temp_dir().join(format!(
+            "jishu-pi-session-receipts-test-{}",
+            std::process::id()
+        ));
+        let agent_dir = root.join(".jishu-agent").join("agent");
+        let session_dir = agent_dir
+            .join("sessions")
+            .join(pi_encode_cwd(Path::new(r"D:\Work\app")));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&session_dir).unwrap();
+        let base = 1_764_055_320_500_i64;
+        let user = |id: &str, at: i64| {
+            json!({
+                "type": "message", "id": id, "timestamp": rfc3339(at),
+                "message": { "role": "user", "content": [{ "type": "text", "text": id }], "timestamp": at },
+            })
+            .to_string()
+        };
+        fs::write(
+            session_dir.join("20260601_sid-receipts-file.jsonl"),
+            [
+                r#"{"type":"session","version":3,"id":"sid-receipts-file","cwd":"D:\\Work\\app"}"#
+                    .to_string(),
+                user("u1", base),
+                user("u2", base + 30_000),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            persisted_user_message_at_in_agent_dir(&agent_dir, "sid-receipts-file"),
+            vec![base, base + 30_000]
+        );
+        // 文件名后缀像，但会话头是另一个会话：不能认。
+        fs::write(
+            session_dir.join("20260602_sid-receipts-decoy.jsonl"),
+            [
+                r#"{"type":"session","version":3,"id":"someone-else","cwd":"D:\\Other"}"#
+                    .to_string(),
+                user("x1", base + 90_000),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        assert!(
+            persisted_user_message_at_in_agent_dir(&agent_dir, "sid-receipts-decoy").is_empty()
+        );
+        assert!(
+            persisted_user_message_at_in_agent_dir(&agent_dir, "sid-receipts-missing").is_empty()
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// Regression test against an actual JSONL that `pi --mode json`
     /// produced on a real run. Captures a snapshot at
     /// `tests/fixtures/pi_session_real.jsonl`; the test loads and
     /// parses it the same way the GUI would.
+    ///
+    /// v0.9.8 评审修复轮 R2：快照已脱敏——会话号、工作目录、响应号换成占位，
+    /// 条目结构与消息形状照旧（本机信息不进公开仓库）。
     ///
     /// v0.9.1 需求14 测试期：errorMessage-only 失败消息投影为 error 分隔线，
     /// 连续多条（重试各一次）折叠为一条——会话重载后失败原因可见。
@@ -1776,16 +2103,6 @@ mod tests {
                 .join("sessions")
                 .join("--D--My Codes-app--")
         );
-    }
-
-    #[test]
-    fn test_parse_real_file() {
-        let path = std::path::Path::new("C:\\Users\\51743\\.jishu-agent\\sessions\\E--Claude-test\\2026-06-06T01-14-06-927Z_019e9a7e-92cf-7e5b-a24d-8d333432e821.jsonl");
-        let session = crate::agent::jishu_self::pi_session::load_pi_session(path);
-        println!("Session parsed: {}", session.is_some());
-        if let Some(s) = session {
-            println!("Messages count: {}", s.messages.len());
-        }
     }
 }
 

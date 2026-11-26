@@ -367,6 +367,22 @@ pub(crate) fn resolve_tool_refs(message: &str, entries: &[SessionToolInfo]) -> V
     ids
 }
 
+/// 按消息文本解析本条消息的工具集；挂载清单由 `entries` **按需**构建。
+///
+/// v0.9.8 评审修复轮 R2：消息里一个 `@[` 都没有，就不可能点名任何工具——
+/// 直接返回空，不去构建挂载清单。此前每次发送都全量重建一遍（逐插件扫
+/// 技能目录、开扩展登记库、读物化清单），而绝大多数消息根本不带工具引用。
+/// `@[` 是引用语法的固定开头（见 `tool_ref_names` 的正则），这个预判与它同源。
+pub(crate) fn resolve_tool_refs_from_message(
+    message: &str,
+    entries: impl FnOnce() -> Vec<SessionToolInfo>,
+) -> Vec<String> {
+    if !message.contains("@[") {
+        return Vec::new();
+    }
+    resolve_tool_refs(message, &entries())
+}
+
 /// 发送入口确定并写入「本条消息的工具集」（send_message 在组装消息前
 /// 调用——见 [`resolve_tool_refs`]）。
 ///
@@ -379,9 +395,11 @@ pub(crate) fn apply_turn_tool_set(
     explicit: Option<Vec<String>>,
 ) {
     let tool_ids = explicit.unwrap_or_else(|| {
-        let s = state.lock().unwrap_or_else(|e| e.into_inner());
-        let tools = s.tool_plugins.lock().unwrap_or_else(|e| e.into_inner());
-        resolve_tool_refs(message, &session_tool_entries(&tools, &Default::default()))
+        resolve_tool_refs_from_message(message, || {
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
+            let tools = s.tool_plugins.lock().unwrap_or_else(|e| e.into_inner());
+            session_tool_entries(&tools, &Default::default())
+        })
     });
     if let Err(e) = session_set_tools(session_id.to_string(), tool_ids) {
         log::warn!("[send_message] 写入会话工具集失败（本条消息工具不注入）: {e}");
@@ -1631,10 +1649,12 @@ pub(crate) async fn skillhub_detail(
     agent::skillhub::skillhub_detail(&slug).await
 }
 
-/// C2-③ 技能市场：安装台账（市场「已安装」态）。
+/// C2-③ 技能市场：安装台账（市场「已安装」态）。读不了 / 解析不了 → Err
+/// （v0.9.8 评审修复轮 R3，此前恒返回 Ok）：调用方（前端
+/// `fetchInstalledLedgers`）按「已装态不明：不推荐、不安装」处理。
 #[tauri::command]
 pub(crate) fn skillhub_installed() -> Result<std::collections::BTreeMap<String, String>, String> {
-    Ok(agent::skillhub::skillhub_installed())
+    agent::skillhub::skillhub_installed()
 }
 
 /// C2-③ 技能市场：安装（下载→校验→注册为 hub 目录形式插件→分发→记台账；
@@ -1840,15 +1860,31 @@ pub(crate) async fn pi_package_installed_versions(
 }
 
 /// 当前 settings.json packages 数组（在线包「已安装」判定真源）。
+///
+/// v0.9.8 评审修复轮 R2：读不到、或读出来不是合法 JSON → Err。此前这两种
+/// 情况都返回空数组，「读不到」和「真没装」调用方区分不出——前端拿到空会
+/// 把「已装」判成「全未装」，照常推荐、照常安装。
+///
+/// 调用方都在前端：`features/equipment/installed.ts` 的 `fetchInstalledLedgers`
+/// 对 Err 的处理是「已装态不明：不推荐、不安装」；`pages/plugins-page.tsx`
+/// 另有三处 `.catch(() => [])`，读失败仍按「全未装」走——那三处不在后端
+/// 管辖内，处理见评审修复轮 R2 的转出项。
 #[tauri::command]
 pub(crate) fn pi_package_installed_sources() -> Result<Vec<String>, String> {
-    let Ok(agent_dir) = agent::jishu_self::paths::agent_dir() else {
-        return Ok(Vec::new());
-    };
-    let content = std::fs::read_to_string(agent_dir.join("settings.json")).unwrap_or_default();
-    let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return Ok(Vec::new());
-    };
+    let agent_dir = agent::jishu_self::paths::agent_dir()
+        .map_err(|e| format!("无法定位智能体数据目录：{e}"))?;
+    parse_registered_packages(std::fs::read_to_string(agent_dir.join("settings.json")))
+}
+
+/// settings.json 的读取结果 → 已注册的在线包源。读失败、不是合法 JSON →
+/// Err；文件在但没有 `packages` 键（或不是数组）→ 空清单——这才是「一个都
+/// 没装」。非字符串项跳过。
+pub(crate) fn parse_registered_packages(
+    content: Result<String, std::io::Error>,
+) -> Result<Vec<String>, String> {
+    let content = content.map_err(|e| format!("读取引擎配置失败：{e}"))?;
+    let settings = serde_json::from_str::<serde_json::Value>(&content)
+        .map_err(|e| format!("引擎配置不是合法的 JSON：{e}"))?;
     Ok(settings
         .get("packages")
         .and_then(|v| v.as_array())
@@ -1963,12 +1999,8 @@ pub(crate) async fn pi_package_install_online(
     // 判断报错」）——npm 源走**注册前预检**：npm 装文件到池（settings
     // 全程不动）→ `pi -e <入口>` 装载试运行（装载器权威判定冲突）→
     // 无冲突才 pi install 补注册；有冲突返回结构化清单（环境零残留）。
-    if let Some(pkg) = source.strip_prefix("npm:") {
-        let pkg = match pkg.rsplit_once('@') {
-            Some((n, v)) if !n.is_empty() && !v.is_empty() && !n.ends_with('/') => n.to_string(),
-            _ => pkg.to_string(),
-        };
-        return match agent::jishu_self::JishuSelfAgent::precheck_extension(&pkg).await {
+    if let Some((pkg, spec)) = agent::jishu_self::npm_precheck_spec(&source) {
+        return match agent::jishu_self::JishuSelfAgent::precheck_extension(&pkg, &spec).await {
             Err(e) => Err(e),
             Ok(None) => {
                 // 预检通过（文件已在池）——补注册 + 终验兜底。
@@ -2041,22 +2073,53 @@ pub(crate) async fn pi_package_install_online(
 
 /// 需求5（合并版）：pi 扩展安装成功收尾挂 equipment.db（来源台账+标签
 /// 固化；ref 用 `pi:<去版本 source>` 归一——同包升级不堆行）。
+///
+/// v0.9.8 评审修复轮 R2：这是在线扩展「装成功了」之后登记来源台账与标签的
+/// **唯一一处**——两条安装命令（直接安装、冲突确认后的「停用并安装」）的
+/// 每个成功出口都经它。此前只有直接安装调：用户在确认卡里选了「停用并
+/// 安装」并且装成了的扩展，从来没进过标签库和来源台账（装是装上了，
+/// 推荐方却仍把它当「没装过」）。
 fn record_pi_install(source: &str, meta: &Option<agent::equipment_db::InstallMeta>) {
     let meta = meta.clone().unwrap_or_default();
-    // npm:pkg@1.2 → pi:npm:pkg（去版本，与 equipment ref 语法一致）。
-    let base = source.rsplit_once('@').map(|(n, _)| n.to_string()).unwrap_or_else(|| source.to_string());
     let _ = agent::equipment_db::record_install(
-        &format!("pi:{base}"),
+        &pi_install_ledger_ref(source),
         meta.via_or_manual(),
         meta.title.as_deref(),
         meta.tags.as_deref(),
     );
 }
 
+/// 安装源 → 来源台账里的装备 ref：npm 源去版本（`npm:pkg@1.2` →
+/// `pi:npm:pkg`，与 equipment ref 语法一致，同包升级不堆行）；其它源（git:）
+/// 原样。npm 源的版本切分走 `parse_npm_source`——scoped 包的首 @ 是名字的
+/// 一部分，整体 rsplit 会把 `npm:@scope/pkg` 切成 `npm:`。
+pub(crate) fn pi_install_ledger_ref(source: &str) -> String {
+    match source.strip_prefix("npm:") {
+        Some(_) => format!("pi:npm:{}", agent::jishu_self::parse_npm_source(source).0),
+        None => format!("pi:{source}"),
+    }
+}
+
+/// 冲突确认安装的成功收口（[`pi_package_install_confirmed`] 里唯一的成功
+/// 出口）：先与直接安装走同一处登记，再产出返回值。登记和「装成功了」绑在
+/// 同一个函数里，成功出口不再各自记得调。
+fn confirmed_install_succeeded(
+    source: &str,
+    meta: &Option<agent::equipment_db::InstallMeta>,
+    disabled: Vec<PiConflictInfo>,
+) -> PiInstallConfirmed {
+    record_pi_install(source, meta);
+    PiInstallConfirmed { disabled }
+}
+
 /// 需求15 方案 A：冲突确认后的「停用并安装」。流程（服务端自证，不信任
 /// 前端传参）：确保文件在池（预检保留/复装）→ 停用全部对手（仅移 pi
 /// 注册不删文件 + 台账）→ pi install 补注册 → 终验探针 → 仍失败则全
 /// 回滚（恢复对手注册与台账 + 卸载新装）。成功返回被停用清单。
+///
+/// v0.9.8 评审修复轮 R2：成功出口只有一个，且与直接安装走同一处登记
+/// （[`record_pi_install`]）。`meta` 是安装链元数据（与
+/// `pi_package_install_online` 同形，可选）；调用方没带就按手动安装登记。
 #[derive(serde::Serialize)]
 pub(crate) struct PiInstallConfirmed {
     pub disabled: Vec<PiConflictInfo>,
@@ -2065,16 +2128,14 @@ pub(crate) struct PiInstallConfirmed {
 #[tauri::command]
 pub(crate) async fn pi_package_install_confirmed(
     source: String,
+    meta: Option<agent::equipment_db::InstallMeta>,
 ) -> Result<PiInstallConfirmed, String> {
     let source = source.trim().to_string();
-    let pkg = source
-        .strip_prefix("npm:")
-        .map(|rest| match rest.rsplit_once('@') {
-            Some((n, v)) if !n.is_empty() && !v.is_empty() && !n.ends_with('/') => n.to_string(),
-            _ => rest.to_string(),
-        });
+    let (pkg, spec) = agent::jishu_self::npm_precheck_spec(&source)
+        .map(|(pkg, spec)| (Some(pkg), Some(spec)))
+        .unwrap_or((None, None));
     // 文件保障：预检可能因取消被回滚（或从未预检）——复装（幂等）。
-    if let Some(pkg) = &pkg {
+    if let (Some(pkg), Some(spec)) = (&pkg, &spec) {
         let Some(agent_dir) = agent::jishu_self::pi_config_dir() else {
             return Err("无法定位 pi 运行数据目录".to_string());
         };
@@ -2083,7 +2144,7 @@ pub(crate) async fn pi_package_install_confirmed(
             .join("node_modules")
             .join(pkg);
         if !pkg_dir.exists() {
-            if let Err(e) = agent::jishu_self::JishuSelfAgent::precheck_extension(pkg).await {
+            if let Err(e) = agent::jishu_self::JishuSelfAgent::precheck_extension(pkg, spec).await {
                 return Err(e);
             }
         }
@@ -2095,12 +2156,8 @@ pub(crate) async fn pi_package_install_confirmed(
         .map_err(|e| format!("安装失败：{e}"))?;
     let target_pkg = pkg.clone().unwrap_or_else(|| source.replace("git:", ""));
     let conflicts = match agent::jishu_self::JishuSelfAgent::verify_engine_boot().await {
-        Ok(()) => {
-            // 对手已被用户先行处置（如手动卸载）——无冲突直接成功。
-            return Ok(PiInstallConfirmed {
-                disabled: Vec::new(),
-            });
-        }
+        // 对手已被用户先行处置（如手动卸载）——无冲突，直接成功。
+        Ok(()) => Vec::new(),
         Err(f) => {
             let list = conflict_infos_from_pairs(
                 agent::jishu_self::extract_conflict_pairs(&f.stderr_tail),
@@ -2121,38 +2178,38 @@ pub(crate) async fn pi_package_install_confirmed(
             list
         }
     };
-    // 停用全部对手（移注册不删文件）。
-    for c in &conflicts {
-        if let Err(e) = agent::jishu_self::pi_registry::disable_extension(
-            &c.opponent_source,
-            &c.opponent_display,
-            &source,
-        ) {
-            log::warn!("[pi-registry] 停用 {} 失败: {e}", c.opponent_source);
-        }
-    }
-    // 终验：引擎应健康（冲突对手已下线）。
-    if let Err(f2) = agent::jishu_self::JishuSelfAgent::verify_engine_boot().await {
-        // 全回滚：恢复对手注册/台账，卸载新装——任何落盘状态必须健康。
+    if !conflicts.is_empty() {
+        // 停用全部对手（移注册不删文件）。
         for c in &conflicts {
-            let pkg = agent::jishu_self::pi_registry::package_dir_of(&c.opponent_source)
-                .unwrap_or_else(|| c.opponent_source.clone());
-            let _ = agent::jishu_self::pi_registry::enable_extension(&pkg);
+            if let Err(e) = agent::jishu_self::pi_registry::disable_extension(
+                &c.opponent_source,
+                &c.opponent_display,
+                &source,
+            ) {
+                log::warn!("[pi-registry] 停用 {} 失败: {e}", c.opponent_source);
+            }
         }
-        agent::jishu_self::JishuSelfAgent::run_pi_package_command("remove", &source)
-            .await
-            .ok();
-        if let Some(p) = &pkg {
-            agent::jishu_self::JishuSelfAgent::rollback_npm_files(p).await;
+        // 终验：引擎应健康（冲突对手已下线）。
+        if let Err(f2) = agent::jishu_self::JishuSelfAgent::verify_engine_boot().await {
+            // 全回滚：恢复对手注册/台账，卸载新装——任何落盘状态必须健康。
+            for c in &conflicts {
+                let opponent = agent::jishu_self::pi_registry::package_dir_of(&c.opponent_source)
+                    .unwrap_or_else(|| c.opponent_source.clone());
+                let _ = agent::jishu_self::pi_registry::enable_extension(&opponent);
+            }
+            agent::jishu_self::JishuSelfAgent::run_pi_package_command("remove", &source)
+                .await
+                .ok();
+            if let Some(p) = &pkg {
+                agent::jishu_self::JishuSelfAgent::rollback_npm_files(p).await;
+            }
+            return Err(format!(
+                "「{source}」停用冲突项后自检仍未通过（{}），已全部回滚。",
+                f2.reason
+            ));
         }
-        return Err(format!(
-            "「{source}」停用冲突项后自检仍未通过（{}），已全部回滚。",
-            f2.reason
-        ));
     }
-    Ok(PiInstallConfirmed {
-        disabled: conflicts,
-    })
+    Ok(confirmed_install_succeeded(&source, &meta, conflicts))
 }
 
 /// 需求15 方案 A：停用台账查询（市场卡呈现「已停用（被 XX 替代）」）。
@@ -2297,6 +2354,11 @@ pub(crate) async fn pi_package_uninstall_online(source: String) -> Result<String
     Ok(note)
 }
 
+// 安装登记的用例在 `agents/install_ledger_tests.rs`（文件规模的原因，见该
+// 文件头）；它只含用例。
+#[cfg(test)]
+mod install_ledger_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2330,6 +2392,41 @@ mod tests {
         );
         assert_eq!(
             resolve_tool_refs("这条消息没有引用", &entries),
+            Vec::<String>::new()
+        );
+    }
+
+    /// v0.9.8 评审修复轮 R2：消息里没有 `@[` 就不构建挂载清单（逐插件扫
+    /// 技能目录、开扩展登记库、读物化清单）；有引用才构建并解析。
+    #[test]
+    fn message_without_tool_ref_does_not_build_mount_catalog() {
+        let never = || -> Vec<SessionToolInfo> {
+            panic!("消息里没有 `@[`，不应构建挂载清单")
+        };
+        assert_eq!(
+            resolve_tool_refs_from_message("这条消息没有引用", never),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            resolve_tool_refs_from_message("", never),
+            Vec::<String>::new()
+        );
+        // 形似但不是引用语法：同样不构建。
+        assert_eq!(
+            resolve_tool_refs_from_message("邮箱 a@b.com / [@] 反着写", never),
+            Vec::<String>::new()
+        );
+
+        let built = std::cell::Cell::new(false);
+        let ids = resolve_tool_refs_from_message("请用 @[甲工具]", || {
+            built.set(true);
+            vec![tool("tool-a", "甲工具")]
+        });
+        assert_eq!(ids, vec!["tool-a".to_string()]);
+        assert!(built.get(), "有引用才构建清单");
+        // 有引用但清单里没人叫这个名：清单构建了，结果为空。
+        assert_eq!(
+            resolve_tool_refs_from_message("@[不存在的]", || vec![tool("tool-a", "甲工具")]),
             Vec::<String>::new()
         );
     }

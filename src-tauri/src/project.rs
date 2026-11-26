@@ -356,7 +356,7 @@ pub fn encode_project_path(path: &str) -> String {
 /// Get the level-1 directory from a project path.
 /// E:\projectA → E:\projectA
 /// D:\MyCodes\claude-hub → D:\MyCodes
-/// D:\MyCodes\Milk Order\all-sys → D:\MyCodes
+/// D:\MyCodes\Demo Project\all-tools → D:\MyCodes
 pub fn get_level1_dir(path: &str) -> Option<String> {
     let path = std::path::Path::new(path);
     let components: Vec<std::path::Component<'_>> = path.components().collect();
@@ -614,7 +614,7 @@ mod tests {
             Some("E:\\projectA".to_string())
         );
         assert_eq!(
-            get_level1_dir("D:\\MyCodes\\Milk Order\\all-sys"),
+            get_level1_dir("D:\\MyCodes\\Demo Project\\all-tools"),
             Some("D:\\MyCodes".to_string())
         );
     }
@@ -660,7 +660,7 @@ mod tests {
 
     #[test]
     fn test_decode_path_with_spaces() {
-        let tmp = std::env::temp_dir().join("Milk Order");
+        let tmp = std::env::temp_dir().join("Demo Project");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 

@@ -1026,6 +1026,121 @@ fn list_node_session_ids_dedupes_and_skips_empty() {
     assert_eq!(ids, vec!["sess-a".to_string(), "sess-b".to_string()]);
 }
 
+/// v0.9.8 需求22（评审修复轮 R2）：节点会话 → 所属的图。同一会话号后来被
+/// 另一张图的尝试复用时取最近的一次；没登记过会话的号查不到。
+#[test]
+fn node_session_graph_resolves_session_to_owning_graph() {
+    use crate::orchestrator::domain::run::{
+        GraphRun, NodeAttempt, NodeRun, NodeRunStatus, RunStatus,
+    };
+    let store = make_test_store();
+    let mk_graph = |id: &str| TaskGraph {
+        graph_id: id.into(),
+        title: "T".into(),
+        goal: "G".into(),
+        project_root: PathBuf::from("/project"),
+        owner: "user".into(),
+        current_draft_revision: None,
+        created_at: now(),
+        updated_at: now(),
+    };
+    let snapshot = GraphSnapshot {
+        nodes: vec![GraphNode {
+            node_id: "n1".into(),
+            parent_id: None,
+            title: "Node 1".into(),
+            description: None,
+            node_kind: NodeKind::Goal,
+            input_contract: Default::default(),
+            output_contract: Default::default(),
+            role_requirement: None,
+            capability_requirements: vec![],
+            agent_assignment_constraint: None,
+            policy: Default::default(),
+            metadata: Default::default(),
+            executable_payload: None,
+            loop_config: None,
+            approval_gate_config: None,
+        }],
+        edges: vec![],
+    };
+    for (graph_id, run_id, node_run_id) in [("g-a", "run-a", "nr-a"), ("g-b", "run-b", "nr-b")] {
+        let revision_id = format!("rev-{graph_id}");
+        store.create_graph(&mk_graph(graph_id)).unwrap();
+        let revision =
+            GraphRevision::from_snapshot(&revision_id, graph_id, None, &snapshot, "user", now())
+                .unwrap();
+        store.save_revision(&revision).unwrap();
+        store
+            .create_run(&GraphRun {
+                run_id: run_id.into(),
+                graph_id: graph_id.into(),
+                active_revision_id: revision_id.clone(),
+                status: RunStatus::Running,
+                run_seq: 1,
+                budget_state: Default::default(),
+                planning_snapshot: Default::default(),
+                started_at: now(),
+                finished_at: None,
+            })
+            .unwrap();
+        store
+            .save_node_run(&NodeRun {
+                node_run_id: node_run_id.into(),
+                run_id: run_id.into(),
+                node_id: "n1".into(),
+                status: NodeRunStatus::Running,
+                revision_id,
+                started_at: Some(now()),
+                finished_at: None,
+                attempt_count: 0,
+                wake_at: None,
+                error: None,
+                loop_iteration: None,
+                superseded: false,
+            })
+            .unwrap();
+    }
+    let mk_attempt =
+        |id: &str, node_run_id: &str, num: u32, sess: &str, started_at: i64| NodeAttempt {
+            attempt_id: id.into(),
+            node_run_id: node_run_id.into(),
+            attempt_number: num,
+            agent_assignment: None,
+            transport: None,
+            session_id: Some(sess.into()),
+            lease: None,
+            usage: Default::default(),
+            error: None,
+            idempotency_key: None,
+            checkpoint: None,
+            dispatch_prompt: None,
+            started_at,
+            finished_at: None,
+        };
+    store
+        .save_attempt(&mk_attempt("att-a1", "nr-a", 1, "sess-shared", 100))
+        .unwrap();
+    store
+        .save_attempt(&mk_attempt("att-b1", "nr-b", 1, "sess-b", 100))
+        .unwrap();
+    // 同一个会话号后来被另一张图的尝试复用：取最近的一次。
+    store
+        .save_attempt(&mk_attempt("att-b2", "nr-b", 2, "sess-shared", 200))
+        .unwrap();
+
+    assert_eq!(
+        store.node_session_graph("sess-b").unwrap().as_deref(),
+        Some("g-b")
+    );
+    assert_eq!(
+        store.node_session_graph("sess-shared").unwrap().as_deref(),
+        Some("g-b"),
+        "同一会话号多次出现时取最近的一次尝试"
+    );
+    assert_eq!(store.node_session_graph("sess-unknown").unwrap(), None);
+}
+
 #[test]
 fn list_node_sessions_returns_latest_attempt_per_node() {
     let store = make_test_store();

@@ -232,6 +232,8 @@ impl PlannerService {
                         prompt: invocation_prompt.clone(),
                         timeout_ms: 180_000,
                         cancellation: cancellation.clone(),
+                        // 规划器的常驻会话不由执行侧登记会话号。
+                        on_session_resolved: None,
                     })
                     .await
                     .map_err(|error| format!("planner invocation failed: {error}"))?;

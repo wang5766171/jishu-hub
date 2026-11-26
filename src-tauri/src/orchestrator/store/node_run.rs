@@ -574,6 +574,30 @@ impl TaskStore {
         Ok(ids)
     }
 
+    /// 节点会话 → 它所属的图：会话号 → 节点尝试 → 节点运行 → 图运行。
+    ///
+    /// v0.9.8 需求22（评审修复轮 R2）：任务实例库按项目分库，一个执行节点
+    /// 会话要找到自己所属的任务，得先经这张全局的编排库定位到图。同一个
+    /// 会话号被多次尝试复用时取最近的一次。
+    pub fn node_session_graph(&self, session_id: &str) -> Result<Option<String>, StoreError> {
+        let conn = self
+            .reader
+            .lock()
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        conn.query_row(
+            "SELECT graph.graph_id
+             FROM node_attempt AS attempt
+             JOIN node_run AS node ON node.node_run_id = attempt.node_run_id
+             JOIN graph_run AS graph ON graph.run_id = node.run_id
+             WHERE attempt.session_id = ?1
+             ORDER BY attempt.started_at DESC LIMIT 1",
+            params![session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(StoreError::from)
+    }
+
     /// 列出某次 run 下所有节点的最新 attempt 摘要（侧边栏任务二级树用）。
     ///
     /// 单条 SQL JOIN node_run + node_attempt（取每个 node_run 的最大 attempt_number），

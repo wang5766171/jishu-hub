@@ -196,33 +196,40 @@ pub(crate) async fn get_session_messages(
     strip_user_injected_blocks(&mut messages);
     // v0.9.8 需求13 复测取证（窗口期停止重复渲染悬案）：读取层指纹——
     // 区分「后端就返回了重复」与「前端自己堆叠」。与前端缓存总闸
-    // （session-cache.ts setCachedSessionMessages）同一指纹口径（user 首
-    // 个 text block 前 12 字），复现时两层对照即可锁定注入层。
+    // （session-cache.ts setCachedSessionMessages）同一指纹口径（user 首个
+    // text block 前 12 字），复现时两层对照即可锁定注入层。
+    //
+    // v0.9.8 评审修复轮 R2：指纹（用户消息的开头）只进日志中心，不再写应用
+    // 日志——应用日志落盘在用户目录、可被整份拷走，而这里每次打开会话都会把
+    // 该会话全部用户消息的开头写进去。应用日志只留条数：判断「后端是否返回
+    // 了重复」够用，两层对照时指纹从日志中心取。
     let fp = req13_user_fingerprints(&messages);
-    let dup = fp.total > fp.uniq;
-    log::info!(
-        "[req13] 读取层 sid={} total={} user={} uniq={} dup={} fp={:?}",
-        session_id,
-        messages.len(),
-        fp.total,
-        fp.uniq,
-        dup,
-        fp.fps
-    );
+    log::info!("{}", req13_log_line(&session_id, messages.len(), &fp));
     crate::dev_log_bridge::emit_dev_log(
         &app,
         "info",
         &format!(
             "[req13] 读取层{} total={} user={} uniq={}",
-            if dup { "[!重复]" } else { "" },
+            if fp.total > fp.uniq { "[!重复]" } else { "" },
             messages.len(),
             fp.total,
             fp.uniq
         ),
         &session_id,
-        serde_json::json!({ "fps": fp.fps, "dup": dup }),
+        serde_json::json!({ "fps": fp.fps, "dup": fp.total > fp.uniq }),
     );
     Ok(messages)
+}
+
+/// 读取层对账写进**应用日志**的那一行：会话号 + 条数 + 是否有重复。不带指纹
+/// 本身——指纹是用户消息的开头，只进日志中心（见调用处说明）。
+fn req13_log_line(session_id: &str, message_count: usize, fp: &Req13Fingerprints) -> String {
+    format!(
+        "[req13] 读取层 sid={session_id} total={message_count} user={} uniq={} dup={}",
+        fp.total,
+        fp.uniq,
+        fp.total > fp.uniq
+    )
 }
 
 /// v0.9.8 需求13：user 消息指纹（条数/去重数/前 12 字原序列表）。
@@ -613,6 +620,86 @@ mod tests {
         assert!(empty.is_empty());
     }
 
+    /// 在 `parent` 下建一个指回 `target` 的目录联接（Windows）或符号链接
+    /// （其它平台），建不出来返回 None。Windows 上建符号链接要开发者模式或
+    /// 管理员权限，目录联接不需要；两者对遍历方是同一种考验（`path.is_dir()`
+    /// 都跟随）。仅测试用：标准库没有建目录联接的接口，借 cmd 的 mklink /J。
+    fn dir_link(parent: &std::path::Path, name: &str, target: &std::path::Path) -> Option<()> {
+        let link = parent.join(name);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(target)
+                .stdout(std::process::Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .status()
+                .ok()?;
+            status.success().then_some(())
+        }
+        #[cfg(not(windows))]
+        {
+            std::os::unix::fs::symlink(target, &link).ok()
+        }
+    }
+
+    /// 用完先摘掉链接再让临时目录析构（链接指向临时目录自己，不让递归删除
+    /// 去碰它）。
+    struct RemoveLink(std::path::PathBuf);
+
+    impl Drop for RemoveLink {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+
+    /// v0.9.8 评审修复轮 R2：产物区里有指回祖先目录的链接时，清单遍历不跟随
+    /// ——有限时间内返回，只列普通文件。修前 `path.is_dir()` 跟随链接，一
+    /// 层层走出去要么无限递归、要么把产物区之外的文件当成产物。
+    ///
+    /// 清单调用放在子线程里限时等待：修复不在时这段遍历不收敛，不能让用例
+    /// 本身挂死整个测试进程。
+    #[test]
+    fn artifact_listing_does_not_follow_directory_symlink_loop() {
+        let root = tempfile::tempdir().unwrap();
+        let artifacts = root
+            .path()
+            .join(".jishu-hub")
+            .join("tasks")
+            .join("t1")
+            .join("artifacts");
+        std::fs::create_dir_all(artifacts.join("sub")).unwrap();
+        std::fs::write(artifacts.join("report.md"), "# ok").unwrap();
+        std::fs::write(artifacts.join("sub").join("data.json"), "{}").unwrap();
+        // 产物区之外（项目根）的文件：不得被当成产物列出。
+        std::fs::write(root.path().join("outside.txt"), "outside").unwrap();
+        let outside = root.path().join("outside.txt");
+        if dir_link(&artifacts, "loop", root.path()).is_none() {
+            panic!("前置：建不出指回祖先目录的链接，这条用例测不到要测的东西");
+        }
+        let _remove_link = RemoveLink(artifacts.join("loop"));
+
+        let project_root = root.path().display().to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(super::task_artifacts_list(project_root, "t1".to_string()));
+        });
+        let listed = rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("产物清单遍历不收敛（跟随了指回祖先的链接）")
+            .expect("产物清单不应报错");
+        let rels: Vec<&str> = listed.iter().map(|f| f.rel_path.as_str()).collect();
+        assert_eq!(rels, vec!["report.md", "sub/data.json"]);
+        assert!(
+            !listed
+                .iter()
+                .any(|f| std::path::Path::new(&f.abs_path) == outside),
+            "产物区之外的文件不得被列出"
+        );
+    }
 
     use super::{session, PreviewFileKind, Req13Fingerprints};
 
@@ -689,6 +776,31 @@ mod tests {
         assert_eq!((empty.total, empty.uniq), (0, 0));
         let long = super::req13_user_fingerprints(&[user_msg("一二三四五六七八九十一二三四五")]);
         assert_eq!(long.fps[0].chars().count(), 12);
+    }
+
+    /// v0.9.8 评审修复轮 R2：读取层对账写进**应用日志**的那一行不含任何用户
+    /// 消息文本——指纹只进日志中心。修前这一行带着全部用户消息的前 12 字，
+    /// 每次打开会话都写进落盘的应用日志。
+    #[test]
+    fn session_read_log_line_has_no_user_text() {
+        let secret = "服务器口令是hunter2不要外传";
+        let fp =
+            super::req13_user_fingerprints(&[user_msg(secret), assistant_msg(), user_msg(secret)]);
+        assert_eq!((fp.total, fp.uniq), (2, 1), "前置：两条同开头的用户消息");
+        let line = super::req13_log_line("sess-1", 3, &fp);
+        let prefix: String = secret.chars().take(12).collect();
+        assert!(
+            !line.contains(&prefix),
+            "应用日志不得带用户消息开头：{line}"
+        );
+        assert!(!line.contains("hunter2"), "{line}");
+        assert!(!line.contains("口令"), "{line}");
+        // 条数信息照旧：够判断「后端是否返回了重复」。
+        assert!(line.contains("sid=sess-1"), "{line}");
+        assert!(line.contains("total=3"), "{line}");
+        assert!(line.contains("user=2"), "{line}");
+        assert!(line.contains("uniq=1"), "{line}");
+        assert!(line.contains("dup=true"), "{line}");
     }
 
     /// v0.9.7 需求6 F3：引用校验——项目内按扩展名返回类别；越界（项目外
@@ -1130,7 +1242,12 @@ pub(crate) fn task_artifacts_list(
         let entries = std::fs::read_dir(&current).map_err(|e| e.to_string())?;
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            // v0.9.8 评审修复轮 R2：只下钻**真实目录**——目录项自己的类型不跟随
+            // 链接。此前用 `path.is_dir()`（跟随符号链接 / 目录联接）判定：产物区
+            // 里只要有一个指回祖先目录的链接，遍历就一层层跟着走出去，既可能
+            // 无限递归，也会把产物区之外的文件当成产物列出来。
+            let is_real_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_real_dir {
                 stack.push(path);
                 continue;
             }
@@ -1138,6 +1255,10 @@ pub(crate) fn task_artifacts_list(
                 Ok(m) => m,
                 Err(_) => continue,
             };
+            // 指向目录的链接（元数据跟随链接后是目录）不是文件，不列。
+            if !meta.is_file() {
+                continue;
+            }
             let rel = path
                 .strip_prefix(&dir)
                 .map(|p| p.to_string_lossy().replace('\\', "/"))

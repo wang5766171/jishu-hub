@@ -35,6 +35,12 @@ pub struct PromptPayload {
     /// 发送入口防丢账的身份（v0.9.8 评审修复轮 R1-1）：声明「落盘回执可
     /// 对账」能力的通道在 prompt 真正落地时按它结算入口账；其余通道忽略。
     pub pending_entries: Vec<crate::pending_messages::PendingEntryRef>,
+    /// 用户原文（未经 hub 消息组装——没有工具说明块、会话注入这些给模型看的
+    /// 后缀）。v0.9.8 评审修复轮 R2（C1）：扩展命令必须按原文交给引擎——
+    /// 引擎靠「`/名字` + 首个空格」识别命令，后面跟着注入块就认不出来，而且
+    /// 命令根本不进模型，那些后缀对它没有意义。None = `message` 本身就是
+    /// 用户原文（编排器、重建派发等不经过消息组装的出口）。
+    pub user_text: Option<String>,
 }
 
 impl From<String> for PromptPayload {
@@ -42,7 +48,29 @@ impl From<String> for PromptPayload {
         Self {
             message,
             pending_entries: Vec::new(),
+            user_text: None,
         }
+    }
+}
+
+impl PromptPayload {
+    /// hub 消息组装之后的发送：`message` 是组装后文本，`user_text` 是用户
+    /// 在输入框里写的那一段。
+    pub fn composed(
+        message: String,
+        user_text: String,
+        pending_entries: Vec<crate::pending_messages::PendingEntryRef>,
+    ) -> Self {
+        Self {
+            message,
+            pending_entries,
+            user_text: Some(user_text),
+        }
+    }
+
+    /// 用户原文：带了的用它，没带的就是 `message` 本身。
+    pub fn user_text(&self) -> &str {
+        self.user_text.as_deref().unwrap_or(&self.message)
     }
 }
 
@@ -179,10 +207,12 @@ impl AcpControl {
                 response,
             })
             .await
-            .map_err(|_| "ACP connection closed".to_string())?;
+            .map_err(|_| "会话连接已关闭，无法压缩上下文".to_string())?;
+        // v0.9.8 评审修复轮 R2：引擎进程在压缩完成前退出时，回填通道随连接
+        // 循环一起被丢弃——此前这里给调用方的是内部英文报错。
         receiver
             .await
-            .map_err(|_| "ACP compact response channel closed".to_string())?
+            .map_err(|_| "压缩请求没有得到引擎回应（会话进程可能已重启）".to_string())?
     }
 
     /// Toggle auto-compaction for the session (v0.7.4 需求1 A3).

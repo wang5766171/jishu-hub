@@ -81,21 +81,9 @@ pub(crate) fn handle_hub_invoke(
             .map_err(|e| e.to_string())
         }
         "runner_capability_plugins" => {
-            // 能力插件联动：task-requirements/task-plan 启用态（runner 扩展
-            // before_agent_start 据此注入「需求澄清/计划拆解」可用能力提示）。
-            // 需求2 追加：透出 taskNoAsk（不询问模式）——runner 扩展 ask_user
-            // 自动放行 + 纪律注入提差异。
-            let config = crate::agent::plugin::load_plugin_config();
-            let enabled = ["task-requirements", "task-plan"]
-                .into_iter()
-                .filter(|id| !config.disabled.contains(&id.to_string()))
-                .collect::<Vec<_>>();
-            let no_ask = crate::agent::jishu_self::config::load_jishu_config()
-                .ok()
-                .and_then(|cfg| cfg.get("taskNoAsk").and_then(|v| v.as_bool()))
-                .unwrap_or(false);
-            serde_json::to_value(serde_json::json!({ "enabled": enabled, "noAsk": no_ask }))
-                .map_err(|e| e.to_string())
+            runner_capability_plugins(params, &|project_root, session_id| {
+                crate::task_launch::query_task_instance(project_root, session_id)
+            })
         }
         // v0.9.3 需求13 C4-slice2：/jishu-pipeline 扩展命令按插件 id 取
         // 展开后的阶段声明（模板展开在 Rust 侧，扩展保持薄）。
@@ -318,4 +306,100 @@ fn validate_loopback_preview_url(url: &str) -> Result<(), String> {
             "仅支持本机回环地址预览（localhost/127.0.0.1），收到: {other}"
         )),
     }
+}
+
+/// 执行器每轮的查询（`runner_capability_plugins`）：能力插件启用态 + 本会话
+/// 是不是任务会话、开没开「不询问」。
+///
+/// v0.9.8 需求22（评审修复轮 R2 / C4）：「不询问」按会话。开关记在任务实例
+/// 上；hub 按自己的任务登记回答——是不是任务会话、开没开，都以 hub 为准，
+/// 不看执行器手里的任务编号（那个要等模型第一次上报步骤之后才有）。此前
+/// 这里透出的是全局配置里的一个布尔键：任一会话打开，所有会话（含普通
+/// 对话）一起进入不询问。
+///
+/// `resolve`：会话 → 所属任务实例（生产走 [`crate::task_launch::query_task_instance`]；
+/// 单测给一份内存里的登记）。
+pub(crate) fn runner_capability_plugins(
+    params: &serde_json::Value,
+    resolve: crate::task_launch::SessionTaskResolve<'_>,
+) -> Result<serde_json::Value, String> {
+    // 能力插件联动：task-requirements/task-plan 启用态（runner 扩展
+    // before_agent_start 据此注入「需求澄清/计划拆解」可用能力提示）。
+    let config = crate::agent::plugin::load_plugin_config();
+    let enabled: Vec<&str> = ["task-requirements", "task-plan"]
+        .into_iter()
+        .filter(|id| !config.disabled.contains(&id.to_string()))
+        .collect();
+    let text = |key: &str| -> Option<String> {
+        params
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let session_id = text("session_id").or_else(|| text("sessionId"));
+    let project_root = text("project_root").or_else(|| text("projectRoot"));
+    let (task_session, task_id, no_ask) = match session_id {
+        Some(session_id) => match resolve(project_root.as_deref(), &session_id) {
+            Ok(Some(instance)) => (true, Some(instance.task_id), instance.no_ask),
+            // 查不到登记 = 不是任务会话。查不动（库打不开）同样按「不是」
+            // 回答并留日志：宁可这一轮少注入，也不把不询问给到一个不确定
+            // 的会话。
+            Ok(None) => (false, None, false),
+            Err(e) => {
+                log::warn!("[task-instance] 会话 {session_id} 的任务登记查询失败: {e}");
+                (false, None, false)
+            }
+        },
+        None => (false, None, false),
+    };
+    serde_json::to_value(serde_json::json!({
+        "enabled": enabled,
+        "taskSession": task_session,
+        "taskId": task_id,
+        "noAsk": no_ask,
+    }))
+    .map_err(|e| e.to_string())
+}
+
+/// hub_invoke 桥接的回写半程（v0.9.8 评审修复轮 R2 自连接循环纯移出，零逻辑
+/// 变更）：从 select 标题里取出 `{command, params}`，经 [`handle_hub_invoke`]
+/// 执行后，把 `{success, data|error}` 的 JSON 串作为这个请求的应答写回引擎
+/// ——扩展侧 `ctx.ui.select` 拿到的返回值就是它。
+pub(crate) async fn answer_hub_invoke(
+    stdin: &std::sync::Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
+    title: &str,
+    msg: &serde_json::Value,
+) {
+    let payload_str = title.strip_prefix("\x00hub_invoke:").unwrap_or("{}");
+    let request_id = msg
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let payload: serde_json::Value =
+        serde_json::from_str(payload_str).unwrap_or_else(|_| serde_json::json!({}));
+    let command = payload
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let params = payload
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let result = handle_hub_invoke(command, &params);
+    let response_value = match result {
+        Ok(data) => serde_json::json!({
+            "type": "extension_ui_response",
+            "id": request_id,
+            "value": serde_json::json!({ "success": true, "data": data }).to_string()
+        }),
+        Err(err) => serde_json::json!({
+            "type": "extension_ui_response",
+            "id": request_id,
+            "value": serde_json::json!({ "success": false, "error": err }).to_string()
+        }),
+    };
+    let _ = super::send_pi_command(stdin, &response_value).await;
 }
