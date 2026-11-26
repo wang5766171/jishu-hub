@@ -7,14 +7,14 @@
  * 回合在后台结束，行首出现绿点。
  *
  * 两条都需要可用模型。UN-1 往项目里已有的一个任务会话发一条消息（项目里没有任务会话时
- * 先建一个）；UN-2 新建一个对话。这些会话留在项目里不删。
+ * 先造一个——造数不让智能体调用工具，不往项目里写任何文件）；UN-2 新建一个对话。
+ * 这些会话留在项目里不删。
  */
+import fs from "node:fs";
 import { expect } from "../lib-pw.mjs";
 
 // 让回复足够长，切走之后回合才结束（实测 glm-5.3-flash 数到 150 只要 3~8 秒）
 const SLOW_MESSAGE = "不要调用任何工具。请从 1 数到 600，每行一个数字，只输出数字。";
-
-const stopBtn = (page) => page.locator('button[title="停止"]:not([disabled])').first();
 
 /** 常规会话行（标题带完整标题提示的那一类；任务会话的行不在此列）。 */
 const regularRows = (app) => app.sidebar().locator("button.flex-col.items-start").filter({ has: app.page.locator("span.truncate[title]") });
@@ -33,7 +33,7 @@ const isUnread = (state) => state === "done" || state === "failed";
 const sendAndLeave = async (ctx, text, row) => {
   const { app, page } = ctx;
   await app.send(text);
-  const started = await stopBtn(page).waitFor({ state: "visible", timeout: 20000 }).then(() => true, () => false);
+  const started = await app.awaitTurnStart(20000);
   if (!started) return { started: false, stateAfterLeave: null };
   await app.newConversation();
   return { started: true, stateAfterLeave: await app.rowState(row) };
@@ -57,18 +57,53 @@ const steps = () => {
   };
 };
 
-/** 项目里没有任务会话时建一个（「新任务」发一条做完即止的消息）。 */
+/**
+ * 造任务用：图上一个节点——不调用工具，只回复两个字（节点策略是无工具、审批 never）。
+ */
+const TASK_NODE = { nodeId: "node-reply", title: "只回复完成", prompt: "不要调用任何工具。只回复两个字：完成。" };
+/** 造任务用：留作任务主会话的一条最短消息——同样不调用工具。 */
+const TASK_MAIN_MESSAGE = "不要调用任何工具。只回复两个字：收到。";
+
+/** 项目根目录下的普通文件名（只看根这一层：会话文件、任务工作区都落在子目录里，那是产品自己的东西）。读不了返回 null。 */
+const rootFiles = (root) => {
+  try {
+    return fs
+      .readdirSync(root, { withFileTypes: true })
+      .filter((e) => !e.isDirectory())
+      .map((e) => e.name)
+      .sort();
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * 项目里没有任务会话时造一个（评审修复轮 R2 / E-3：不再让智能体往项目根目录写文件）。
+ * 原先走「新任务」发一条「在项目根目录创建 task-demo.txt」——那会往用户的真实项目里落文件，
+ * 审批档下还得靠框架自动放行才做得成。现在：主会话只回复文字；图上的节点不调用工具、审批 never。
+ * 造完核对项目根目录没有多出普通文件。
+ */
 const createTask = async (ctx) => {
-  const { app, page } = ctx;
-  await app.newConversation();
-  await app.click("新任务");
-  await expect(app.composer()).toBeVisible();
-  await app.send("在项目根目录创建 task-demo.txt，内容为：验证。做完即止，不要扩展。");
-  const started = await stopBtn(page).waitFor({ state: "visible", timeout: 20000 }).then(() => true, () => false);
-  if (!started) ctx.skip("模型不可用：建任务的消息发出后 20 秒内回合未启动");
-  const turn = await app.waitTurn({ budgetMs: 180000, settleMs: 4000 });
-  if (!turn.done) throw new Error("建任务的回合没有在时限内结束");
-  await app.waitIdle(3000, 120000);
+  const { app } = ctx;
+  const project = await app.projectInfo();
+  if (!project?.path) ctx.skip("认不出当前项目的目录，没法造任务");
+  const before = rootFiles(project.path);
+  let made;
+  try {
+    made = await app.createTaskWithMainSession({
+      title: `未读验证${new Date().toTimeString().slice(0, 8).replace(/:/g, "")}`,
+      nodes: [TASK_NODE],
+      mainMessage: TASK_MAIN_MESSAGE,
+    });
+  } catch (e) {
+    if (/^模型不可用/.test(String(e?.message || e))) ctx.skip(e.message);
+    throw e;
+  }
+  if (before) {
+    const added = (rootFiles(project.path) ?? []).filter((name) => !before.includes(name));
+    if (added.length) throw new Error(`造任务的过程中项目根目录多出了文件：${added.join("、")}（造数不该写任何文件）`);
+  }
+  ctx.state.unreadTask = made;
   await app.taskRows().first().waitFor({ state: "visible", timeout: 30000 });
 };
 
@@ -128,7 +163,7 @@ export const unreadCases = [
       const staleCleared = await clearStaleTaskDots(ctx, records);
       timing.mark("处理已有的绿点");
 
-      const row = app.taskRows().filter({ hasText: task.title }).first();
+      const row = app.sidebar().locator(`button[data-task-id="${task.task_id}"]`).first(); // 按任务号找：标题会重复
       await app.openTaskRow(row, task);
       const sent = await sendAndLeave(ctx, SLOW_MESSAGE, row);
       timing.mark("发消息并切走");

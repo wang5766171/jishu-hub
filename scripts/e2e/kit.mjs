@@ -14,7 +14,11 @@
  *     run: async (ctx) => { …; return { 事实 } },  // 通过 = 正常返回；ctx.skip(原因) = 跳过；抛错 = 失败
  *   }
  * ctx 由 run.mjs 提供：app / page / expect / state（跨用例共享）/ shot(name) / fixture(name) /
- * truth(sinceMs)（会话落盘真值）/ skip(reason) / cfg。
+ * truth(sinceMs, needles)（会话落盘真值）/ skip(reason) / warn(原因)（有一条断言没法核对时明确报出，
+ * 结果标「有未核对的断言」，不算失败）/ cfg。
+ *
+ * 块上还可以登记 `restore: async (ctx) => {...}`：用例自己的还原动作。运行器在用例结束后一定执行它
+ *（成败、超时、Ctrl+C 中断都执行；超时的用例自己的 finally 是跑不到的——那时它手里的驱动已被停用）。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -25,6 +29,49 @@ export class Skip extends Error {
     super(String(reason));
     this.name = "Skip";
   }
+}
+
+/**
+ * 把访问权限档位调回运行前的那一档，并读回核对（冒烟的 C4c、审批场景包 AP-1~AP-3 的 try/finally、
+ * 块上登记的 restore、还原用例 APX-1 用的都是它）。没切过档位时如实返回「不需要还原」。
+ *
+ * 运行前的档位由调用方在切走**之前**记进 ctx.state.accessRestore：
+ *   { fromLabel, fromMode, fromEffective, fromToolApproval }（app.readToolMode() 的读数 + 触发钮文案）。
+ * 档位按**生效值**比（从未设置过 = 完全访问）：运行前是空值时，切回后后端会留下显式的「完全访问」——
+ * 行为相同（都不弹审批），差异如实写进返回值，不算还原失败（产品没有「清除选择」的入口，自动化不直接改 Hub 的状态文件）。
+ */
+export async function restoreAccessMode(ctx) {
+  const { app } = ctx;
+  const saved = ctx.state.accessRestore;
+  if (!saved) return { 还原: "不需要（本轮没有切过档位）" };
+  // 回合还在跑时触发钮是禁用的：先停掉本用例留下的回合、拒掉它还挂着的审批卡
+  for (let i = 0; i < 3 && (await app.approvalCard()); i++) await app.clickApproval("deny", "restoreAccessMode").catch(() => {});
+  if (await app.turnActive()) {
+    await app.page.locator('button[title="停止"]:not([disabled])').first().click({ timeout: 3000 }).catch(() => {});
+    await app.waitIdle(3000, 60000).catch(() => {});
+  }
+  const now = await app.accessMode();
+  const switched = now.label !== saved.fromLabel ? (await app.setAccessMode(saved.fromLabel)).switched : false;
+  const read = await app.readToolMode();
+  const label = (await app.accessMode()).label;
+  if (read.effective !== saved.fromEffective || label !== saved.fromLabel) {
+    throw new Error(
+      `访问权限档位没有调回原档：运行前「${saved.fromLabel}」（后端值 ${JSON.stringify(saved.fromMode)}），现在触发钮「${label}」、后端值 ${JSON.stringify(read.mode)}`,
+    );
+  }
+  delete ctx.state.accessRestore;
+  const report = {
+    运行前: { 档位: saved.fromLabel, 后端值: saved.fromMode, Pi审批: saved.fromToolApproval },
+    还原后: { 档位: label, 后端值: read.mode, Pi审批: read.toolApproval },
+    这次点了切回: switched,
+    存储差异:
+      read.mode === saved.fromMode
+        ? "无（与运行前完全一致）"
+        : `后端值由 ${JSON.stringify(saved.fromMode)} 变成 ${JSON.stringify(read.mode)}（生效档位相同：${saved.fromEffective}；产品没有「清除选择」的入口）`,
+  };
+  // 留一份给运行报告：用例收尾时切回了，运行器还会再调一次本函数（那时已是「不需要还原」）
+  ctx.state.accessRestoreReports = [...(ctx.state.accessRestoreReports || []), report];
+  return report;
 }
 
 /** PNG 尺寸（读文件头 IHDR）：[宽, 高]。 */

@@ -5,6 +5,8 @@
  * 安全约束（全文件生效）：
  * - 「能力重叠」确认卡一律取消——自动化绝不点「停用并安装」（会停用用户已装的内置扩展）；
  * - 键盘路径只在「活动元素名字精确等于目标」时才按回车。
+ * - 还原（P4）按「当前已装源 − 运行前基线」核对，不只看台账：运行期间请不要在应用里手动安装扩展，
+ *   那样装上的也会被当成测试残留卸掉。
  */
 import { expect } from "../lib-pw.mjs";
 import { pkgOf } from "../kit.mjs";
@@ -271,13 +273,22 @@ export const marketCases = [
     id: "P4",
     name: "还原：清掉失败残留的测试扩展",
     feature: "副作用还原（兜底）",
-    steps: "若本轮还有安装用例失败中途留下的测试扩展：逐个卸载并核对回到基线",
+    steps: "读当前已装源，与运行前的基线比：多出来的（含安装用例 90 秒超时之后才装上的）记进待卸清单；待卸清单里有东西就逐个卸掉并再核对回到基线，没有则如实返回「已核对：已装源 = 基线」",
     expect: "已装源回到本轮开始时的清单",
     needs: "none",
     cleanup: true,
     run: async (ctx) => {
-      if (!ctx.state.installed.length) ctx.skip("本轮没有残留的测试扩展（安装用例都已自行卸载）");
-      await ctx.app.openMarket("扩展生态");
+      const { app } = ctx;
+      // 评审修复轮 R2：台账为空也要核对基线——候选 90 秒超时之后才装上的扩展不会进台账
+      const sources = await app.invoke("pi_package_installed_sources").then((v) => (Array.isArray(v) ? v : null), () => null);
+      if (!sources) ctx.skip("读不到当前已装源，没法核对它和运行前的基线一致不一致");
+      for (const source of sources.filter((s) => !ctx.state.baselineSources.includes(s))) {
+        if (!ctx.state.installed.includes(source)) ctx.state.installed.push(source);
+      }
+      if (!ctx.state.installed.length) {
+        return { 核对: "本轮没有残留的测试扩展（安装用例都已自行卸载；已核对：当前已装源 = 运行前的基线）", 基线数: ctx.state.baselineSources.length };
+      }
+      await app.openMarket("扩展生态");
       return restoreInstalled(ctx);
     },
   },

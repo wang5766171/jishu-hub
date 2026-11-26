@@ -2,7 +2,10 @@
  * 积木：输入区菜单族（不需要模型与网络）。对应需求20 的 C4a/C4b/C4c。
  * 输入区的 + 菜单 / 智能体菜单 / 权限菜单是自定义实现（无 role、Esc 不关）——
  * 靠 plusMenu() 收窄范围、dismiss() 关闭。
+ * C4c 会切换访问权限档位（写 Hub 状态与 Pi 设置）：用例内 try/finally 切回并读回，有回合在跑时跳过。
  */
+import { restoreAccessMode } from "../kit.mjs";
+
 const GROUP_LABELS = /^(附件|Skill|MCP|扩展|插件工具|输入素材|能力挂载)$/;
 
 /** 列出 + 菜单弹层内的按钮文字（排除组标签与子菜单触发器）。 */
@@ -93,30 +96,50 @@ export const composerCases = [
   },
   {
     id: "C4c",
-    name: "权限下拉（切只读再切回）",
-    feature: "输入区访问权限下拉（需求10 只读披露）",
-    steps: "读当前档位 → 点访问权限 → 选另一档 → 触发钮文案变为该档 → 再点开选回原档",
-    expect: "两向切换后触发钮文案正确，终态回到运行前的档位（不假设、也不改动用户原有设置）",
+    name: "权限下拉（切到另一档再切回，读回核对）",
+    feature: "输入区访问权限下拉（需求10 只读披露）/ 副作用还原",
+    steps: "读当前档位与后端值 → 有回合在跑就跳过 → 读菜单里的档位 → 点访问权限选另一档 → 触发钮文案变为该档、后端值跟着变 → finally 再点开选回原档 → 读回档位与触发钮文案",
+    expect: "两向切换后触发钮文案正确；终态回到运行前的档位（档位读回与触发钮文案都对上，断言失败也会切回）；不假设、也不改动用户原有设置",
     needs: "none",
+    // 用例超时 / 被中断时它自己的 finally 跑不到（手里的驱动已被停用）——运行器按这个登记替它切回原档
+    restore: restoreAccessMode,
     run: async (ctx) => {
       const { app, page, expect } = ctx;
       await app.ensureWorkspace();
       await app.closeGuideCards();
-      // 当前档位是用户环境的既有状态（可能本来就停在只读）——先读出来，结束时切回去。
-      const trigger = page.locator('button[title="访问权限"]');
-      const initial = (await trigger.textContent()).trim();
-      const other = initial.startsWith("只读") ? "完全访问" : "只读模式";
-      await app.clickTitle("访问权限");
-      // 菜单项与触发钮文字相同（当前档位就是这一档时）：排除触发钮内部再找
-      const menuItem = (label) => page.locator(`:text-is('${label}'):not([title='访问权限'] *)`);
-      await expect(menuItem(other)).toBeVisible();
-      await ctx.shot("C4c-权限菜单");
-      await menuItem(other).click();
-      await expect(page.getByRole("button", { name: new RegExp("^" + other) })).toBeVisible();
-      await app.clickTitle("访问权限");
-      await menuItem(initial).click();
-      await expect(page.getByRole("button", { name: new RegExp("^" + initial) })).toBeVisible();
-      return { 运行前: initial, 切到: other, 终态: initial + "（已还原）" };
+      // 当前档位是用户环境的既有状态（可能本来就停在只读）——先读出来，切走之前就登记好怎么切回
+      const access = await app.accessMode();
+      if (!access.switchable) ctx.skip(`当前智能体不支持切换访问权限档位（触发钮：${access.label || "找不到"}）`);
+      // 切档是产品行为：会重启该智能体全部会话的引擎进程——有回合在跑就不在这个时候切
+      const running = await app.invoke("chat_active_sessions").catch(() => []);
+      if (Array.isArray(running) && running.length) ctx.skip(`有 ${running.length} 个会话的回合还在进行——切档会重启引擎进程、打断它们；等它们结束再跑`);
+      const before = await app.readToolMode();
+      const options = await app.accessModeOptions();
+      const initial = access.label;
+      // 原先写死「只读 ↔ 完全访问」：另一档从菜单里挑（先挑这两档，都不在就挑任意一个别的档）
+      const other =
+        [initial.startsWith("只读") ? "完全访问" : "只读模式", "只读模式", "完全访问"].find((label) => label !== initial && options.includes(label)) ??
+        options.find((label) => label !== initial);
+      if (!other) ctx.skip(`权限菜单里除了当前这一档没有别的档位（菜单：${options.join("、") || "读不到"}）`);
+      ctx.state.accessRestore = { fromLabel: initial, fromMode: before.mode, fromEffective: before.effective, fromToolApproval: before.toolApproval };
+      try {
+        await app.clickTitle("访问权限");
+        // 菜单项与触发钮文字相同（当前档位就是这一档时）：排除触发钮内部再找
+        const menuItem = (label) => page.locator(`:text-is('${label}'):not([title='访问权限'] *)`);
+        await expect(menuItem(other)).toBeVisible();
+        await ctx.shot("C4c-权限菜单");
+        await menuItem(other).click();
+        await expect(page.locator('button[title="访问权限"]').first()).toHaveText(other, { timeout: 20000 });
+        // 后端的值要跟着变（菜单项与后端声明的档位值同序）
+        const expected = (before.modes ?? [])[options.indexOf(other)] ?? null;
+        const mid = await app.readToolMode();
+        if (expected && mid.effective !== expected) throw new Error(`切到「${other}」后，后端的档位没有跟着变：读回 ${JSON.stringify(mid.mode)}，应为 ${JSON.stringify(expected)}`);
+      } finally {
+        // 评审修复轮 R2：断言失败也必须切回原档（原来没有 finally，失败一次就把用户的权限档留在另一档）
+        await restoreAccessMode(ctx).catch((e) => ctx.warn(`用例收尾时没能切回原档：${e?.message || e}`));
+      }
+      const report = ctx.state.accessRestoreReports?.at(-1);
+      return { 运行前: initial, 切到: other, 终态: report?.还原后?.档位, 后端读回: report?.还原后?.后端值, 存储差异: report?.存储差异 };
     },
   },
 ];

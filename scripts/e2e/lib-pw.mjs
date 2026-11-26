@@ -16,6 +16,11 @@
  *
  * 界面定位按中文界面编写（按钮 title / 文案）；run.mjs 启动时校验界面语言。
  *
+ * 等回合时不替用户表态（v0.9.8 评审修复轮 R2 / 用户裁决 9）：waitTurn / waitIdle 的 approvals
+ * 默认关闭——回合里出现审批卡，按 Esc（= 拒绝，与清残留弹层同向）并让用例失败、写明是哪一张；
+ * 要放行或拒绝必须显式传 "allow" / "deny"，返回值里报告点了几次、点的哪个钮。
+ * 审批的「同意」「不同意」各有一条自动化用例（blocks/approval.mjs）。
+ *
  * 最小用法：
  *   import { open, expect } from "./lib-pw.mjs";
  *   const app = await open();
@@ -36,6 +41,15 @@ export { expect };
 
 /** CDP 端点（可用环境变量 JISHU_CDP_URL 覆盖，如多实例换端口）。 */
 export const CDP_ENDPOINT = process.env.JISHU_CDP_URL || "http://127.0.0.1:9222";
+
+/**
+ * jishu-hub 页面的地址：生产包是 http://tauri.localhost/，开发模式是 http://localhost:1420/
+ *（Tauri 的网页在 Windows 上的协议就是 tauri.localhost——别的程序开着同一个调试口时不是这个地址）。
+ * 附着前先按它挑页面；一个都对不上就不附着（评审修复轮 R2：只看调试口通不通，会附着到别的程序上）。
+ */
+export function isJishuPageUrl(url) {
+  return /^https?:\/\/(tauri\.localhost|localhost:\d+|127\.0\.0\.1:\d+)\/?/.test(String(url || ""));
+}
 
 /** 截图纪律视口（需求14 D14-1：生产包、1440×900）。传 null 沿用窗口原生尺寸。 */
 export const DEFAULT_VIEWPORT = { width: 1440, height: 900 };
@@ -66,8 +80,18 @@ export function runPowerShell(command) {
  * sinceMs 之后修改的最新匹配文件——传脚本/用例启动时刻）。
  * 会话文件根目录默认 `~/.jishu-agent/agent/sessions`，可用环境变量
  * JISHU_AGENT_SESSIONS_DIR 覆盖（非默认安装位置时）。
+ *
+ * 返回的口径：
+ * - users / assistants / rawUsers / sequence：原有四个一个字不变（存量用例靠它们判事）；
+ * - timeline：比 sequence 更全的落盘顺序——除用户 / 助手文字外，还记工具结果
+ *   （`{ role: "toolResult", text: "工具名: 结果" }`）与压缩边界（引擎写的 compaction 条目，
+ *   `{ role: "compaction" }`）。判断「工具结果在回复之前」「压缩排在谁后面」用它；
+ * - assistantFull / assistantEnds / assistantLengths / assistantAt：与 assistants 一一对应——每段助手
+ *   文字的全文（最多 4000 字）、末尾 60 字、全长、它在 timeline 里的行号；
+ * - tools：工具执行结果 `[{ name, isError, text }]`（工具真的执行了没有，以它为准）；
+ * - found：needles 里每个词在用户 / 助手 / 工具结果里出现没有（整段文字里找，不受截断影响）。
  */
-export function readSessionUsers(shortId, sinceMs = 0) {
+export function readSessionUsers(shortId, sinceMs = 0, needles = []) {
   const root = process.env.JISHU_AGENT_SESSIONS_DIR || path.join(os.homedir(), ".jishu-agent", "agent", "sessions");
   if (!shortId || !fs.existsSync(root)) return null;
   const hits = [];
@@ -87,6 +111,14 @@ export function readSessionUsers(shortId, sinceMs = 0) {
   //（工具说明块是否带上）与「谁在谁之后」（重发的消息后面有没有回复）时用。
   const rawUsers = [];
   const sequence = [];
+  // v0.9.8 评审修复轮 R2：更全的落盘顺序、工具结果、每段助手文字的全文 / 末尾 / 全长、按词查找（见函数注释）
+  const timeline = [];
+  const tools = [];
+  const assistantFull = [];
+  const assistantAt = [];
+  const assistantEnds = [];
+  const assistantLengths = [];
+  const found = Object.fromEntries(needles.map((n) => [n, { user: false, assistant: false, tool: false, toolError: false }]));
   for (const line of fs.readFileSync(hits[0], "utf8").split("\n")) {
     if (!line.trim()) continue;
     let o;
@@ -95,21 +127,52 @@ export function readSessionUsers(shortId, sinceMs = 0) {
     } catch {
       continue;
     }
+    // 压缩边界：引擎把摘要写成一条 type=compaction 的条目，按落盘顺序记一行
+    if (o.type === "compaction") {
+      timeline.push({ role: "compaction", text: "(压缩边界)" });
+      continue;
+    }
     const m = o.message || {};
+    // 工具执行结果（role=toolResult）：被拒绝 / 被拦截的调用也在这里，isError 为真、文本是拒绝原因
+    if (m.role === "toolResult") {
+      const tc = m.content;
+      const toolText = typeof tc === "string" ? tc : (tc || []).map((b) => (b && b.type === "text" ? b.text || "" : "")).join("\n");
+      const entry = { name: m.toolName ?? null, isError: Boolean(m.isError), text: clean(toolText).replace(/\n+/g, " ").slice(0, 160) };
+      tools.push(entry);
+      timeline.push({ role: "toolResult", text: `${entry.name ?? "?"}: ${entry.text.slice(0, 40)}` });
+      for (const n of needles) {
+        if (!toolText.includes(n)) continue;
+        found[n].tool = true;
+        if (m.isError) found[n].toolError = true;
+      }
+      continue;
+    }
     if (m.role !== "user" && m.role !== "assistant") continue;
     const c = m.content;
     const texts = typeof c === "string" ? [c] : (c || []).filter((b) => b && b.type === "text").map((b) => b.text || "");
     const raw = texts.join("\n");
     if (m.role === "user") rawUsers.push(raw);
-    sequence.push({ role: m.role, text: clean(raw).replace(/\n+/g, " ").slice(0, 40) });
+    const rowText = clean(raw).replace(/\n+/g, " ").slice(0, 40);
+    sequence.push({ role: m.role, text: rowText });
+    const rowIndex = timeline.length;
+    timeline.push({ role: m.role, text: rowText });
     for (let t of texts) {
-      t = clean(t).replace(/\n+/g, " ");
-      if (!t) continue;
-      if (m.role === "user") users.push(t);
-      else assistants.push(t.slice(0, 120));
+      const full = clean(t).replace(/\n+/g, " ");
+      if (!full) continue;
+      if (m.role === "user") {
+        users.push(full);
+        for (const n of needles) if (full.includes(n)) found[n].user = true;
+      } else {
+        assistants.push(full.slice(0, 120));
+        assistantFull.push(full.slice(0, 4000));
+        assistantEnds.push(full.slice(-60));
+        assistantLengths.push(full.length);
+        assistantAt.push(rowIndex);
+        for (const n of needles) if (full.includes(n)) found[n].assistant = true;
+      }
     }
   }
-  return { file: path.basename(hits[0]), users, assistants, rawUsers, sequence };
+  return { file: path.basename(hits[0]), users, assistants, rawUsers, sequence, timeline, tools, assistantFull, assistantAt, assistantEnds, assistantLengths, found };
 }
 
 /** 步骤记录器：结论同时进 console 与结果文件（后台运行时 stdout 缓冲会产出空日志假象）。 */
@@ -174,13 +237,21 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
     await browser.close();
     throw new Error(`无 browser context——应用是否带 --remote-debugging-port 启动？(${CDP_ENDPOINT})`);
   }
-  // 页面发现：Tauri 单窗口；过滤 devtools:// 目标；URL 兼容生产 tauri.localhost 与 dev localhost:1420。
+  // 页面发现：Tauri 单窗口；只认 jishu-hub 的页面地址（生产 tauri.localhost、开发 localhost:端口）。
+  // 评审修复轮 R2：调试口上可能是别的程序（同一个端口被 Chrome / Edge / 别的 Tauri 应用占着）——
+  // 一个都对不上就断开、不附着，别把点击打到别人的页面上。
   let page = null;
   const deadline = Date.now() + 10000;
-  while (!(page = context.pages().find((p) => !p.url().startsWith("devtools")))) {
+  const seen = new Set();
+  while (!(page = context.pages().find((p) => isJishuPageUrl(p.url())))) {
+    for (const p of context.pages()) if (!p.url().startsWith("devtools")) seen.add(p.url().slice(0, 80));
     if (Date.now() > deadline) {
       await browser.close();
-      throw new Error(`10s 内未发现 page target（${CDP_ENDPOINT}/json/list）`);
+      throw new Error(
+        seen.size
+          ? `调试口 ${CDP_ENDPOINT} 上不是 jishu-hub——拒绝附着（调试口上的页面：${[...seen].join(" | ")}）。换个端口：start.mjs --port <端口>，并让运行器用同一个端口（环境变量 JISHU_CDP_URL）`
+          : `10s 内未发现 page target（${CDP_ENDPOINT}/json/list）`,
+      );
     }
     await sleep(200);
   }
@@ -336,10 +407,11 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
    * 解析完成前暂存的消息会随 id 解析搬到真实键（v0.9.8 需求21 修复；修前会丢失，
    * 见 docs/v0.9.8/测试/issues/04）。
    */
-  const waitSessionResolved = async (timeoutMs = 15000) => {
+  const waitSessionResolved = async (timeoutMs = 15000, alive = null) => {
     const deadline = Date.now() + timeoutMs;
     let id = "";
     while (Date.now() < deadline) {
+      if (alive && !alive()) throw new Error("用例已超时，等待终止");
       id = await headerIdText();
       if (id && !/^pending/.test(id)) return id;
       await sleep(150);
@@ -415,12 +487,21 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
    * 残留弹层清理：屏幕上有弹层且有「取消」钮就取消（上次脚本中断常把「能力重叠」
    * 确认卡留在屏幕上——模态开着时背景元素对角色定位不可见，后续导航全部落空）。
    * 冲突卡一律取消：自动化不触发「停用并安装」（会停用用户已装的内置扩展）。
+   * 审批卡（没有取消钮）按 Esc——等于拒绝，与 waitTurn 的默认同向；记进审批日志
+   *（app.approvalLog），返回的文本以「[审批卡]」开头，运行器据此在报告里单列。
    * 返回被关闭的弹层文本，无弹层返回 null。
    */
   const cancelResidualDialog = async () => {
     let lastText = null;
     // 弹层可能叠着（上一用例中途失败常留一个）：逐个关，最多 3 层
     for (let layer = 0; layer < 3; layer++) {
+      const card = await approvalCard();
+      if (card) {
+        const item = await rejectApprovalByEscape("cancelResidualDialog", "用例之间清残留弹层");
+        lastText = `[审批卡] ${item.button}｜工具 ${card.tool ?? "?"}｜${(card.summary || "").slice(0, 80)}`;
+        if (!item.settled) break; // 关不掉就停手，交给用例自己报错
+        continue;
+      }
       const dlg = page.getByRole("dialog").first();
       if (!(await dlg.isVisible().catch(() => false))) break;
       const text = (await dlg.textContent()).replace(/\s+/g, " ").slice(0, 160);
@@ -569,10 +650,11 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
   };
 
   /** 等会话行进入给定状态之一；超时返回最后看到的状态。 */
-  const waitRowState = async (row, wanted, timeout) => {
+  const waitRowState = async (row, wanted, timeout, alive = null) => {
     const deadline = Date.now() + timeout;
     let last = "idle";
     while (Date.now() < deadline) {
+      if (alive && !alive()) throw new Error("用例已超时，等待终止");
       last = await rowState(row);
       if (wanted.includes(last)) return last;
       await sleep(700);
@@ -665,11 +747,12 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
    * 等一次执行里所有节点都跑完。返回 [{ nodeId, status, sessionId, agentId }]；超时返回当时的状态。
    * sessionId 是这个节点那一轮执行产生的子会话。
    */
-  const waitGraphRun = async (runId, timeout = 240000) => {
+  const waitGraphRun = async (runId, timeout = 240000, alive = null) => {
     const done = new Set(["succeeded", "failed", "cancelled", "canceled", "skipped"]);
     const deadline = Date.now() + timeout;
     let runs = [];
     while (Date.now() < deadline) {
+      if (alive && !alive()) throw new Error("用例已超时，等待终止");
       runs = await invoke("orchestrator_get_node_runs", { runId }).catch(() => []);
       if (Array.isArray(runs) && runs.length > 0 && runs.every((r) => done.has(String(r.status).toLowerCase()))) break;
       await sleep(2000);
@@ -694,6 +777,115 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
     return invoke("task_launch_mark_session", { projectRoot: project.path, taskId, sessionId, skillId: "jishu-task-runner", title });
   };
 
+  /**
+   * 造一个「带主会话」的带任务图的任务——任务会话类、未读类用例自己造数用，不去动用户已有的任务：
+   * 新对话发一条消息留作主会话 → 建图、加节点、启动执行（createGraphTask）→ 把这个会话挂成任务的主会话
+   * → 等节点都执行完。节点策略是无工具、审批 never；mainMessage 与节点提示词都要写明「不要调用任何工具」——
+   * 这样造数不让智能体动项目里的任何文件，也不会弹审批卡。图、任务、节点会话都留在项目里。
+   * 返回 { taskId, graphId, runId, title, mainShortId, mainId, nodeRuns, projectRoot, encodedName }。
+   * 模型不可用时抛的错以「模型不可用」开头，调用方据此标跳过。
+   */
+  const createTaskWithMainSession = async ({ title, nodes, mainMessage }) => {
+    await newConversation();
+    await send(mainMessage);
+    const started = await awaitTurnStart(20000);
+    if (!started) throw new Error("模型不可用：主会话的消息发出后 20 秒内回合未启动");
+    const turn = await waitTurn({ budgetMs: 180000, settleMs: 3000 });
+    await waitIdle(2000, 120000);
+    if (!turn.done) throw new Error("主会话的回合没有在时限内结束");
+    const short = (await sessionHeader())?.id;
+    if (!short) throw new Error("读不到主会话的会话头");
+    const made = await createGraphTask({ title, nodes });
+    const mainId = await sessionFullId(short, made.encodedName);
+    if (!mainId) throw new Error("找不到主会话的完整 id");
+    await attachTaskMainSession({ taskId: made.taskId, sessionId: mainId, title });
+    const nodeRuns = await waitGraphRun(made.runId);
+    return { ...made, title, mainShortId: short, mainId, nodeRuns };
+  };
+
+  // ── 访问权限档位（输入区的「访问权限」菜单；审批类用例切档、还原，冒烟的 C4c 也用）──
+  /**
+   * 当前会话用的智能体 id——与前端 AgentContext 同一套规则：界面记忆里有、且在清单里就用它；
+   * 否则默认内建引擎（jishu-self），清单里连它都没有才退到第一个已安装的 / 第一项。
+   */
+  const chatAgentId = async () =>
+    page.evaluate(async () => {
+      const list = (await window.__TAURI_INTERNALS__.invoke("agent_list_statuses").catch(() => [])) || [];
+      const saved = localStorage.getItem("jishu-hub.chatAgentId");
+      if (saved && list.some((a) => a.id === saved)) return saved;
+      if (list.some((a) => a.id === "jishu-self")) return "jishu-self";
+      return (list.find((a) => a.health?.installed) ?? list[0])?.id ?? null;
+    });
+  /**
+   * 读回工具模式：{ agentId, provider, modes, mode, effective, toolApproval }。
+   * - mode：Hub 存的原始值。从未设置过时后端返回 null，界面按「完全访问」显示（effective 就是界面上生效的那一档）；
+   * - toolApproval：Pi 设置里的那一半（变更前审批 = ask_always、智能审批 = smart、其余 = off）。只把这一个字段带出页面——
+   *   配置里可能有密钥，整份不读进测试进程；
+   * - 智能体不是「Hub 工具模式」这一类（claude-code / codex 走自己的配置）：provider 如实返回，mode 为 undefined。
+   */
+  const readToolMode = async () => {
+    const agentId = await chatAgentId();
+    if (!agentId) return { agentId: null, provider: null, modes: [], mode: undefined, effective: undefined, toolApproval: null };
+    return page.evaluate(async (id) => {
+      const call = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
+      const list = (await call("agent_list_statuses", {}).catch(() => [])) || [];
+      const agent = list.find((x) => x.id === id) ?? null;
+      const provider = agent?.permission_mode_provider ?? null;
+      const modes = agent?.permission_modes ?? [];
+      if (provider !== "hub_tool_mode") return { agentId: id, provider, modes, mode: undefined, effective: undefined, toolApproval: null };
+      const config = await call("load_config", { agentId: id }).catch(() => null);
+      const mode = (await call("get_agent_tool_mode", { agentId: id }).catch(() => null)) ?? null;
+      return { agentId: id, provider, modes, mode, effective: mode ?? "full", toolApproval: config?.toolApproval ?? null };
+    }, agentId);
+  };
+  /** 触发钮：可以切换时 title 是「访问权限」；当前智能体不支持切换时 title 是「当前智能体暂不支持切换」。 */
+  const accessTrigger = () => page.locator('button[title="访问权限"]');
+  /** 当前档位：{ switchable, label }——label 是触发钮上显示的文字（只读模式 / 完全访问 / 变更前审批 / 智能审批…）。 */
+  const accessMode = async () => {
+    const trigger = accessTrigger().first();
+    if (!(await trigger.isVisible().catch(() => false))) {
+      const unsupported = await page.locator('button[title="当前智能体暂不支持切换"]').first().isVisible().catch(() => false);
+      return { switchable: false, label: unsupported ? "当前智能体暂不支持切换" : "", options: [] };
+    }
+    return { switchable: true, label: ((await trigger.textContent()) || "").trim(), options: [] };
+  };
+  /** 读权限菜单里的全部档位文字（要开一次菜单、读完关掉）。回合进行中触发钮是禁用的，此时返回空数组。 */
+  const accessModeOptions = async () => {
+    const trigger = accessTrigger().first();
+    if (!(await trigger.isVisible().catch(() => false)) || (await trigger.isDisabled().catch(() => true))) return [];
+    await dismiss();
+    await trigger.click();
+    // 菜单项是触发钮的兄弟节点，且自身没有 title；第一层 span 是档位文字（下一行是说明）
+    const items = trigger.locator("xpath=..").locator("button:not([title])");
+    await items.first().waitFor({ state: "visible", timeout: 3000 }).catch(() => {});
+    const labels = [];
+    for (const item of await items.all()) {
+      const label = ((await item.locator("span").first().textContent().catch(() => "")) || "").trim();
+      if (label) labels.push(label);
+    }
+    await dismiss();
+    return labels;
+  };
+  /**
+   * 切到指定档位（按菜单项的文字）：点触发钮 → 点菜单项 → 等触发钮文案变成它（后端保存完前端才重读）。
+   * 已经在这一档就什么都不做。返回 { before, after, switched }。
+   * 副作用（产品行为）：写 Hub 状态与 Pi 设置，并重启该智能体全部会话的引擎进程——调用方先确认没有回合在跑。
+   */
+  const setAccessMode = async (label) => {
+    const trigger = accessTrigger().first();
+    await expect(trigger).toBeEnabled({ timeout: 20000 });
+    const before = ((await trigger.textContent()) || "").trim();
+    if (before === label) return { before, after: before, switched: false };
+    await dismiss();
+    await trigger.click();
+    // 菜单项与触发钮文字相同（当前档位就是这一档时）：排除触发钮内部再找
+    const item = page.locator(`:text-is('${label}'):not([title='访问权限'] *)`);
+    await expect(item).toBeVisible({ timeout: 5000 });
+    await item.click();
+    await expect(trigger).toHaveText(label, { timeout: 20000 });
+    return { before, after: label, switched: true };
+  };
+
   // ── 会话区 ──
   /** 当前可见的输入框（出现多个即 strict 报错——如同时开着消息编辑框）。 */
   const composer = () => page.locator("textarea").filter({ visible: true });
@@ -713,58 +905,237 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
   };
   /** 输入并按回车发送（流式中回车 = 暂存）。 */
   const send = async (text, opts) => {
+    lastSendHead = headOf(text);
     await type(text, opts);
     await composer().press("Enter");
     return true;
   };
-  /** 回合进行中判定：停止钮在场且可用。 */
+  /** 回合进行中判定：停止钮在场且可用。
+   *  注意：输入框里有文字时，产品把停止钮换成发送钮——等回合的期间别让输入框留着内容。 */
   const turnActive = () => page.locator('button[title="停止"]:not([disabled])').first().isVisible().catch(() => false);
   /**
-   * 等回合结束：轮询停止钮；期间自动点审批钮（总是允许/允许）。
-   * 返回 { done, ms, approvals }。
+   * 等回合启动的迹象，超时返回 false：停止钮亮着，或者刚发的那条用户消息后面已经有了助手的回答。
+   * 不能只看停止钮——发送之后要等后端的发送调用返回才清空输入框，输入框里有字时产品显示的是发送钮；
+   * 回合很短时（快模型一两秒就答完）发送调用要到回合收口才返回，停止钮可能一次都没亮过
+   * （收口轮实跑：EC-10 的第一条消息因此被误判成「模型不可用」）。
+   * 「刚发的那条」按内容认（send 记下消息开头的几个字），不数消息行数——消息列表按视口窗口渲染，
+   * 视图挪动时多渲染出来的旧行会被数成新回合。不是经 send 发出的（打字后自己按回车）调用方把这条
+   * 消息的文字传进来（`{ text }`）；传了也对不上的（比如命令会展开成另一段提示词）只看停止钮。
    */
-  const waitTurn = async ({ budgetMs = 180000, settleMs = 5000, approvals = true } = {}) => {
+  let lastSendHead = null;
+  const headOf = (text) => {
+    const head = String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 16);
+    return head || null;
+  };
+  const awaitTurnStart = async (timeout = 20000, { text } = {}) => {
+    const head = text ? headOf(text) : lastSendHead;
+    lastSendHead = null;
+    const answered = () =>
+      page
+        .evaluate((h) => {
+          const rows = [...document.querySelectorAll('[data-turn-scope="main"] [data-message-index]')];
+          const mine = rows.findLast((r) => r.hasAttribute("data-turn-index") && (r.textContent || "").includes(h));
+          return Boolean(mine) && rows.indexOf(mine) < rows.length - 1;
+        }, head)
+        .catch(() => false);
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      if (await turnActive()) return true;
+      if (head && (await answered())) return true;
+      await sleep(200);
+    }
+    return false;
+  };
+
+  // ── 工具执行审批（v0.9.8 评审修复轮 R2 / 用户裁决 9：同意、不同意各有自动化；默认不替用户表态）──
+  /** 审批卡上的三个钮（chat-page.tsx 的审批弹窗；按中文界面定位）。 */
+  const APPROVAL_BUTTONS = { deny: "拒绝", once: "仅本次允许", always: "始终允许" };
+  /** approvals 三态里要表态的两态 → 点哪个钮。false（默认）不表态。 */
+  const APPROVAL_ACTION = { allow: "once", deny: "deny" };
+  /** 自动化对审批卡的每一次表态（点了哪个钮 / 按了 Esc、卡上的工具与命令），运行器写进报告。 */
+  const approvalLog = [];
+  /**
+   * 审批卡定位：弹窗里有「仅本次允许」或「始终允许」钮（变更前审批档隐藏后者）。
+   * 业务确认卡（能力重叠、卸载确认…）没有这两个钮，不会误中。
+   */
+  const approvalDialog = () =>
+    page.getByRole("dialog").filter({ has: page.getByRole("button", { name: /^(仅本次允许|始终允许)$/ }) });
+  /**
+   * 读当前审批卡；没有卡返回 null。
+   * payload 是卡上 <pre> 里那段 JSON：{ tool, summary, mode, origin }——summary 是工具入参里那句
+   * 命令 / 文件路径（后端 jishu-tool-approval 链路拼的），mode 是发卡时的档位。
+   */
+  const approvalCard = async () => {
+    const dlg = approvalDialog().first();
+    if (!(await dlg.isVisible().catch(() => false))) return null;
+    const raw = (await dlg.locator("pre").first().textContent().catch(() => "")) || "";
+    let payload = null;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      payload = null;
+    }
+    const buttons = (await dlg.getByRole("button").allTextContents().catch(() => [])).map((s) => s.trim()).filter(Boolean);
+    return { payload: payload ?? raw.slice(0, 200), tool: payload?.tool ?? null, summary: payload?.summary ?? null, mode: payload?.mode ?? null, buttons };
+  };
+  /** 点完 / 按 Esc 之后等这张卡收起（后面若还排着下一张，卡会留着但内容换了）。超时返回 false。 */
+  const cardSettled = async (card, timeoutMs = 8000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const now = await approvalCard();
+      if (!now) return true;
+      if (JSON.stringify(now.payload) !== JSON.stringify(card.payload)) return true;
+      await sleep(200);
+    }
+    return false;
+  };
+  /**
+   * 点审批卡上的一个钮，返回这一下点了什么。只认 "deny"（拒绝）和 "once"（仅本次允许）——
+   * 「始终允许」会把这次批准记进用户的审批记忆（持久改动），自动化不点：传 "always" 直接抛错。
+   */
+  const clickApproval = async (which, by = "case") => {
+    if (which === "always") {
+      throw new Error('自动化不点「始终允许」——它会把这次批准记进用户的审批记忆。要放行请点「仅本次允许」（"once"）');
+    }
+    const label = APPROVAL_BUTTONS[which];
+    if (!label) throw new Error(`点审批卡：不认识的钮「${String(which)}」（只认 "deny" / "once"）`);
+    const card = await approvalCard();
+    if (!card) throw new Error("要点审批卡，但屏幕上没有审批卡");
+    await approvalDialog().first().getByRole("button", { name: label, exact: true }).click({ timeout: 5000 });
+    const settled = await cardSettled(card);
+    const item = { button: label, tool: card.tool, summary: card.summary, mode: card.mode, settled };
+    approvalLog.push({ at: new Date().toISOString(), by, ...item });
+    return item;
+  };
+  /**
+   * 拒绝当前审批卡：按 Esc（= 用户点「拒绝」）。用在「不表态」的场合——等回合时的默认值、
+   * 用例之间清残留弹层——都是同一个方向：宁可拒绝，不放行。返回这一下拒绝了哪张卡。
+   */
+  const rejectApprovalByEscape = async (by, note = "") => {
+    const card = await approvalCard();
+    if (!card) return null;
+    let settled = false;
+    for (let attempt = 0; attempt < 3 && !settled; attempt++) {
+      await page.keyboard.press("Escape").catch(() => {});
+      settled = await cardSettled(card, 4000);
+    }
+    const item = { button: "Esc（等于拒绝）", tool: card.tool, summary: card.summary, mode: card.mode, settled, note };
+    approvalLog.push({ at: new Date().toISOString(), by, ...item });
+    return item;
+  };
+  /**
+   * 等审批卡出现。返回 { card }；回合先结束了、或等满了时限都没有卡，返回 { card: null, reason }。
+   * 要在确认回合已经启动之后调（停止钮出现过）——回合还没起头时停止钮不在，会被当成「回合已结束」。
+   */
+  const waitApproval = async (timeoutMs = 60000) => {
     const t0 = Date.now();
-    let clicked = 0;
-    while (Date.now() - t0 < budgetMs) {
-      if (approvals) {
-        const btn = page.getByRole("button", { name: /总是允许|允许|批准/ }).filter({ hasNotText: /拒绝|否/ });
-        const n = await btn.count();
-        for (let i = 0; i < n; i++) {
-          const b = btn.nth(i);
-          if (await b.isVisible().catch(() => false)) {
-            await b.click({ timeout: 2000 }).catch(() => {});
-            clicked++;
-            break;
-          }
-        }
+    while (Date.now() - t0 < timeoutMs) {
+      const card = await approvalCard();
+      if (card) return { card };
+      if (!(await turnActive())) {
+        await sleep(600); // 两张卡之间可能有一拍空档：再确认一次
+        const again = await approvalCard();
+        if (again) return { card: again };
+        if (!(await turnActive())) return { card: null, reason: "回合已经结束，没有再弹审批卡" };
       }
+      await sleep(400);
+    }
+    return { card: null, reason: `等了 ${Math.round(timeoutMs / 1000)} 秒没有弹审批卡，回合也还没结束` };
+  };
+  /** approvals 的合法值：false（默认，不表态）/ "allow" / "deny"。别的值直接抛错——旧版的 true（自动放行）不再被接受。 */
+  const assertApprovalSetting = (approvals) => {
+    if (approvals === false || approvals === "allow" || approvals === "deny") return;
+    throw new Error(`waitTurn / waitIdle 的 approvals 只能是 false / "allow" / "deny"，收到 ${JSON.stringify(approvals)}（框架不再自动放行审批，见文件头）`);
+  };
+  /**
+   * 轮询等待时遇到审批卡的处理（waitTurn / waitIdle 共用）。返回处理了哪一张；没有卡返回 null。
+   * - setting 为 false（默认）：按 Esc 拒绝并记下——调用方在等待结束时据此让用例失败；
+   * - "allow" / "deny"：点对应的钮；"allow" 另可给 approveOnly(card) 划定放行范围，范围之外的卡点「拒绝」并记下。
+   */
+  const dealWithApproval = async (setting, approveOnly, items, by) => {
+    const card = await approvalCard();
+    if (!card) return null;
+    const which = APPROVAL_ACTION[setting];
+    const inScope = typeof approveOnly === "function" ? Boolean(approveOnly(card)) : true;
+    let item;
+    if (!which) item = { ...(await rejectApprovalByEscape(by, "框架默认不表态")), inScope: false };
+    else if (inScope) item = { ...(await clickApproval(which, by)), inScope: true };
+    else item = { ...(await clickApproval("deny", by)), inScope: false, note: "不在放行范围内" };
+    items.push(item);
+    return item;
+  };
+  /** 默认不表态时遇到了审批卡：等待结束抛这个错（写明每一张卡）。 */
+  const unexpectedApprovalsError = (items, where) => {
+    const stuck = items.filter((i) => i.settled === false).length;
+    return new Error(
+      `${where}期间出现了 ${items.length} 张审批卡——框架不替用户放行，已按 Esc 拒绝（与清残留弹层同向）：` +
+        JSON.stringify(items.map((i) => ({ 工具: i.tool, 命令: i.summary, 档位: i.mode }))) +
+        (stuck ? `；其中 ${stuck} 张按 Esc 没有收起，可能还留在屏幕上` : "") +
+        `。这条用例确实需要工具被批准（或被拒绝）才走得完的话，显式传 approvals: "allow"（或 "deny"）并在调用处写明原因`,
+    );
+  };
+  /**
+   * 等回合结束：轮询停止钮。期间遇到审批卡怎么办由 approvals 决定（三态，默认 false）：
+   *   false    不替用户表态：按 Esc（= 拒绝）并记下每一张；回合结束后抛错说明「出现了 N 张审批卡，
+   *            已拒绝、未放行」——用例判失败。审批卡不区分会话，也可能是别的会话弹的，所以报错里带卡上的内容。
+   *   "allow"  点「仅本次允许」。给了 approveOnly(card) 时只放行它返回 true 的卡，其余点「拒绝」并记下。
+   *   "deny"   点「拒绝」。
+   * 「始终允许」任何情况下都不点（见 clickApproval）。返回 { done, ms, approvals: { setting, clicked, button, items } }。
+   */
+  const waitTurn = async ({ budgetMs = 180000, settleMs = 5000, approvals = false, approveOnly = null, _alive = null } = {}) => {
+    assertApprovalSetting(approvals);
+    const t0 = Date.now();
+    const items = [];
+    const finish = (done) => {
+      if (approvals === false && items.length) throw unexpectedApprovalsError(items, "等回合");
+      return {
+        done,
+        ms: Date.now() - t0,
+        approvals: { setting: approvals, clicked: items.length, button: approvals === false ? null : APPROVAL_BUTTONS[APPROVAL_ACTION[approvals]], items },
+      };
+    };
+    while (Date.now() - t0 < budgetMs) {
+      if (_alive && !_alive()) throw new Error("用例已超时，等待终止");
+      if (await dealWithApproval(approvals, approveOnly, items, "waitTurn")) continue;
       const active = await turnActive();
-      if (!active && Date.now() - t0 > settleMs) return { done: true, ms: Date.now() - t0, approvals: clicked };
+      if (!active && Date.now() - t0 > settleMs) return finish(true);
       await sleep(1500);
     }
-    return { done: false, ms: Date.now() - t0, approvals: clicked };
+    return finish(false);
   };
-  // 暂存消息（流式中回车排队的消息）：拖拽手柄与条目行
+  // 暂存消息（流式中回车排队的消息；排队的压缩命令也在这一区）：拖拽手柄与条目行
   const stagedGrips = () => page.locator('span[draggable][title="拖动调整顺序"]');
   const stagedRows = () => page.locator('div[class*="bg-amber-500/5"]');
   const stagedTexts = () => stagedRows().evaluateAll((els) => els.map((e) => (e.querySelector("p")?.textContent || "").trim()));
   /**
    * 等全部回合真正空闲：连续 stableMs 内既无停止钮也无暂存卡片（暂存投递会在
-   * 回合之间立刻起新回合——只看一次「停止钮消失」会误判）。返回 { idle, ms }。
+   * 回合之间立刻起新回合——只看一次「停止钮消失」会误判）。返回 { idle, ms, approvals }。
+   * 审批卡的处理与 waitTurn 同一个口径（approvals 三态，默认不表态——遇到了同样让用例失败）；
+   * 前两个参数照旧按位置传：waitIdle(4000, 120000)，要表态时第三个参数给 { approvals, approveOnly }。
    */
-  const waitIdle = async (stableMs = 6000, budgetMs = 240000) => {
+  const waitIdle = async (stableMs = 6000, budgetMs = 240000, { approvals = false, approveOnly = null, _alive = null } = {}) => {
+    assertApprovalSetting(approvals);
     const t0 = Date.now();
     let idleSince = null;
+    const items = [];
+    const finish = (idle) => {
+      if (approvals === false && items.length) throw unexpectedApprovalsError(items, "等空闲");
+      return { idle, ms: Date.now() - t0, approvals: { setting: approvals, clicked: items.length, button: approvals === false ? null : APPROVAL_BUTTONS[APPROVAL_ACTION[approvals]], items } };
+    };
     while (Date.now() - t0 < budgetMs) {
+      if (_alive && !_alive()) throw new Error("用例已超时，等待终止");
+      if (await dealWithApproval(approvals, approveOnly, items, "waitIdle")) {
+        idleSince = null;
+        continue;
+      }
       const busy = (await turnActive()) || (await stagedGrips().count()) > 0;
       if (!busy) {
         if (!idleSince) idleSince = Date.now();
-        if (Date.now() - idleSince >= stableMs) return { idle: true, ms: Date.now() - t0 };
+        if (Date.now() - idleSince >= stableMs) return finish(true);
       } else idleSince = null;
       await sleep(1000);
     }
-    return { idle: false, ms: Date.now() - t0 };
+    return finish(false);
   };
 
   /** 活动元素画像（纯键盘走查 J12 用）。 */
@@ -812,43 +1183,95 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
         { timeout: timeoutMs, polling: 300 },
       )
       .then(() => true, () => false);
+  /** 剪贴板里那类内容的中文说法（报告里用）。 */
+  const CLIPBOARD_KIND_TEXT = { image: "图片", files: "文件", other: "非文本的内容（富文本、位图以外的格式）", text: "文字", empty: "（空）" };
+  /** 剪贴板原文字的 base64 超过这个长度就不占用：还原要把整段文字塞进 PowerShell 命令行，太长塞不下、保证不了原样放回。 */
+  const CLIPBOARD_RESTORE_LIMIT = 6000;
+  /**
+   * 读系统剪贴板现在装的是什么（只读，不动它）。返回 { kind, text }：
+   * - kind：image（图片）/ files（复制的文件）/ other（有内容但不是文字）/ text（纯文字）/ empty（空）；
+   * - text：文字内容的 base64（UTF-8），没有文字就是空串。
+   * 读不出来（被别的进程占着）返回 null。
+   */
+  const probeClipboard = async () => {
+    const out = await runPowerShell(
+      "Add-Type -AssemblyName System.Windows.Forms; " +
+        "try { " +
+        "$t = Get-Clipboard -Raw -ErrorAction SilentlyContinue; " +
+        "$b64 = ''; if ($null -ne $t) { $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t)) }; " +
+        "$n = 0; $d = [System.Windows.Forms.Clipboard]::GetDataObject(); if ($null -ne $d) { $n = @($d.GetFormats()).Count }; " +
+        "$kind = 'text'; " +
+        "if ([System.Windows.Forms.Clipboard]::ContainsImage()) { $kind = 'image' } " +
+        "elseif ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) { $kind = 'files' } " +
+        "elseif ($null -eq $t -and $n -gt 0) { $kind = 'other' } " +
+        "elseif ($null -eq $t -or $b64 -eq '') { $kind = 'empty' }; " +
+        "'{0}|{1}' -f $kind, $b64 " +
+        "} catch { exit 3 }",
+    ).catch(() => null);
+    if (out === null) return null;
+    const bar = out.indexOf("|");
+    if (bar < 0) return null;
+    const kind = out.slice(0, bar).trim().toLowerCase();
+    if (!(kind in CLIPBOARD_KIND_TEXT)) return null;
+    return { kind, text: out.slice(bar + 1).trim() };
+  };
   /**
    * 附件——真人路径：把文件放进系统剪贴板（同资源管理器「复制」）→ 输入框 Ctrl+V。
    * 输入框没有 <input type=file>（附件菜单走系统原生对话框，浏览器自动化够不着）；
    * chat-input 的粘贴处理明确支持「OS 文件复制」这条用户路径（实测：可信 paste 事件，
    * clipboardData.files 1 项）。仅 Windows。
-   * 副作用：占用系统剪贴板——原内容若为文本，附件挂上后还原；非文本内容无法还原。
-   * 返回 { attached, ms, clipboardRestored }。
+   *
+   * 系统剪贴板是用户的——评审修复轮 R2 起的规矩：
+   * - 先看里面是什么。图片、文件、别的非文本格式、或者读不出来（被别的进程占着）→ **不占用**，
+   *   返回 attached: false 并写明原因（调用方回落到合成粘贴事件）；只有空剪贴板或纯文字才占用；
+   * - 占用后一定还原（Ctrl+V 那一步抛错也走还原），并且**读回**：读回来的与占用前一致才算「已还原」。
+   * 返回 { attached, ms, clipboardRestored, clipboardUntouched, reason?, placeholder }。
    */
   const attachByClipboard = async (filePath, { timeoutMs = 8000 } = {}) => {
-    if (process.platform !== "win32") return { attached: false, ms: 0, clipboardRestored: false, reason: "仅 Windows" };
+    if (process.platform !== "win32") return { attached: false, ms: 0, clipboardRestored: false, clipboardUntouched: true, reason: "仅 Windows" };
     const abs = filePath.replace(/\//g, "\\").replace(/'/g, "''");
     const ph0 = await composerPlaceholder();
-    const saved = await runPowerShell(
-      "$t = Get-Clipboard -Raw -ErrorAction SilentlyContinue; if ($null -ne $t) { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t)) } else { '' }",
-    ).catch(() => null);
-    await runPowerShell(`Set-Clipboard -Path '${abs}'`);
-    const t0 = Date.now();
-    await composer().focus();
-    await page.keyboard.press("Control+V");
-    // 剪贴板在「挂上判定完成之后」才还原——后端要读剪贴板里的文件路径。
-    const attached = await waitAttached(ph0, timeoutMs);
-    // 清空剪贴板用 .NET 的 Clipboard.Clear——Windows PowerShell 5.1 没有 Clear-Clipboard
-    // 这个命令（2026-11-24 实录：剪贴板原本没有文字时还原走到它，命令不存在，演示图
-    // 文件留在了用户的剪贴板上）。剪贴板可能被别的进程短暂占用，还原失败重试，最多 3 次。
-    const restore = async () => {
-      if (saved === null) return false;
-      const command = saved === ""
-        ? "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()"
-        : `Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${saved}')))`;
+    const before = await probeClipboard();
+    const skip = (reason) => ({ attached: false, ms: 0, clipboardRestored: false, clipboardUntouched: true, reason, placeholder: ph0 });
+    if (!before) return skip("读不出系统剪贴板里的内容（可能被别的进程占用），不覆盖它");
+    if (before.kind !== "text" && before.kind !== "empty") return skip(`系统剪贴板里是${CLIPBOARD_KIND_TEXT[before.kind]}，不覆盖它`);
+    if (before.text.length > CLIPBOARD_RESTORE_LIMIT) return skip("系统剪贴板里的文字太长，保证不了原样放回，不覆盖它");
+    const saved = before.text;
+    /** 还原并读回。占用前是空的 → 清空；是文字 → 放回原文。剪贴板可能被别的进程短暂占用，失败重试，最多 3 次。 */
+    const restoreClipboard = async () => {
+      // 清空剪贴板用 .NET 的 Clipboard.Clear——Windows PowerShell 5.1 没有 Clear-Clipboard 这个命令
+      //（2026-11-24 实录：命令不存在，演示图文件留在了用户的剪贴板上）
+      const command =
+        saved === ""
+          ? "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()"
+          : `Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${saved}')))`;
       for (let attempt = 0; attempt < 3; attempt++) {
-        if (await runPowerShell(command).then(() => true, () => false)) return true;
+        if (await runPowerShell(command).then(() => true, () => false)) {
+          const back = await probeClipboard();
+          if (back && back.kind === before.kind && back.text === saved) return true;
+        }
         await sleep(600);
       }
       return false;
     };
-    const clipboardRestored = await restore();
-    return { attached, ms: Date.now() - t0, clipboardRestored, placeholder: await composerPlaceholder() };
+    await runPowerShell(`Set-Clipboard -Path '${abs}'`).catch(() => {
+      throw Object.assign(new Error("系统剪贴板被占用，放不进文件"), { clipboardUntouched: true });
+    });
+    // 剪贴板已经被改掉：从这里开始无论成败都要走还原
+    const t0 = Date.now();
+    let attached = false;
+    let clipboardRestored = false;
+    try {
+      await composer().focus();
+      await page.keyboard.press("Control+V");
+      // 剪贴板在「挂上判定完成之后」才还原——后端要读剪贴板里的文件路径。
+      attached = await waitAttached(ph0, timeoutMs);
+    } catch (e) {
+      e.clipboardRestored = await restoreClipboard();
+      throw e;
+    }
+    clipboardRestored = await restoreClipboard();
+    return { attached, ms: Date.now() - t0, clipboardRestored, clipboardUntouched: false, placeholder: await composerPlaceholder() };
   };
   /**
    * 附件——合成兜底：直接派发带 DataTransfer 的 paste 事件（非可信事件，但走应用同一条
@@ -895,8 +1318,7 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
     await browser.close().catch(() => {});
   };
 
-  log(`attached: ${page.url()} (${Date.now() - t0}ms) viewport=${viewport ? `${viewport.width}x${viewport.height}` : "native"}`);
-  return {
+  const api = {
     browser,
     context,
     page,
@@ -946,10 +1368,22 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
     createGraphTask,
     waitGraphRun,
     attachTaskMainSession,
+    createTaskWithMainSession,
+    chatAgentId,
+    readToolMode,
+    accessMode,
+    accessModeOptions,
+    setAccessMode,
     composer,
     type,
     send,
     turnActive,
+    awaitTurnStart,
+    approvalDialog,
+    approvalCard,
+    clickApproval,
+    waitApproval,
+    approvalLog,
     waitTurn,
     stagedGrips,
     stagedRows,
@@ -959,8 +1393,50 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
     focusWalkTo,
     attachByClipboard,
     attachByPasteEvent,
+    probeClipboard,
     setViewport,
     shot,
     close,
   };
+
+  /**
+   * 轮询等待方法里「用例是否还活着」这个参数在各自签名的第几位（waitTurn / waitIdle 走选项对象里的 _alive，不在此列）。
+   * 必须按位置放，不能一律追加到末尾：用例只传运行号调 waitGraphRun 时，追加会把它放进「超时时长」那一位——
+   * 截止时刻算出 NaN，等待循环一轮不跑就返回空表，用例以为节点都跑完了（tasksession 场景包 TS-4 首跑实跑踩到）。
+   */
+  const ALIVE_AT = { waitRowState: 3, waitGraphRun: 2, waitSessionResolved: 1 };
+
+  /**
+   * 给单个用例用的驱动视图（运行器每条用例调一次）——用例超时后「终止」它靠这个：
+   * - expire() 之后，这条用例再调任何驱动方法都立即抛「用例已超时，后续操作不再执行」；
+   * - 正在进行的轮询等待（waitTurn / waitIdle / waitRowState / waitGraphRun / waitSessionResolved）
+   *   在下一轮循环里抛「用例已超时，等待终止」——不会带着界面操作（例如按 Esc 关审批卡）活到下一条用例；
+   * - 其它属性（page、log、errors、approvalLog…）原样透出。
+   * 返回 { app, expire, alive }：expire() 之后 alive() 为假——运行器用它把 ctx 上的助手也一并挡下。
+   */
+  api.forCase = () => {
+    const lease = { expired: false };
+    const alive = () => !lease.expired;
+    const guarded = new Proxy(api, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (typeof value !== "function") return value;
+        return (...args) => {
+          if (lease.expired) throw new Error("用例已超时，后续操作不再执行");
+          if (prop === "waitTurn") args[0] = { ...(args[0] || {}), _alive: alive };
+          else if (prop === "waitIdle") args[2] = { ...(args[2] || {}), _alive: alive };
+          else if (prop in ALIVE_AT) {
+            // 中间没传的可选参数留空位（undefined），方法自己的默认值照常生效
+            while (args.length < ALIVE_AT[prop]) args.push(undefined);
+            args[ALIVE_AT[prop]] = alive;
+          }
+          return value.apply(target, args);
+        };
+      },
+    });
+    return { app: guarded, expire: () => { lease.expired = true; }, alive: () => !lease.expired };
+  };
+
+  log(`attached: ${page.url()} (${Date.now() - t0}ms) viewport=${viewport ? `${viewport.width}x${viewport.height}` : "native"}`);
+  return api;
 }

@@ -1,13 +1,17 @@
 /**
- * 积木：v0.9.8 需求23 搜索体验优化 + 补充轮（SE-1~SE-11）。
+ * 积木：v0.9.8 需求23 搜索体验优化 + 补充轮（SE-1~SE-13）；评审修复轮 R2 补工具标签两块（SE-14、SE-15）。
  * 对应需求文档 docs/v0.9.8/需求23-搜索体验优化/（02 实施与验证、03 补充轮、tests/06 测试清单）。
+ * 工具标签两块对应用户裁决 8：「把标签放进容器内，标签的格式可以直接搜」。
  *
- * 两类积木：
- * - 不需要模型（SE-1~SE-3、SE-7、SE-8、SE-11）：在当前项目已有的会话上量，项目里没有会话就跳过。
+ * 三类积木：
+ * - 不需要模型（SE-1~SE-3、SE-7、SE-8、SE-11、SE-13、SE-15）：在当前项目已有的会话上量，项目里没有会话就跳过。
  * - 需要模型（SE-4~SE-6、SE-9、SE-10、SE-12）：首次用到时新建一个测试会话，连发三条消息——第 1、3 条
  *   带同一个独一无二的词（「蓝鲸 + 6 位编号」），第 2 条不带；第 3 条让模型回一个 Markdown 表格，
  *   表格最后一行也带这个词。搜这个词只会命中这个测试会话。测试会话留在项目里不删。SE-12 再往
  *   这个会话里发一条带另一个新词的消息——验证侧栏搜索的数据跟着刚聊完的内容走。
+ * - 工具标签（评审修复轮 R2）：SE-14 自己造一条「正文里带工具字样」的消息（内联形态，要模型）；
+ *   SE-15 在项目已有的会话里找「正文没有工具字样、标签跟在正文之后」的历史消息（尾随形态，不要模型）。
+ *   尾随形态没有可靠的自动化造数（它来自旧版本的剥离消息和任务启动包装），SE-15 找不到就标跳过并写明。
  *
  * 回复故意要长：搜索态里只留命中行，命中行加起来得比视口高，「打开会话落在哪」「退出搜索后正在
  * 看的那行在不在原处」才会真的滚动、才量得出来（会话太短时视图不动，怎么测都过）。前提不成立
@@ -18,9 +22,9 @@
  * 就是字底被裁。数字与显示缩放无关（都按逻辑像素算）。
  */
 import { expect } from "../lib-pw.mjs";
+import { pickInjectableTool, reloadIntoSession } from "./fix-round.mjs";
 
 const searchBox = (app) => app.sidebar().locator("input").first();
-const stopBtn = (page) => page.locator('button[title="停止"]:not([disabled])').first();
 /** 侧栏的常规会话行（标题带完整标题提示的那一类；任务会话树的行不在此列）。 */
 const sessionRows = (app) => app.sidebar().locator("button.flex-col.items-start").filter({ has: app.page.locator("span.truncate[title]") });
 const messageRows = (page) => page.locator('[data-turn-scope="main"] [data-message-index]');
@@ -204,11 +208,12 @@ async function ensureFixture(ctx) {
   ];
   for (const [i, text] of turns.entries()) {
     await app.send(text);
-    const started = await stopBtn(page).waitFor({ state: "visible", timeout: 20000 }).then(() => true, () => false);
+    const started = await app.awaitTurnStart(20000);
     if (!started) {
       ctx.state.modelOk = false;
       ctx.skip(`模型不可用：第 ${i + 1} 条消息发出后 20 秒内回合未启动`);
     }
+    // approvals 用框架默认值（不表态）：这几条提示词都只要求回复文字，不该出现审批卡；真弹了用例失败并写明
     const turn = await app.waitTurn({ budgetMs: 180000, settleMs: 4000 });
     if (!turn.done) throw new Error(`第 ${i + 1} 条消息的回合没有在时限内结束`);
     const idle = await app.waitIdle(3000, 120000);
@@ -295,6 +300,266 @@ const withCleanup = (c) => ({
     }
   },
 });
+
+/**
+ * 主线程占用量（SE-13）：长任务（浏览器记的「一次占住主线程超过 50 毫秒」）与两帧之间的间隔。
+ * 长任务是浏览器自己记的，窗口在后台也准；帧间隔在窗口被完全挡住时会被浏览器拉长，只作旁证。
+ */
+const perfStart = (page) =>
+  page.evaluate(() => {
+    const s = (window.__se13 = { start: performance.now(), tasks: [], frames: [], raf: 0, ob: null });
+    try {
+      s.ob = new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) s.tasks.push({ start: e.startTime, dur: e.duration });
+      });
+      s.ob.observe({ entryTypes: ["longtask"] });
+    } catch {
+      /* 不支持长任务观测时只看帧间隔 */
+    }
+    const tick = (t) => {
+      s.frames.push(t);
+      s.raf = requestAnimationFrame(tick);
+    };
+    s.raf = requestAnimationFrame(tick);
+  });
+
+const perfIdle = (page) =>
+  page.evaluate(() => {
+    const s = window.__se13;
+    const now = performance.now();
+    const lastEnd = s.tasks.reduce((m, t) => Math.max(m, t.start + t.dur), s.start);
+    return { elapsed: now - s.start, sinceLastTask: now - lastEnd, tasks: s.tasks.length };
+  });
+
+const perfStop = (page) =>
+  page.evaluate(() => {
+    const s = window.__se13;
+    cancelAnimationFrame(s.raf);
+    s.ob?.disconnect();
+    const tasks = s.tasks;
+    let maxGap = 0;
+    for (let i = 1; i < s.frames.length; i++) maxGap = Math.max(maxGap, s.frames[i] - s.frames[i - 1]);
+    const lastEnd = tasks.reduce((m, t) => Math.max(m, t.start + t.dur), s.start);
+    return {
+      观察毫秒: Math.round(performance.now() - s.start),
+      长任务个数: tasks.length,
+      长任务合计毫秒: Math.round(tasks.reduce((a, t) => a + t.dur, 0)),
+      最长长任务毫秒: Math.round(tasks.reduce((m, t) => Math.max(m, t.dur), 0)),
+      最大帧间隔毫秒: Math.round(maxGap),
+      最后一个长任务结束于毫秒: tasks.length ? Math.round(lastEnd - s.start) : 0,
+      页面可见: document.visibilityState,
+    };
+  });
+
+/** 等到界面静下来（至少观察 1.5 秒，且最后一个长任务结束已超过 1.5 秒）再收表。 */
+const perfStopWhenIdle = async (page, timeoutMs) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const s = await perfIdle(page);
+    if (s.elapsed > 1500 && s.sinceLastTask > 1500) break;
+    await page.waitForTimeout(250);
+  }
+  return perfStop(page);
+};
+
+/** SE-13 的通过线：长任务合计与单次、帧间隔都在这条线以内才算「不卡」。 */
+const assertNotJanky = (measured, what) => {
+  if (measured.长任务合计毫秒 > 1000 || measured.最长长任务毫秒 > 500) {
+    throw new Error(`${what}卡了：${JSON.stringify(measured)}`);
+  }
+};
+
+// ── 工具标签（评审修复轮 R2 · 用户裁决 8：把标签放进容器内，标签的格式可以直接搜）──
+/**
+ * 量消息区里带工具标签的用户消息（在页面里执行，必须自给自足）。用户消息里的标签有两种形态：
+ * - 内联：正文里就有 @[名] 字样，标签是正文里的 span[data-tool-pill]（看得见的那部分是它里面绝对定位的子节点）；
+ * - 尾随：正文里没有字样，标签组（span.inline-flex.flex-wrap）跟在正文 span.whitespace-pre-wrap.break-all 之后，
+ *   组里每个标签是 span[title="<工具 id>"]，页面文字是 @[显示名]（首尾的 @[ 和 ] 不占宽度）。
+ * 每个标签 / 标签组量三样，都是量真实矩形，不看 DOM 在不在：
+ * - 在容器内：是正文容器（div.overflow-hidden）的后代，且矩形落在容器矩形之内；
+ * - 同一行：和它旁边那一行正文有纵向重叠（尾随组只看正文最后一行：正文最后一行的底 > 标签组顶 + 2）；
+ * - 尾随组另记「本可放在最后一行」：正文最后一行右边还空得下这个组——空得下却掉了下去才是缺陷，
+ *   最后一行本来就放不下的自然换行不算。
+ * 另外把当前登记的搜索高亮范围逐个读出来（文字、矩形、是不是落在某个标签上）。
+ * StaticRange 自己不能量位置——按它的起止点临时建一个 Range 来量。
+ */
+const measureToolTags = () => {
+  const main = document.querySelector('[data-turn-scope="main"]');
+  const round = (r) => ({ top: +r.top.toFixed(1), bottom: +r.bottom.toFixed(1), left: +r.left.toFixed(1), right: +r.right.toFixed(1), width: +r.width.toFixed(1), height: +r.height.toFixed(1) });
+  const lineRects = (node) => {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    return [...range.getClientRects()];
+  };
+  const within = (inner, outer) => inner.left >= outer.left - 1 && inner.right <= outer.right + 1 && inner.top >= outer.top - 1 && inner.bottom <= outer.bottom + 1;
+  /**
+   * 高亮范围落在标签上：高亮与标签矩形的交集占高亮的一半以上。不能要求高亮整个在标签矩形里——
+   * 文字的行盒比标签的边框盒上下各高出约 1 像素；显示名被截断的标签（超出最大宽度以省略号收尾），
+   * 文字范围伸出标签右边，看得见的那部分仍在标签里（首跑实跑踩到：两种形态各中一种）。
+   */
+  const mostlyOn = (inner, outer) => {
+    const w = Math.min(inner.right, outer.right) - Math.max(inner.left, outer.left);
+    const h = Math.min(inner.bottom, outer.bottom) - Math.max(inner.top, outer.top);
+    return w > 0 && h > 0 && w * h >= inner.width * inner.height * 0.5;
+  };
+  const sameRow = (a, b) => a.bottom > b.top + 2 && b.bottom > a.top + 2;
+  const TAGS = "[data-tool-pill], span.inline-flex.flex-wrap";
+  const tags = [];
+  let scanned = 0;
+  for (const row of main ? main.querySelectorAll("[data-message-index][data-turn-index]") : []) {
+    const body = row.querySelector("span.whitespace-pre-wrap.break-all");
+    const container = body ? body.closest("div.overflow-hidden") : null;
+    if (!body || !container) continue;
+    scanned += 1;
+    const box = container.getBoundingClientRect();
+    // 正文里的文字节点（标签里面的不算），按先后
+    const texts = [];
+    for (const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT); walker.nextNode(); ) {
+      const node = walker.currentNode;
+      if (!node.parentElement || node.parentElement.closest(TAGS)) continue;
+      if ((node.textContent || "").trim()) texts.push(node);
+    }
+    const bodyText = texts.map((node) => node.textContent).join("");
+    const lastBefore = (node) => {
+      let last = null;
+      for (const t of texts) if (t.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) last = t;
+      return last;
+    };
+    const firstAfter = (node) => texts.find((t) => node.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING) ?? null;
+    const base = { 行: Number(row.getAttribute("data-message-index")), 正文文字: bodyText.slice(0, 40), 矩形: null, 容器矩形: round(box) };
+    for (const pill of body.querySelectorAll("[data-tool-pill]")) {
+      const visible = pill.querySelector(":scope > .absolute") ?? pill;
+      const rect = visible.getBoundingClientRect();
+      const prev = lastBefore(pill);
+      const next = firstAfter(pill);
+      const prevLine = prev ? lineRects(prev).at(-1) : null;
+      const nextLine = next ? lineRects(next)[0] : null;
+      tags.push({
+        ...base,
+        形态: "内联",
+        文字: (visible.textContent || "").trim(),
+        在容器内: container.contains(pill),
+        矩形容得下: within(rect, box),
+        同一行: Boolean((prevLine && sameRow(prevLine, rect)) || (nextLine && sameRow(nextLine, rect))),
+        矩形: round(rect),
+      });
+    }
+    for (const group of container.querySelectorAll("span.inline-flex.flex-wrap")) {
+      const items = [...group.querySelectorAll(":scope > span[title]")];
+      if (!items.length) continue;
+      const rect = group.getBoundingClientRect();
+      const prev = lastBefore(group);
+      const prevLine = prev ? lineRects(prev).at(-1) : null;
+      tags.push({
+        ...base,
+        形态: "尾随",
+        工具: items.map((item) => ({ id: item.getAttribute("title"), 文字: (item.textContent || "").trim() })),
+        文字: items.map((item) => (item.textContent || "").trim()).join(" "),
+        正文含字样: /@\[/.test(bodyText),
+        在容器内: container.contains(group),
+        矩形容得下: within(rect, box),
+        同一行: prevLine ? prevLine.bottom > rect.top + 2 : null,
+        本可放在最后一行: prevLine ? prevLine.right + rect.width <= box.right + 1 : null,
+        矩形: round(rect),
+      });
+    }
+  }
+  // 当前登记的搜索高亮：文字、矩形、是不是落在某个标签上
+  const highlights = [];
+  const layer = (name) => {
+    const h = typeof CSS !== "undefined" && CSS.highlights ? CSS.highlights.get(name) : undefined;
+    return h ? [...h] : [];
+  };
+  for (const [name, ranges] of [["jishu-search-match", layer("jishu-search-match")], ["jishu-search-current", layer("jishu-search-current")]]) {
+    for (const range of ranges) {
+      let rect = null;
+      let text = "";
+      try {
+        // 高亮层里登记的是 StaticRange：自己不能量位置、也没有 toString——按它的起止点
+        // 临时建一个 Range 来量矩形、读文字（首跑实跑踩到：range.toString() 得到 "[object StaticRange]"）
+        const probe = document.createRange();
+        probe.setStart(range.startContainer, range.startOffset);
+        probe.setEnd(range.endContainer, range.endOffset);
+        rect = probe.getBoundingClientRect();
+        text = probe.toString();
+      } catch {
+        rect = null;
+        text = "";
+      }
+      const onTag = Boolean(rect && rect.width + rect.height > 0 && tags.some((t) => mostlyOn(rect, t.矩形)));
+      highlights.push({ 层: name, 文字: text, 矩形: rect ? round(rect) : null, 落在标签上: onTag });
+    }
+  }
+  return { 量到的用户消息行: scanned, 标签: tags, 高亮: highlights };
+};
+
+/** 徽标上的命中数；这个会话行没有徽标返回 null（rowBadge 把「没有」当成 0，这里要分清）。 */
+const badgeOrNull = async (row) => {
+  const text = ((await row.locator("span.rounded-full").filter({ hasText: /^\s*\d+\s*$/ }).first().textContent().catch(() => "")) || "").trim();
+  return /^\d+$/.test(text) ? Number(text) : null;
+};
+
+/**
+ * 当前打开的会话、换一个搜索词之后「标签能不能直接搜」的事实：三处计数（侧栏徽标 / 正文高亮范围数 /
+ * 标题栏计数）、每个高亮范围的文字与位置。locateRow 返回这个会话在搜索结果里的那一行（认不出返回 null）。
+ */
+const searchTagFacts = async (ctx, query, locateRow) => {
+  const { app, page } = ctx;
+  await searchAndWait(app, query);
+  // 高亮登记是每帧合并一次：连续两次读数一样再记
+  let last = -1;
+  for (let i = 0; i < 6; i++) {
+    const n = await highlightCounts(page);
+    if (n === last) break;
+    last = n;
+    await app.sleep(300);
+  }
+  const measured = await page.evaluate(measureToolTags);
+  const row = await locateRow().catch(() => null);
+  return {
+    query,
+    侧栏徽标: row ? await badgeOrNull(row) : null,
+    正文高亮范围数: measured.高亮.length,
+    标题栏计数: await counter(page),
+    高亮: measured.高亮,
+    量到的标签: measured.标签.length,
+    // 与高亮同一时刻量的标签矩形（报错时对照用）
+    标签矩形: measured.标签.slice(0, 6).map((t) => ({ 形态: t.形态, 行: t.行, 文字: String(t.文字).slice(0, 30), 矩形: t.矩形 })),
+  };
+};
+
+/** 判读一次搜索：三处计数对不对得上、高亮文字是不是搜索词、有没有高亮落在标签上。 */
+const judgeTagSearch = (f) => {
+  const m = /^(\d+)\/(\d+)$/.exec(String(f.标题栏计数 ?? ""));
+  const total = m ? Number(m[2]) : -1;
+  return {
+    搜索词: f.query,
+    侧栏徽标: f.侧栏徽标,
+    正文高亮范围数: f.正文高亮范围数,
+    标题栏计数: f.标题栏计数,
+    正文与标题栏一致: f.正文高亮范围数 > 0 && f.正文高亮范围数 === total,
+    三处一致: f.侧栏徽标 !== null && f.侧栏徽标 === f.正文高亮范围数 && f.正文高亮范围数 === total,
+    高亮文字就是搜索词: f.高亮.length > 0 && f.高亮.every((h) => h.文字.toLowerCase() === f.query.toLowerCase()),
+    落在标签上的高亮数: f.高亮.filter((h) => h.落在标签上).length,
+    高亮文字: [...new Set(f.高亮.map((h) => h.文字))].slice(0, 6),
+    高亮位置: f.高亮.slice(0, 6),
+    标签矩形: f.标签矩形 ?? [],
+  };
+};
+
+/** 「能直接搜」的断言：侧栏那一行认不出来时只告警（另两处照常核对），其余不成立直接抛错。 */
+const assertTagSearch = (ctx, judged, more) => {
+  const what = `搜「${judged.搜索词}」`;
+  if (judged.侧栏徽标 === null) ctx.warn(`${what}时在侧栏搜索结果里认不出这个会话的行——侧栏徽标没有核对`);
+  if (!judged.正文与标题栏一致) throw new Error(`${what}：正文高亮 ${judged.正文高亮范围数} 处，标题栏计数「${judged.标题栏计数}」，对不上：${JSON.stringify({ ...more, 搜索: judged })}`);
+  if (!judged.三处一致) throw new Error(`${what}：侧栏徽标 ${judged.侧栏徽标}、正文高亮 ${judged.正文高亮范围数} 处、标题栏计数「${judged.标题栏计数}」，三处对不上：${JSON.stringify({ ...more, 搜索: judged })}`);
+  if (!judged.高亮文字就是搜索词) throw new Error(`${what}：高亮范围的文字不是搜索词（${judged.高亮文字.join(" | ")}）：${JSON.stringify({ ...more, 搜索: judged })}`);
+  if (!judged.落在标签上的高亮数) throw new Error(`${what}：有命中，但没有一处高亮落在工具标签上：${JSON.stringify({ ...more, 搜索: judged })}`);
+};
+
+/** 尾随形态没有自动化造数时跳过用的说明。 */
+const NO_TRAILING_DATA =
+  "尾随形态（正文没有工具字样、标签跟在正文之后）来自旧版本的剥离消息和任务启动包装，没有可靠的自动化造数——请用真实历史会话在界面上取证";
 
 export const searchCases = [
   {
@@ -525,7 +790,7 @@ export const searchCases = [
       await openFixtureNormally(ctx);
       const token = `信标${fixture.nonce}`;
       await app.send(`第四个问题：请记住「${token}」这个词，后面会用到。这一条只回复两个字：记下。`);
-      const started = await stopBtn(page).waitFor({ state: "visible", timeout: 20000 }).then(() => true, () => false);
+      const started = await app.awaitTurnStart(20000);
       if (!started) ctx.skip("模型不可用：消息发出后 20 秒内回合未启动");
       const turn = await app.waitTurn({ budgetMs: 180000, settleMs: 4000 });
       if (!turn.done) throw new Error("这一条消息的回合没有在时限内结束");
@@ -639,6 +904,219 @@ export const searchCases = [
       const rows = await sessionRows(app).count();
       if (rows !== sidebarRows) throw new Error("侧栏会话行数没有恢复");
       return { 翻了几处: moves, 刚才看的行: before.row, 离视口顶: [before.offset, after] };
+    },
+  },
+  {
+    id: "SE-13",
+    name: "长会话搜一个常见字，界面不卡",
+    feature: "搜索态的渲染量 / 需求23（用户原始约束：长对话必须能安全检索）",
+    steps: "停到新对话（正文里没有任何会话）→ 开始记录 → 侧栏搜「的」→ 找命中最多的那个会话 → 点开它（搜索态）→ 等界面静下来 → 关键词换成「是」→ 再等静下来",
+    expect: "侧栏出结果、点开长会话、换词这三步，长任务合计都不超过 1000 毫秒、单次不超过 500 毫秒；命中数、渲染行数、各项耗时如实记录",
+    needs: "none",
+    timeoutMs: 240000,
+    run: async (ctx) => {
+      const { app, page } = ctx;
+      await settle(ctx);
+      await app.newConversation();
+      await app.sleep(600);
+      // 第一步：只输词、不点开——量侧栏自己算命中的开销
+      await perfStart(page);
+      await searchBox(app).fill("的");
+      await app.sleep(1500);
+      const typing = await perfStopWhenIdle(page, 30000);
+      const rows = sessionRows(app);
+      const n = await rows.count();
+      let best = { index: -1, badge: 0 };
+      const badges = [];
+      for (let i = 0; i < Math.min(n, 40); i++) {
+        const badge = await rowBadge(rows.nth(i));
+        if (!Number.isFinite(badge)) continue;
+        badges.push(badge);
+        if (badge > best.badge) best = { index: i, badge };
+      }
+      badges.sort((a, b) => b - a);
+      if (best.badge < 80) {
+        ctx.skip(`当前项目里「的」命中最多的会话只有 ${best.badge} 处（不足 80），量不出长会话`);
+      }
+      // 第二步：点开命中最多的会话（搜索态只显示命中行——命中越多渲染越多）
+      await perfStart(page);
+      await rows.nth(best.index).click();
+      await expect(messageRows(page).first()).toBeVisible({ timeout: 60000 });
+      const opened = await perfStopWhenIdle(page, 60000);
+      const rendered = await messageRows(page).count();
+      const openedCounter = await counter(page);
+      await ctx.shot("SE13-长会话搜常见字");
+      // 第三步：长会话开着，换一个同样常见的词
+      await perfStart(page);
+      await searchBox(app).fill("是");
+      await app.sleep(1500);
+      const retyped = await perfStopWhenIdle(page, 60000);
+      const retypedCounter = await counter(page);
+      const facts = {
+        命中最多的前几个会话: badges.slice(0, 5),
+        点开的会话命中数: best.badge,
+        搜索态渲染的消息行数: rendered,
+        计数: [openedCounter, retypedCounter],
+        输入时: typing,
+        点开时: opened,
+        换词时: retyped,
+      };
+      assertNotJanky(typing, "侧栏算命中时");
+      assertNotJanky(opened, "点开长会话时");
+      assertNotJanky(retyped, "换词时");
+      return facts;
+    },
+  },
+  {
+    id: "SE-14",
+    name: "工具标签（内联形态）：在正文容器内、与正文同一行、能直接搜",
+    feature: "用户消息里的工具标签 / 会话内搜索（评审修复轮 R2 · 用户裁决 8：把标签放进容器内，标签的格式可以直接搜）",
+    steps: "新对话：加号菜单挂一个可注入的工具（标签落在正文开头）→ 接着输入一段带编号的正文 → 发送、等回合结束 → 重载页面回到这个会话 → 量这个标签：是不是正文容器的后代、矩形在不在容器之内、和旁边的正文是不是同一行 → 侧栏搜标签的显示名、再搜「@[显示名]」，量侧栏徽标、正文高亮范围数、标题栏计数，读每个高亮范围的文字和位置",
+    expect: "标签在正文容器内、矩形容得下、和正文同一行；两种搜索词下 侧栏徽标 = 正文高亮范围数 = 标题栏计数，每个高亮范围的文字就是搜索词，且至少一处高亮落在这个标签上",
+    needs: "model",
+    timeoutMs: 420000,
+    run: async (ctx) => {
+      const { app, page } = ctx;
+      await settle(ctx);
+      await app.closeGuideCards();
+      if (ctx.state.modelOk === false) ctx.skip("模型不可用（本轮已判定）");
+      await app.newConversation();
+      ctx.state.sessionsCreated += 1;
+      ctx.since = Date.now();
+      const nonce = String(Date.now()).slice(-6);
+      // 同 J5 的顺序：先挂工具（胶囊落在空输入框里），再接正文——消息就是「@[显示名] 工具标签验证-编号：…」
+      const tool = await pickInjectableTool(ctx);
+      if (!tool) ctx.skip("加号菜单里没有可挂载的工具项——造不出带工具标签的消息");
+      await app.type(`工具标签验证-${nonce}：只回复两个字：收到。`, { append: true });
+      await app.composer().press("Enter");
+      const started = await app.awaitTurnStart(20000, { text: `工具标签验证-${nonce}：只回复两个字：收到。` });
+      if (!started) {
+        ctx.state.modelOk = false;
+        ctx.skip("模型不可用：消息发出后 20 秒内回合未启动");
+      }
+      ctx.state.modelOk = true;
+      // 提示词只要求回复两个字，不该出现审批卡——等回合用框架默认值（不表态）
+      const turn = await app.waitTurn({ budgetMs: 180000, settleMs: 4000 });
+      const idle = await app.waitIdle(3000, 120000);
+      if (!turn.done || !idle.idle) throw new Error("回合没有在时限内结束");
+      const truth = await ctx.truth(ctx.since);
+      const raw = (truth?.rawUsers ?? []).find((u) => u.includes(`工具标签验证-${nonce}`)) ?? "";
+      if (!raw.includes(`@[${tool}]`)) throw new Error(`落盘的用户消息没有保留 @[${tool}] 字样：${JSON.stringify(raw.slice(0, 80))}`);
+      const head = await app.sessionHeader();
+      if (!head) throw new Error("读不到会话头");
+      const token = `@[${tool}]`;
+      const beforeReload = await page.evaluate(measureToolTags);
+      // 重载后按回放路径再量（历史消息走的就是这条路）。有别的会话的回合在跑时不重载（前端会丢对流式的跟踪），
+      // 改按当前显示量、并写明没走重载这一步。
+      const running = await app.invoke("chat_active_sessions").catch(() => []);
+      const reloaded = !(Array.isArray(running) && running.length);
+      if (reloaded) {
+        await reloadIntoSession(ctx, { shortId: head.id, keyword: `工具标签验证-${nonce}` });
+        await expect(messageRows(page).first()).toBeVisible({ timeout: 15000 });
+      } else ctx.warn(`有 ${running.length} 个会话的回合还在进行，没有重载页面——标签是按当前显示量的，没走重载后的回放路径`);
+      const measured = await page.evaluate(measureToolTags);
+      const mine = measured.标签.filter((t) => t.形态 === "内联" && t.文字 === token);
+      await ctx.shot("SE14-内联标签");
+      if (!mine.length) {
+        throw new Error(`重开会话后，这条消息里没有找到工具标签 ${token}：${JSON.stringify({ 现在的标签: measured.标签.slice(0, 6), 重载前的标签: beforeReload.标签.slice(0, 6) })}`);
+      }
+      const misplaced = mine.filter((t) => !t.在容器内 || !t.矩形容得下 || !t.同一行);
+      if (misplaced.length) throw new Error(`工具标签不在正文容器内 / 矩形伸出容器 / 和正文不在同一行：${JSON.stringify(misplaced)}`);
+      // 能直接搜：搜显示名、搜 @[显示名]
+      const title = (await app.sessionHeader())?.title ?? "";
+      const locateRow = async () => {
+        const rows = sessionRows(app);
+        // 搜索结果行的文字带着命中的那一段：这条消息的命中就在带编号的正文前面
+        const byNonce = rows.filter({ hasText: `工具标签验证-${nonce}` });
+        if (await byNonce.count()) return byNonce.first();
+        const byTitle = rows.filter({ has: page.locator(`span.truncate[title=${JSON.stringify(title)}]`) });
+        return (await byTitle.count()) === 1 ? byTitle.first() : null;
+      };
+      const byName = judgeTagSearch(await searchTagFacts(ctx, tool, locateRow));
+      await ctx.shot("SE14-搜显示名");
+      const byToken = judgeTagSearch(await searchTagFacts(ctx, token, locateRow));
+      await searchBox(app).fill("");
+      assertTagSearch(ctx, byName, { 标签: mine });
+      assertTagSearch(ctx, byToken, { 标签: mine });
+      return {
+        挂的工具: tool,
+        消息: raw.replace(/\n+/g, " ").slice(0, 60),
+        重载后量的: reloaded,
+        标签: mine.map((t) => ({ 在容器内: t.在容器内, 矩形容得下: t.矩形容得下, 同一行: t.同一行, 矩形: t.矩形, 容器矩形: t.容器矩形 })),
+        搜显示名: byName,
+        搜原始文本: byToken,
+      };
+    },
+  },
+  {
+    id: "SE-15",
+    name: "工具标签（尾随形态）：历史消息里跟在正文后的标签在容器内、同一行、能直接搜",
+    feature: "历史消息的工具标签 / 会话搜索（评审 R2-8：历史消息工具标签掉到下一行；用户裁决 8：搜索时识别标签的原始文本）",
+    steps: "侧栏搜「@[」找出项目里带工具标签的会话 → 逐个点开（最多 5 个，每步校验落点），找一条「正文里没有工具字样、标签组跟在正文之后」的用户消息 → 量每个标签组：是不是正文容器的后代、矩形在不在容器之内、和正文最后一行是不是同一行 → 搜其中一个标签的显示名、再搜「@[显示名]」，量三处计数、每个高亮范围的文字和位置",
+    expect: "每个标签组都在正文容器内、矩形容得下；正文最后一行还放得下却掉到了下一行 = 不通过；两种搜索词下 侧栏徽标 = 正文高亮范围数 = 标题栏计数，高亮范围的文字就是搜索词，且至少一处高亮落在标签上；项目里没有这种消息时标跳过并写明",
+    needs: "none",
+    timeoutMs: 300000,
+    run: async (ctx) => {
+      const { app, page } = ctx;
+      await settle(ctx);
+      await app.newConversation();
+      const info = await app.projectInfo();
+      const listed = await app.invoke("list_sessions", { agentId: await app.chatAgentId(), encodedName: info?.encoded_name }).catch(() => []);
+      // 标签的原始文本是 @[显示名]：搜「@[」就把带工具标签的会话都列出来了
+      await searchAndWait(app, "@[");
+      const rows = sessionRows(app);
+      const total = await rows.count();
+      if (!total) ctx.skip(`侧栏搜「@[」没有结果：当前项目的会话里没有带工具标签的消息。${NO_TRAILING_DATA}`);
+      let found = null;
+      let opened = 0;
+      const tried = [];
+      for (let i = 0; i < Math.min(total, 5) && !found; i++) {
+        const row = rows.nth(i);
+        const title = (await row.locator("span.truncate[title]").first().getAttribute("title")) || "";
+        await row.click();
+        await app.sleep(1500);
+        const head = await app.sessionHeader();
+        // 落点校验：会话头的短号得是清单里这个标题的会话（标题重复时任意一个同名会话都算）
+        const ids = (Array.isArray(listed) ? listed : []).filter((s) => (s.display_name ?? "").trim() === title).map((s) => s.id);
+        const landed = Boolean(head?.id) && (ids.length ? ids.some((id) => id.startsWith(head.id)) : head.title === title);
+        tried.push({ 标题: title.slice(0, 20), 落点对上: landed });
+        if (!landed) continue;
+        opened += 1;
+        const measured = await page.evaluate(measureToolTags);
+        const trailing = measured.标签.filter((t) => t.形态 === "尾随" && !t.正文含字样);
+        if (trailing.length) found = { head, trailing };
+      }
+      if (!found || !found.head) {
+        ctx.skip(`点开了 ${opened} 个带工具标签的会话，都没有「正文没有工具字样、标签跟在正文之后」的消息（只有内联形态，或正文本来就带字样）。${NO_TRAILING_DATA}：${JSON.stringify(tried)}`);
+      }
+      await ctx.shot("SE15-尾随标签");
+      const groups = found.trailing;
+      const outside = groups.filter((t) => !t.在容器内 || !t.矩形容得下);
+      if (outside.length) throw new Error(`历史消息的工具标签不在正文容器内 / 矩形伸出容器：${JSON.stringify(outside)}`);
+      const dropped = groups.filter((t) => t.本可放在最后一行 && t.同一行 === false);
+      if (dropped.length) throw new Error(`历史消息的工具标签掉到了下一行（正文最后一行还放得下）：${JSON.stringify(dropped)}`);
+      if (!groups.some((t) => t.同一行 === true)) ctx.warn("这些标签组都跟着正文自然换行了（最后一行本来就放不下），「和正文最后一行同一行」这一条没有量到");
+      // 能直接搜：正文里没有这个字样，搜得到才是「识别了标签的原始文本」
+      const token = groups[0].工具[0].文字;
+      const name = token.replace(/^@\[/, "").replace(/\]$/, "");
+      const title = found.head.title;
+      const locateRow = async () => {
+        const byTitle = sessionRows(app).filter({ has: page.locator(`span.truncate[title=${JSON.stringify(title)}]`) });
+        return (await byTitle.count()) === 1 ? byTitle.first() : null; // 同名会话不止一个就认不出是哪一行
+      };
+      const byName = judgeTagSearch(await searchTagFacts(ctx, name, locateRow));
+      const byToken = judgeTagSearch(await searchTagFacts(ctx, token, locateRow));
+      await ctx.shot("SE15-搜原始文本");
+      await searchBox(app).fill("");
+      assertTagSearch(ctx, byName, { 标签组数: groups.length });
+      assertTagSearch(ctx, byToken, { 标签组数: groups.length });
+      return {
+        会话: title.slice(0, 24),
+        试过的会话: tried,
+        标签组: groups.map((g) => ({ 工具: g.工具.map((t) => t.文字), 正文: g.正文文字, 在容器内: g.在容器内, 矩形容得下: g.矩形容得下, 同一行: g.同一行, 本可放在最后一行: g.本可放在最后一行 })),
+        搜显示名: byName,
+        搜原始文本: byToken,
+      };
     },
   },
 ].map(withCleanup);

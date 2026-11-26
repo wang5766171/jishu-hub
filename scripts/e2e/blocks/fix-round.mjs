@@ -10,6 +10,8 @@
  * - F6 在套装件都已装的环境里，会临时卸掉一个「本地件」（装/卸只是写/删一个清单文件，
  *   不联网）来造出可装项，用例结束时装回。
  * - 还原类积木两块（无论前面成败都会执行）：FX1 还原冲突停用与扩展，FX2 把精选件调回原状。
+ *   评审修复轮 R2：台账为空时它们不再直接跳过，而是拿当前实测与运行前的基线比
+ *   （安装用例超时之后才装上的扩展、F6 中途失败时没记全的精选件，都靠这一步兜住）。
  */
 import { expect } from "../lib-pw.mjs";
 
@@ -32,6 +34,8 @@ async function begin(ctx) {
 }
 
 async function finishTurn(ctx, budget = 240000) {
+  // approvals 用框架默认值（不表态）：本文件的提示词里只有 F1、F4（挂着工具问问题）可能让模型调工具——
+  // 挂的是哪个工具运行时才知道，框架不替用户放行；审批档下真弹了卡，用例失败并写明，断言本身不依赖工具执行
   const turn = await ctx.app.waitTurn({ budgetMs: budget });
   const idle = await ctx.app.waitIdle(4000, budget);
   if (!turn.done || !idle.idle) throw new Error("回合未在时限内结束");
@@ -160,6 +164,21 @@ async function restoreCurated(ctx) {
   return results;
 }
 
+/**
+ * 实测的「已装本地精选件」与运行前基线的差（基线是 run.mjs 在运行开始时取的快照）。
+ * 只管本地件（装卸只是写/删一个清单文件，可逆、不联网）；需要联网的件不在基线里。
+ * 返回 { installed: 多装的, missing: 少装的 }；读不到实测清单返回 null。
+ */
+async function curatedDiff(ctx) {
+  const { app } = ctx;
+  const base = ctx.state.curatedBaseline;
+  const [curated, plugins] = await Promise.all([app.invoke("market_list_curated").catch(() => null), app.invoke("plugin_list").catch(() => null)]);
+  if (!Array.isArray(base) || !Array.isArray(curated) || !plugins) return null;
+  const localIds = new Set(curated.filter((e) => e?.kind === "agent").map((e) => e.id));
+  const now = (plugins.plugins || []).map((p) => p.id).filter((id) => localIds.has(id));
+  return { installed: now.filter((id) => !base.includes(id)), missing: base.filter((id) => !now.includes(id)) };
+}
+
 export const fixRoundViewCases = [
   {
     id: "F5",
@@ -274,7 +293,9 @@ export const fixRoundReloadCases = [
       await expect(dialog).toContainText(/成功 1 项/, { timeout: 60000 });
       const firstRun = (await dialog.textContent()).replace(/\s+/g, " ").trim();
       await ctx.shot("F6-第一个套装装完");
-      if (borrowed) delete ctx.state.curatedTarget[want]; // 借出的件已装回 = 回到原状
+      // 借出的件要实测装回了才算回到原状（评审修复轮 R2：原来只凭弹层文案「成功 1 项」销账）；
+      // 没装上则留在目标态表里，由还原用例 FX2 装回
+      if (borrowed && (await isInstalled(want))) delete ctx.state.curatedTarget[want];
       await app.click("Close", { scope: dialog });
       await expect(dialog).toBeHidden();
 
@@ -323,7 +344,7 @@ export const fixRoundCases = [
       const MARK = `请用刚才挂载的工具回答：一加一等于几？只回答数字，不要解释。（${NONCE}）`;
       await app.type(MARK, { append: true });
       await app.composer().press("Enter");
-      const started = await stopBtn(page).waitFor({ state: "visible", timeout: 15000 }).then(() => true, () => false);
+      const started = await app.awaitTurnStart(15000, { text: MARK });
       if (!started) {
         ctx.state.modelOk = false;
         ctx.skip(`已挂载「${tool}」；模型不可用，发送段跳过`);
@@ -380,7 +401,16 @@ export const fixRoundCases = [
         }
         ctx.state.modelOk = true;
         attempts.push(headerWhenStaged);
-        if (!/pending/.test(headerWhenStaged)) continue; // 没赶上：换一个新会话再试
+        if (!/pending/.test(headerWhenStaged)) {
+          // 没赶上：换一个新会话再试。先等这条长任务收场（评审修复轮 R2：原来直接换下一个，最多两个
+          // 长任务留在后台继续跑、和后面的用例抢界面）——等 4 分钟还在跑就点停止结束它
+          const idle = await app.waitIdle(3000, 240000).catch(() => ({ idle: false }));
+          if (!idle.idle) {
+            await stopBtn(page).click({ timeout: 3000 }).catch(() => {});
+            await app.waitIdle(3000, 120000).catch(() => {});
+          }
+          continue;
+        }
         await expect(app.composer()).toHaveValue("", { timeout: 5000 });
         await page.keyboard.insertText("解析前暂存乙：只回复「乙」");
         headerWhenStaged2 = await app.headerIdText();
@@ -425,7 +455,7 @@ export const fixRoundCases = [
       if (ctx.state.modelOk === false) ctx.skip("模型不可用（本轮已判定）");
       await begin(ctx);
       await app.send(LONG_TASK);
-      const started = await stopBtn(page).waitFor({ state: "visible", timeout: 15000 }).then(() => true, () => false);
+      const started = await app.awaitTurnStart(15000);
       if (!started) {
         ctx.state.modelOk = false;
         ctx.skip("模型不可用：发送后 15 秒内回合未启动");
@@ -626,7 +656,7 @@ export const fixRoundCases = [
       // 引擎健康：新开一个对话（新拉起引擎进程）发消息，要能得到回复。
       await begin(ctx);
       await app.send("请只回复两个字：收到");
-      const probeStarted = await stopBtn(page).waitFor({ state: "visible", timeout: 20000 }).then(() => true, () => false);
+      const probeStarted = await app.awaitTurnStart(20000);
       if (!probeStarted) throw new Error("停用期间新对话无法启动回合（引擎可能因工具重名启动失败）");
       await finishTurn(ctx);
       const truth = await ctx.truth(ctx.since);
@@ -716,14 +746,22 @@ export const fixRoundCleanupCases = [
     id: "FX1",
     name: "还原：清掉冲突停用（卸载替代者即自动恢复被停用的扩展）",
     feature: "副作用还原",
-    steps: "若登记簿有冲突停用记录或本场景包装的扩展还在：先等安装流程静止 → 卸载替代者 → 核对停用记录清空且被停用的扩展回到注册表（不成立重试，最多 3 次）",
-    expect: "已装源回到基线；登记簿没有冲突停用记录；被停用的扩展全部恢复注册",
+    steps: "若登记簿有冲突停用记录、本场景包装的扩展还在、或当前已装源比运行前的基线多出东西：先等安装流程静止 → 卸载替代者 → 核对停用记录清空且被停用的扩展回到注册表（不成立重试，最多 3 次）；三者都没有时如实返回「已核对：已装源 = 基线」",
+    expect: "已装源回到本轮开始时的清单；登记簿没有冲突停用记录；被停用的扩展全部恢复注册",
     needs: "none",
     timeoutMs: 600000,
     cleanup: true,
     run: async (ctx) => {
       const overrides = await ctx.app.invoke("pi_extension_overrides_list");
-      if (!overrides.length && !ctx.state.installed.length) ctx.skip("没有需要还原的冲突停用");
+      // 评审修复轮 R2：台账为空也要核对基线——安装用例 90 秒超时之后才装上的扩展不会进台账
+      const sources = await ctx.app.invoke("pi_package_installed_sources").then((v) => (Array.isArray(v) ? v : null), () => null);
+      if (!sources) ctx.skip("读不到当前已装源，没法核对它和运行前的基线一致不一致");
+      for (const source of sources.filter((s) => !ctx.state.baselineSources.includes(s))) {
+        if (!ctx.state.installed.includes(source)) ctx.state.installed.push(source);
+      }
+      if (!overrides.length && !ctx.state.installed.length) {
+        return { 核对: "没有需要还原的冲突停用（已核对：停用记录为空，当前已装源 = 运行前的基线）", 基线数: ctx.state.baselineSources.length };
+      }
       const result = await restoreConflictDisables(ctx);
       if (!result.尝试.every((a) => a.成立)) throw new Error("冲突停用经重试才还原: " + JSON.stringify(result));
       return result;
@@ -733,12 +771,23 @@ export const fixRoundCleanupCases = [
     id: "FX2",
     name: "还原：把本场景包动过的精选件调回原状",
     feature: "副作用还原",
-    steps: "对目标态表里的每个精选件：按目标安装/卸载",
-    expect: "已装清单回到运行前",
+    steps: "目标态表里有精选件：按目标安装/卸载；表是空的：把当前已装的本地精选件与运行前的基线比，多装的卸掉、少装的装回",
+    expect: "已装的本地精选件回到运行前的清单（逐项用 plugin_list 实测核对）",
     needs: "none",
     cleanup: true,
     run: async (ctx) => {
-      if (!Object.keys(ctx.state.curatedTarget || {}).length) ctx.skip("本场景包没有动过精选件");
+      if (!Object.keys(ctx.state.curatedTarget || {}).length) {
+        // 评审修复轮 R2：目标态表为空也按运行前的实测快照核对（F6 中途失败时表里可能没记全）
+        if (!Array.isArray(ctx.state.curatedBaseline)) ctx.skip("本场景包没有动过精选件；运行前的精选件基线没取到，没法实测核对");
+        const diff = await curatedDiff(ctx);
+        if (!diff) ctx.skip("本场景包没有动过精选件；读不到当前的已装清单，没法实测核对");
+        if (!diff.installed.length && !diff.missing.length) {
+          return { 核对: "没有动过精选件（已核对：已装的本地精选件 = 运行前的基线）", 基线数: ctx.state.curatedBaseline.length };
+        }
+        // 实测与运行前不一致（台账里却没有）：按基线调回
+        for (const id of diff.installed) ctx.state.curatedTarget[id] = "uninstalled";
+        for (const id of diff.missing) ctx.state.curatedTarget[id] = "installed";
+      }
       return restoreCurated(ctx);
     },
   },
