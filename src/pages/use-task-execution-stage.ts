@@ -130,14 +130,19 @@ export function useTaskExecutionStage({
     // 这里同步量、不等下面那两帧：打开函数的定位（先遮住、同一次提交里生效）此刻已经落上了
     const el = messageAreaRef.current;
     if (!el || el.scrollHeight - el.scrollTop - el.clientHeight > 100) return;
-    const raf = requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
+    // 两帧都要能取消：排了第一帧之后条件就变了（退出执行段、卸载），第二帧不能再执行
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
         if (isAwayFromBottomRef.current) return;
         const target = messageAreaRef.current;
         if (target) target.scrollTop = target.scrollHeight;
       });
     });
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(outer);
+      if (inner !== 0) cancelAnimationFrame(inner);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskExecutionMode, activeTaskLaunchInstance?.task_id, taskRunStarted, sessionMessagesLength, showExecutionStartPrompt]);
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 
+import { isNoSessionSelected } from "./session-placeholder";
 import { isAppWindowActive, subscribeWindowActivity } from "./window-activity";
 
 /**
@@ -82,11 +83,7 @@ export function useSessionUnread(): Record<string, UnreadKind> {
   return useSyncExternalStore(subscribe, unreadSnapshot, unreadSnapshot);
 }
 
-/** 没有会话被打开的选中态（空 / 新对话 / 节点会话待定）。 */
-function isNoSessionSelected(sessionId: string | null | undefined): boolean {
-  return !sessionId || sessionId === "new" || sessionId === "pending-node";
-}
-
+/** 占位选中态（空 / 新对话 / 节点会话待定）没有会话可清——判定见 session-placeholder。 */
 function markViewed(sessionId: string | null | undefined): void {
   if (!isNoSessionSelected(sessionId)) clearUnread(sessionId as string);
 }

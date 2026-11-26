@@ -5,13 +5,16 @@
  *   经 send_message 重发——修复「恢复卡片 → 反复提交反复失败」死循环；
  * - 瞬时错误：恢复卡片可重试（既有行为）；
  * - mid_turn 正常：对照组，不触发 send_message。
+ * - 评审修复轮 R2（契约 C5）：两类永久性失败以稳定前缀开头（
+ *   `[interaction_stale]` / `[no_active_session]`），先按前缀判断；前缀不在时
+ *   退回原来的文案子串。
  */
 import { act, render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { streamStore } from "@/hooks/use-stream-store";
 import type { ConversationInteractionSubmission } from "@/types";
-import { useChatApprovals } from "./chat-approvals";
+import { classifyInteractionSubmitError, useChatApprovals } from "./chat-approvals";
 import type { PendingChatInteraction } from "./chat-page-utils";
 
 const invokeCommand = vi.hoisted(() => vi.fn());
@@ -130,5 +133,63 @@ describe("useChatApprovals interaction submit failure routing", () => {
     expect(caught).toBeNull();
     expect(hook!.pendingInteractions).toHaveLength(0);
     expect(invokeCommand).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── v0.9.8 评审修复轮 R2（契约 C5）：按结构化前缀判断 ─────────────────────
+
+describe("评审修复轮 R2：问答卡提交失败按前缀分类", () => {
+  beforeEach(() => {
+    hook = null;
+    invokeCommand.mockReset();
+    streamStore.drop(SESSION_ID);
+  });
+
+  it("S4-U1 `[interaction_stale]` 开头（不含「已过期」字样）→ 过期：撤卡不回队、上抛", async () => {
+    invokeCommand.mockRejectedValueOnce("[interaction_stale] 该交互已失效，请重新发起提问");
+    render(<Harness />);
+    act(() => hook!.setPendingInteractions([makeInteraction()]));
+
+    const caught = await submitCatching();
+    expect(String(caught)).toContain("[interaction_stale]");
+    expect(hook!.pendingInteractions).toHaveLength(0);
+    expect(invokeCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("S4-U2 `[no_active_session]` 开头（不含英文子串）→ 撤卡并把答案作为新消息重发", async () => {
+    invokeCommand
+      .mockRejectedValueOnce("[no_active_session] 当前没有活动会话")
+      .mockResolvedValueOnce({ delivery: "mid_turn" });
+    render(<Harness />);
+    act(() => hook!.setPendingInteractions([makeInteraction()]));
+
+    const caught = await submitCatching();
+    expect(caught).toBeNull();
+    expect(hook!.pendingInteractions).toHaveLength(0);
+    expect(invokeCommand.mock.calls[1][0]).toBe("send_message");
+    expect(invokeCommand.mock.calls[1][1]).toEqual(expect.objectContaining({ sessionId: SESSION_ID }));
+  });
+
+  it("S4-U3 前缀不在开头、也不含旧子串 → 瞬时错误：恢复卡片可重试", async () => {
+    invokeCommand.mockRejectedValueOnce("重试时遇到 [interaction_stale] 字样的其它报错");
+    render(<Harness />);
+    act(() => hook!.setPendingInteractions([makeInteraction()]));
+
+    const caught = await submitCatching();
+    expect(caught).not.toBeNull();
+    expect(hook!.pendingInteractions).toHaveLength(1);
+    expect(invokeCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifyInteractionSubmitError：纯函数对照表（含被 Error 包装的前缀）", () => {
+    expect(classifyInteractionSubmitError("[interaction_stale] x")).toBe("stale");
+    expect(classifyInteractionSubmitError(new Error("[interaction_stale] x"))).toBe("stale");
+    expect(classifyInteractionSubmitError("该交互已过期（回合已结束或会话重启）")).toBe("stale");
+    expect(classifyInteractionSubmitError("[no_active_session] x")).toBe("no_session");
+    expect(classifyInteractionSubmitError(new Error("[no_active_session] x"))).toBe("no_session");
+    expect(classifyInteractionSubmitError("No active ACP session found for s1")).toBe("no_session");
+    expect(classifyInteractionSubmitError("提交超时（10 秒无响应），请重试")).toBe("transient");
+    expect(classifyInteractionSubmitError("x [interaction_stale]")).toBe("transient");
+    expect(classifyInteractionSubmitError(undefined)).toBe("transient");
   });
 });

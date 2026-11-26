@@ -69,6 +69,9 @@ function makeDeps(selected: string) {
     stagedApiRef: { current: null },
     supportsSteerRef: { current: true } as MutableRefObject<boolean>,
     syncSessionListMessagesRef: { current: null },
+    // v0.9.8 评审修复轮 R2：排队压缩的执行器（本组用例不涉及，留空）
+    runStagedCompactionRef: { current: null },
+    takeCompactionRequest: () => true,
     taskLaunchOpenRef: { current: false },
     taskLaunchPhaseRef: { current: null },
     visitedSessions: { current: new Set<string>() },
@@ -129,6 +132,21 @@ describe("turn-complete 通知门控（窗口激活语义）", () => {
     });
     off();
     expect(received).toContain("turn-complete");
+  });
+
+  it("扩展命令的流（中止 / 错误收场）：后台会话 + 窗口失焦也不通知——它不是一次对话回合（二轮评审 R3 P2-4）", () => {
+    setWindowActiveForTest(false);
+    stop = startAgentEventPipeline(makeDeps("other-viewed") as never);
+    streamStore.start("s1", "/todos", [], { extensionCommand: true });
+    const received: string[] = [];
+    const off = subscribeSessionSignals((s) => received.push(s.type));
+    emit({
+      agent_id: "jishu-self",
+      session_id: "s1",
+      data: { kind: "turn_complete", reason: "Aborted", usage: null },
+    });
+    off();
+    expect(received).not.toContain("turn-complete");
   });
 
   it("后台会话 + 窗口激活：通知（原语义保持）", () => {

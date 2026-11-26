@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle, memo } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo, forwardRef, useImperativeHandle, memo } from "react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { invokeCommand } from "@/hooks/use-invoke";
@@ -8,10 +8,22 @@ import {
   Zap, Blocks, Check, ChevronDown, Download, KeyRound, Loader2, MessagesSquare, Package, Paperclip, Plus, Send, Server, Square, Sparkles, Wrench, X } from "lucide-react";
 // v0.9.8 需求5（合并版）：装备建议条数据源（L1/L0/入门分级）。
 import { fetchEquipConfig, fetchEquipmentTags, fetchLatestProfile, fetchWorkspaceScene } from "@/features/equipment/api";
-import { buildCatalog, installCommandFor, matchByProfile, matchByTags, matchByWorkspaceScene, officialFallback } from "@/features/equipment/match";
+import { buildCatalog, matchByProfile, matchByTags, matchByWorkspaceScene, officialFallback } from "@/features/equipment/match";
+// v0.9.8 评审修复轮 R2（R2-6 / R2-7）：已装集与安装出口——与市场页、会话推荐卡同源。
+import { fetchInstalledRefs } from "@/features/equipment/installed";
+import { installRef, useConflictAsker } from "@/features/equipment/install";
+import { userFacingError } from "@/lib/user-facing-error";
 import { FilePreview } from "./file-preview";
 import { InteractionComposer } from "./interaction-composer";
 import { MessageStaging, type StagedMessage } from "./message-staging";
+import type { SessionSendContext } from "@/features/session-kernel/kernel/steer-coordinator";
+import type { TaskLaunchInstanceSummary } from "@/features/task-instance/types";
+import {
+  findExtensionSlashCommand,
+  findLocalSlashCommand,
+  findSlashCommandEntry,
+  type SlashCommandInfo,
+} from "./slash-command";
 import { open } from "@tauri-apps/plugin-dialog";
 import { formatInteractionReply } from "@/lib/conversation-interaction";
 import { getInputHistory, pushInputHistory } from "@/lib/input-history";
@@ -28,7 +40,6 @@ import type {
 import { cn } from "@/lib/utils";
 import { EmbeddedToolPill } from "./embedded-tools";
 import { detectAtToken } from "./at-file";
-import { findLocalSlashCommand, type SlashCommandInfo } from "./slash-command";
 
 /** 会话工具插件条目（v0.8.1 需求7，后端 session_tool_list）。 */
 interface SessionTool {
@@ -127,6 +138,9 @@ interface AttachedFile {
 
 type StagedMessageUpdater = StagedMessage[] | ((prev: StagedMessage[]) => StagedMessage[]);
 
+/** 待发送区为空时的共享空数组（引用稳定，下游 memo 不必因空数组重算）。 */
+const NO_STAGED_MESSAGES: StagedMessage[] = [];
+
 /**
  * Imperative bridge so the parent (chat-page) can participate in the staging
  * area's lifecycle — specifically Route 2: auto-sending staged guides when the
@@ -135,7 +149,7 @@ type StagedMessageUpdater = StagedMessage[] | ((prev: StagedMessage[]) => Staged
  *
  * Each method takes a `sessionKey` so the parent can target the session whose
  * turn just completed — even when the user is viewing a DIFFERENT session.
- * Staging state is partitioned by session (`stagedMessagesBySession`), so a
+ * Staging state is partitioned by session (the per-session staging map), so a
  * background session's turn_complete claims only its own staged guides, never
  * another session's.
  *
@@ -156,6 +170,40 @@ export interface StagedGuideApi {
    *  整体搬到新键（保序；「已领取」标记随条目走，exactly-once 不因换键
    *  失效）。与引导队列的 `moveKey` 在同一事件点调用。 */
   moveKey(from: string, to: string): void;
+  /** v0.9.8 评审修复轮 R2（裁决 4）：往该会话的待发送区末尾追加一条——回合
+   *  进行中发起的上下文压缩从这里入队，与用户在此期间暂存的消息同队同序。 */
+  stage(sessionKey: string, message: StagedMessage): void;
+}
+
+/**
+ * v0.9.8 评审修复轮 R2（裁决 4）：执行一条**轮到了的**排队压缩——引擎此刻
+ * 空闲（回合结束或上一次压缩结束之后）。`context` 是条目入队时捕获的发送
+ * 上下文（跟会话走，与界面停留项目无关）。
+ *
+ * 结果如实回报：`"done"` = 压缩执行到了结束；`"skipped"` = 没有启动（这个会话
+ * 已有压缩在途）；执行失败以拒绝回报。事件管线据此决定条目是销掉还是放回
+ * 待发送区（修前两种情况条目都被领走，排在后面的消息从此没人投递）。
+ */
+export type StagedCompactionRunner = (
+  sessionId: string,
+  instructions: string | null,
+  context: SessionSendContext,
+) => Promise<"done" | "skipped">;
+
+/** 任务模式首条消息的任务意图（v0.9.8 评审修复轮 R3 / P1-1）：随 `send_message`
+ * 的 `taskLaunch` 带给后端——后端在拉起进程**之前**把任务实例建好并挂在本次
+ * 发送的会话键上（登记先于首条 prompt），会话解析后改绑成真实会话号。此前任务
+ * 实例等 `session_resolved` 分片到达才建，晚于首条 prompt：引擎首轮来查「是不是
+ * 任务会话」常查不到，任务锚点、任务纪律、不询问在首轮全部落空。 */
+export interface ChatInputTaskLaunch {
+  /** 已有任务的任务号；新任务为 null。 */
+  taskId: string | null;
+  skillId: string;
+  /** 不带命令前缀的纯目标——建实例时作为标题。 */
+  title: string;
+  /** 发第一条之前（还没有会话）点下的「不询问」——只对新任务带；已有任务的开关
+   * 在实例上、按会话读写，不带。 */
+  noAsk?: boolean;
 }
 
 interface ChatInputProps {
@@ -177,11 +225,16 @@ interface ChatInputProps {
   /** 斜杠命令清单（A2）：行首 `/` 触发，available=false 的命令不显示。
    * 需求7 补充（2026-11-24 用户裁决「应该点了之后只是落到输入框，只有点击
    * 发送才发送」）：面板里的命令一律选中只填入 `/name `，不执行。点发送时
-   * local（hub 内建命令）本地执行，其余发给智能体。 */
+   * local（hub 内建命令）本地执行，其余发给智能体。
+   * v0.9.8 评审修复轮 R2：`source: "extension"` 的是扩展命令——引擎立即执行、
+   * 不落用户消息、不起回合（正在输出时也一样，不进待发送区）。 */
   slashCommands?: readonly SlashCommandInfo[];
   /** hub 内建命令的执行回调——**发送时**调用（名字、参数），输入框已清空。
-   * 与是否正在输出无关：任务进行中也立即执行。 */
+   * 与是否正在输出无关：命令的去向（立即执行还是排队）由执行方决定。 */
   onSlashCommand?: (name: string, args: string) => void | Promise<void>;
+  /** hub 内建命令当前不可用（面板里不显示）却被手输发送：输入框不清空、
+   * 不发送，交给这里给出提示。`hint` 是清单里给出的说明，缺省由页面补。 */
+  onSlashCommandUnavailable?: (name: string, hint?: string) => void;
   /** 渲染在发送按钮左侧同一行的控件（v0.7.3 需求2：模型选择器+水位圆环）。 */
   trailingControls?: ReactNode;
   onDraftChange?: (value: string) => void;
@@ -201,6 +254,13 @@ interface ChatInputProps {
    * 提问，全部按推荐执行）。 */
   taskNoAsk?: boolean;
   onTaskNoAskChange?: (enabled: boolean) => void;
+  /** 评审修复轮 R3（P1-1）：任务模式的首条消息会被 `prepareMessageForAgent` 包装
+   * 成启动命令——包装发生时由它产出任务意图，随 `send_message` 带给后端；其余
+   * 消息不带。 */
+  getTaskLaunchIntent?: (goal: string) => ChatInputTaskLaunch;
+  /** `send_message` 带回了登记好的任务实例（此刻挂的还是发送用的临时会话键，
+   * 会话解析后端改绑）。 */
+  onTaskInstanceBound?: (instance: TaskLaunchInstanceSummary) => void;
   accessModeLabel?: string;
   accessModeTitle?: string;
   accessModeReadOnly?: boolean;
@@ -253,6 +313,7 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   historyScope,
   slashCommands,
   onSlashCommand,
+  onSlashCommandUnavailable,
   trailingControls,
   onDraftChange,
   onBeforeSend,
@@ -269,6 +330,8 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   onWorkModeChange,
   taskNoAsk,
   onTaskNoAskChange,
+  getTaskLaunchIntent,
+  onTaskInstanceBound,
   accessModeLabel,
   accessModeTitle,
   accessModeReadOnly = true,
@@ -297,7 +360,6 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   const [toolSubmenu, setToolSubmenu] = useState<"mcp" | "skill" | "extension" | "agent-tool" | null>(null);
   const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
   const [accessMenuOpen, setAccessMenuOpen] = useState(false);
-  const [stagedMessagesBySession, setStagedMessagesBySession] = useState<Record<string, StagedMessage[]>>({});
   // v0.8.1 需求7：会话工具插件（+[菜单] 列表 + token 归一依据）。
   const [sessionTools, setSessionTools] = useState<SessionTool[]>([]);
   const [guideLoading, setGuideLoading] = useState<string | null>(null);
@@ -305,8 +367,19 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   // v0.9.1 需求4 测试期修复二：输入框根容器——高度等比伸缩的宽度基准测量点。
   const inputRootRef = useRef<HTMLDivElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
+  // 待发送区（按会话键分区）的唯一真源——同步可读可写。回合结束时的自动领取
+  // 与会话 id 解析后的搬家可能落在同一个 React 批次里：此前领取读的是渲染期
+  // 镜像，搬家的更新还没提交，读到的是搬家前的旧位置，同一条被领两次。
+  // v0.9.8 评审修复轮 R2 起读写都直接走这份状态，渲染只订阅版本号。
+  const stagedBySessionRef = useRef<Record<string, StagedMessage[]>>({});
+  const [stagedVersion, setStagedVersion] = useState(0);
   const stagingSessionKey = sessionId ?? "__new_session__";
-  const stagedMessages = stagedMessagesBySession[stagingSessionKey] ?? [];
+  const stagedMessages = useMemo<StagedMessage[]>(
+    () => stagedBySessionRef.current[stagingSessionKey] ?? NO_STAGED_MESSAGES,
+    // stagedBySessionRef 是真源本身（不随渲染换引用），版本号才是它的变更信号。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [stagedVersion, stagingSessionKey],
+  );
   // Single source of truth for "this staged message was already claimed/sent".
   // Mutated SYNCHRONOUSLY before any await by BOTH routes (manual guide here,
   // auto-send via stagedApiRef in the parent), so whichever claims first wins
@@ -449,14 +522,9 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     },
     [closeSuggestions, message, onDraftChange, projectPath],
   );
-  // Always-fresh mirror of the ENTIRE stagedMessagesBySession map so the
-  // stagedApiRef methods (set up once) can target ANY session's staging array
-  // by key — not just the currently-viewed session. This is what lets Route 2
-  // auto-send a background session's staged guides when its turn completes
-  // while the user is viewing a different conversation.
-  const stagedBySessionRef = useRef<Record<string, StagedMessage[]>>(stagedMessagesBySession);
-  stagedBySessionRef.current = stagedMessagesBySession;
-
+  // stagedApiRef 的方法（挂载时建一次）按会话键直接读写上面的真源——不必是
+  // 当前查看的会话：后台会话的回合在用户看着别的对话时结束，它的暂存照样
+  // 能被领走（Route 2）。
   const claimedIdsForSession = useCallback((key: string) => {
     let ids = claimedStagedIdsBySessionRef.current.get(key);
     if (!ids) {
@@ -467,17 +535,20 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   }, []);
 
   const setStagedMessagesForSession = useCallback((key: string, updater: StagedMessageUpdater) => {
-    setStagedMessagesBySession((prev) => {
-      const current = prev[key] ?? [];
-      const next = typeof updater === "function" ? updater(current) : updater;
-      if (next.length === 0) {
-        if (!(key in prev)) return prev;
-        const rest = { ...prev };
-        delete rest[key];
-        return rest;
-      }
-      return { ...prev, [key]: next };
-    });
+    const prev = stagedBySessionRef.current;
+    const current = prev[key] ?? [];
+    const next = typeof updater === "function" ? updater(current) : updater;
+    let rest: Record<string, StagedMessage[]>;
+    if (next.length === 0) {
+      if (!(key in prev)) return;
+      rest = { ...prev };
+      delete rest[key];
+    } else {
+      if (next === current) return;
+      rest = { ...prev, [key]: next };
+    }
+    stagedBySessionRef.current = rest;
+    setStagedVersion((version) => version + 1);
   }, []);
 
   const setCurrentStagedMessages = useCallback((updater: StagedMessageUpdater) => {
@@ -539,26 +610,22 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           setSceneSuggest(null);
           return;
         }
-        // 目录合并 + 已装态（派生态现场交叉算）。
-        const [curated, tagRows, pluginList, skillInstalled, piSources, profile, wsScene] = await Promise.all([
+        // 目录合并 + 已装集（三份台账同一处归一——与市场页、会话推荐卡同源）。
+        const [curated, tagRows, installedRefs, profile, wsScene] = await Promise.all([
           invokeCommand<Array<{ id: string; kind: string; title: string; description: string; required: boolean; tags?: string[]; stars?: number }>>(
             "market_list_curated",
             { scene: null },
           ).catch(() => []),
           fetchEquipmentTags(),
-          invokeCommand<{ plugins: Array<{ id: string }> }>("plugin_list").catch(() => null),
-          invokeCommand<Record<string, string>>("skillhub_installed").catch(() => ({})),
-          invokeCommand<string[]>("pi_package_installed_sources").catch(() => []),
+          fetchInstalledRefs(),
           fetchLatestProfile(),
           projectPath ? fetchWorkspaceScene(projectPath) : Promise.resolve(null),
         ]);
         if (cancelled) return;
-        const installedRefs = new Set<string>();
-        for (const p of pluginList?.plugins ?? []) installedRefs.add(`curated:${p.id}`);
-        for (const slug of Object.keys(skillInstalled ?? {})) installedRefs.add(`skillhub:${slug}`);
-        for (const src of piSources ?? []) {
-          const at = src.lastIndexOf("@");
-          installedRefs.add(`pi:${at > 0 ? src.slice(0, at) : src}`);
+        // 读不到已装集：已装态不明，不推荐（不把可能已装的当未装推）。
+        if (!installedRefs) {
+          setSceneSuggest(null);
+          return;
         }
         const catalog = buildCatalog(curated ?? [], tagRows);
         const input = { catalog, installedRefs, officialOnly: !config.third_party };
@@ -652,25 +719,34 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
 
   // 未装件浮卡（点击建议条胶囊展开：星级+描述+安装）。
   const [suggestPopover, setSuggestPopover] = useState<{ ref: string; title: string; stars: number; kind?: string; description?: string } | null>(null);
+  /** 这一件上次安装没成的原因（显示在浮卡里；换一件或关掉浮卡时清）。 */
+  const [suggestError, setSuggestError] = useState<string | null>(null);
   const [suggestInstalling, setSuggestInstalling] = useState(false);
+  // 撞名确认卡（扩展工具与已装能力重叠时弹出）——与市场页同一组件、同一份文案。
+  const conflictAsk = useConflictAsker();
   const handleSuggestInstall = useCallback(async (item: { ref: string; title: string }) => {
     setSuggestInstalling(true);
+    setSuggestError(null);
     try {
-      const target = installCommandFor(item.ref);
-      if (target) {
-        await invokeCommand(target.command, { ...target.args, meta: { via: "input-bar", title: item.title } });
-        setSuggestPopover(null);
-        // 装成即从建议条摘除该件（下次重算自然刷新）。
-        setSceneSuggest((prev) =>
-          prev ? { ...prev, installItems: prev.installItems.filter((i) => i.ref !== item.ref) } : prev,
-        );
-      }
-    } catch {
-      // 失败保留浮卡（用户可重试）；错误展示从简——安装链已有完整反馈面。
+      // 安装与结果判读都经 installRef（评审修复轮 R2 / R2-7：修前不看返回值，
+      // 扩展撞名被后端回滚时照样把这件从建议条摘掉）。撞名且取消 = 保持未装，
+      // 浮卡与建议条都保留。
+      const result = await installRef(item.ref, { via: "input-bar", title: item.title }, conflictAsk.ask);
+      if (result.kind === "declined") return;
+      setSuggestPopover(null);
+      // 装成即从建议条摘除该件（下次重算自然刷新）。
+      setSceneSuggest((prev) =>
+        prev ? { ...prev, installItems: prev.installItems.filter((i) => i.ref !== item.ref) } : prev,
+      );
+    } catch (e) {
+      // 没装成：原因显示在浮卡里，浮卡与建议条都保留（可以重试）。出口交出来的
+      // 已经是给用户看的文字（二轮评审 R3 P2-7：修前这里什么都不显示，转圈停了、
+      // 浮卡原样留着——「无法读取已安装清单，本次未安装」这类原因只有这一条路径到不了用户眼前）。
+      setSuggestError(userFacingError(e));
     } finally {
       setSuggestInstalling(false);
     }
-  }, []);
+  }, [conflictAsk.ask]);
 
   /** 在光标处插入 `@[显示名] ` token（+ 菜单点击入口）。 */
   const insertToolToken = useCallback((displayName: string) => {
@@ -838,21 +914,21 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       },
       moveKey: (from: string, to: string) => {
         if (from === to) return;
-        const claimed = claimedIdsForSession(from);
-        setStagedMessagesBySession((prev) => {
-          const moving = prev[from];
-          if (!moving || moving.length === 0) return prev;
-          const rest = { ...prev };
-          delete rest[from];
-          rest[to] = [...(rest[to] ?? []), ...moving];
-          return rest;
-        });
+        const moving = stagedBySessionRef.current[from];
+        if (moving && moving.length > 0) {
+          setStagedMessagesForSession(from, []);
+          setStagedMessagesForSession(to, (prev) => [...prev, ...moving]);
+        }
         // 已领取标记随条目搬到新键（同一条消息不会因换键被再领一次）。
+        const claimed = claimedIdsForSession(from);
         if (claimed.size > 0) {
           const target = claimedIdsForSession(to);
           for (const id of claimed) target.add(id);
           claimed.clear();
         }
+      },
+      stage: (sessionKey: string, message: StagedMessage) => {
+        setStagedMessagesForSession(sessionKey, (prev) => [...prev, message]);
       },
     };
   }, [claimedIdsForSession, setStagedMessagesForSession, stagedApiRef]);
@@ -872,8 +948,8 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
 
   // When the user switches to a different session, clear the local "active" abort
   // reference so the Stop button targets the new session, not the previous send.
-  // Also reset the claimed-id dedup set — claimed ids are UUIDs unique to the
-  // prior session's staged messages and no longer relevant.
+  // (The claimed-id sets are keyed per session and stay — a staged message that
+  // was claimed is not delivered twice when the user comes back.)
   useEffect(() => {
     setActiveSessionId(null);
   }, [sessionId]);
@@ -1150,12 +1226,15 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     clearComposer: boolean,
     pendingIdOverride?: string,
     toolIds?: string[],
+    options?: { extensionCommand?: boolean },
   ) => {
     if (!projectPath) {
       throw new Error("project path is required");
     }
 
-    const handled = await onBeforeSend?.(fullMessage);
+    // 扩展命令就是命令本身：不经发送前钩子与任务包装改写（它们面向「发给
+    // 智能体的消息」，改写后引擎拿到的就不是这条命令了）。
+    const handled = options?.extensionCommand ? false : await onBeforeSend?.(fullMessage);
     if (handled) {
       if (clearComposer) {
         setMessage("");
@@ -1169,7 +1248,16 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
 
     const pendingId = pendingIdOverride ?? (sessionId || `pending-${Date.now()}`);
     setActiveSessionId(pendingId);
-    const agentMessage = await prepareMessageForAgent?.(fullMessage) ?? fullMessage;
+    const agentMessage = options?.extensionCommand
+      ? fullMessage
+      : await prepareMessageForAgent?.(fullMessage) ?? fullMessage;
+    // 评审修复轮 R3（P1-1）：任务模式的首条消息被包装成了启动命令（之后的消息原样
+    // 透传，不会被包装）——把任务意图随发送带过去，后端在拉起进程之前建好任务实例。
+    // 登记做不成时 send_message 整个失败，走下面同一条失败路径（不带任务态硬发）。
+    const taskLaunch =
+      !options?.extensionCommand && agentMessage !== fullMessage
+        ? getTaskLaunchIntent?.(fullMessage)
+        : undefined;
 
     if (onSubmitMessage) {
       if (onMessageSent) onMessageSent(pendingId, fullMessage, toolIds);
@@ -1187,18 +1275,27 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       return;
     }
 
-    streamStore.start(pendingId, fullMessage, toolIds ?? []);
+    streamStore.start(pendingId, fullMessage, toolIds ?? [], options);
     if (onMessageSent) onMessageSent(pendingId, fullMessage, toolIds);
 
-    const chatSession = await invokeCommand<ChatSession>(
+    // send_message 的返回值多一项 task_instance（任务模式下后端登记好的实例）；
+    // 类型上就地扩一个可选字段，不去动公共的 ChatSession 类型。
+    type ChatSessionWithTask = ChatSession & { task_instance?: TaskLaunchInstanceSummary };
+    const chatSession = await invokeCommand<ChatSessionWithTask>(
       "send_message",
       {
         agentId: agentId ?? "",
         projectPath,
         sessionId: pendingId,
         message: agentMessage,
+        ...(taskLaunch ? { taskLaunch } : {}),
       },
     );
+    if (chatSession.task_instance) {
+      // 实例此刻挂的是发送用的临时会话键；会话解析后（session_resolved）事件
+      // 管线会按任务号读回带真实会话号的那一份。
+      onTaskInstanceBound?.(chatSession.task_instance);
+    }
     // v0.9.4 需求12：send 受理确认（spawn 完成 + prompt 已发出）——阶段文案
     // 从②「正在赶来」切③「思考中」（模型首响应慢不再误导为连接中）。
     // C20：携带 process_id（连接世代）——新进程重连不凭旧记忆直升③。
@@ -1214,7 +1311,9 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     if (clearComposer) {
       setMessage("");
       onDraftChange?.("");
-      setFiles([]);
+      // 命令只带文本：附件对命令没有意义（随消息组装还会拼进命令参数），
+      // 留在输入框随下一条消息走。
+      if (!options?.extensionCommand) setFiles([]);
     }
   };
 
@@ -1222,15 +1321,61 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     if (!projectPath || disabled) return;
     if (!message.trim() && files.length === 0) return;
 
-    // 需求7 补充（2026-11-24 用户裁决）：hub 内建命令（如 /compact）在发送时
-    // 本地执行——不发给智能体，也不进暂存区：任务进行中同样立即执行，与水位
-    // 圆环里「立即压缩」按钮的行为一致（压缩会先中止当前任务，这是引擎的行为）。
-    const localCommand = findLocalSlashCommand(message, slashCommands);
-    if (localCommand) {
+    // ── hub 内建命令（/compact 等）：发送时本地执行 ──
+    // 需求7 补充（2026-11-24 用户裁决）：内建命令在发送时本地执行——不发给
+    // 智能体，也不进暂存区；立即执行还是排队由执行方决定（压缩与普通消息
+    // 等价处理：回合进行中进待发送区，见页面的压缩请求入口）。
+    const localEntry = findSlashCommandEntry(message, slashCommands);
+    if (localEntry?.local) {
+      const localCommand = findLocalSlashCommand(message, slashCommands);
+      if (!localCommand) {
+        // 当前端不可用的内建命令（面板里不显示）：手输也不执行。输入框
+        // 不清空，交给页面给出提示。
+        onSlashCommandUnavailable?.(localEntry.name, localEntry.unavailableHint);
+        return;
+      }
+      if (!onSlashCommand) return; // 没有执行器：不动输入，也不当作消息发出去
       setMessage("");
       onDraftChange?.("");
-      setFiles([]);
-      await onSlashCommand?.(localCommand.name, localCommand.args);
+      // 命令执行与附件无关：附件留在输入框，随下一条消息走。
+      await onSlashCommand(localCommand.name, localCommand.args);
+      return;
+    }
+
+    // ── 扩展命令：引擎立即执行，不落用户消息、不起回合（与 pi 原生 TUI 一致）──
+    const extensionCommand = findExtensionSlashCommand(message, slashCommands);
+    // 正在输出时引擎同样立即执行——目标就是当前流所属的会话。
+    const liveKey = activeSessionId ?? sessionId;
+    const liveTarget = liveKey ? streamStore.getState(liveKey)?.resolvedId ?? liveKey : null;
+    if (extensionCommand && (!isStreaming || liveTarget)) {
+      const text = message.trim();
+      // 输入历史记录用户原始输入（A6）：发送即入列。
+      pushInputHistory(historyScope, message);
+      setHistoryPos(null);
+      draftBeforeHistoryRef.current = "";
+      if (isStreaming) {
+        // 不进待发送区、不开乐观流、不显示气泡；出错走既有的错误事件。
+        try {
+          await invokeCommand<ChatSession>("send_message", {
+            agentId: agentId ?? "",
+            projectPath,
+            sessionId: liveTarget,
+            message: text,
+          });
+          setMessage("");
+          onDraftChange?.("");
+        } catch (err) {
+          console.error("Failed to send extension command:", err);
+        }
+        return;
+      }
+      setSending(true);
+      try {
+        await sendPreparedMessage(text, true, nextPendingId(), [], { extensionCommand: true });
+      } catch (err) {
+        console.error("Failed to send extension command:", err);
+        setSending(false);
+      }
       return;
     }
 
@@ -1272,14 +1417,13 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     setSending(true);
     try {
       let fullMessage = message.trim();
-      // v0.8.1 内联工具 pill（M0/M2 修订语义 → v0.9.0 需求3 元数据化）：
-      // - 会话级真源 = + 菜单勾选（session-tools.json，跨消息/重启保持）；
-      // - @[token] = 本条追加——归一为 id 后**并集**写入会话集合（不覆盖、
-      //   空消息不再清空勾选）；本条快照以 toolIds 元数据传递（流式渲染/
-      //   引导占位用），回放由后端从注入块派生（extract_tool_snapshot）；
-      // - 写入键 = 本条 send_message 携带的 sessionId（nextPendingId 同源，
-      //   新会话为 pending-<ts>，续聊为真实 id）——修前用 activeSessionId
-      //   （流式引用，非流式恒 null）导致写入全部落到暂存键、注入永不命中。
+      // 内联工具 pill（v0.8.1 → v0.9.0 需求3 元数据化 → 评审修复轮 R1-5）：
+      // - @[名] = 本条消息的工具引用：归一为 id，以 toolIds 元数据随流传递
+      //   （流式渲染 / 引导占位用），并同步 + 菜单的勾选态；@[名] 原文随消息
+      //   保留，模型看得见点名及其位置；
+      // - 「把工具集写进会话」统一在后端 send_message 入口按消息文本完成
+      //   （所有用户消息出口的必经点），这里不再写；
+      // - 回放由后端从注入块派生（extract_tool_snapshot）。
       const pendingId = nextPendingId();
       const composed = composeOutgoing(fullMessage);
       fullMessage = composed.message;
@@ -1322,9 +1466,11 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     claimedIds.add(id);
     setGuideLoading(id);
     try {
-      // M5：引导路径与普通发送共用同一工具管线——剥 @[token]、归一 id、
-      // 写消息头标记（回放 pill）、并集写入会话集（注入生效）。修前引导
-      // 完全绕过：token 原文进 prompt、无 pill、无注入。
+      // 排队的压缩条目没有手动「发送」（message-staging 不出这个按钮）：它只按
+      // 顺序轮到时执行（裁决 4）。这里只处理普通消息。
+      // 引导路径与普通发送共用同一工具管线（composeOutgoing）：归一 @[名]
+      // 为 toolIds、同步 + 菜单的勾选态；@[名] 原文随消息保留。引导通道不
+      // 重组装消息，工具说明块的注入不在它这条路上。
       const { message, sessionKey, toolIds } = composeOutgoing(rawContent);
       // v0.9.4 需求8 补充：引导消息附加暂存附件的标记行（与普通发送同通道
       // ——文件落盘 + Read 引用）。上传未完成时在此兜底等待（guide loading
@@ -1575,6 +1721,9 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
 
   return (
     <div ref={inputRootRef} className={cn("mx-auto w-full max-w-[var(--message-content-max-width)] px-4 pb-4 pt-2", containerClassName)}>
+      {/* 建议条安装的撞名确认卡。弹层经 portal 挂在 body；节点放在建议条外面——
+          建议条重算后消失时，还没答完的确认卡不能跟着卸载（否则安装流程悬住）。 */}
+      {conflictAsk.dialogNode}
       {/* v0.9.8 需求5（合并版）：装备建议条（新对话起始态；L1/L0/入门分级，
           未装件点击浮卡安装 + 已装未挂件 @[注入]——两类胶囊视觉区分：
           安装类=实线+星级，挂载类=虚线+Plus 徽标「已装可挂载」，不再混作
@@ -1593,7 +1742,10 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
               type="button"
               data-equip-suggest={item.ref}
               title={t("sessions.equipSuggestInstallHint", "点击安装使用")}
-              onClick={() => setSuggestPopover(suggestPopover?.ref === item.ref ? null : item)}
+              onClick={() => {
+                setSuggestError(null);
+                setSuggestPopover(suggestPopover?.ref === item.ref ? null : item);
+              }}
               className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-background/70 px-2.5 py-0.5 text-foreground/85 transition-fast hover:border-primary/60 hover:text-foreground"
             >
               <span className="font-mono text-[9px] text-amber-500">{"★".repeat(Math.max(1, Math.min(5, item.stars)))}</span>
@@ -1636,11 +1788,19 @@ const ChatInputBase = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                   {suggestPopover.description}
                 </p>
               )}
+              {suggestError && (
+                <p role="alert" data-equip-suggest-error="" className="mt-1 break-all text-[11px] leading-snug text-destructive">
+                  {suggestError}
+                </p>
+              )}
               <div className="mt-2 flex justify-end gap-1.5">
                 <button
                   type="button"
                   className="rounded-md border border-border/60 px-2 py-1 text-[10px] hover:bg-accent/50"
-                  onClick={() => setSuggestPopover(null)}
+                  onClick={() => {
+                    setSuggestError(null);
+                    setSuggestPopover(null);
+                  }}
                 >
                   {t("common.cancel", "取消")}
                 </button>

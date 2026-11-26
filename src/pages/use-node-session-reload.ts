@@ -13,6 +13,7 @@
  * 这里只管「什么时候重读」；定位、滚动记忆都不管（打开函数已经做了）。
  */
 import { useEffect, type RefObject } from "react";
+import { isNoSessionSelected } from "@/features/session-kernel/session-placeholder";
 import type { ReloadSessionMessages } from "./use-session-selection";
 
 export function useNodeSessionReload({
@@ -37,7 +38,7 @@ export function useNodeSessionReload({
 }): void {
   useEffect(() => {
     if (!taskModeActive || !taskSelectedNodeId || !projectId) return;
-    if (!selectedSession || selectedSession === "new" || selectedSession === "pending-node") return;
+    if (isNoSessionSelected(selectedSession)) return;
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const agentId = taskNodeSessionAgentId ?? activeId ?? null;

@@ -37,7 +37,13 @@ import {
   type PendingChatInteraction,
   type TaskLaunchPhase,
 } from "@/pages/chat-page-utils";
-import type { ChatInputHandle, StagedGuideApi } from "@/components/sessions/chat-input";
+import type {
+  ChatInputHandle,
+  StagedCompactionRunner,
+  StagedGuideApi,
+} from "@/components/sessions/chat-input";
+import type { StagedMessage } from "@/components/sessions/message-staging";
+import { stagedCompactionArgs } from "@/lib/slash-command-parse";
 import {
   getCachedSessionMessages,
   setCachedSessionMessages,
@@ -78,6 +84,14 @@ export interface AgentEventPipelineDeps {
    * 而列表只在读取时从磁盘读一次——回合结束时同步，列表里这一项才跟正文是同一份消息。
    */
   syncSessionListMessagesRef: MutableRefObject<((sessionId: string, messages: Message[]) => void) | null>;
+  /**
+   * v0.9.8 评审修复轮 R2（裁决 4）：执行一条轮到了的排队压缩（引擎此刻空闲）。
+   * 排队的压缩在待发送区里与普通消息同队——领到它时走这里，不是 send_message。
+   */
+  runStagedCompactionRef: MutableRefObject<StagedCompactionRunner | null>;
+  /** 取走「这个会话当前这次压缩是用户发起的」标记（见 use-compaction）。压缩结束时据此决定
+   *  要不要领取待发送区：引擎在自己起的回合开头做的自动压缩不是队列里的一员。 */
+  takeCompactionRequest: (sessionId: string) => boolean;
   taskLaunchOpenRef: MutableRefObject<boolean>;
   taskLaunchPhaseRef: MutableRefObject<TaskLaunchPhase>;
   /** 需求9 #4 补：任务首条 goal（prepareTaskLaunchMessage 捕获，建实例即写标题）。 */
@@ -140,71 +154,105 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
   // 对不上，领取落空，这条消息就永远留在待发送区不被投递。现在把这个对话的全部
   // 身份键（解析后的键、事件携带的键、临时键）下的一次性都取出来，仍按入队顺序
   // 逐条发送。
-  const deliverNextStagedGuide = (cid: string, finalKey: string, trigger: "turn_complete" | "compaction_end"): void => {
+  const deliverNextStagedGuide = (cid: string, finalKey: string, trigger: "turn_complete" | "compaction_end" | "handled"): void => {
     if (!deps.stagedApiRef.current) return;
     const identityKeys = streamStore.identityKeys(finalKey);
     if (cid && !identityKeys.includes(cid)) identityKeys.push(cid);
-    let claimed: ReturnType<StagedGuideApi["claimAll"]> = [];
+    let claimed: StagedMessage[] = [];
     for (const key of identityKeys) {
       claimed = claimed.concat(deps.stagedApiRef.current.claimAll(key));
     }
-    if (claimed.length > 0) {
-      devLog("pipeline", "自动发送暂存消息（引擎空闲）", {
-        session: finalKey,
-        trigger,
-        claimed: claimed.length,
-      });
-      const first = claimed[0];
-      const rest = claimed.slice(1);
-      if (rest.length > 0) {
-        deps.stagedApiRef.current.restore(finalKey, rest);
-      }
-      // v0.9.4 需求8 补充：暂存附件标记行随自动发送附加（与手动引导
-      // 同通道——文件落盘 + Read 引用）。逐条化后只带本条自己的附件。
-      let fileBlock = "";
-      if (first.fileLines && first.fileLines.length > 0) {
-        fileBlock = "\n" + "\n" + "<!--JISHU_HUB_IMAGES_BEGIN-->" + "\n" + "[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]" + "\n" + first.fileLines.join("\n") + "\n" + "<!--JISHU_HUB_IMAGES_END-->";
-      }
-      const merged = first.content + fileBlock;
-      // Start WITHOUT pendingUserMessage: send_message delivers the
-      // message to the backend (JSONL), so the reply's turn_complete
-      // must NOT re-commit it (would duplicate). Commit it into the
-      // cache ourselves here, exactly once.
-      streamStore.start(finalKey, null);
-      if (cid !== finalKey) streamStore.alias(finalKey, cid);
-      deps.pendingReplyStartedAtRef.current.set(finalKey, Date.now());
-      const autoBase =
-        getCachedSessionMessages(finalKey)
-        ?? getCachedSessionMessages(cid)
-        ?? [];
-      const autoUpdated = [...autoBase, {
-        role: "user" as const,
-        content: [{ type: "text" as const, text: merged }],
-        timestamp: Date.now(),
-      }];
-      setCachedSessionMessages(finalKey, autoUpdated);
-      if (cid !== finalKey) setCachedSessionMessages(cid, autoUpdated);
-      if (deps.selectedSessionRef.current === cid || deps.selectedSessionRef.current === finalKey) {
-        deps.setSessionMessages(autoUpdated);
-      }
-      // v0.9.8 需求3：按暂存条目自带的会话发送上下文投递（入队时
-      // 捕获——面单写地址；跟会话走，与界面停留项目无关）。
-      const restore = deps.stagedApiRef.current.restore.bind(deps.stagedApiRef.current);
-      void (async () => {
-        try {
-          await invokeCommand("send_message", {
-            agentId: first.context.agentId,
-            projectPath: first.context.projectPath,
-            sessionId: finalKey,
-            message: merged,
-          });
-        } catch (err) {
-          console.error("Auto-send of staged guides failed:", err);
-          streamStore.drop(finalKey);
-          restore(finalKey, [first, ...rest]);
-        }
-      })();
+    if (claimed.length === 0) return;
+    devLog("pipeline", "自动发送暂存消息（引擎空闲）", {
+      session: finalKey,
+      trigger,
+      claimed: claimed.length,
+    });
+    const first = claimed[0];
+    const rest = claimed.slice(1);
+    // 需求11 #2 逐条发送：只发队首一条，其余原序放回待发送区（放回 = 插回
+    // 队首，失败回滚与「发一条放回剩余」都不被打乱；期间新暂存的排其后）。
+    if (rest.length > 0) {
+      deps.stagedApiRef.current.restore(finalKey, rest);
     }
+    // v0.9.8 评审修复轮 R2（裁决 4）：排队的上下文压缩与普通消息等价处理——
+    // 轮到它且引擎空闲时执行压缩，不是发消息。压缩结束后（compaction_end）
+    // 再领下一条。条目可以编辑，以当前内容为准：内容已不是 /compact 的，
+    // 按普通消息发出去。
+    const compactionArgs = stagedCompactionArgs(first);
+    if (compactionArgs !== null) {
+      const runner = deps.runStagedCompactionRef.current;
+      if (!runner) {
+        deps.stagedApiRef.current?.restore(finalKey, [first]);
+        return;
+      }
+      // 没启动（这个会话已有压缩在途）：这一条还没轮到——放回队首，用户看得见、可删可改；
+      // 已经在压缩的那一次结束时会再领到它。修前条目被领走就没了，排在后面的消息没人投递。
+      const putBack = () => deps.stagedApiRef.current?.restore(finalKey, [first]);
+      // 执行失败：执行器已经弹窗告诉过用户，这一条到此为止，不放回（收口轮界面实跑：
+      // 压缩条目没有手动重试的入口，放回去只会在之后每个回合结束时被再领一次、再失败一次、
+      // 再弹一次「压缩失败」窗，会话里一次多一条失败分隔线，用户只能手动删掉它才停得下来）。
+      // 它已经出队，排在后面的消息照常轮到——与压缩正常做完之后一样。压缩结束事件先到时
+      // 那边已经领过了，这里再领一次什么都领不到，不会重复发。
+      const failed = () => deliverNextStagedGuide(cid, finalKey, "compaction_end");
+      try {
+        void Promise.resolve(runner(finalKey, compactionArgs || null, first.context)).then(
+          (outcome) => {
+            if (outcome === "skipped") putBack();
+          },
+          failed,
+        );
+      } catch {
+        failed();
+      }
+      return;
+    }
+    // v0.9.4 需求8 补充：暂存附件标记行随自动发送附加（与手动引导
+    // 同通道——文件落盘 + Read 引用）。逐条化后只带本条自己的附件。
+    let fileBlock = "";
+    if (first.fileLines && first.fileLines.length > 0) {
+      fileBlock = "\n" + "\n" + "<!--JISHU_HUB_IMAGES_BEGIN-->" + "\n" + "[用户在本次对话中上传了以下文件，请使用 Read 工具查看对应的文件路径：]" + "\n" + first.fileLines.join("\n") + "\n" + "<!--JISHU_HUB_IMAGES_END-->";
+    }
+    const merged = first.content + fileBlock;
+    // Start WITHOUT pendingUserMessage: send_message delivers the
+    // message to the backend (JSONL), so the reply's turn_complete
+    // must NOT re-commit it (would duplicate). Commit it into the
+    // cache ourselves here, exactly once.
+    streamStore.start(finalKey, null, [], { committedUserMessage: true });
+    if (cid !== finalKey) streamStore.alias(finalKey, cid);
+    deps.pendingReplyStartedAtRef.current.set(finalKey, Date.now());
+    const autoBase =
+      getCachedSessionMessages(finalKey)
+      ?? getCachedSessionMessages(cid)
+      ?? [];
+    const autoUpdated = [...autoBase, {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: merged }],
+      timestamp: Date.now(),
+    }];
+    setCachedSessionMessages(finalKey, autoUpdated);
+    if (cid !== finalKey) setCachedSessionMessages(cid, autoUpdated);
+    if (deps.selectedSessionRef.current === cid || deps.selectedSessionRef.current === finalKey) {
+      deps.setSessionMessages(autoUpdated);
+    }
+    // v0.9.8 需求3：按暂存条目自带的会话发送上下文投递（入队时
+    // 捕获——面单写地址；跟会话走，与界面停留项目无关）。
+    void (async () => {
+      try {
+        await invokeCommand("send_message", {
+          agentId: first.context.agentId,
+          projectPath: first.context.projectPath,
+          sessionId: finalKey,
+          message: merged,
+        });
+      } catch (err) {
+        console.error("Auto-send of staged guides failed:", err);
+        streamStore.drop(finalKey);
+        // v0.9.8 评审修复轮 R2：只放回发失败的这一条。其余的在领取时已经
+        // 放回待发送区了——此前连它们一起再放一遍，同一条出现两份、各发一次。
+        deps.stagedApiRef.current?.restore(finalKey, [first]);
+      }
+    })();
   };
 
   listen<AgentEventPayload>("agent-event", (event) => {
@@ -322,17 +370,20 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
         if (chunk.data.kind === "steer_queue_cleared") {
           const finalKey = streamStore.getState(cid)?.resolvedId ?? cid;
           const queueKey = steerCoordinator.isEmpty(finalKey) ? cid : finalKey;
-          const { followUps } = steerCoordinator.reconcileCleared(
+          const { followUps, undeliverable } = steerCoordinator.reconcileCleared(
             queueKey,
             chunk.data.texts,
             chunk.data.follow_up_texts ?? [],
           );
           // followUp 部分维持 v0.9.1 回填语义（仅正查看的会话，切走不越权改草稿）。
+          // v0.9.8 评审修复轮 R2：这个会话没有入队记录、无从投递的 steering
+          // 同样回填——不丢用户输入，也不拿空地址去发。
+          const toComposer = undeliverable.length > 0 ? [...undeliverable, ...followUps] : followUps;
           if (
-            followUps.length > 0
+            toComposer.length > 0
             && (cid === deps.selectedSessionRef.current || cid === streamStore.getState(cid)?.resolvedId)
           ) {
-            deps.chatInputRef.current?.restoreTexts(followUps);
+            deps.chatInputRef.current?.restoreTexts(toComposer);
           }
           continue;
         }
@@ -371,7 +422,8 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             // divider）提交进缓存，再 drop。否则"处理中"永挂 + 压缩结束后
             // 停止打空（pi 已空闲，无 turn_complete(Aborted) 收尾）。
             if (
-              st0 && st0.pendingUserMessage === null && st0.text === ""
+              st0 && st0.pendingUserMessage === null && !st0.committedUserMessage
+              && st0.text === ""
               && st0.thinking === "" && st0.tools.length === 0
               && st0.steerTexts.length === 0 && !st0.error
             ) {
@@ -398,9 +450,23 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
                 }
               }
               streamStore.drop(finalKey);
+              // v0.9.8 评审修复轮 R2：「点过停止」在这条流上留下的本地提交标记
+              // 随流终结一并结算——标记只属于这个令牌的流；流没了它就是一张
+              // 过期便签，之后新回合以中止收场时会被当成旧回执而不收口。
+              // 别的回合留下的标记（等它自己的终结者）不动。
+              for (const key of new Set([finalKey, cid])) {
+                if (deps.abortLocalCommitRef.current.get(key) === st0.turnToken) {
+                  deps.abortLocalCommitRef.current.delete(key);
+                }
+              }
               devLog("pipeline", "压缩结束：终结纯压缩流（divider 已提交缓存）", { session: finalKey });
-              // v0.9.8 需求7 补充轮：压缩结束 = 引擎空闲 → 发出压缩期间暂存的消息。
-              deliverNextStagedGuide(cid, finalKey, "compaction_end");
+              // v0.9.8 需求7 补充轮：用户发起的压缩结束 = 引擎空闲 → 发出压缩期间暂存的消息。
+              // 二轮评审 R3（P2-8）：只有用户发起的压缩才这样。引擎在自己起的回合开头做的
+              // 自动压缩（任务会话 / 节点会话里的内部回合，流是分隔线到达时自动起的）结束时
+              // 回合还在跑——排队的消息不发给正在跑的引擎，留给回合结束。
+              if (deps.takeCompactionRequest(finalKey) || deps.takeCompactionRequest(cid)) {
+                deliverNextStagedGuide(cid, finalKey, "compaction_end");
+              }
             }
           }
           continue;
@@ -434,28 +500,25 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
               console.warn("deps.discoverConductorTask failed:", e),
             );
           }
-          // v0.9.7 需求2（R1 生产实测 issue #3 修复）：conductor 退役后任务
-          // 实例的唯一创建者是这里的 mark（后端 mark_task_session
-          // unwrap_or_else 建实例）——守卫放宽为「任务模式发消息」即可，
-          // taskId 为空 = 新建。旧「占位任务双建」顾虑不适用：runner 不建
-          // 任务，mark 是唯一创建者。
-          if (deps.taskLaunchOpenRef.current) {
+          // v0.9.8 评审修复轮 R3（P1-1）：任务实例改在**发送入口**建——首条消息把任务
+          // 意图随 `send_message` 带给后端，后端在拉起进程之前建实例（先挂发送用的
+          // 临时会话键），会话解析回调里（早于首条 prompt 写出）改绑成这里的真实
+          // 会话号。修前实例是这一刻才由前端 mark 创建的，晚于首条 prompt：引擎首轮
+          // 来查「是不是任务会话」常查不到。这一处退成只读刷新：按任务号读回带真实
+          // 会话号的那一份（任务号为空 = 发送入口那边已经处理过，或者这次不是任务
+          // 发起，都不需要刷新）。
+          if (deps.taskLaunchOpenRef.current && deps.activeTaskInstanceIdRef.current) {
             const projectRoot = deps.projectPathRef.current;
+            const taskId = deps.activeTaskInstanceIdRef.current;
             if (projectRoot) {
-              invokeCommand<TaskLaunchInstanceSummary>("task_launch_mark_session", {
+              invokeCommand<TaskLaunchInstanceSummary | null>("task_launch_get_instance", {
                 projectRoot,
-                taskId: deps.activeTaskInstanceIdRef.current,
-                sessionId: realId,
-                skillId: deps.selectedTaskSkillIdRef.current || "jishu-task-runner",
-                // 需求9 #4 补：建实例即写首条 goal（截断在 Rust 侧）——单步
-                // 小任务 agent 不调 update_steps，步骤上报链不触发，标题会
-                // 停在默认「新任务」。
-                title: deps.taskLaunchGoalRef.current,
+                taskId,
               })
                 .then((record) => {
-                  deps.applyTaskLaunchInstanceSnapshot(record);
+                  if (record) deps.applyTaskLaunchInstanceSnapshot(record);
                 })
-                .catch((error) => console.warn("Failed to mark task launch session:", error));
+                .catch((error) => console.warn("Failed to refresh task launch instance:", error));
             }
           }
 
@@ -538,11 +601,47 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             return kept.length === current.length ? current : kept;
           });
         }
+        // v0.9.8 评审修复轮 R2（裁决 2 / 契约 C1）：回合以 `Handled` 结束 =
+        // 这条流是一条扩展命令，引擎已经执行完它。扩展命令不落用户消息、
+        // 不起回合（与 pi 原生 TUI 一致：界面不留这条命令的用户气泡）——这条
+        // 流是为它乐观起的，整条丢弃：不提交消息、不发完成通知、不生成标题。
+        // 引擎此刻空闲，待发送区的下一条照常投递。
+        if (chunk.data.kind === "turn_complete" && chunk.data.reason === "Handled") {
+          const handledState = streamStore.getState(cid);
+          const handledKey = handledState?.resolvedId ?? cid;
+          streamStore.drop(cid);
+          // 「点过停止」在这条流上留下的本地提交标记随流终结结算（只结算属于
+          // 这个令牌的；别的回合等它自己的终结者）。
+          for (const key of new Set([handledKey, cid])) {
+            if (deps.abortLocalCommitRef.current.get(key) === handledState?.turnToken) {
+              deps.abortLocalCommitRef.current.delete(key);
+            }
+            deps.pendingReplyStartedAtRef.current.delete(key);
+          }
+          if (
+            deps.newSessionStreamIdsRef.current.has(cid)
+            || deps.newSessionStreamIdsRef.current.has(handledKey)
+          ) {
+            // 新会话的第一条就是扩展命令：列表里还没有这一项，重读把它加进来。
+            deps.newSessionStreamIdsRef.current.delete(cid);
+            deps.newSessionStreamIdsRef.current.delete(handledKey);
+            deps.refetchSessionsRef.current?.(true).catch(console.error);
+          }
+          // 用量照常刷新：扩展命令若在引擎内部用了模型，圆环不该落后一拍（二轮评审 R3 P2-4）
+          void deps.refreshSessionUsage(handledKey);
+          devLog("pipeline", "扩展命令已执行：丢弃这条流（不留用户消息）", { session: handledKey });
+          deliverNextStagedGuide(cid, handledKey, "handled");
+          continue;
+        }
         if (chunk.data.kind === "turn_complete") {
+          // 二轮评审 R3（P2-4）：扩展命令的流以中止 / 错误收场时（执行期间点了停止、命令失败），
+          // 输出照常收口，但它不是一次「对话回合」——不生成标题、不发完成通知 / 未读
+          //（与 Handled 分支同一口径；与 TUI 一致——TUI 里命令执行完就回到输入提示）。
+          const extensionCommandStream = streamStore.getState(cid)?.extensionCommand === true;
           // v0.9.4 需求6 v2：回合完成后触发 AI 标题生成（一次/会话；后端幂等
           // ——已有 session_info 即跳过，用户重命名不覆盖；失败静默回落规则
           // 截断标题）。仅 jishu-self（pi 原生 JSONL 通道）。
-          if (chunk.agent_id === "jishu-self") {
+          if (chunk.agent_id === "jishu-self" && !extensionCommandStream) {
             const titledKey = streamStore.getState(cid)?.resolvedId ?? cid;
             if (!titledOnce.has(titledKey)) {
               titledOnce.add(titledKey);
@@ -565,6 +664,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           const emitTurnCompleteSignal = () => {
             // 闭包捕获循环变量——TS 控制流收窄在函数体内失效，显式恢复。
             if (chunk.data.kind !== "turn_complete") return;
+            if (extensionCommandStream) return;
             const turnCompleteBackground = cid !== deps.selectedSessionRef.current;
             if (turnCompleteBackground || !isAppWindowActive()) {
               emitSessionSignal({
@@ -691,7 +791,9 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // runs after this turn's drop(cid), so the new stream isn't cleared.
           let guideToSendAfterDrop: SteerQueueItem | null = null;
           const newMessages: Message[] = [];
-          if (state?.pendingUserMessage) {
+          // v0.9.8 评审修复轮 R2（C1）：扩展命令起的流不留用户消息——即使它
+          // 以中止收场（用户在命令执行期间点了停止），也只收口、不提交气泡。
+          if (state?.pendingUserMessage && !state.extensionCommand) {
             newMessages.push({
               role: "user",
               content: [{
@@ -739,8 +841,12 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
           // 一条（此刻 pi 已 Idle，steer 进 pi 队列由其开新回合注入；注入
           // 回执 steer_injected 照常消占位）。队首之外的条目在本轮发送时
           // 已被闸门拦下（chat-page onGuideStaged），队列里的就是待投递集。
+          // v0.9.8 评审修复轮 R2：中止的回合不在这里投——引擎的引导队列已被
+          // 清空，残留的引导由下方的中止收口作为新消息重发。此前闸门写的是
+          // 小写 "aborted"，与回执的实际取值（"Aborted"）永不相等，中止时也会
+          // 往引擎投一条（与随后的重发形成双发）。
           if (
-            chunk.data.reason !== "aborted" &&
+            chunk.data.reason !== "Aborted" &&
             queuedSteers.length > 0 &&
             steerTexts.length === 0
           ) {
@@ -1112,7 +1218,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             // fires (drops the state, covering empty or error responses). An
             // arbitrary cutoff would kill the indicator before a slow model's
             // first token, exactly the bug we're fixing.
-            streamStore.start(finalKey, null);
+            streamStore.start(finalKey, null, [], { committedUserMessage: true });
             if (cid !== finalKey) streamStore.alias(finalKey, cid);
             deps.pendingReplyStartedAtRef.current.set(finalKey, Date.now());
           }
@@ -1129,7 +1235,7 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             // so the reply's turn_complete must NOT re-commit it as a user
             // message (that would duplicate it). We commit the guide into the
             // cache ourselves here, exactly once.
-            streamStore.start(finalKey, null);
+            streamStore.start(finalKey, null, [], { committedUserMessage: true });
             if (cid !== finalKey) streamStore.alias(finalKey, cid);
             deps.pendingReplyStartedAtRef.current.set(finalKey, Date.now());
             const guideBase =
@@ -1174,8 +1280,15 @@ export function startAgentEventPipeline(deps: AgentEventPipelineDeps): () => voi
             deps.newSessionStreamIdsRef.current.delete(finalKey);
             // 新会话在列表里还没有这一项，上面的同步落空——重读列表把它加进来；
             // 重读完成后这一项以正文那一份为准（重读读到的是磁盘上的文件）。
+            // v0.9.8 评审修复轮 R2：重读是异步的（要把项目里每个会话文件解析
+            // 一遍），期间这个会话的缓存可能已经前进（回合结束自动发出的下
+            // 一条消息写进了缓存）——同步缓存里**此刻最新**的一份，不拿回合
+            // 结束时的旧快照去覆盖它。
             deps.refetchSessionsRef.current?.(true)
-              .then(() => deps.syncSessionListMessagesRef.current?.(finalKey, updated))
+              .then(() => deps.syncSessionListMessagesRef.current?.(
+                finalKey,
+                getCachedSessionMessages(finalKey) ?? updated,
+              ))
               .catch(console.error);
           }
 

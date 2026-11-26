@@ -10,8 +10,12 @@ import type { MutableRefObject, Dispatch, SetStateAction } from "react";
 import type { TFunction } from "i18next";
 import type { AgentEventPayload, Message, Session } from "@/types";
 import { streamStore } from "@/hooks/use-stream-store";
-import { getCachedSessionMessages, setCachedSessionMessages } from "./session-cache";
+import { setCachedSessionMessages } from "./session-cache";
 import { startAgentEventPipeline } from "./event-pipeline";
+
+// 评审修复轮 R2：缓存替身的行为与真实缓存一致（写进去的读得回来）——回合
+// 结束后的列表同步读的是「缓存里此刻最新的一份」，读不回来的替身测不出它。
+const cacheMemory = vi.hoisted(() => new Map<string, Message[]>());
 
 let listenCallback: ((e: { payload: unknown }) => void) | null = null;
 
@@ -34,8 +38,10 @@ vi.mock("./session-cache", async (importOriginal) => {
   const orig = await importOriginal<typeof import("./session-cache")>();
   return {
     ...orig,
-    getCachedSessionMessages: vi.fn(() => null),
-    setCachedSessionMessages: vi.fn(),
+    getCachedSessionMessages: vi.fn((key: string) => cacheMemory.get(key)),
+    setCachedSessionMessages: vi.fn((key: string, messages: Message[]) => {
+      cacheMemory.set(key, messages);
+    }),
   };
 });
 
@@ -70,6 +76,9 @@ function makeDeps() {
     sessionsRef: { current: null } as MutableRefObject<Session[] | null>,
     // 「把这个会话的消息写进列表」——本组用例的被测对象
     syncSessionListMessagesRef: { current: vi.fn<(sessionId: string, messages: Message[]) => void>() },
+    // v0.9.8 评审修复轮 R2：排队压缩的执行器（本组用例不涉及，留空）
+    runStagedCompactionRef: { current: null },
+    takeCompactionRequest: () => true,
     stagedApiRef: { current: null },
     supportsSteerRef: { current: true } as MutableRefObject<boolean>,
     taskLaunchOpenRef: { current: false },
@@ -96,8 +105,9 @@ describe("v0.9.8 需求23：回合结束后，列表里该会话的消息换成�
 
   beforeEach(() => {
     vi.clearAllMocks();
+    cacheMemory.clear();
     deps = makeDeps();
-    vi.mocked(getCachedSessionMessages).mockReturnValue(base);
+    cacheMemory.set("s1", base);
     stop = startAgentEventPipeline(deps as never);
   });
 
@@ -106,7 +116,11 @@ describe("v0.9.8 需求23：回合结束后，列表里该会话的消息换成�
     streamStore.drop("s1");
   });
 
-  it("已有的会话：写进列表的那一份就是写进正文、写进缓存的同一个数组；不重读列表——S23-U30", () => {
+  it("已有的会话：写进列表的那一份就是写进正文、写进缓存的同一个数组；不重读列表——S23-U30 / S11-U2", () => {
+    // 评审修复轮 R2（S11-U2）：给重读一个真实的替身再断言它没被调用——
+    // 此前断言的是夹具里恒为 null 的初始值，重读了也发现不了。
+    const refetch = vi.fn(() => Promise.resolve([]));
+    deps.refetchSessionsRef.current = refetch;
     streamStore.start("s1", "这一轮的问题");
     emitTurnComplete("s1");
 
@@ -127,7 +141,7 @@ describe("v0.9.8 需求23：回合结束后，列表里该会话的消息换成�
     expect(toCache[toCache.length - 1][1]).toBe(written);
 
     // 已有的会话不重读列表（重读要把项目里每个会话文件全量解析一遍）
-    expect(deps.refetchSessionsRef.current).toBeNull();
+    expect(refetch).not.toHaveBeenCalled();
   });
 
   it("新会话的第一轮：重读列表完成后再写入一次——S23-U31", async () => {
@@ -146,7 +160,7 @@ describe("v0.9.8 需求23：回合结束后，列表里该会话的消息换成�
 
     finishRefetch!([]);
     await vi.waitFor(() => expect(sync).toHaveBeenCalledTimes(2));
-    // 第二次写入的仍是同一份消息、同一个会话
+    // 缓存在重读期间没有前进：第二次写入的仍是同一份消息、同一个会话
     expect(sync.mock.calls[1][0]).toBe("s1");
     expect(sync.mock.calls[1][1]).toBe(sync.mock.calls[0][1]);
     // 标记已清掉——下一轮按「已有的会话」走，不再重读

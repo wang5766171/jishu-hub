@@ -97,6 +97,10 @@ const TaskRow = memo(function TaskRow({
         <div>
           <button
             type="button"
+            // 行上带任务号与任务会话号：自动化用例按它找到确定的一行（标题会重复——都叫「新任务」时
+            // 按标题找会点开别的任务）
+            data-task-id={task.task_id}
+            data-task-session={task.task_session_id ?? undefined}
             onClick={() => onSelectTask(task)}
             className={cn(
               // 与常规会话项对齐：pl-5(1.25rem) + gap-3，图标 h-3 w-3，避免整体右移。
@@ -149,7 +153,7 @@ const TaskRow = memo(function TaskRow({
               <span
                 role="button"
                 tabIndex={0}
-                title="取消执行"
+                title={t("sessions.cancelTaskRun", "取消执行")}
                 onClick={(e) => {
                   e.stopPropagation();
                   onCancelTask(task);

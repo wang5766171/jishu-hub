@@ -26,10 +26,10 @@ import {
 import { usePanelActivation, consumePanelActivation } from "../../shell/panel-activation";
 import { openManagePage } from "@/lib/app-nav";
 import { resolvePluginIcon } from "@/components/ui/icon-picker";
-import { useAllPluginBehaviors } from "../config-plane";
+import { useAllPluginBehaviors, type PluginBehaviorConfig } from "../config-plane";
 import { listSessionPlugins, useEnabledSessionPlugins } from "../registry";
 import { dockPanelsOf, sidebarPanelsOf } from "../types";
-import type { SessionKernelContext } from "../types";
+import type { SessionKernelContext, SessionPluginDescriptor } from "../types";
 
 /**
  * 停靠面板宿主（v0.9.2 需求1）：五槽位 + 拖拽 + 浮动窗口。
@@ -91,6 +91,30 @@ function declaredSlotOf(pluginId: string): DockSlot | undefined {
 
 function isWindowMaximized(): boolean {
   return window.innerWidth * window.innerHeight >= screen.width * screen.height * 0.92;
+}
+
+/** 自动展开的判定（纯函数）：本次会话该展开哪个「每次自动展开」的面板（单选
+ *  互斥取第一个命中的）。命中在先的面板若是「仅任务会话」而任务上下文还没到，
+ *  这一刻不能下结论——返回 deferred，等任务到了再判。 */
+export function resolveAutoOpen(input: {
+  plugins: SessionPluginDescriptor[];
+  enabled: Set<string>;
+  behaviors: Record<string, PluginBehaviorConfig>;
+  taskPresent: boolean;
+}): { pluginId: string | null; deferred: boolean } {
+  let deferred = false;
+  for (const plugin of input.plugins) {
+    if (!input.enabled.has(plugin.id)) continue;
+    const bhv = input.behaviors[plugin.id];
+    if (bhv?.autoOpen !== "every-session") continue;
+    if (!dockPanelsOf(plugin).length && !sidebarPanelsOf(plugin).length) continue;
+    if (bhv.scope === "task-only" && !input.taskPresent) {
+      deferred = true;
+      continue;
+    }
+    return { pluginId: plugin.id, deferred: false };
+  }
+  return { pluginId: null, deferred };
 }
 
 export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
@@ -455,27 +479,47 @@ export function SessionPanelLayer({ ctx }: { ctx: SessionKernelContext }) {
   // 批次4：autoOpen=every-session——进入新会话（含首次挂载）自动展开首个
   // 命中面板（单选互斥取一）；never/install-once（默认）不在此动作——
   // install-once 由 5a 确认卡链路承担。仅会话切换驱动（行为保存不重开）。
-  const autoOpenSession = ctx.sessionId;
-  useEffect(() => {
-    if (!autoOpenSession) return;
-    for (const plugin of listSessionPlugins()) {
-      if (!enabled.has(plugin.id)) continue;
-      const bhv = behaviors[plugin.id];
-      if (bhv?.autoOpen !== "every-session") continue;
-      if (!dockPanelsOf(plugin).length && !sidebarPanelsOf(plugin).length) continue;
-      if (bhv.scope === "task-only" && ctx.task == null) continue;
-      if (isSidebarPlugin(plugin.id)) {
+  //
+  // v0.9.8 评审修复轮 R2 / M-5：判定要读「任务上下文在不在」，而任务上下文
+  // 可能晚于会话 id 到达（冷启动恢复任务会话）。修前的依赖只有会话 id：任务
+  // 还没到就按「没有任务」判完了，「仅任务会话 + 每次自动展开」的面板不再展开。
+  // 现在进会话时任务没到、又有仅任务会话的面板命中在先 → 记「待补判」，任务
+  // 到了再判一次。触发补判的是「有无任务」这个布尔值的变化，不是任务上下文
+  // 本身——任务会话里它每 3 秒换一次引用，拿它当依赖会把用户收起的面板反复弹开。
+  const autoOpenDeferredRef = useRef(false);
+  const runAutoOpenRef = useRef<(taskPresent: boolean) => void>(() => {});
+  runAutoOpenRef.current = (taskPresent: boolean) => {
+    const decision = resolveAutoOpen({ plugins: listSessionPlugins(), enabled, behaviors, taskPresent });
+    if (decision.pluginId) {
+      if (isSidebarPlugin(decision.pluginId)) {
         hideAllDockPanels();
-        if (sidebarOpenId !== plugin.id) openSessionSidebar(plugin.id);
+        if (sidebarOpenId !== decision.pluginId) openSessionSidebar(decision.pluginId);
       } else {
         closeSessionSidebar();
-        showPanel(plugin.id);
+        showPanel(decision.pluginId);
       }
-      break;
     }
+    autoOpenDeferredRef.current = decision.deferred;
+  };
+  const autoOpenSession = ctx.sessionId;
+  useEffect(() => {
+    if (!autoOpenSession) {
+      autoOpenDeferredRef.current = false;
+      return;
+    }
+    runAutoOpenRef.current(inTaskSession);
     // 依赖仅会话 id：切换会话触发；behaviors/enabled 快照取当次值。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoOpenSession]);
+  useEffect(() => {
+    // 任务上下文到了（false → true）且上一轮留了「待补判」：补判一次。任务
+    // 取消关联（true → false）不触发——没有面板该因此弹开。
+    if (!inTaskSession || !autoOpenDeferredRef.current) return;
+    autoOpenDeferredRef.current = false;
+    runAutoOpenRef.current(true);
+    // 依赖仅「有无任务」：刻意不含 runAutoOpenRef（每帧刷新的稳定转发）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inTaskSession]);
 
   const hasAnyMount = panels.length > 0 || sidebarEntries.length > 0;
   if (!hasAnyMount) return null;

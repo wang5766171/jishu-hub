@@ -31,6 +31,11 @@ export interface StagedMessage {
   /** v0.9.8 需求3：入队时捕获的会话发送上下文——Route 2 自动发送按此投递
    * （跟会话走，与界面停留项目无关）。 */
   context: SessionSendContext;
+  /** v0.9.8 评审修复轮 R2（裁决 4）：`compaction` = 一条排队的上下文压缩。
+   *  回合进行中发起的压缩与普通消息等价处理——进待发送区、排在它前面的
+   *  消息之后；轮到它且引擎空闲时执行压缩。内容就是命令原文，可拖动、
+   *  编辑、删除。 */
+  kind?: "compaction";
 }
 
 interface MessageStagingProps {
@@ -169,18 +174,23 @@ export function MessageStaging({
                 >
                   <Trash2 className="size-3" />
                 </button>
-                <button
-                  type="button"
-                  onClick={() => onSend(msg.id, msg.content)}
-                  disabled={Boolean(sendLoadingId)}
-                  className={cn(
-                    "flex items-center gap-1 rounded bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40",
-                  )}
-                  title={sendLabel ?? t("sessions.interactionSubmit")}
-                >
-                  <Send className="size-3" />
-                  {sendLabel ?? t("tasks.workbench.planningProgress.steer")}
-                </button>
+                {/* 排队的压缩条目没有「发送 / 引导」：它只按顺序轮到时执行（用户裁决 4
+                    「不立即执行」）。输出过程中手动触发会中止正在跑的输出、把排在后面的
+                    消息发进正在压缩的引擎。条目仍可编辑、删除、拖动。 */}
+                {msg.kind !== "compaction" && (
+                  <button
+                    type="button"
+                    onClick={() => onSend(msg.id, msg.content)}
+                    disabled={Boolean(sendLoadingId)}
+                    className={cn(
+                      "flex items-center gap-1 rounded bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40",
+                    )}
+                    title={sendLabel ?? t("sessions.interactionSubmit")}
+                  >
+                    <Send className="size-3" />
+                    {sendLabel ?? t("tasks.workbench.planningProgress.steer")}
+                  </button>
+                )}
               </div>
             </>
           )}

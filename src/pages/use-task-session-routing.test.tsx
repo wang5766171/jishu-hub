@@ -4,6 +4,9 @@
  * S24-U9 节点会话也走同一个打开函数；
  * S24-U10 选中节点前先记离开位置，取消选中回到主会话也走打开函数。
  *
+ * v0.9.8 评审修复轮 R2，对应 docs/v0.9.8/评审修复轮-R2/tests/O-用例清单.md：
+ * O7-U1/U2（任务没有关联会话时也记离开位置、收起预览）。
+ *
  * 打开函数在这里是替身：只看「谁被打开、带了什么标记」，读消息 / 定位本身由
  * use-session-selection 的测试覆盖。
  */
@@ -27,7 +30,6 @@ const task = {
 
 function setup({ activeTask = task }: { activeTask?: TaskLaunchInstanceSummary } = {}) {
   const handleSelectSession = vi.fn();
-  const noteLeavingSession = vi.fn();
   const setSelectedSession = vi.fn();
   const setSessionMessages = vi.fn();
   const setTaskSelectedNodeId = vi.fn();
@@ -35,6 +37,7 @@ function setup({ activeTask = task }: { activeTask?: TaskLaunchInstanceSummary }
   const setTaskModeActive = vi.fn();
   const setActiveTaskInstanceId = vi.fn();
   const selectedSessionRef = { current: null as string | null };
+  const closeViewer = vi.fn();
   const hook = renderHook(() =>
     useTaskSessionRouting({
       setTaskModeActive,
@@ -60,7 +63,7 @@ function setup({ activeTask = task }: { activeTask?: TaskLaunchInstanceSummary }
       taskGraph: { snapshot: null, nodeRuns: {}, runStatus: null },
       nodeSessionMap: {},
       closeSessionSidebar: vi.fn(),
-      closeViewer: vi.fn(),
+      closeViewer,
       setSelectedSession,
       selectedSessionRef,
       setSessionMessages,
@@ -73,13 +76,11 @@ function setup({ activeTask = task }: { activeTask?: TaskLaunchInstanceSummary }
       confirmDialog: vi.fn(async () => true),
       alertDialog: vi.fn(async () => undefined),
       handleSelectSessionRef: { current: handleSelectSession },
-      noteLeavingSession,
     }),
   );
   return {
     ...hook,
     handleSelectSession,
-    noteLeavingSession,
     setSelectedSession,
     setSessionMessages,
     setTaskSelectedNodeId,
@@ -87,6 +88,7 @@ function setup({ activeTask = task }: { activeTask?: TaskLaunchInstanceSummary }
     setTaskModeActive,
     setActiveTaskInstanceId,
     selectedSessionRef,
+    closeViewer,
   };
 }
 
@@ -105,13 +107,18 @@ describe("useTaskSessionRouting · 任务会话与普通会话走同一个打开
     expect(h.setSelectedSession).not.toHaveBeenCalled();
   });
 
-  it("任务没有关联会话：选中态置空，不调用打开函数", () => {
+  // 二轮评审 R3（P1-1）：离开位置改由「选中态一变就记」（use-session-selection），导流钩子不再手动调——
+  // 这几条只看它自己还做的事：置空 / 换占位、收预览、交不交给打开函数。
+  it("任务没有关联会话：选中态置空，不调用打开函数；预览照收——O7-U1", () => {
     const h = setup({ activeTask: { ...task, task_session_id: null } });
+    h.selectedSessionRef.current = "sess-other"; // 正在看别的会话
     act(() => {
       h.result.current.openTaskSession({ ...task, task_session_id: null });
     });
     expect(h.handleSelectSession).not.toHaveBeenCalled();
     expect(h.setSelectedSession).toHaveBeenCalledWith(null);
+    // 没有会话可打开，收预览这件事打开函数做不了——不补上的话，上一个会话的预览还开着
+    expect(h.closeViewer).toHaveBeenCalledTimes(1);
   });
 
   it("节点会话回填：也交给打开函数（带「保留任务上下文 + 节点会话」），记下绑定的智能体——S24-U9", () => {
@@ -141,12 +148,11 @@ describe("useTaskSessionRouting · 任务会话与普通会话走同一个打开
     expect(h.handleSelectSession).not.toHaveBeenCalled();
   });
 
-  it("选中节点：先记下正在离开的会话的滚动位置，主区换成占位；取消选中：回到任务主会话也走打开函数——S24-U10", () => {
+  it("选中节点：主区换成占位；取消选中：回到任务主会话也走打开函数——S24-U10", () => {
     const h = setup();
     act(() => {
       h.result.current.handleTaskSelectNode("node-1");
     });
-    expect(h.noteLeavingSession).toHaveBeenCalledTimes(1);
     expect(h.setTaskSelectedNodeId).toHaveBeenCalledWith("node-1");
     expect(h.setSelectedSession).toHaveBeenCalledWith("pending-node");
     expect(h.setSessionMessages).toHaveBeenCalledWith([]);
@@ -158,7 +164,17 @@ describe("useTaskSessionRouting · 任务会话与普通会话走同一个打开
     });
     expect(h.handleSelectSession).toHaveBeenCalledWith("sess-main", { keepTaskContext: true });
     expect(h.setTaskNodeSessionAgentId).toHaveBeenCalledWith(null);
-    // 离开位置由打开函数记（它知道正要离开的是哪个会话）
-    expect(h.noteLeavingSession).not.toHaveBeenCalled();
+  });
+
+  it("任务没有关联会话时取消节点选择：收起预览，选中态置空——O7-U2", () => {
+    const h = setup({ activeTask: { ...task, task_session_id: null } });
+    h.selectedSessionRef.current = "node-sess"; // 正在看节点的会话
+    act(() => {
+      h.result.current.handleTaskSelectNode(null);
+    });
+    expect(h.handleSelectSession).not.toHaveBeenCalled();
+    expect(h.setSelectedSession).toHaveBeenCalledWith(null);
+    expect(h.selectedSessionRef.current).toBeNull();
+    expect(h.closeViewer).toHaveBeenCalledTimes(1);
   });
 });

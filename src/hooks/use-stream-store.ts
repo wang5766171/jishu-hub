@@ -130,12 +130,29 @@ export interface SessionStreamState {
    *  同一滞留流再次提交 = 「停止后消息重复渲染」根因）；新回合（新
    *  start）令牌不同，自动放行，无需任何清理配合。 */
   turnToken: number;
+  /** v0.9.8 评审修复轮 R2（C1）：这条流是一条**扩展命令**起的——引擎立即
+   *  执行它，不落用户消息、不起回合（与 pi 原生 TUI 一致）。流上的用户消息
+   *  永不提交为气泡：回合以 `Handled` 结束时整条流丢弃，以中止收场时也只
+   *  收口、不留用户消息。 */
+  extensionCommand: boolean;
+  /** v0.9.8 评审修复轮 R2：这条流上有一个在途的回合——它的用户消息已经另行提交进
+   *  缓存（自动发送暂存消息、引导补发、编辑重发、引导回复的指示流），流本身只是在
+   *  等回复。三处「纯压缩流」判据（压缩结束收口、压缩中停止、乐观分隔线回滚）原先
+   *  拿「没有待发的用户消息」当判据，会把这种流误认成纯压缩流：回合开头的自动压缩
+   *  一结束就把流丢掉、再发下一条。 */
+  committedUserMessage: boolean;
+}
+
+export interface StartStreamOptions {
+  extensionCommand?: boolean;
+  committedUserMessage?: boolean;
 }
 
 function emptyState(
   abortKey: string,
   pendingUserMessage: string | null,
   pendingToolIds: string[] = [],
+  options: StartStreamOptions = {},
 ): SessionStreamState {
   return {
     chunks: [],
@@ -160,6 +177,8 @@ function emptyState(
     retryFailed: null,
     compactionStartedAt: null,
     turnToken: nextTurnToken++,
+    extensionCommand: options.extensionCommand === true,
+    committedUserMessage: options.committedUserMessage === true,
   };
 }
 
@@ -246,12 +265,17 @@ class StreamStore {
   }
 
   /** Begin tracking a session that we just sent a message to. */
-  start(canonicalId: string, pendingUserMessage: string | null, pendingToolIds: string[] = []): void {
+  start(
+    canonicalId: string,
+    pendingUserMessage: string | null,
+    pendingToolIds: string[] = [],
+    options?: StartStreamOptions,
+  ): void {
     devLog("store", "start", { id: canonicalId, pending: pendingUserMessage?.slice(0, 40) ?? null });
     const key = this.canonical(canonicalId);
     // Reset the state for a new turn, even if the key already exists
     // (e.g. second message in the same session).
-    this.sessions.set(key, emptyState(key, pendingUserMessage, pendingToolIds));
+    this.sessions.set(key, emptyState(key, pendingUserMessage, pendingToolIds, options));
     this.scheduleFlush();
   }
 
@@ -622,6 +646,8 @@ class StreamStore {
       retryFailed,
       compactionStartedAt,
       turnToken,
+      extensionCommand: prev.extensionCommand,
+      committedUserMessage: prev.committedUserMessage,
     });
     this.scheduleFlush();
   }
@@ -716,6 +742,25 @@ class StreamStore {
     // lifecycle-only 事件被 pushTracked 拒收 → 流永等不到终结者（会话
     // 「处理中」永挂、停止无效，仅重启恢复）。pending 键带时间戳不复用，
     // 保留 alias 无错误路由风险；量级=会话数×2。
+    this.scheduleFlush();
+  }
+
+  /**
+   * v0.9.8 评审修复轮 R2：会话被删除后不再记得它——这个对话的全部身份键
+   * （规范键、自身、指向它的别名）上的流、别名、连接记忆、进程世代、阶段
+   * 一并清除。流 drop 时别名与连接记忆**保留**（需求19-B：进程死亡后迟到
+   * 的终结者还要靠别名找回键）；会话删除才是它们的终点。
+   */
+  forgetSession(sid: string): void {
+    devLog("store", "forgetSession", { id: sid });
+    for (const key of this.identityKeys(sid)) {
+      this.sessions.delete(key);
+      this.aliases.delete(key);
+      this.resolvedOnce.delete(key);
+      this.resolvedPid.delete(key);
+      this.currentPid.delete(key);
+      this.conductorPhases.delete(key);
+    }
     this.scheduleFlush();
   }
 

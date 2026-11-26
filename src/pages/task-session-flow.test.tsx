@@ -8,6 +8,11 @@
  *   「往上翻后切走再回来，停不到原处」（真实界面验证时抓到过）。
  * - U14b：节点会话的完整流程——进入任务主会话 → 选中节点（占位）→ 节点会话回填 →
  *   消息由补读从磁盘读出来并定位 → 取消选中回到主会话。
+ * - U20：打开带任务图的任务，恢复位置之后任务图才加载完，视图不被拽到底。
+ *
+ * v0.9.8 评审修复轮 R2，对应 docs/v0.9.8/评审修复轮-R2/tests/O-用例清单.md：
+ * O1-U1/U4/U7/U8、O3-U2/U3——应用启动后每个会话的第一次打开（消息要从磁盘读）直接落在
+ * 最底部；从往上翻着的会话切过去同样；读到空、装载失败时遮蔽当场解除。
  *
  * 打开动作从**真实的点击事件**里触发，并且不放进测试框架的 act 包裹：真实应用里点击
  * 事件一结束 React 就把这一轮更新提交掉，随后才轮到打开函数里「等一拍」之后的代码；
@@ -51,13 +56,21 @@ type Mode = {
   projected?: unknown[];
 };
 
-function useFlow(m: Mode) {
+/** 页面持有、跟软件同寿的两份状态：卸载重挂（切到管理页再回来）也还在，所以可以从外面传进来。 */
+interface Shared {
+  scrollMemory: Map<string, number | "bottom">;
+  visitedSessions: Set<string>;
+}
+
+function useFlow(m: Mode, shared?: Shared) {
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
   const [sessionMessages, setSessionMessages] = useState<Message[]>([]);
   const selectedSessionRef = useRef<string | null>(null);
   const messageAreaRef = useRef<HTMLDivElement | null>(null);
-  const scrollMemory = useRef(new Map<string, number | "bottom">());
-  const visitedSessions = useRef(new Set<string>());
+  const ownMemory = useRef(new Map<string, number | "bottom">());
+  const ownVisited = useRef(new Set<string>());
+  const scrollMemory = { current: shared?.scrollMemory ?? ownMemory.current };
+  const visitedSessions = { current: shared?.visitedSessions ?? ownVisited.current };
   const searchLensInputRef = useRef<SearchLensInput>({ query: "", selectedSession: null, hitSessionIds: new Set() });
   const scroll = useChatScroll({ messageAreaRef, sessionMessages, selectedSession, searchLensInputRef });
   const reloadSessionMessagesRef = useRef<ReloadSessionMessages>(() => []);
@@ -75,6 +88,8 @@ function useFlow(m: Mode) {
     scrollMemory,
     visitedSessions,
     scrollAction: scroll.scrollAction,
+    selectedSession,
+    lastScrollPositionOf: scroll.lastScrollPositionOf,
     armScroll: scroll.armScroll,
     newSessionStreamIdsRef: { current: new Set<string>() },
     setTaskModeActive: noop,
@@ -134,12 +149,17 @@ function useFlow(m: Mode) {
     sessionMessages,
     scrollAction: scroll.scrollAction,
     isAwayFromBottomRef: scroll.isAwayFromBottomRef,
+    /** 滚动系统里这个会话最近一次量到的位置（用例核对离开记录的样本）。 */
+    lastScrollPositionOf: scroll.lastScrollPositionOf,
     closeViewer,
     messageAreaRef,
   };
 }
 
-function mount(mode: Mode = { taskModeActive: false, taskSelectedNodeId: null, taskNodeSessionAgentId: null }) {
+function mount(
+  mode: Mode = { taskModeActive: false, taskSelectedNodeId: null, taskNodeSessionAgentId: null },
+  shared?: Shared,
+) {
   const el = document.createElement("div");
   const size = { scrollHeight: 1000, clientHeight: 500 };
   Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => size.scrollHeight });
@@ -156,7 +176,7 @@ function mount(mode: Mode = { taskModeActive: false, taskSelectedNodeId: null, t
   let api: ReturnType<typeof useFlow> | null = null;
   const next = { sessionId: "", options: undefined as SelectSessionOptions | undefined };
   function Harness(props: Mode) {
-    api = useFlow(props);
+    api = useFlow(props, shared);
     // 滚动容器由页面挂进文档；这里直接挂上（钩子读的是 ref）
     if (api.messageAreaRef.current !== el) api.messageAreaRef.current = el;
     return <button onClick={() => void api!.handleSelectSession(next.sessionId, next.options)}>打开</button>;
@@ -167,7 +187,7 @@ function mount(mode: Mode = { taskModeActive: false, taskSelectedNodeId: null, t
     next.sessionId = sessionId;
     next.options = options;
     fireEvent.click(view.getByRole("button"));
-    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => realSetTimeout(r, 0));
   };
   return {
     get api() {
@@ -176,11 +196,53 @@ function mount(mode: Mode = { taskModeActive: false, taskSelectedNodeId: null, t
     el,
     size,
     clickOpen,
+    /** 用户往上翻到某个位置（真实环境里三件事自动发生）：滚轮向上先解除贴底跟随——不解除的话
+     *  跟随循环会把位置拽回底部；位置变；滚动事件到，下一帧滚动系统量到位置。 */
+    scrollTo: (top: number) => {
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: -400 }));
+      el.scrollTop = top;
+      el.dispatchEvent(new Event("scroll"));
+      runFrames();
+    },
     rerender: (m: Mode) => view.rerender(<Harness {...m} />),
+    unmount: () => view.unmount(),
   };
 }
 
 const actEnvironmentBefore = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+
+/** 测试自己的「等一拍」用的真定时器——个别用例会接管 window.setTimeout（见 manualTimers）。 */
+const realSetTimeout = window.setTimeout.bind(window);
+
+/**
+ * 遮蔽保险用的定时器：收进队列，时间由 clock 说了算（只接管 window.setTimeout——
+ * 滚动系统调的就是它；React 调度器在模块加载时已经拿走了原函数，不受影响）。
+ */
+function manualTimers(clock: { now: number }) {
+  let seq = 0;
+  const pending = new Map<number, { at: number; fn: () => void }>();
+  vi.spyOn(window, "setTimeout").mockImplementation(((fn: () => void, ms = 0) => {
+    pending.set(++seq, { at: clock.now + ms, fn });
+    return seq;
+  }) as unknown as typeof window.setTimeout);
+  vi.spyOn(window, "clearTimeout").mockImplementation(((id?: number) => {
+    if (id !== undefined) pending.delete(id);
+  }) as unknown as typeof window.clearTimeout);
+  return {
+    /** 时间走过 ms：中途到点的定时器按到点先后依次执行。 */
+    elapse(ms: number) {
+      const until = clock.now + ms;
+      for (;;) {
+        const due = [...pending].filter(([, t]) => t.at <= until).sort((a, b) => a[1].at - b[1].at)[0];
+        if (!due) break;
+        clock.now = due[1].at;
+        pending.delete(due[0]);
+        due[1].fn();
+      }
+      clock.now = until;
+    },
+  };
+}
 
 beforeEach(() => {
   // 不放进 act：让 React 按真实应用的时机提交（点击事件一结束就提交）
@@ -198,6 +260,7 @@ beforeEach(() => {
 afterEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = actEnvironmentBefore;
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("任务工作台的会话流程 · 三个钩子接在一起（从真实点击事件触发）", () => {
@@ -207,7 +270,7 @@ describe("任务工作台的会话流程 · 三个钩子接在一起（从真实
     await h.clickOpen("s1");
     expect(h.el.scrollTop).toBe(500); // 首次打开：到底
     // 往上翻一段再切走：记下这个位置
-    h.el.scrollTop = 200;
+    h.scrollTo(200);
     invokeCommand.mockResolvedValue([msg("s2 的消息")]);
     await h.clickOpen("s2");
 
@@ -227,9 +290,9 @@ describe("任务工作台的会话流程 · 三个钩子接在一起（从真实
     expect(h.el.scrollTop).toBe(500);
 
     // 选中节点：导流钩子在同一次更新里落下节点选中态与占位（中间不会出现「节点已选中、
-    // 主区还是主会话」的状态，否则补读会把主会话当成节点会话重读）
+    // 主区还是主会话」的状态，否则补读会把主会话当成节点会话重读）。
+    // 离开位置随选中态的变化记（二轮评审 R3 P1-1：导流钩子不再手动调记录）。
     const current = h.api;
-    current.noteLeavingSession();
     current.setSelectedSession("pending-node");
     h.rerender({ taskModeActive: true, taskSelectedNodeId: "node-1", taskNodeSessionAgentId: null });
     await new Promise((r) => setTimeout(r, 0));
@@ -261,9 +324,8 @@ describe("任务工作台的会话流程 · 三个钩子接在一起（从真实
     await h.clickOpen("sess-main", { keepTaskContext: true });
     expect(h.el.scrollTop).toBe(500); // 首次打开：到底
     // 往上翻一段（真实环境里滚轮会解除贴底跟随、滚动事件会把「离开底部」标记置真）
-    h.el.scrollTop = 200;
     h.el.dispatchEvent(new WheelEvent("wheel", { deltaY: -400 }));
-    h.el.dispatchEvent(new Event("scroll"));
+    h.scrollTo(200);
     await h.clickOpen("s1"); // 切走：记下 200
 
     // 回来：这一帧内容还不够高（执行卡要等任务图加载完才出现），恢复的位置先被压低
@@ -278,5 +340,196 @@ describe("任务工作台的会话流程 · 三个钩子接在一起（从真实
     for (let i = 0; i < 6; i++) runFrames();
 
     expect(h.el.scrollTop).toBe(200);
+  });
+});
+
+describe("离开位置：记录只有一个写点，跟着选中态走（二轮评审 R3 · P1-1 / P2-3）", () => {
+  const mode = { taskModeActive: false, taskSelectedNodeId: null, taskNodeSessionAgentId: null };
+
+  it("经「新对话」离开再回来：停在离开的位置——R3-P1-1", async () => {
+    setCachedSessionMessages("s1", [msg("s1 的消息")]);
+    const h = mount();
+    await h.clickOpen("s1");
+    expect(h.el.scrollTop).toBe(500);
+    h.scrollTo(200);
+    // 「新对话」对状态做的事：选中态换成占位、消息清空（页面上不经打开函数）
+    h.api.setSelectedSession("new");
+    h.api.selectedSessionRef.current = "new";
+    h.rerender(mode);
+    await new Promise((r) => realSetTimeout(r, 0));
+
+    await h.clickOpen("s1");
+    expect(h.el.scrollTop).toBe(200);
+  });
+
+  it("切到管理页（页面卸载）再回来：停在离开的位置——R3-P1-1", async () => {
+    setCachedSessionMessages("s1", [msg("s1 的消息")]);
+    // 位置记忆由页面持有、跟软件同寿：卸载重挂也还在
+    const shared = { scrollMemory: new Map<string, number | "bottom">(), visitedSessions: new Set<string>() };
+    const first = mount(mode, shared);
+    await first.clickOpen("s1");
+    first.scrollTo(200);
+    first.unmount();
+
+    const second = mount(mode, shared);
+    await second.clickOpen("s1");
+    expect(second.el.scrollTop).toBe(200);
+  });
+
+  it("读盘没回来就切走：不把位置记成「底部」，原有的记忆保留——R3-P2-3", async () => {
+    let release: (messages: Message[]) => void = () => {};
+    invokeCommand.mockImplementation(() => new Promise<Message[]>((resolve) => { release = resolve; }));
+    const memory = new Map<string, number | "bottom">();
+    memory.set("s1", 200);
+    const shared: Shared = { scrollMemory: memory, visitedSessions: new Set(["s1", "s2"]) };
+    const h = mount(mode, shared);
+    await h.clickOpen("s1");
+    // 读盘期间：屏幕上是空的，指令还挂着
+    expect(h.api.sessionMessages).toEqual([]);
+    expect(h.api.scrollAction.current).toEqual({ type: "restore", top: 200, sessionId: "s1" });
+    await h.clickOpen("s2");
+    expect(shared.scrollMemory.get("s1")).toBe(200);
+    release([msg("s1 的消息")]);
+  });
+});
+
+describe("应用启动后的第一次打开：消息要从磁盘读（v0.9.8 评审修复轮 R2）", () => {
+  /** 让读盘挂起，返回「放它回来」的函数。 */
+  const holdRead = () => {
+    let resolveRead: (messages: Message[]) => void = () => {};
+    invokeCommand.mockImplementation(() => new Promise<Message[]>((resolve) => { resolveRead = resolve; }));
+    return (messages: Message[]) => resolveRead(messages);
+  };
+
+  it("读回来那一帧直接在最底部——O1-U1", async () => {
+    const release = holdRead();
+    const h = mount();
+    await h.clickOpen("s1");
+    // 读盘还没回来：定位指令已经挂好（属于 s1），消息区遮着，屏幕上没有内容
+    expect(h.api.scrollAction.current).toEqual({ type: "bottom", sessionId: "s1" });
+    expect(h.el.style.visibility).toBe("hidden");
+    expect(h.api.sessionMessages).toEqual([]);
+    expect(h.el.scrollTop).toBe(0);
+
+    release([msg("s1 的消息")]);
+    await new Promise((r) => realSetTimeout(r, 0));
+    // 消息上屏的同一帧指令被消费：先落到底，贴底首轮之后才上屏
+    expect(h.api.sessionMessages).toEqual([msg("s1 的消息")]);
+    expect(h.api.scrollAction.current).toBeNull();
+    expect(h.el.scrollTop).toBe(500);
+    expect(h.el.style.visibility).toBe("hidden");
+    runFrames();
+    expect(h.el.style.visibility).toBe("");
+  });
+
+  it("从往上翻着的会话切到另一个会话：新会话落到底，遮蔽随贴底首轮解除，后长出来的内容跟到底——O1-U7", async () => {
+    setCachedSessionMessages("s1", [msg("s1 的消息")]);
+    setCachedSessionMessages("s2", [msg("s2 的消息")]);
+    const h = mount();
+    await h.clickOpen("s1");
+    runFrames();
+    expect(h.el.scrollTop).toBe(500);
+    // 在 s1 里往上翻：滚轮解除贴底，滚动事件把「离开底部」标记置真
+    h.el.scrollTop = 200;
+    h.el.dispatchEvent(new WheelEvent("wheel", { deltaY: -400 }));
+    h.el.dispatchEvent(new Event("scroll"));
+    runFrames();
+    expect(h.api.isAwayFromBottomRef.current).toBe(true);
+
+    // 打开 s2（有缓存：消息就绪的同一轮提交里消费）
+    await h.clickOpen("s2");
+    expect(h.api.sessionMessages).toEqual([msg("s2 的消息")]);
+    expect(h.api.scrollAction.current).toBeNull();
+    expect(h.el.scrollTop).toBe(500);
+    expect(h.api.isAwayFromBottomRef.current).toBe(false);
+    expect(h.el.style.visibility).toBe("hidden");
+    runFrames();
+    expect(h.el.style.visibility).toBe("");
+    // 内容继续撑高（图片、图表后置加载）：跟到新的底部
+    h.size.scrollHeight = 1400;
+    runFrames();
+    expect(h.el.scrollTop).toBe(900);
+  });
+
+  it("离开再回来停到原处——走磁盘的那条读取路径——O1-U8", async () => {
+    // 前两次读盘立刻返回；第三次（回到 s1）挂起
+    let release = (_messages: Message[]) => {};
+    invokeCommand
+      .mockResolvedValueOnce([msg("s1 的消息")])
+      .mockResolvedValueOnce([msg("s2 的消息")])
+      .mockImplementationOnce(() => new Promise<Message[]>((resolve) => { release = (messages) => resolve(messages); }));
+    const h = mount();
+    await h.clickOpen("s1");
+    runFrames();
+    expect(h.el.scrollTop).toBe(500);
+    h.scrollTo(200); // 往上翻一段再切走
+    expect(h.api.lastScrollPositionOf("s1")).toBe(200); // 滚动系统量到了这次滚动
+    await h.clickOpen("s2");
+    deleteCachedSessionMessages("s1"); // 回来时消息要从磁盘读
+
+    await h.clickOpen("s1");
+    // 读盘期间：遮着、屏幕清空、指令是「恢复到 200」
+    expect(h.api.scrollAction.current).toEqual({ type: "restore", top: 200, sessionId: "s1" });
+    expect(h.el.style.visibility).toBe("hidden");
+    expect(h.api.sessionMessages).toEqual([]);
+
+    release([msg("s1 的消息")]);
+    await new Promise((r) => realSetTimeout(r, 0));
+    expect(h.api.scrollAction.current).toBeNull();
+    expect(h.el.scrollTop).toBe(200);
+    expect(h.el.style.visibility).toBe("");
+  });
+
+  it("读到空：遮蔽当场解除，不等保险；指令留着，以后有了内容再定位——O3-U2", async () => {
+    invokeCommand.mockResolvedValue([]);
+    const h = mount();
+    await h.clickOpen("s1");
+    expect(h.el.style.visibility).toBe("");
+    expect(h.api.sessionMessages).toEqual([]);
+    expect(h.api.scrollAction.current).toEqual({ type: "bottom", sessionId: "s1" });
+  });
+
+  it("装载失败：同样当场解除——O3-U3", async () => {
+    invokeCommand.mockRejectedValue(new Error("disk boom"));
+    const h = mount();
+    await h.clickOpen("s1");
+    expect(h.el.style.visibility).toBe("");
+    expect(h.api.sessionMessages).toEqual([]);
+  });
+
+  it("读盘超过保险时长才回来：内容上屏时重新遮住，定位完成再上屏——O1-U4", async () => {
+    const clock = { now: 0 };
+    vi.spyOn(performance, "now").mockImplementation(() => clock.now);
+    const timers = manualTimers(clock);
+    const release = holdRead();
+    const h = mount();
+    await h.clickOpen("s1");
+    expect(h.el.style.visibility).toBe("hidden");
+    // 保险到点（800 毫秒）：读盘还没回来，先不遮了
+    timers.elapse(800);
+    expect(h.el.style.visibility).toBe("");
+
+    release([msg("s1 的消息")]);
+    await new Promise((r) => realSetTimeout(r, 0));
+    // 内容上屏：遮蔽与消息同一批武装；指令在同一帧被消费
+    expect(h.api.sessionMessages).toEqual([msg("s1 的消息")]);
+    expect(h.api.scrollAction.current).toBeNull();
+    expect(h.el.scrollTop).toBe(500);
+    expect(h.el.style.visibility).toBe("hidden");
+    runFrames();
+    expect(h.el.style.visibility).toBe("");
+  });
+
+  it("读盘期间去了「新对话」：旧指令作废、遮蔽解除，新对话页立即可见——O1-U6", async () => {
+    holdRead();
+    const h = mount();
+    await h.clickOpen("s1");
+    expect(h.el.style.visibility).toBe("hidden");
+    // 页面的「新对话」：选中态改成占位、消息清空（不经打开函数）
+    const current = h.api;
+    current.setSelectedSession("new");
+    await new Promise((r) => realSetTimeout(r, 0));
+    expect(h.api.scrollAction.current).toBeNull();
+    expect(h.el.style.visibility).toBe("");
   });
 });

@@ -9,6 +9,10 @@ import type {
   Session,
 } from "@/types";
 
+// 「哪些用户消息看得见」在下层（features/chat-core/visible-user-messages.ts）：
+// 搜索域与页面层都读它，features/ 不能反过来引用页面层。这里再导出。
+export { filterInvisibleUserMessages } from "@/features/chat-core/visible-user-messages";
+
 export function TerminalIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -117,34 +121,6 @@ export const PHASE_LAUNCH_RANK: Record<string, number> = {
   execution: 2,
   graph: 2,
 };
-
-/**
- * 回放消息可见性过滤：剔除「不该向用户展示」的 user 消息。
- * 1. Conductor before_agent_start 注入的方法论消息（skill 全文，display:false
- *    但 Pi 仍写 JSONL）——以 [JISHU-TASK: 开头；
- * 2. 文本内容为空的 user 消息（纯系统注入残留）。
- * v0.9.5 用户裁决：历史格式兼容剥离（[JISHU-PROMT] 配对块 / 旧
- * <jishu-task-*> 标签）整体移除，不保留兜底。
- */
-export function filterInvisibleUserMessages(messages: Message[]): Message[] {
-  return messages
-    .filter((message) => {
-      if (message.role !== "user") return true;
-      const firstText = message.content.find((b) => b.type === "text");
-      if (!firstText || firstText.type !== "text") return true;
-      // Conductor 注入消息以 [JISHU-TASK: 开头
-      if (firstText.text.trimStart().startsWith("[JISHU-TASK:")) return false;
-      return true;
-    })
-    .filter((message) => {
-      if (message.role !== "user") return true;
-      const hasVisibleContent = message.content.some((block) => {
-        if (block.type === "text") return block.text.trim().length > 0;
-        return true; // 非文本块（interaction/tool 等）保留
-      });
-      return hasVisibleContent;
-    });
-}
 
 /**
  * v0.9.8 需求2 D2-1/D2-3：编辑重发失败回滚（纯函数，从

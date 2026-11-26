@@ -76,6 +76,9 @@ function makeDeps() {
     stagedApiRef: { current: null },
     supportsSteerRef: { current: true } as MutableRefObject<boolean>,
     syncSessionListMessagesRef: { current: null },
+    // v0.9.8 评审修复轮 R2：排队压缩的执行器（本组用例不涉及，留空）
+    runStagedCompactionRef: { current: null },
+    takeCompactionRequest: () => true,
     taskLaunchOpenRef: { current: false },
     taskLaunchPhaseRef: { current: null },
     visitedSessions: { current: new Set<string>() },

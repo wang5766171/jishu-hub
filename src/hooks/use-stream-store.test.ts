@@ -399,3 +399,52 @@ describe("v0.9.8 评审修复轮 R1-3：直播重试翻绿是派生态（每次�
     streamStore.drop(SID);
   });
 });
+
+// ── v0.9.8 评审修复轮 R2（S 域）────────────────────────────────────────────
+
+describe("评审修复轮 R2：流的扩展命令标记（C1）", () => {
+  it("S1-U6 扩展命令起的流带标记，推入事件后保留；普通流不带", () => {
+    const sid = "session-extension-command";
+    streamStore.start(sid, "/todos", [], { extensionCommand: true });
+    expect(streamStore.getState(sid)?.extensionCommand).toBe(true);
+    streamStore.push(sid, chunk({ kind: "phase_divider", phase: "task", title: "执行流程" }));
+    expect(streamStore.getState(sid)?.extensionCommand).toBe(true);
+    streamStore.drop(sid);
+
+    streamStore.start(sid, "普通消息");
+    expect(streamStore.getState(sid)?.extensionCommand).toBe(false);
+    streamStore.drop(sid);
+  });
+});
+
+describe("评审修复轮 R2：会话删除后流存储不再记得它", () => {
+  it("S14-U1 forgetSession 清掉该对话全部身份键上的别名、连接记忆、进程世代与阶段", () => {
+    const pendingId = "pending-forget-001";
+    const realId = "pi-forget-real-session-id-01";
+    streamStore.start(pendingId, "第一条");
+    streamStore.push(pendingId, {
+      agent_id: "jishu-self",
+      session_id: pendingId,
+      data: { kind: "session_resolved", session_id: realId },
+    } as never);
+    streamStore.noteProcess(pendingId, 4242);
+    streamStore.push(pendingId, chunk({ kind: "phase_divider", phase: "task", title: "执行流程" }));
+    streamStore.drop(pendingId);
+    // 删除前：别名与连接记忆都在（需求19-B：drop 不清）
+    expect(new Set(streamStore.identityKeys(pendingId))).toEqual(new Set([pendingId, realId]));
+    expect(streamStore.getConductorPhase(realId)).toBe("task");
+
+    streamStore.forgetSession(realId);
+
+    // 两个身份键互不再关联
+    expect(streamStore.identityKeys(pendingId)).toEqual([pendingId]);
+    expect(streamStore.identityKeys(realId)).toEqual([realId]);
+    expect(streamStore.getConductorPhase(realId)).toBeNull();
+    expect(streamStore.getConductorPhase(pendingId)).toBeNull();
+    // 连接记忆已清：重新起流后受理确认不再凭旧记忆直升「思考中」
+    streamStore.start(realId, "删除后同名的新会话");
+    streamStore.markPromptAccepted(realId);
+    expect(streamStore.getState(realId)?.sessionResolved).toBe(false);
+    streamStore.drop(realId);
+  });
+});

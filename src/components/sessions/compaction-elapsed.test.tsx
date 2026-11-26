@@ -62,15 +62,37 @@ describe("压缩用时（v0.9.8 需求7 补充轮）", () => {
     expect(done.container.textContent).not.toContain("已用时");
   });
 
-  it("同一次压缩的后续进行态标题沿用首次时刻；终态之后新的进行态重新起算", () => {
+  // 评审修复轮 R2（S12-U3 / S12-U4）：用例名说到的两件事此前没有断言——
+  // 「终态之后重新起算」只断言了清零，「卸载后不再触发」整条没有用例。
+  it("S12-U3 同一次压缩的后续进行态标题沿用首次时刻；终态之后新的进行态重新起算", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 24, 12, 0, 0));
     streamStore.start(SID, null);
     streamStore.push(SID, chunk({ kind: "phase_divider", phase: "compaction", title: "上下文压缩中…" }));
     const first = streamStore.getState(SID)?.compactionStartedAt;
+    // 30 秒后又来一条进行态标题（重试横幅归并等）：同一次压缩，沿用首次时刻
+    vi.setSystemTime(new Date(2026, 10, 24, 12, 0, 30));
     streamStore.push(SID, chunk({ kind: "phase_divider", phase: "compaction", title: "上下文压缩中…" }));
     expect(streamStore.getState(SID)?.compactionStartedAt).toBe(first);
+    expect(streamStore.getState(SID)?.content.filter((b) => b.type === "phase_divider")).toHaveLength(1);
+    // 终态：清零
     streamStore.push(SID, chunk({ kind: "phase_divider", phase: "compaction", title: "上下文压缩已取消" }));
     expect(streamStore.getState(SID)?.compactionStartedAt).toBeNull();
-    expect(streamStore.getState(SID)?.content.filter((b) => b.type === "phase_divider")).toHaveLength(1);
+    // 5 分钟后的新一次压缩：从它自己的开始时刻起算，不是沿用上一次的
+    vi.setSystemTime(new Date(2026, 10, 24, 12, 5, 0));
+    streamStore.push(SID, chunk({ kind: "phase_divider", phase: "compaction", title: "上下文压缩中…" }));
+    const second = streamStore.getState(SID)?.compactionStartedAt;
+    expect(second).not.toBeNull();
+    expect(second).toBe(new Date(2026, 10, 24, 12, 5, 0).getTime());
+    expect(second).not.toBe(first);
+  });
+
+  it("S12-U4 卸载后计时器不再触发", () => {
+    vi.useFakeTimers();
+    const view = render(<CompactionElapsed startedAt={Date.now()} />);
+    expect(vi.getTimerCount()).toBe(1);
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("摘要生成的重试状态到达时，压缩分隔线下方出现重试横幅；重试结束横幅消失", () => {

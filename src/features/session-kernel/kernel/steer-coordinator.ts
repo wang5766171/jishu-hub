@@ -48,15 +48,19 @@ interface SteerSessionState {
   /** 被 pi clear_queue 作废、等待 Abort 终结重发的条目（保持到达序）。
    * v0.9.8 需求3：文本→条目（携带会话发送上下文，Abort 合并重发跟会话走）。 */
   pendingResend: SteerQueueItem[];
-  /** v0.9.8 需求3：本会话最近一次入队的发送上下文——reconcileCleared
-   * 队列已空时的兜底条目化来源（会话的项目归属恒定，last 即当前）。 */
-  lastContext?: SessionSendContext;
 }
 
 type Listener = () => void;
 
 export class SteerCoordinator {
   private sessions = new Map<string, SteerSessionState>();
+  /**
+   * v0.9.8 评审修复轮 R2：每个会话最近一次入队的发送上下文——独立于队列
+   * 记（不随队列清空而丢）。清队事件带回的 steering 文本要重发时，地址
+   * 从这里取（会话的项目归属恒定，最近一次即当前）。此前它挂在会话状态
+   * 上，引导一旦全部注入、状态整条删除，地址就跟着没了。
+   */
+  private contexts = new Map<string, SessionSendContext>();
   private listeners = new Set<Listener>();
   private version = 0;
 
@@ -86,8 +90,8 @@ export class SteerCoordinator {
    * 时刻的会话发送上下文（需求3：跟会话走）。 */
   stage(key: string, text: string, toolIds: string[] | undefined, context: SessionSendContext): void {
     devLog("steer", "stage", { key, text: text.slice(0, 60), toolIds, context });
+    this.contexts.set(key, context);
     const s = this.stateOf(key);
-    s.lastContext = context;
     s.queue.push({ text, toolIds, context });
     this.notify();
   }
@@ -115,9 +119,9 @@ export class SteerCoordinator {
     return this.sessions.get(key)?.queue ?? [];
   }
 
-  /** 文本快照（提交路径用）。 */
+  /** 文本快照（提交路径用）。只读——不为没登记过的会话建状态。 */
   textsOf(key: string): string[] {
-    return this.stateOf(key).queue.map((i) => i.text);
+    return this.sessions.get(key)?.queue.map((i) => i.text) ?? [];
   }
 
   /**
@@ -126,7 +130,8 @@ export class SteerCoordinator {
    */
   consume(key: string, count: number): void {
     if (count <= 0) return;
-    const s = this.stateOf(key);
+    const s = this.sessions.get(key);
+    if (!s) return;
     s.queue = s.queue.slice(count);
     if (s.queue.length === 0 && s.pendingResend.length === 0) {
       this.sessions.delete(key);
@@ -142,31 +147,41 @@ export class SteerCoordinator {
    * 兜底（测试期教训）：pi 入队前做 skill/模板展开，回传文本可能与原文
    * 不等 → 精确匹配失败。此时按事件条数移除最旧条目（占位即 queue 投影，
    * 自动消失，无僵尸）；事件条数 ≥ 队列长时全清。
+   *
+   * v0.9.8 评审修复轮 R2：重发条目的地址只取**这个会话真实入队过的**上下文。
+   * 这个会话一次都没有入队过（事件带回的 steering 不是从这里发出去的），
+   * 就没有地址可投——不构造空地址的条目（发出去也是一条发不出去的消息），
+   * 这些文本列在 `undeliverable` 里交回调用方，由调用方回填输入框。
    */
   reconcileCleared(
     key: string,
     texts: string[],
     followUpTexts: string[],
-  ): { steering: string[]; followUps: string[] } {
+  ): { steering: string[]; followUps: string[]; undeliverable: string[] } {
     devLog("steer", "reconcileCleared", { key, texts: texts.length, followUps: followUpTexts.length });
     const steering = texts.filter((t) => !followUpTexts.includes(t));
     const s = this.sessions.get(key);
     if (!s || s.queue.length === 0) {
       // 队列已空（如 steer 已注入）：事件里的 steering 仍需重发登记。
       if (steering.length > 0) {
-        const fresh = this.stateOf(key);
-        // 需求3：条目化——队列已空无原条目可挂，用 lastContext 兜底。
-        const ctx = fresh.lastContext ?? { projectPath: "", agentId: "" };
-        fresh.pendingResend.push(...steering.map((t) => ({ text: t, context: ctx })));
-        this.notify();
+        const ctx = this.contexts.get(key);
+        if (ctx) {
+          this.stateOf(key).pendingResend.push(...steering.map((t) => ({ text: t, context: ctx })));
+          this.notify();
+        } else {
+          return { steering, followUps: followUpTexts, undeliverable: steering };
+        }
       }
-      return { steering, followUps: followUpTexts };
+      return { steering, followUps: followUpTexts, undeliverable: [] };
     }
     const toRemove = [...texts];
+    // 被移除的条目：它们就是事件里这些 steering 的来源，重发地址取它们的。
+    const dropped: SteerQueueItem[] = [];
     const remaining = s.queue.filter((q) => {
       const i = toRemove.indexOf(q.text);
       if (i >= 0) {
         toRemove.splice(i, 1);
+        dropped.push(q);
         return false;
       }
       return true;
@@ -175,19 +190,24 @@ export class SteerCoordinator {
     if (removed < texts.length) {
       // 匹配不全（展开变形）：按事件条数移除最旧条目，事件文本进重发。
       const shortfall = Math.min(texts.length - removed, remaining.length);
-      remaining.splice(0, shortfall);
+      dropped.push(...remaining.splice(0, shortfall));
     }
     s.queue = remaining;
+    let undeliverable: string[] = [];
     if (texts.length > 0) {
-      // 需求3：条目化（lastContext 兜底展开变形场景）。
-      const ctx = s.lastContext ?? { projectPath: "", agentId: "" };
-      s.pendingResend.push(...steering.map((t) => ({ text: t, context: ctx })));
+      // 需求3：条目化——重发地址 = 被移除条目入队时捕获的上下文（跟会话走）。
+      const ctx = dropped[0]?.context ?? this.contexts.get(key);
+      if (ctx) {
+        s.pendingResend.push(...steering.map((t) => ({ text: t, context: ctx })));
+      } else {
+        undeliverable = steering;
+      }
     }
     if (s.queue.length === 0 && s.pendingResend.length === 0) {
       this.sessions.delete(key);
     }
     this.notify();
-    return { steering, followUps: followUpTexts };
+    return { steering, followUps: followUpTexts, undeliverable };
   }
 
   /**
@@ -230,6 +250,12 @@ export class SteerCoordinator {
   moveKey(from: string, to: string): void {
     devLog("steer", "moveKey", { from, to });
     if (from === to) return;
+    // 发送上下文随对话换键（地址属于对话，不属于某一个 id）。
+    const context = this.contexts.get(from);
+    if (context) {
+      this.contexts.set(to, context);
+      this.contexts.delete(from);
+    }
     const s = this.sessions.get(from);
     if (!s) return;
     const existing = this.sessions.get(to);
@@ -243,9 +269,18 @@ export class SteerCoordinator {
     this.notify();
   }
 
+  /** 会话没了：它的引导队列、待重发条目、发送上下文一并清掉（会话删除时调用）。 */
+  forgetSession(key: string): void {
+    const had = this.sessions.has(key) || this.contexts.has(key);
+    this.sessions.delete(key);
+    this.contexts.delete(key);
+    if (had) this.notify();
+  }
+
   /** 测试辅助：清空全部状态。 */
   clearAll(): void {
     this.sessions.clear();
+    this.contexts.clear();
     this.notify();
   }
 }

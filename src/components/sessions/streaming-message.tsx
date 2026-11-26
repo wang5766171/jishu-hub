@@ -41,12 +41,18 @@ interface StreamingMessageProps {
    * store 的 pendingToolIds（与 pendingUserMessage 同源）。 */
   userToolIds?: string[];
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
+  /**
+   * 滚动系统的「离开底部」标记（use-chat-scroll 的 isAwayFromBottomRef）。输出内容更新时
+   * 要不要把视图拉到底只听它的：用户上翻过、或者滚动系统还在把视图放回记忆里的位置
+   *（恢复未到位），都不拉。不传时用组件自己的判定（见 userScrolledRef）。
+   */
+  isAwayFromBottomRef?: React.RefObject<boolean | null>;
   /** 需求13：回复过程中编辑本条用户消息——非空时流式用户气泡显示编辑入口
    * （rawText=发送原文，newText=编辑后文本；停止回复+截断重发由页面承担）。 */
   onEditUserMessage?: ((rawText: string, newText: string, remainingToolIds?: string[]) => void) | null;
 }
 
-export const StreamingMessage = memo(function StreamingMessage({ sessionId, isComplete = false, userMessage, userToolIds, scrollContainerRef, agentDisplayName, onEditUserMessage }: StreamingMessageProps) {
+export const StreamingMessage = memo(function StreamingMessage({ sessionId, isComplete = false, userMessage, userToolIds, scrollContainerRef, isAwayFromBottomRef, agentDisplayName, onEditUserMessage }: StreamingMessageProps) {
   const state = useSessionStream(sessionId);
   const { t } = useTranslation();
   // v0.8.1 需求7：用户消息气泡内 pill 显示插件中文名（id→显示名映射）。
@@ -67,6 +73,11 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   const steps = state?.steps ?? [];
   const resolvedUserMessage = userMessage === undefined ? state?.pendingUserMessage ?? undefined : userMessage ?? undefined;
   const resolvedUserToolIds = userToolIds ?? state?.pendingToolIds ?? [];
+  // v0.9.8 评审修复轮 R2：输出内容更新时把视图拉到底——拉不拉，挂载那一拍与之后的内容更新
+  // 是同一个口径，并且听滚动系统的（isAwayFromBottomRef）。此前挂载即无条件拉底，带一套
+  // 自己的「用户上翻过」判定：打开一个正在输出的会话、按滚动记忆刚恢复到中间，气泡一挂载
+  // 就被拽到底，滚动记忆等于不生效。
+  // 没接滚动系统的标记时才用组件自己的判定：滚动事件之后离底不到 80px 算在底部。
   const userScrolledRef = useRef(false);
 
   // v0.9.4 需求10：会话阶段判定（用户确认话术）——
@@ -114,23 +125,26 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   }, [scrollContainerRef]);
 
   const scrollToBottom = useCallback(() => {
-    if (userScrolledRef.current) return;
+    if (isAwayFromBottomRef ? isAwayFromBottomRef.current : userScrolledRef.current) return;
     if (scrollContainerRef?.current) {
       const el = scrollContainerRef.current;
       el.scrollTop = el.scrollHeight;
     }
-  }, [scrollContainerRef]);
+  }, [scrollContainerRef, isAwayFromBottomRef]);
 
   // Detect user manual scroll
   useEffect(() => {
+    if (isAwayFromBottomRef) return;
     const el = scrollContainerRef?.current;
     if (!el) return;
+    // 初值按挂载那一刻的位置定：视图停在中间（刚按滚动记忆恢复），挂载这一拍就不拉
+    userScrolledRef.current = !isNearBottom();
     const onScroll = () => {
       userScrolledRef.current = !isNearBottom();
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [scrollContainerRef, isNearBottom]);
+  }, [scrollContainerRef, isNearBottom, isAwayFromBottomRef]);
 
   // Scroll to bottom when content updates (only while actively streaming)
   const interactionTextKey = interactionSplits
@@ -296,18 +310,22 @@ export const StreamingMessage = memo(function StreamingMessage({ sessionId, isCo
   // v0.9.5 需求5 T3 排查：流式 part 渲染点。
   // 日志在提交之后写：渲染期间写日志会同步刷新日志面板，把正在进行的低优先级渲染
   // （如搜索词延迟生效）打断重来——v0.9.8 需求23 实测逐帧空转、搜索永远不生效。
+  // 只在交互 part 的构成变化时写：这个 effect 原先没有依赖，每次重渲染都写一条。
+  const interactionPartKey = parts
+    .filter((part) => part.kind === "interaction")
+    .map((part) => part.items.length)
+    .join(",");
   useEffect(() => {
-    for (const part of parts) {
-      if (part.kind === "interaction") {
-        devLog("session", "ia-render:stream-part", { items: part.items.length });
-      }
+    for (const items of interactionPartKey.split(",").filter(Boolean)) {
+      devLog("session", "ia-render:stream-part", { items: Number(items) });
     }
-  });
+  }, [interactionPartKey]);
 
   return (
     <div className="mx-auto w-full max-w-[var(--message-content-max-width)] space-y-2 px-4 py-3">
-      {/* User message bubble */}
-      {resolvedUserMessage && (
+      {/* User message bubble。扩展命令不留用户气泡（与 TUI 一致：命令执行完就回到
+          输入提示）——修前执行期间先出一个带编辑入口的气泡、结束后整条消失。 */}
+      {resolvedUserMessage && !state?.extensionCommand && (
         <StreamingUserBubble
           text={resolvedUserMessage}
           toolIds={resolvedUserToolIds}
@@ -569,7 +587,8 @@ function StreamingUserBubble({ text, toolIds, toolNames, toolCats, onEdit }: { t
         </div>
         <div
           ref={bubbleRef}
-          style={editing && editWidth ? { width: Math.max(editWidth, 260) } : undefined}
+          // 正文字号跟回放的用户气泡同源（字号设置对两边一样生效）
+          style={{ fontSize: "var(--font-size-prose)", ...(editing && editWidth ? { width: Math.max(editWidth, 260) } : {}) }}
           className="rounded-xl px-3 py-2 bg-[var(--message-user-bg)] text-[var(--message-user-fg)] whitespace-pre-wrap break-all overflow-hidden min-w-0 max-w-full"
         >
           {editing ? (

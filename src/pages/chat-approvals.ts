@@ -14,6 +14,29 @@ import {
 import type { InteractionResponseDto, ConversationInteractionSubmission } from "@/types";
 import type { PendingChatApproval, PendingChatInteraction } from "./chat-page-utils";
 
+/** 「交互卡已过期」错误的稳定前缀（后端在这两类错误的开头加上）。 */
+export const INTERACTION_STALE_PREFIX = "[interaction_stale]";
+/** 「没有活动会话」错误的稳定前缀。 */
+export const NO_ACTIVE_SESSION_PREFIX = "[no_active_session]";
+
+export type InteractionSubmitFailure = "stale" | "no_session" | "transient";
+
+/**
+ * v0.9.8 评审修复轮 R2（契约 C5）：交互提交失败的分类。
+ *
+ * 「交互卡已过期」「没有活动会话」是永久性失败——把卡片放回队列只会让用户
+ * 反复提交、反复失败。此前靠在报错文案里找子串（「已过期」、
+ * 「No active ACP session」）来认这两类：文案一改判断就失效，报错也是引擎
+ * 的内部说法。现在后端让这两类错误以稳定前缀开头，先按前缀判断；前缀不在
+ * 时退回原来的子串（同版本之前的后端、其它通道的同类文案）。
+ */
+export function classifyInteractionSubmitError(error: unknown): InteractionSubmitFailure {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.startsWith(INTERACTION_STALE_PREFIX) || message.includes("已过期")) return "stale";
+  if (message.startsWith(NO_ACTIVE_SESSION_PREFIX) || message.includes("No active ACP session")) return "no_session";
+  return "transient";
+}
+
 export function useChatApprovals(deps: {
   selectedSession: string | null;
   handleMessageSent: (sid: string, msg: string) => void;
@@ -111,12 +134,12 @@ export function useChatApprovals(deps: {
       // 其余错误（超时/瞬时）维持恢复可重试。
       const dropCard = () =>
         setPendingInteractions((current) => current.filter((item) => !matchesInteraction(item)));
-      const message = String(error);
-      if (message.includes("已过期")) {
+      const failure = classifyInteractionSubmitError(error);
+      if (failure === "stale") {
         dropCard();
         throw error;
       }
-      if (message.includes("No active ACP session")) {
+      if (failure === "no_session") {
         dropCard();
       } else {
         restorePending();

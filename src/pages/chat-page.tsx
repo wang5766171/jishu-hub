@@ -55,8 +55,21 @@ import type {
 } from "@/features/session-kernel/plugins/types";
 import { RenameSessionDialog } from "@/components/sessions/rename-session-dialog";
 import { RenameTaskSessionDialog } from "@/components/sessions/rename-task-session-dialog";
-import { ChatInput, extractToolTokens, type ChatInputHandle, type StagedGuideApi } from "@/components/sessions/chat-input";
-import { dispatchLocalSlashCommand } from "@/components/sessions/slash-command";
+import {
+  ChatInput,
+  extractToolTokens,
+  type ChatInputHandle,
+  type ChatInputTaskLaunch,
+  type StagedCompactionRunner,
+  type StagedGuideApi,
+} from "@/components/sessions/chat-input";
+import {
+  LOCAL_SLASH_COMMANDS,
+  dispatchLocalSlashCommand,
+  isLocalSlashCommandName,
+  type LocalSlashCommandName,
+  type SlashCommandSource,
+} from "@/components/sessions/slash-command";
 import { StreamingMessage } from "@/components/sessions/streaming-message";
 import { clearImageCache, InlineImages, stripImagePrompt } from "@/components/sessions/inline-image";
 // 会话二级树（T3）：侧边栏任务会话区
@@ -102,7 +115,13 @@ import { useSessionSelection, type ReloadSessionMessages } from "./use-session-s
 import { useChatScroll } from "./use-chat-scroll";
 import { useNodeSessionReload } from "./use-node-session-reload";
 import { commitEnterSession, useSearchLens, type SearchLensInput } from "./use-search-lens";
-import { useUnreadClearedOnView } from "@/features/session-kernel/session-unread";
+import { clearUnread, useUnreadClearedOnView } from "@/features/session-kernel/session-unread";
+// 给用户看的报错：去掉机器前缀与括号里的英文原文（原话仍进控制台与日志）
+import { userFacingError } from "@/lib/user-facing-error";
+import {
+  NEW_SESSION_PLACEHOLDER,
+  PENDING_NODE_PLACEHOLDER,
+} from "@/features/session-kernel/session-placeholder";
 import { useTaskExecutionStage } from "./use-task-execution-stage";
 import { useTaskSessionRouting } from "./use-task-session-routing";
 import { getSessionDraft, setSessionDraft } from "@/lib/input-history";
@@ -111,6 +130,10 @@ import { SessionComposerTrailing } from "@/features/session-kernel/plugins/mount
 import { UserTextWithPills, useSessionToolNames } from "@/components/sessions/embedded-tools";
 import { useModelPicker } from "@/features/chat-core/use-model-picker";
 import { useCompaction } from "@/features/chat-core/use-compaction";
+import { useCompactionRequest } from "@/features/chat-core/use-compaction-request";
+import { taskLaunchNoAsk, useTaskNoAsk } from "@/features/chat-core/use-task-no-ask";
+import { commitSessionMessages, useUnsentMessageDismiss } from "@/features/chat-core/session-view-sync";
+import { replaceSessionMessages } from "@/features/chat-core/session-list-sync";
 import { useMessageSearch } from "@/features/chat-core/use-message-search";
 import { ThinkingLevelSelect } from "@/components/sessions/thinking-level-select";
 import {
@@ -130,6 +153,13 @@ import type {
   SessionSearchResult,
 } from "@/types";
 
+
+/**
+ * 会话位置记忆与「本次运行打开过没有」。放在模块级：会话页重挂载（切到管理页再回来）
+ * 不清空，离开再回来仍停在离开的位置；只存在于本次运行，关闭软件即清除。
+ */
+const visitedSessionsStore: { current: Set<string> } = { current: new Set() };
+const scrollMemoryStore: { current: Map<string, number | "bottom"> } = { current: new Map() };
 
 export function ChatPage({
   currentProject,
@@ -237,47 +267,17 @@ export function ChatPage({
   // 需求3：压缩控制域拆分至 use-compaction（IPC 与状态内聚）。
   const supportsCompact = capabilities?.has("CONTEXT_COMPACT") ?? false;
   const compaction = useCompaction(activeId, supportsCompact);
-  const { compacting, autoCompaction: autoCompactionPref } = compaction;
-  // 需求7 补充轮（2026-11-24）：两个入口共用——水位圆环里的「立即压缩」按钮，
-  // 以及输入框发送 `/compact [补充要求]`（行为一致：点击/发送即执行，任务
-  // 进行中也可执行）。
-  const handleCompactSession = useCallback(async (instructions: string | null = null) => {
-    devLog("ipc", "手动压缩会话（compact_chat）", {
-      session: selectedSessionRef.current,
-      customInstructions: instructions,
-    });
-    const sessionId = selectedSessionRef.current;
-    if (!sessionId || sessionId === "new") return;
-    if (compacting) {
-      // 按钮在压缩进行中是禁用态；输入 /compact 发送没有这个禁用态，给出
-      // 提示而不是静默忽略。
-      void alertDialog({
-        title: t("sessions.compactRunning"),
-        description: t("sessions.compactAlreadyRunning"),
-      });
-      return;
-    }
-    try {
-      // v0.9.6 需求2：传 agentId/projectPath——无活跃进程的历史会话由后端
-      // 先静默连接（resume）再压缩（「先连接会话再压缩」）。
-      // 需求7 补充轮：instructions = `/compact` 后面的补充要求，作为摘要指令
-      // 交给引擎。
-      await compaction.runCompact(sessionId, instructions, {
-        agentId: activeId,
-        projectPath: currentProject?.path ?? null,
-      });
-    } catch (err) {
-      console.error("Compact failed:", err);
-      void alertDialog({ title: t("sessions.compactFailed"), description: String(err) });
-    }
-  }, [compacting, alertDialog, compaction, activeId, currentProject, t]);
+  const { autoCompaction: autoCompactionPref } = compaction;
+  // v0.9.8 评审修复轮 R2：两个压缩入口（水位圆环里的「立即压缩」、输入框发送
+  // `/compact [补充要求]`）共用的 handleCompactSession 定义在会话与待发送区的
+  // ref 之后（它的去向判断要用到它们）。
   const handleAutoCompactionChange = useCallback(async (enabled: boolean) => {
     if (!activeId) return;
     try {
       await compaction.setAuto(enabled);
     } catch (err) {
       console.error("Set auto compaction failed:", err);
-      void alertDialog({ title: "设置自动压缩失败", description: String(err) });
+      void alertDialog({ title: "设置自动压缩失败", description: userFacingError(err) });
     }
   }, [activeId, alertDialog]);
 
@@ -299,8 +299,8 @@ export function ChatPage({
   // selectedSession: null or real backend UUID — never fake IDs
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
   // v0.9.8 需求24：正在查看的会话 = 已读。挂在选中态上而不是各条「打开会话」的路径上——
-  // 任务会话的打开（openTaskSession）直接改选中态、不经 handleSelectSession，此前它的
-  // 未读没人清：点开任务行时绿点只是因为这一行正被选中而不显示，切走又出现。
+  // 此前未读清除只写在常规会话的打开函数里，任务会话走另一条路不清：点开任务行时绿点
+  // 只是因为这一行正被选中而不显示，切走又出现。判定点只有这一个。
   useUnreadClearedOnView(selectedSession);
   // 输入历史/草稿作用域（A6）：草稿按 项目+会话 维度，历史按项目维度。
   const draftSessionKey = projectId ? `${projectId}:${selectedSession ?? "new"}` : null;
@@ -388,8 +388,8 @@ export function ChatPage({
   // v0.9.2 需求6：最近一次流式解析出的真实 session id（新会话从 "new" 起步时，
   // selectedSession 要等 session_resolved 才回填；任务实例事件到达时用它匹配关联）。
   const lastRealSessionIdRef = useRef<string | null>(null);
-  const visitedSessions = useRef(new Set<string>());
-  const scrollMemory = useRef(new Map<string, number | "bottom">());
+  const visitedSessions = visitedSessionsStore;
+  const scrollMemory = scrollMemoryStore;
   const sessionMessagesRef = useRef(sessionMessages);
   sessionMessagesRef.current = sessionMessages;
   const newSessionStreamIdsRef = useRef<Set<string>>(new Set());
@@ -432,6 +432,56 @@ export function ChatPage({
   // 流会再次提交（spawn 期停止后用户连点 6 次、第 4 次落在窗口外 →
   // 用户消息重复渲染，实证根因）。
   const abortLocalCommitRef = useRef<Map<string, number>>(new Map());
+
+  // v0.9.8 评审修复轮 R2：压缩进行态按会话记——这里是「选中会话」的那一份
+  //（水位环按钮的禁用态读它）；别的会话在压缩不影响当前会话的入口。
+  const compacting = Boolean(
+    selectedSession && selectedSession !== NEW_SESSION_PLACEHOLDER && compaction.compactingSessions.has(selectedSession),
+  );
+  // 需求7 补充轮（2026-11-24）：两个入口共用——水位圆环里的「立即压缩」按钮，
+  // 以及输入框发送 `/compact [补充要求]`。评审修复轮 R2（用户裁决 4）：去向
+  // 判断在 useCompactionRequest——回合进行中进待发送区（压缩与普通消息等价
+  // 处理），引擎空闲立即执行，压缩进行中提示。
+  const requestCompaction = useCompactionRequest({
+    runCompact: compaction.runCompact,
+    isCompacting: compaction.isCompacting,
+    activeId,
+    projectPathRef,
+    selectedSessionRef,
+    stagedApiRef,
+    alertDialog,
+    t,
+  });
+  const handleCompactSession = useCallback(async (instructions: string | null = null) => {
+    devLog("ipc", "手动压缩会话（compact_chat）", {
+      session: selectedSessionRef.current,
+      customInstructions: instructions,
+    });
+    try {
+      // v0.9.6 需求2：带 agentId/projectPath——无活跃进程的历史会话由后端
+      // 先静默连接（resume）再压缩（「先连接会话再压缩」）。
+      // instructions = `/compact` 后面的补充要求，作为摘要指令交给引擎。
+      await requestCompaction(instructions);
+    } catch (err) {
+      console.error("Compact failed:", err);
+      void alertDialog({ title: t("sessions.compactFailed"), description: userFacingError(err) });
+    }
+  }, [requestCompaction, alertDialog, t]);
+  // 排队的压缩轮到它时由事件管线调用（回合结束 / 上一次压缩结束之后）——
+  // 发送上下文取条目入队时捕获的那一份（跟会话走，与界面停留项目无关）。
+  const runStagedCompactionRef = useRef<StagedCompactionRunner | null>(null);
+  runStagedCompactionRef.current = (sessionId, instructions, context) =>
+    compaction
+      .runCompact(sessionId, instructions, {
+        agentId: context.agentId || activeId,
+        projectPath: context.projectPath || projectPathRef.current,
+      })
+      .catch((err) => {
+        console.error("Compact failed:", err);
+        void alertDialog({ title: t("sessions.compactFailed"), description: userFacingError(err) });
+        // 提示之后仍如实上抛：事件管线据此把这一条放回待发送区
+        throw err;
+      });
   // v0.9.4 需求7 测试期重构：steer 队列（外部单例）变更驱动占位重渲染。
   useSyncExternalStore(steerCoordinator.subscribe, steerCoordinator.getVersion, steerCoordinator.getVersion);
   // Live display of steered user messages, scoped per session (v0.9.2 需求4：
@@ -449,7 +499,7 @@ export function ChatPage({
   const currentStream = useSessionStream(selectedSession);
 
   // ── v0.9.8 需求23：搜索态输入（见 use-search-lens）──
-  // 搜索域（useMessageSearch）声明在后面；滚动系统、任务会话加载、会话选择都要
+  // 搜索域（useMessageSearch）声明在后面；滚动系统、节点会话补读、会话选择都要
   // 用它，且只在事件与副作用里读——渲染期间写入本轮的值（见 useMessageSearch 之后）。
   const searchLensInputRef = useRef<SearchLensInput>({
     query: "",
@@ -477,6 +527,8 @@ export function ChatPage({
     handleJumpToTurn,
     messageExpandSignal,
     handleScrollToBottom,
+    lastScrollPositionOf,
+    forgetScrollPosition,
   } = useChatScroll({ messageAreaRef, sessionMessages, selectedSession, searchLensInputRef });
   // ── 簇B 节点会话补读（use-node-session-reload）——打开任务主会话、节点会话与打开普通
   // 会话走同一个函数（use-session-selection，v0.9.8 需求24 续），这里只剩节点会话
@@ -572,7 +624,7 @@ export function ChatPage({
     total: messageSearchTotal,
     label: messageSearchLabel,
   } = useMessageSearch({ sessions, selectedSession });
-  // v0.9.8 需求23：把本轮的搜索态交给早先声明的消费方（滚动系统 / 任务会话加载 / 会话选择）。
+  // v0.9.8 需求23：把本轮的搜索态交给早先声明的消费方（滚动系统 / 节点会话补读 / 会话选择）。
   const searchHitSessionIds = useMemo(
     () => new Set(searchResults.map((result) => result.sessionId)),
     [searchResults],
@@ -623,13 +675,10 @@ export function ChatPage({
   // v0.9.8 需求23：回合结束时把该会话在列表里的消息换成正文那一份——侧栏搜索与摘要读的是
   // 列表，列表只在读取时从磁盘读一次，不换的话同一个会话第二轮起再聊的内容侧栏搜不到、
   // 徽标数停在旧的一份上。按 id 换这一项，别的会话不动（不重读整个列表）。
+  // 评审修复轮 R2（S-11）：替换规则是 chat-core/session-list-sync 的纯函数（有单测）。
   const syncSessionListMessagesRef = useRef<((sessionId: string, messages: Message[]) => void) | null>(null);
   syncSessionListMessagesRef.current = (sessionId, messages) => {
-    setSessions((cur) => {
-      // 列表里还没有这一项（新会话的第一轮：重读列表后才加进来）——不动
-      if (!cur?.some((s) => s.id === sessionId)) return cur;
-      return cur.map((s) => (s.id === sessionId ? { ...s, messages } : s));
-    });
+    setSessions((cur) => replaceSessionMessages(cur, sessionId, messages));
   };
 
   useEffect(() => {
@@ -670,7 +719,6 @@ export function ChatPage({
     setOptimisticSessions,
     handleSelectSession,
     handleSelectSessionRef,
-    noteLeavingSession,
     prepareTaskLaunchMessage,
     handleMessageSent,
     handleSessionResolved,
@@ -687,6 +735,8 @@ export function ChatPage({
     scrollMemory,
     visitedSessions,
     scrollAction,
+    selectedSession,
+    lastScrollPositionOf,
     armScroll,
     newSessionStreamIdsRef,
     setTaskModeActive,
@@ -756,24 +806,8 @@ export function ChatPage({
   );
   // T7：taskLaunchPhaseStates（三阶段 tab 的 done/active/pending 派生）随 TaskPhaseNavBar 一并退役。
   // M3：访问/权限模式域已上移 use-access-mode（permissionModes 定义处）。
-  // 需求9 #3：离开保存——标签切换（[projectId]）/agent 切换（[activeId]）的
-  // 重置 effect 会绕过 handleSelectSession 内的保存点直接置 null，切回时
-  // restore 到残留旧像素。置空前统一补存（与 use-session-selection.ts 同口径）。
-  const saveCurrentScrollBeforeLeave = useCallback(() => {
-    // v0.9.8 需求23：正以搜索态显示的会话，像素位置在完整列表里没有意义——不记。
-    if (
-      selectedSessionRef.current &&
-      messageAreaRef.current &&
-      !isInSearchLens(selectedSessionRef.current)
-    ) {
-      const el = messageAreaRef.current;
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 100;
-      scrollMemory.current.set(
-        selectedSessionRef.current,
-        atBottom ? "bottom" : el.scrollTop,
-      );
-    }
-  }, [isInSearchLens]);
+  // 需求9 #3：离开保存——下面两个重置 effect 把选中态置 null，离开位置随之记下
+  //（记录挂在选中态的变化上，见 use-session-selection；二轮评审 R3 之前这里要手动补存）。
 
   // 需求9 补充1：上一个项目的 encoded（离开上报用——effect 执行时
   // currentProject 已是新值，旧值经 ref 传递）。
@@ -787,7 +821,6 @@ export function ChatPage({
       onProjectLeaveSession?.(leavingEnc, selectedSessionRef.current);
     }
     prevProjectEncodedRef.current = projectId;
-    saveCurrentScrollBeforeLeave();
     setSelectedSession(null);
     selectedSessionRef.current = null;
     setSessionMessages([]);
@@ -812,7 +845,6 @@ export function ChatPage({
       refetchNames(true).catch(console.error);
       return;
     }
-    saveCurrentScrollBeforeLeave();
     setSelectedSession(null);
     selectedSessionRef.current = null;
     setSessionMessages([]);
@@ -825,7 +857,7 @@ export function ChatPage({
     newSessionStreamIdsRef.current.clear();
     setListRefreshKey(Date.now());
     refetchNames(true).catch(console.error);
-  }, [activeId, projectId, refetchNames, saveCurrentScrollBeforeLeave]);
+  }, [activeId, projectId, refetchNames]);
 
   // Navigate to a specific session (triggered by floating window restore)
   useEffect(() => {
@@ -886,10 +918,10 @@ export function ChatPage({
       // 分支历史在 Pi 侧 JSONL 已就绪，经 get_session_messages 加载（清掉可能
       // 残留的同 id 缓存，避免读到分支前的旧数据）。
       deleteCachedSessionMessages(newId);
-      await handleSelectSession(newId);
+      void handleSelectSession(newId);
     } catch (err) {
       console.error("Failed to fork session:", err);
-      await alertDialog({ title: t("sessions.forkFailedTitle", "创建分支失败"), description: String(err) });
+      await alertDialog({ title: t("sessions.forkFailedTitle", "创建分支失败"), description: userFacingError(err) });
     } finally {
       setForking(false);
     }
@@ -910,7 +942,7 @@ export function ChatPage({
       });
     } catch (err) {
       console.error("edit_last_user_message failed:", err);
-      await alertDialog({ title: t("sessions.editLastFailed", "编辑失败"), description: String(err) });
+      await alertDialog({ title: t("sessions.editLastFailed", "编辑失败"), description: userFacingError(err) });
       return;
     }
     // 本地截断：删该消息及其后（按落盘原文定位；找不到则仅重发——文件已
@@ -972,7 +1004,7 @@ export function ChatPage({
     setSessionMessages(updated);
     // 流式态清场（流式中编辑场景——进程已被 Rust 侧回收）+ 乐观回复流。
     streamStore.drop(sid);
-    streamStore.start(sid, null);
+    streamStore.start(sid, null, [], { committedUserMessage: true });
     // v0.9.8 需求2 D2-1：回滚判定提前算好（纯函数，单测锁行为）。
     const rollback = applyEditResendRollback(msgs, cut, outgoing);
     try {
@@ -1002,45 +1034,30 @@ export function ChatPage({
             encodedName: projectId,
           });
           const visible = filterInvisibleUserMessages(fresh ?? []);
-          setCachedSessionMessages(sid, visible);
-          setSessionMessages(visible);
+          // v0.9.8 评审修复轮 R2（S-17）：重载是一次 IPC 往返——期间用户可能
+          // 已切到别的会话。缓存按会话写；正文只在仍选中该会话时才动。
+          commitSessionMessages(sid, visible, { selectedSessionRef, setSessionMessages });
         } catch (reloadErr) {
           console.warn("reload after edit-resend rollback failed:", reloadErr);
         }
       } else {
-        setCachedSessionMessages(sid, rollback.messages ?? []);
-        setSessionMessages(rollback.messages ?? []);
+        commitSessionMessages(sid, rollback.messages ?? [], { selectedSessionRef, setSessionMessages });
       }
       chatInputRef.current?.restoreTexts([rollback.restoreText]);
-      await alertDialog({ title: t("sessions.editLastFailed", "编辑失败"), description: String(err) });
+      await alertDialog({ title: t("sessions.editLastFailed", "编辑失败"), description: userFacingError(err) });
     }
-  }, [activeId, currentProject?.path, alertDialog, t, projectId]);
+  }, [activeId, currentProject?.path, alertDialog, t, projectId, selectedSessionRef]);
 
   // ── 需求2（v0.9.8）：清除「未送达」消息（pending 幽灵）─────────────────
   // 编辑重发失败/投递挂死后 pending 行永等不到 ack，加载时并入列表尾部且
   // 无清除通道（永在最新消息之下）。删除走主键 (session_id, sent_at)，本
   // 地列表同步移除；消息仍可复制——用户可改写后手动重发。
-  const handleDismissUnsent = useCallback(async (msg: Message) => {
-    const sid = selectedSessionRef.current;
-    if (!sid || sid === "new" || msg.timestamp == null) return;
-    try {
-      await invokeCommand("dismiss_pending_message", {
-        sessionId: sid,
-        sentAt: msg.timestamp,
-      });
-    } catch (err) {
-      console.error("dismiss_pending_message failed:", err);
-      return;
-    }
-    const rest = sessionMessagesRef.current.filter(
-      (m) => !(m.unsent && m.timestamp === msg.timestamp),
-    );
-    setCachedSessionMessages(sid, rest);
-    setSessionMessages(rest);
-  }, []);
+  // v0.9.8 评审修复轮 R2（S-17）：数据取自该会话的缓存、正文只在仍选中它时
+  // 同步（实现见 chat-core/session-view-sync）。
+  const handleDismissUnsent = useUnsentMessageDismiss({ selectedSessionRef, setSessionMessages });
 
   // ── 斜杠命令面板（A2）：GUI 本地命令注册表，不透传给 agent ──────────────
-  const hasSelectedSession = Boolean(selectedSession && selectedSession !== "new");
+  const hasSelectedSession = Boolean(selectedSession && selectedSession !== NEW_SESSION_PLACEHOLDER);
   // v0.8.0 需求1 A5：会话分支（capability SESSION_FORK；仅 jishu-self）。
   const supportsFork = capabilities?.has("SESSION_FORK") ?? false;
   // 需求7 补充（2026-11-22 用户裁决二轮）：/ 命令清单不 hub 写死——
@@ -1052,12 +1069,12 @@ export function ChatPage({
   // 发送才发送」）：面板里的命令一律选中只填入输入框；hub 内建命令的执行
   // 时机从「选中」改到「发送」（见 chat-input 的 handleSend）。
   const [piSlashCommands, setPiSlashCommands] = useState<
-    Array<{ name: string; description: string; source: string }>
+    Array<{ name: string; description: string; source: SlashCommandSource }>
   >([]);
   useEffect(() => {
     let cancelled = false;
     const load = () =>
-      invokeCommand<Array<{ name: string; description: string; source: string }>>(
+      invokeCommand<Array<{ name: string; description: string; source: SlashCommandSource }>>(
         "pi_slash_commands",
       )
         .then((cmds) => {
@@ -1074,37 +1091,57 @@ export function ChatPage({
     };
   }, []);
 
+  // hub 内建命令的清单：名字来自唯一出处（slash-command.ts 的名单），这里只给
+  // 每个名字配标签与可用条件。两份映射都按名单的键联合建表——名单加了名字
+  // 而这里没跟上时类型检查即报错（评审修复轮 R2，S-7：此前名单与分发表两处
+  // 各写一份，漏改会静默吞掉输入）。
+  const localSlashLabels: Record<LocalSlashCommandName, string> = {
+    name: t("sessions.slashRename"),
+    terminal: t("sessions.slashTerminal"),
+    float: t("sessions.slashFloat"),
+    compact: t("sessions.slashCompact"),
+    fork: t("sessions.slashFork", "创建会话分支"),
+  };
+  const localSlashAvailable: Record<LocalSlashCommandName, boolean> = {
+    name: hasSelectedSession,
+    terminal: hasSelectedSession,
+    float: hasSelectedSession,
+    compact: hasSelectedSession && supportsCompact,
+    fork: hasSelectedSession && supportsFork && !currentStream?.isStreaming,
+  };
   const slashCommands = useMemo(
     () => [
       // hub 内建命令：发送时由 hub 本地执行（pi 的 prompt 通道只执行扩展
-      // 命令，不执行这些内建命令）。
-      { name: "name", label: t("sessions.slashRename"), available: hasSelectedSession, local: true },
-      { name: "terminal", label: t("sessions.slashTerminal"), available: hasSelectedSession, local: true },
-      { name: "float", label: t("sessions.slashFloat"), available: hasSelectedSession, local: true },
-      { name: "compact", label: t("sessions.slashCompact"), available: hasSelectedSession && supportsCompact, local: true },
-      { name: "fork", label: t("sessions.slashFork", "创建会话分支"), available: hasSelectedSession && supportsFork && !currentStream?.isStreaming, local: true },
-      // pi 真实命令集（get_commands 动态拉取）：发送后 pi prompt 通道原生
-      // 展开/执行。
+      // 命令，不执行这些内建命令）。不可用时的提示与可用条件同处给出。
+      ...LOCAL_SLASH_COMMANDS.map((name) => ({
+        name,
+        label: localSlashLabels[name],
+        available: localSlashAvailable[name],
+        local: true,
+        unavailableHint: hasSelectedSession ? t("sessions.slashUnavailable") : t("sessions.slashNeedSession"),
+      })),
+      // 引擎的真实命令集（get_commands 动态拉取）：发送后由引擎原生展开/执行
+      // ——提示模板与技能命令展开成一条用户消息，扩展命令立即执行不留痕。
+      // 与**任一**内建命令重名的动态项不进面板（内建优先；此前只排除 name
+      // 一个，其余四个重名时面板出现两条同名项，动态那条不可达）。
       ...piSlashCommands
-        .filter((c) => c.name && c.name !== "name")
+        .filter((c) => c.name && !isLocalSlashCommandName(c.name))
         .map((c) => ({
           name: c.name,
           label: c.description || c.source,
           available: true,
+          source: c.source,
         })),
     ],
     [hasSelectedSession, supportsCompact, supportsFork, currentStream?.isStreaming, t, piSlashCommands],
   );
-  // hub 内建命令的执行——发送时由 chat-input 调用（名字 + 参数）。
+  // hub 内建命令的执行——发送时由 chat-input 调用（名字 + 参数）。内建命令
+  // 都以「已有选中会话」为可用条件，输入框只在可用时才调到这里；不可用的
+  // 内建命令由下面的 handleSlashCommandUnavailable 给出提示。
   const handleSlashCommand = useCallback(
     async (name: string, args: string) => {
-      if (!hasSelectedSession || !selectedSession) {
-        void alertDialog({
-          title: t("sessions.slashCommandTitle"),
-          description: t("sessions.slashNeedSession"),
-        });
-        return;
-      }
+      const sessionId = selectedSession;
+      if (!sessionId) return;
       await dispatchLocalSlashCommand(name, args, {
         rename: async (newName) => {
           if (newName === null) {
@@ -1112,24 +1149,33 @@ export function ChatPage({
             return;
           }
           try {
-            await invokeCommand("rename_session", { sessionId: selectedSession, name: newName });
+            await invokeCommand("rename_session", { sessionId, name: newName });
             refetchNames(true).catch(console.error);
           } catch (err) {
             console.error("Rename via /name failed:", err);
-            void alertDialog({ title: t("sessions.renameTitle"), description: String(err) });
+            void alertDialog({ title: t("sessions.renameTitle"), description: userFacingError(err) });
           }
         },
         // handleResumeSession / handleFloatSession 定义在本处之后：闭包按运行
         // 时取值，无 TDZ（同此前的写法，故不进依赖数组）。
-        openTerminal: () => handleResumeSession(selectedSession),
-        float: () => handleFloatSession(selectedSession),
+        openTerminal: () => handleResumeSession(sessionId),
+        float: () => handleFloatSession(sessionId),
+        // 压缩：去向（立即执行 / 回合进行中进待发送区）由压缩请求入口决定。
         compact: (instructions) => handleCompactSession(instructions),
-        fork: () => handleForkSession(selectedSession),
+        fork: () => handleForkSession(sessionId),
       });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [hasSelectedSession, selectedSession, handleCompactSession, handleForkSession, alertDialog, t, refetchNames],
+    [selectedSession, handleCompactSession, handleForkSession, alertDialog, t, refetchNames],
   );
+  // 面板里不显示的内建命令被手输发送：输入框不清空、不发送，这里给出提示
+  //（没有会话 / 当前智能体或当前状态不支持）。文案与可用条件同处给出。
+  const handleSlashCommandUnavailable = useCallback((_name: string, hint?: string) => {
+    void alertDialog({
+      title: t("sessions.slashCommandTitle"),
+      description: hint ?? t("sessions.slashUnavailable"),
+    });
+  }, [alertDialog, t]);
 
   const workModeOptions = useMemo(() => [
     { value: "chat", label: t("sessions.workMode.chat") },
@@ -1242,8 +1288,11 @@ export function ChatPage({
           if (cancelled || active) return;
           streamStore.drop(sid);
           deleteCachedSessionMessages(sid);
+          // 正查看的就是它：直接重读磁盘上的最新一份。不走打开函数——同一个会话会被
+          // 「已是当前会话」的守卫拦掉，视图停在发送时种下的半截缓存上，少了最后一轮
+          //（二轮评审 R3 P2-10）；还会把任务态清一遍。
           if (selectedSessionRef.current === sid) {
-            handleSelectSessionRef.current(sid);
+            void reloadSessionMessagesRef.current(sid, null, true);
           }
         })
         .catch(() => {
@@ -1280,8 +1329,6 @@ export function ChatPage({
       clearInterval(interval);
     };
   }, []);
-
-  // ── 簇B 节点会话补读：已迁 use-node-session-reload（任务会话的打开并入了上面的打开函数）──
 
   const handleNewSession = async () => {
     if (!projectId) return;
@@ -1368,6 +1415,19 @@ export function ChatPage({
         sessionId,
         encodedName: projectId,
       });
+      // v0.9.8 评审修复轮 R2（S-14）：会话没了，流存储里它的别名、连接记忆、
+      // 进程世代、阶段一并清掉（流 drop 时这些是保留的——那是给迟到的终结者
+      // 找键用的；会话删除才是它们的终点）。
+      streamStore.forgetSession(sessionId);
+      // 会话没了，它的未读条目一并清掉（未读存储只增不减的话会一直留着）。
+      clearUnread(sessionId);
+      // 按会话键记的其余状态同样清掉（二轮评审 R3 P2-6）：位置记忆与访问记录在本次运行期
+      // 一直活着、滚动系统里的位置样本、消息缓存——会话 id 不会串到别的会话上，只是只增不减。
+      scrollMemory.current.delete(sessionId);
+      visitedSessions.current.delete(sessionId);
+      forgetScrollPosition(sessionId);
+      deleteCachedSessionMessages(sessionId);
+      steerCoordinator.forgetSession(sessionId);
       setOptimisticSessions(prev => prev.filter(s => s.id !== sessionId));
       setListRefreshKey(k => k + 1);
       if (selectedSession === sessionId) {
@@ -1375,7 +1435,7 @@ export function ChatPage({
       }
     } catch (err) {
       console.error("Failed to delete session:", err);
-      await alertDialog({ title: "删除会话失败", description: String(err) });
+      await alertDialog({ title: "删除会话失败", description: userFacingError(err) });
     }
   }, [activeId, projectId, sessions, sessionNames, confirmDialog, alertDialog, t, selectedSession]);
 
@@ -1442,7 +1502,7 @@ export function ChatPage({
       console.error(e);
       void alertDialog({
         title: t("sessions.refreshFailedTitle", "刷新会话失败"),
-        description: String(e),
+        description: userFacingError(e),
       });
     } finally {
       setRefreshingSessionId(null);
@@ -1588,7 +1648,7 @@ export function ChatPage({
     // v0.9.2 测试期二次返工（节点会话派发信息缺失）：本 effect 只在
     // nodeId/runId/attempt_count/status 变化时触发；节点刚启动时 session_id
     // 常常尚未由 Pi RPC SessionResolved 落库——此刻查询拿到 null 后再无
-    // 重试触发（status 长期停在 running），主区卡 "pending-node" 占位直到
+    // 重试触发（status 长期停在 running），主区卡在节点待定占位直到
     // 节点终态才恢复。节点仍在执行且会话未回填时按 2s 轮询，直到拿到
     // session_id 或节点终态为止。
     const nodeStatus = taskGraph.nodeRuns[taskSelectedNodeId]?.status ?? null;
@@ -1697,20 +1757,39 @@ export function ChatPage({
   // ── A5 簇②③：任务会话导流钩子（新建任务对话/工作模式切换/任务工作台/
   // 节点选择与回填 + 任务面板 ctx——流程全景插件的数据面）。任务态 state 仍在
   // 页面（读写面横跨发送链/流式管线/JSX），此处收拢动作与派生。 ──
-  // 需求2 追加：任务不询问模式（Pi settings taskNoAsk——runner ask_user
-  // 自动放行 + 工具审批跳过 + 纪律注入三处同源）。
-  const [taskNoAsk, setTaskNoAsk] = useState(false);
-  useEffect(() => {
-    invokeCommand<boolean>("get_task_no_ask")
-      .then(setTaskNoAsk)
-      .catch(() => setTaskNoAsk(false));
-  }, []);
-  const handleTaskNoAskChange = useCallback((enabled: boolean) => {
-    setTaskNoAsk(enabled); // 乐观更新；失败回滚
-    invokeCommand<boolean>("set_task_no_ask", { enabled })
-      .then((v) => setTaskNoAsk(v))
-      .catch(() => setTaskNoAsk(!enabled));
-  }, []);
+  // 需求2 追加：任务不询问模式（runner ask_user 自动放行 + 工具审批跳过 +
+  // 纪律注入三处同源）。需求22 / 评审修复轮 R2（契约 C4）：开关跟着**选中的
+  // 会话**读写（task_get_no_ask / task_set_no_ask 都带会话 id）——记在任务
+  // 实例上，只对该任务的主会话与节点会话生效；此前是全局的一个布尔值，任何
+  // 地方打开，所有会话同时生效。
+  // 评审修复轮 R3（P1-1）：读写带上项目根（后端省一次会话目录扫描）；新任务页还
+  // 没有会话时点下的开关先记成意图（pendingNoAsk），随任务模式首条消息带过去。
+  const { taskNoAsk, handleTaskNoAskChange, pendingNoAsk } = useTaskNoAsk(
+    selectedSession && selectedSession !== NEW_SESSION_PLACEHOLDER ? selectedSession : null,
+    activeTaskInstanceId,
+    currentProject?.path ?? null,
+  );
+  const pendingNoAskRef = useRef(pendingNoAsk);
+  pendingNoAskRef.current = pendingNoAsk;
+  /** 任务模式首条消息的任务意图（随 `send_message` 的 `taskLaunch` 带给后端）。
+   * 评审修复轮 R3（P1-1）：后端在拉起进程之前把任务实例建好并挂在本次发送的
+   * 会话键上，会话解析后改绑成真实会话号——登记先于首条 prompt，引擎首轮来查
+   * 「是不是任务会话」就查得到。此前实例等 `session_resolved` 分片到达才由前端
+   * mark 创建，晚于首条 prompt。 */
+  const getTaskLaunchIntent = useCallback(
+    (goal: string): ChatInputTaskLaunch => ({
+      // 新建任务对话时这里是 null（= 新建）；已有的任务则只把会话改绑过去。
+      taskId: activeTaskInstanceIdRef.current,
+      skillId: selectedTaskSkillIdRef.current || "jishu-task-runner",
+      // 需求9 #4 补：建实例即写首条 goal（截断在 Rust 侧）——单步小任务 agent
+      // 不调 update_steps，步骤上报链不触发，标题会停在默认「新任务」。
+      title: goal,
+      // 「不询问」只对新任务带：已有任务的开关在实例上、按会话读写，带过去就是
+      // 把用户的决定冲成 false。
+      noAsk: taskLaunchNoAsk(activeTaskInstanceIdRef.current, pendingNoAskRef.current),
+    }),
+    [],
+  );
 
   const {
     handleOpenTaskConversation,
@@ -1745,7 +1824,6 @@ export function ChatPage({
     closeSessionSidebar,
     closeViewer,
     handleSelectSessionRef,
-    noteLeavingSession,
     setSelectedSession,
     selectedSessionRef,
     setSessionMessages,
@@ -1994,7 +2072,8 @@ export function ChatPage({
       searchMessages,
       scrollToMessage,
       insertToComposer,
-      switchSession: (id: string) => void handleSelectSession(id),
+      // 经 ref 调最新的打开函数：这份命令面是按清单记忆的，直接拿函数会停在记忆那一刻的闭包
+      switchSession: (id: string) => void handleSelectSessionRef.current(id),
       openFileViewer: (path: string) => openViewer({ kind: "file", path }),
       // v0.9.2 测试期：插件展开自己面板的命令（event-hook 收到信号拉起面板，
       // 如 file-preview-request）；经 shell 的激活性落点，由宿主按形态生效。
@@ -2010,9 +2089,9 @@ export function ChatPage({
       // v0.9.4 需求12：插件底座日志能力（dev 日志中心，plugin 类别）。
       devLog: (message, data) => devLog("plugin", message, data),
       task: taskPanelCtx,
-      sessionId: selectedSession && selectedSession !== "new" ? selectedSession : null,
+      sessionId: selectedSession && selectedSession !== NEW_SESSION_PLACEHOLDER ? selectedSession : null,
       sessionTitle:
-        selectedSession && selectedSession !== "new"
+        selectedSession && selectedSession !== NEW_SESSION_PLACEHOLDER
           ? sessions?.find((item) => item.id === selectedSession)?.display_name ?? null
           : null,
       messages: ctxMessages,
@@ -2173,9 +2252,9 @@ export function ChatPage({
      selectedNodeRun.status === "blocked" ||
      selectedNodeRun.status === "ready");
   // v0.7.0 需求二-问题3：节点已进入 leased/running 但 session_id 尚未由 Pi RPC
-  // SessionResolved 回填（selectedSession 为 "pending-node" 占位）。此时主区显示
+  // SessionResolved 回填（selectedSession 为节点待定占位）。此时主区显示
   // "正在建立会话"占位，而非主流程会话内容，避免节点会话和主流程混在一起。
-  const taskSelectedNodeStarting = selectedSession === "pending-node";
+  const taskSelectedNodeStarting = selectedSession === PENDING_NODE_PLACEHOLDER;
 
   // T8-P10：节点会话的流式输出与常规会话**同一套机制**——
   // `agent-event` → `streamStore` → `useSessionStream` → `StreamingMessage`。
@@ -2262,6 +2341,8 @@ export function ChatPage({
         stagedApiRef,
         supportsSteerRef,
         syncSessionListMessagesRef,
+        runStagedCompactionRef,
+        takeCompactionRequest: compaction.takeCompactionRequest,
         taskLaunchOpenRef,
         taskLaunchPhaseRef,
         taskLaunchGoalRef,
@@ -2550,7 +2631,7 @@ export function ChatPage({
             {!taskLaunchOpen ? (
               <>
             {/* Session header */}
-            {selectedSession && selectedSession !== "new" ? (
+            {selectedSession && selectedSession !== NEW_SESSION_PLACEHOLDER ? (
               <div className="flex items-center justify-between px-5 h-[44px] border-b border-border/30" style={{ background: "var(--color-layer-1)" }}>
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="font-medium text-sm truncate">{nodeHeaderTitle}</span>
@@ -2629,7 +2710,7 @@ export function ChatPage({
                   <div className="mx-auto w-full max-w-[var(--message-content-max-width)] px-4 py-8 text-center text-[12px] text-muted-foreground">
                     {t("task.execution.nodeStarting")}
                   </div>
-                ) : selectedSession && selectedSession !== "new" ? (
+                ) : selectedSession && selectedSession !== NEW_SESSION_PLACEHOLDER ? (
                   // v0.9.1 需求5：data-turn-scope="main" 圈定主会话列表——横杠
                   // 导航轨的轮次定位/滚动侦测只在此作用域内查询，任务执行投影
                   // 的第二个 MessageView 不参与计数。无样式普通块级 div，
@@ -2647,7 +2728,7 @@ export function ChatPage({
                       scrollContainerRef={messageAreaRef}
                       expandSignal={messageExpandSignal}
                       onEditLastUserMessage={
-                        selectedSession && selectedSession !== "new" && !taskModeActive
+                        selectedSession && selectedSession !== NEW_SESSION_PLACEHOLDER && !taskModeActive
                           ? handleEditLastUserMessage
                           : null
                       }
@@ -2732,12 +2813,13 @@ export function ChatPage({
                     committed messages are already rendered by MessageView above —
                     keeping the streaming preview would duplicate interaction cards
                     and other content. */}
-                {currentStream?.isStreaming && selectedSession && selectedSession !== "new" && !taskSelectedNodeNotStarted && (
+                {currentStream?.isStreaming && selectedSession && selectedSession !== NEW_SESSION_PLACEHOLDER && !taskSelectedNodeNotStarted && (
                   <StreamingMessage
                     key={selectedSession}
                     sessionId={selectedSession}
                     isComplete={false}
                     scrollContainerRef={messageAreaRef}
+                    isAwayFromBottomRef={isAwayFromBottomRef}
                     agentDisplayName={active?.display_name}
                     onEditUserMessage={taskModeActive ? null : handleEditLastUserMessage}
                   />
@@ -2865,6 +2947,10 @@ export function ChatPage({
               onSessionResolved={handleSessionResolved}
               onBeforeSend={handleTaskLaunchBeforeSend}
               prepareMessageForAgent={prepareTaskLaunchMessage}
+              getTaskLaunchIntent={getTaskLaunchIntent}
+              // send_message 带回登记好的任务实例：立即落地为当前任务（旧流程是
+              // session_resolved 时 mark 的返回值做这件事）。
+              onTaskInstanceBound={applyTaskLaunchInstanceSnapshot}
               allowFiles={capabilities ? (capabilities.has("FILE_INPUT") || capabilities.has("IMAGE_INPUT")) : true}
               agentDisplayName={active?.display_name}
               disabled={taskLaunchOpen && (!taskModeCanSend || taskLaunchReadOnly)}
@@ -2874,6 +2960,7 @@ export function ChatPage({
               slashCommands={slashCommands}
               trailingControls={modelTrailingControls}
               onSlashCommand={handleSlashCommand}
+              onSlashCommandUnavailable={handleSlashCommandUnavailable}
               containerClassName={showStartComposer ? "mx-auto w-full max-w-[var(--message-content-max-width)] px-0 pb-0 pt-0" : undefined}
               panelClassName={showStartComposer ? "rounded-[22px] border-border/70 bg-card/98 shadow-[0_18px_48px_rgba(0,0,0,0.10)]" : undefined}
               contextFooter={startComposerFooter}
@@ -2888,7 +2975,7 @@ export function ChatPage({
                 taskModeActive ||
                 // 需求9 #5：「⚡不询问」chip 绑定会话身份而非易失 UI 状态——
                 // 切会话/点桌面通知会重置 taskModeActive，但任务会话本体
-                // （settings.json 的 taskNoAsk 仍生效）应保持不询问入口可切换。
+                //（不询问开关记在它所属的任务实例上）应保持不询问入口可切换。
                 taskLaunchSessionIds.has(selectedSession ?? "")
                   ? "task"
                   : "chat"
@@ -2931,12 +3018,19 @@ export function ChatPage({
                     // 形成双条。pi 的 abort 含 abortCompaction：取消后
                     // compaction_end(aborted) → pipeline 终结沿统一收口。
                     const isPureCompaction = state.pendingUserMessage === null
+                      && !state.committedUserMessage
                       && state.text === "" && state.thinking === ""
                       && state.tools.length === 0 && state.steerTexts.length === 0
                       && state.content.length > 0
                       && state.content.every((b) => b.type === "phase_divider" && b.phase === "compaction");
-                    if (isPureCompaction) {
-                      devLog("session", "onAbort 纯压缩流（跳过本地提交，等待压缩取消收口）", { session: finalKey });
+                    // v0.9.8 评审修复轮 R2（契约 C1）：扩展命令起的流同理——
+                    // 引擎不落用户消息，流上没有可提交的用户内容。停止时也不把
+                    // 命令文本提交成气泡（与 pi 原生 TUI 一致），等终结者收口。
+                    if (isPureCompaction || state.extensionCommand) {
+                      devLog("session", "onAbort 无可提交内容的流（跳过本地提交，等待终结者收口）", {
+                        session: finalKey,
+                        kind: isPureCompaction ? "compaction" : "extension-command",
+                      });
                       abortLocalCommitRef.current.set(finalKey, state.turnToken);
                       if (selectedSession !== finalKey) {
                         abortLocalCommitRef.current.set(selectedSession, state.turnToken);

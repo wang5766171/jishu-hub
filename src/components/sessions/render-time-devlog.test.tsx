@@ -20,6 +20,10 @@ import { BlockRenderersProvider } from "@/features/session-kernel/plugins/mounts
 import type { Message, StreamChunk } from "@/types";
 import { MessageView } from "./message-view";
 import { StreamingMessage } from "./streaming-message";
+import { stubTextHighlightApi } from "./__stubs__/text-highlight-api";
+import { catalogStub } from "./__stubs__/tool-catalog";
+
+vi.mock("@/lib/tool-catalog", async () => await import("./__stubs__/tool-catalog"));
 
 const { listSessionPlugins } = vi.hoisted(() => ({ listSessionPlugins: vi.fn() }));
 vi.mock("@/features/session-kernel/plugins/registry", async (importOriginal) => ({
@@ -112,6 +116,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   streamStore.drop(sessionId);
+  vi.unstubAllGlobals();
 });
 
 describe("渲染期间不写开发日志", () => {
@@ -134,6 +139,86 @@ describe("渲染期间不写开发日志", () => {
       "block-renderer hit: mermaid → fake",
     ]) {
       expect(logged, expected).toContain(expected);
+    }
+  });
+
+  it("代码块被插件接管：「被谁接管」不变就不重复写——V8-U1", () => {
+    // 高亮方式下退出搜索：高亮开关翻转，文字块重渲染，代码块渲染件跟着重渲染
+    stubTextHighlightApi();
+    const tree = (searchQuery: string) => (
+      <BlockRenderersProvider enabled={new Set(["session.fake"])}>
+        <MessageView messages={messages} flat searchQuery={searchQuery} />
+      </BlockRenderersProvider>
+    );
+    const { seq, rerender } = mountSubscriberThen(() => tree("完成"));
+    const blockRendererLogs = () => messagesAfter(seq).filter((entry) => entry.startsWith("block-renderer hit"));
+    expect(blockRendererLogs()).toHaveLength(1);
+    rerender(
+      <>
+        <LogSubscriber />
+        {tree("")}
+      </>,
+    );
+    expect(blockRendererLogs()).toHaveLength(1);
+  });
+
+  it("搜索态的各条渲染路径（高亮方式 / 回落方式 / 带工具标签的消息）——V8-U2", () => {
+    catalogStub.set({ "dev-god": "写后诊断", plan: "方案规划" }, { "dev-god": "cli", plan: "skill" });
+    const withPills: Message[] = [
+      ...messages,
+      { role: "user", timestamp: null, content: [{ type: "text" as const, text: "用 @[方案规划] 排期", tool_ids: ["plan"] }] },
+      { role: "user", timestamp: null, content: [{ type: "text" as const, text: "查一下这段代码", tool_ids: ["dev-god"] }] },
+    ];
+    const tree = (searchQuery: string, navigation?: { direction: 1 | -1; nonce: number }) => (
+      <MessageView messages={withPills} sessionId={sessionId} flat searchQuery={searchQuery} searchNavigation={navigation} />
+    );
+    stubTextHighlightApi();
+    const { rerender } = mountSubscriberThen(() => tree("完成"));
+    // 高亮方式：换词、翻页
+    for (const [query, navigation] of [
+      ["排期", undefined],
+      ["排期", { direction: 1, nonce: 1 } as const],
+      ["@[", undefined],
+    ] as const) {
+      rerender(
+        <>
+          <LogSubscriber />
+          {tree(query, navigation)}
+        </>,
+      );
+    }
+    // 回落方式（高亮接口不可用）
+    vi.unstubAllGlobals();
+    for (const query of ["排期", "代码"]) {
+      rerender(
+        <>
+          <LogSubscriber />
+          {tree(query)}
+        </>,
+      );
+    }
+    // 退出搜索
+    rerender(
+      <>
+        <LogSubscriber />
+        {tree("")}
+      </>,
+    );
+    expect(renderTimeUpdateErrors()).toEqual([]);
+  });
+
+  it("代码块角标的提示走 i18n——V6-U5", async () => {
+    await i18n.changeLanguage("en");
+    try {
+      const { container } = render(
+        <BlockRenderersProvider enabled={new Set(["session.fake"])}>
+          <MessageView messages={messages} flat />
+        </BlockRenderersProvider>,
+      );
+      const badge = container.querySelector("[data-no-search]");
+      expect(badge?.getAttribute("title")).toBe("Rendered by plugin: Fake (fake)");
+    } finally {
+      await i18n.changeLanguage("zh");
     }
   });
 

@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { decorateInteractionOptions, validateInteractionSubmission } from "@/lib/conversation-interaction";
+import { userFacingError } from "@/lib/user-facing-error";
 import { cn } from "@/lib/utils";
 import type {
   ConversationInteractionRequest,
@@ -81,9 +82,10 @@ export function InteractionComposer({
       setError(null);
       await onSubmit(submission);
     } catch (submitError) {
+      // 给用户看的是人话：机器前缀与括号里的英文原文不显示在卡上（原话仍进控制台与日志）
       setError(
         submitError instanceof Error
-          ? submitError.message
+          ? userFacingError(submitError)
           : t("sessions.interactionInvalid"),
       );
     }

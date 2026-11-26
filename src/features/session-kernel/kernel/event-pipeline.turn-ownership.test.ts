@@ -74,6 +74,9 @@ function makeDeps() {
     stagedApiRef: { current: null } as MutableRefObject<StagedGuideApi | null>,
     supportsSteerRef: { current: true } as MutableRefObject<boolean>,
     syncSessionListMessagesRef: { current: null },
+    // v0.9.8 评审修复轮 R2：排队压缩的执行器（本组用例不涉及，留空）
+    runStagedCompactionRef: { current: null },
+    takeCompactionRequest: () => true,
     taskLaunchOpenRef: { current: false },
     taskLaunchPhaseRef: { current: null },
     visitedSessions: { current: new Set<string>() },
@@ -113,7 +116,7 @@ describe("v0.9.8 评审修复轮 R1-4：迟到的中止回执与回合归属", (
     steerCoordinator.clearAll();
     streamStore.drop("s1");
     deps = makeDeps();
-    stagedApi = { claimAll: vi.fn(() => []), restore: vi.fn(), moveKey: vi.fn() };
+    stagedApi = { claimAll: vi.fn(() => []), restore: vi.fn(), moveKey: vi.fn(), stage: vi.fn() };
     deps.stagedApiRef.current = stagedApi;
     stop = startAgentEventPipeline(deps as never);
   });
@@ -213,7 +216,7 @@ describe("v0.9.8 评审修复轮 R1-4：迟到的中止回执与回合归属", (
     const staged = { id: "st-1", content: "暂存在临时键下的消息", files: [], context: CTX };
     const claimAll = vi.fn((key: string) => (key === PENDING ? [staged] : []));
     const restore = vi.fn();
-    deps.stagedApiRef.current = { claimAll, restore, moveKey: vi.fn() };
+    deps.stagedApiRef.current = { claimAll, restore, moveKey: vi.fn(), stage: vi.fn() };
     // 回合结束事件带着真实 id 到达（界面当前键、事件键、暂存键三者并不相同）
     listenCallback!({
       payload: {

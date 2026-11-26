@@ -65,3 +65,88 @@ describe("v0.9.6 需求1 完善修复①：乐观压缩分隔线", () => {
     streamStore.drop(SID);
   });
 });
+
+// ── v0.9.8 评审修复轮 R2：压缩进行态按会话隔离 ─────────────────────────────
+
+describe("评审修复轮 R2：压缩进行态按会话隔离", () => {
+  const A = "test-compact-session-a";
+  const B = "test-compact-session-b";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    streamStore.drop(A);
+    streamStore.drop(B);
+  });
+
+  it("S9-U1 A 在压缩：只标记 A；B 的压缩请求照常发出，不被 A 的请求拦下", async () => {
+    invokeMock.mockReturnValue(new Promise(() => {})); // IPC 悬挂（压缩未返回）
+    const { result } = renderHook(() => useCompaction("jishu-self", true));
+    await act(async () => {
+      void result.current.runCompact(A, null);
+    });
+    expect(result.current.isCompacting(A)).toBe(true);
+    expect(result.current.isCompacting(B)).toBe(false);
+    expect(result.current.compactingSessions.has(A)).toBe(true);
+    expect(result.current.compactingSessions.has(B)).toBe(false);
+
+    await act(async () => {
+      void result.current.runCompact(B, null);
+    });
+    expect(invokeCommandCalls()).toEqual([
+      ["compact_agent_session", expect.objectContaining({ sessionId: A })],
+      ["compact_agent_session", expect.objectContaining({ sessionId: B })],
+    ]);
+    expect(result.current.isCompacting(B)).toBe(true);
+  });
+
+  it("S9-U2 同一会话连点两次只发一个请求（同步闸按会话生效）", async () => {
+    invokeMock.mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useCompaction("jishu-self", true));
+    await act(async () => {
+      void result.current.runCompact(A, null);
+      void result.current.runCompact(A, null);
+    });
+    expect(invokeCommandCalls()).toHaveLength(1);
+  });
+
+  it("S9-U2 B 的压缩返回：只清 B 的进行态，A 仍在压缩", async () => {
+    let finishB: () => void = () => {};
+    invokeMock.mockImplementation((_cmd: string, args: { sessionId: string }) =>
+      args.sessionId === B ? new Promise<void>((resolve) => { finishB = resolve; }) : new Promise(() => {}));
+    const { result } = renderHook(() => useCompaction("jishu-self", true));
+    await act(async () => {
+      void result.current.runCompact(A, null);
+      void result.current.runCompact(B, null);
+    });
+    await act(async () => {
+      finishB();
+      await Promise.resolve();
+    });
+    expect(result.current.isCompacting(A)).toBe(true);
+    expect(result.current.isCompacting(B)).toBe(false);
+    // 渲染用的快照同样只清了 B（水位环按钮的禁用态读它）
+    expect(result.current.compactingSessions.has(A)).toBe(true);
+    expect(result.current.compactingSessions.has(B)).toBe(false);
+  });
+
+  it("R3-P2-8 用户发起的压缩留标记（取一次即清）；没发起过的会话与做失败的压缩都没有", async () => {
+    invokeMock.mockImplementation((_cmd: string, args: { sessionId: string }) =>
+      args.sessionId === "s-fail" ? Promise.reject(new Error("没有可压缩的内容")) : new Promise(() => {}));
+    const { result } = renderHook(() => useCompaction("jishu-self", true));
+    // 没发起过：不是用户发起的压缩（引擎在回合开头自己做的自动压缩）
+    expect(result.current.takeCompactionRequest("s-other")).toBe(false);
+    await act(async () => {
+      void result.current.runCompact(SID, null);
+      await result.current.runCompact("s-fail", null).catch(() => {});
+    });
+    // 做失败的压缩：标记已清（不会有压缩结束事件来取它）
+    expect(result.current.takeCompactionRequest("s-fail")).toBe(false);
+    // 发起中的压缩：标记在（压缩结束事件可能晚于命令返回，所以留着等事件管线来取）；取走即清
+    expect(result.current.takeCompactionRequest(SID)).toBe(true);
+    expect(result.current.takeCompactionRequest(SID)).toBe(false);
+  });
+
+  function invokeCommandCalls() {
+    return invokeMock.mock.calls.filter(([cmd]) => cmd === "compact_agent_session");
+  }
+});

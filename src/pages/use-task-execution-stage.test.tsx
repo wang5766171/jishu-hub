@@ -6,6 +6,9 @@
  *（刚按滚动记忆恢复）时不能被拽到底。「视图在不在底部」以滚动系统维护的标记为准：
  * 那个标记在程序性恢复位置的那一刻就由滚动系统当场更新（见 use-chat-scroll 的测试）。
  *
+ * v0.9.8 评审修复轮 R2，对应 docs/v0.9.8/评审修复轮-R2/tests/O-用例清单.md：
+ * O10-U1（「拉到底」排的两帧都要能取消）。
+ *
  * jsdom 不排版：滚动容器的尺寸用属性替身，scrollTop 按浏览器的规矩压到可滚动范围内；
  * 逐帧回调收进数组里手动执行。
  */
@@ -78,6 +81,30 @@ function mount({ awayFromBottom }: { awayFromBottom: boolean }) {
   return { ...hook, el, size, isAwayFromBottomRef };
 }
 
+/**
+ * 会真的取消的帧队列：按 id 登记，取消即移除（上面的替身只收集、取消是空操作，
+ * 「排了之后被取消」这件事测不出来）。
+ */
+function cancellableFrames() {
+  let seq = 0;
+  const queued = new Map<number, FrameRequestCallback>();
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+    queued.set(++seq, cb);
+    return seq;
+  });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+    queued.delete(id);
+  });
+  return {
+    /** 执行当前排队的帧（跑的过程中新排的帧留到下一轮）。 */
+    run() {
+      const due = [...queued.values()];
+      queued.clear();
+      for (const frame of due) frame(0);
+    },
+  };
+}
+
 beforeEach(() => {
   frames.length = 0;
 });
@@ -145,5 +172,34 @@ describe("useTaskExecutionStage · 进入执行段的「拉到底」", () => {
     h.isAwayFromBottomRef.current = true;
     runFrames();
     expect(h.el.scrollTop).toBe(120);
+  });
+});
+
+describe("useTaskExecutionStage · 「进入执行段拉到底」排的两帧都要能取消", () => {
+  // 执行还没启动：只有「进入拉底」这一处会滚（执行流贴底那一处要执行启动之后才生效）
+  const enter = { taskExecutionMode: true, taskRunStarted: false, projected: [] };
+  const leave = { taskExecutionMode: false, taskRunStarted: false, projected: [] };
+
+  it("排了第一帧之后条件消失（退出执行段）：第二帧不再执行——O10-U1", () => {
+    const h = mount({ awayFromBottom: false });
+    const ff = cancellableFrames();
+    h.rerender(enter);
+    // 第一帧执行：第二帧已经排上；这时执行卡出现在下方，内容变高
+    ff.run();
+    h.size.scrollHeight = 1500;
+    // 第一帧之后、第二帧之前退出执行段：清理把第二帧取消
+    h.rerender(leave);
+    ff.run();
+    expect(h.el.scrollTop).toBe(500); // 没被拉到 1000（1500 - 500）
+  });
+
+  it("对照：两帧之间条件没变，第二帧照常把视图拉到底", () => {
+    const h = mount({ awayFromBottom: false });
+    const ff = cancellableFrames();
+    h.rerender(enter);
+    ff.run();
+    h.size.scrollHeight = 1500;
+    ff.run();
+    expect(h.el.scrollTop).toBe(1000);
   });
 });

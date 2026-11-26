@@ -72,6 +72,9 @@ function makeDeps() {
     stagedApiRef: { current: null },
     supportsSteerRef: { current: true } as MutableRefObject<boolean>,
     syncSessionListMessagesRef: { current: null },
+    // v0.9.8 评审修复轮 R2：排队压缩的执行器（本组用例不涉及，留空）
+    runStagedCompactionRef: { current: null },
+    takeCompactionRequest: () => true,
     taskLaunchOpenRef: { current: false },
     taskLaunchPhaseRef: { current: null },
     visitedSessions: { current: new Set<string>() },
@@ -303,5 +306,64 @@ describe("v0.9.4 需求13：手动压缩流终结", () => {
 
     expect(claimAll).not.toHaveBeenCalled();
     expect(streamStore.getState("s1")?.pendingUserMessage).toBe("用户问题");
+  });
+
+  // ── v0.9.8 评审修复轮 R2（主控补充）：带在途消息的流不是纯压缩流 ──
+  it("R3-P2-8 引擎自己起的回合开头的自动压缩：压缩结束不领取暂存——回合还在跑", async () => {
+    // 标记里没有这个会话的「用户发起的压缩」：这次压缩是引擎在回合开头自动做的
+    deps.takeCompactionRequest = () => false;
+    const claimAll = vi.fn(() => [{ id: "st-1", content: "继续", files: [], context: STAGED_CTX }]);
+    deps.stagedApiRef.current = { claimAll, restore: vi.fn(), moveKey: vi.fn() } as never;
+    // 没有从界面发出的用户消息：流是压缩分隔线到达时自动起的（任务会话 / 节点会话里的内部回合）
+    emit(dividerChunk("上下文压缩中…"));
+    emit(dividerChunk("上下文已压缩"));
+    emit(compactionStatus(false));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(claimAll).not.toHaveBeenCalled();
+    expect(invokeCommand).not.toHaveBeenCalledWith("send_message", expect.anything());
+  });
+
+  it("R3-P2-8 对照：用户发起的压缩结束才领取暂存（标记取一次即清）", async () => {
+    const take = vi.fn(() => true);
+    deps.takeCompactionRequest = take;
+    const claimAll = vi.fn(() => []);
+    deps.stagedApiRef.current = { claimAll, restore: vi.fn(), moveKey: vi.fn() } as never;
+    emit(dividerChunk("上下文压缩中…"));
+    emit(dividerChunk("上下文已压缩"));
+    emit(compactionStatus(false));
+    await vi.waitFor(() => expect(claimAll).toHaveBeenCalled());
+    expect(take).toHaveBeenCalledWith("s1");
+  });
+
+  it("R2-S19 自动发送起的流遇上回合开头的自动压缩：压缩结束不丢流、不再发下一条", async () => {
+    const staged = [
+      { id: "st-1", content: "第一条", files: [], context: STAGED_CTX },
+      { id: "st-2", content: "第二条", files: [], context: STAGED_CTX },
+    ];
+    const claimAll = vi.fn(() => staged);
+    const restore = vi.fn();
+    deps.stagedApiRef.current = { claimAll, restore, moveKey: vi.fn() } as never;
+
+    // 上一回合结束 → 自动发出第一条：为它的回复起一条流。这条流不带待发的用户消息
+    //（消息已经提交进缓存），但它在等一个回合的回复。
+    streamStore.start("s1", "上一条");
+    emit({ agent_id: "jishu-self", session_id: "s1", data: { kind: "turn_complete", reason: "Complete", usage: null } });
+    await vi.waitFor(() => {
+      expect(invokeCommand).toHaveBeenCalledWith(
+        "send_message",
+        expect.objectContaining({ sessionId: "s1", message: "第一条" }),
+      );
+    });
+    expect(streamStore.getState("s1")?.pendingUserMessage).toBeNull();
+
+    // 这一回合开头的自动压缩（引擎侧）：回复还没出来，压缩已经结束
+    emit(dividerChunk("上下文压缩中…"));
+    emit(dividerChunk("上下文已压缩"));
+    emit({ agent_id: "jishu-self", session_id: "s1", data: { kind: "compaction_status", active: false, reason: "threshold" } });
+
+    // 流还在等回复；暂存只领过一次，没有在回合中途再发一条
+    expect(streamStore.getState("s1")?.isStreaming).toBe(true);
+    expect(claimAll).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(invokeCommand).mock.calls.filter(([cmd]) => cmd === "send_message")).toHaveLength(1);
   });
 });
