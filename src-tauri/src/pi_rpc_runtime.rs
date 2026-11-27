@@ -192,8 +192,13 @@ fn spawn_pi_rpc_session_inner(
 
     // Capture stderr for diagnostics
     let stderr_buf = Arc::new(TokioMutex::new(String::new()));
+    // 2026-11-27 公司连接中断修复：stderr 流结束信号——引擎瞬死时 stdout 先关、
+    // 连接循环先报错，stderr 读取任务可能还没把最后的行灌进缓冲（错误富化与
+    // 坏件解析会读到半截甚至空）。错误路径先等它收尾（≤500ms）再取缓冲。
+    let (stderr_done_tx, stderr_done_rx) = tokio::sync::watch::channel(false);
     if let Some(stderr_stream) = stderr {
         let stderr_buf_clone = stderr_buf.clone();
+        let mut stderr_done_tx = stderr_done_tx;
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr_stream).lines();
             while let Ok(Some(line)) = reader.next_line().await {
@@ -202,7 +207,7 @@ fn spawn_pi_rpc_session_inner(
                 buf.push_str(&line);
                 buf.push('\n');
                 // v0.9.5 收口质量审查 P2：诊断用 stderr 环形截断——失败取证
-                // 只取尾部（stderr 富化取尾 500 字节），长会话全量堆内存无收益。
+                // 只取尾部（stderr 富化取头尾窗口），长会话全量堆内存无收益。
                 // 切割点对齐 UTF-8 字符边界（drain 落在多字节字符中间会 panic）。
                 const STDERR_TAIL_LIMIT: usize = 8 * 1024;
                 if buf.len() > STDERR_TAIL_LIMIT {
@@ -213,6 +218,7 @@ fn spawn_pi_rpc_session_inner(
                     buf.drain(..cut);
                 }
             }
+            let _ = stderr_done_tx.send(true);
         });
     }
 
@@ -277,35 +283,93 @@ fn spawn_pi_rpc_session_inner(
         }
 
         if let Err(err) = &result {
+            // 先等 stderr 读取任务收尾（引擎瞬死时 stdout 先关、循环先报错——
+            // 不等会读到半截缓冲，错误富化与坏件解析都失真）
+            {
+                let mut rx = stderr_done_rx;
+                let _ = tokio::time::timeout(Duration::from_millis(500), async {
+                    loop {
+                        if *rx.borrow() {
+                            break;
+                        }
+                        if rx.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                })
+                .await;
+            }
             // Enrich error with stderr output
             let stderr_content = stderr_buf.lock().await.clone();
-            let enriched_err = if !stderr_content.trim().is_empty() {
-                let tail = if stderr_content.len() > 500 {
-                    &stderr_content[stderr_content.len() - 500..]
-                } else {
-                    &stderr_content
-                };
-                format!("{}\n--- 智能体引擎 stderr ---\n{}", err, tail.trim())
+            // 修复 A（2026-11-27 公司连接中断）：退出码取证——启动期退出时进程
+            // 多半已死，try_wait 立即拿到；仍活着（罕见）不阻塞上报。
+            let exit_code = {
+                let mut sampled = child.try_wait().ok().flatten().and_then(|s| s.code());
+                if sampled.is_none() {
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                    sampled = child.try_wait().ok().flatten().and_then(|s| s.code());
+                }
+                sampled
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "仍在运行/未知".to_string())
+            };
+            // 修复 B（同上）：握手期（会话尚未解析）引擎退出 + 装载失败签名 →
+            // 治理存量坏件（停用出注册表），用户重发即恢复。pi 对装载失败
+            // fail-loud 是上游有意设计；治理复用需求15 方案 A 的停用设施。
+            let handshake_pending = acp_session_id_for_cleanup
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none();
+            let stderr_text = stderr_content.as_str();
+            let mut heal_suffix = String::new();
+            let mut heal_json = serde_json::Value::Null;
+            if handshake_pending
+                && crate::agent::jishu_self::pi_health::has_extension_load_failure(stderr_text)
+            {
+                let outcome =
+                    crate::agent::jishu_self::pi_health::heal_failed_extensions(stderr_text);
+                log::warn!(
+                    "[pi-rpc] 启动期扩展装载失败治理：停用 {:?}，跳过 {:?}",
+                    outcome.disabled,
+                    outcome.skipped
+                );
+                heal_suffix = crate::agent::jishu_self::pi_health::heal_user_suffix(&outcome);
+                heal_json = serde_json::json!({
+                    "disabled": outcome.disabled.iter().map(|(display, source)| serde_json::json!({
+                        "display": display, "source": source
+                    })).collect::<Vec<_>>(),
+                    "skipped": outcome.skipped,
+                });
+            }
+            // 修复 A：stderr 摘录从「只留尾部 500 字节」改为头尾各 1.5KB——
+            // 装载失败的 Error 行打印在 package Warning 之前，尾部窗口恰好把
+            // 致命行切掉（公司机实测，界面与日志中心都看不到坏件是谁）。
+            let excerpt = stderr_excerpt(stderr_text);
+            let enriched_err = if excerpt.is_empty() {
+                format!("{}\n引擎退出码：{}", err, exit_code)
             } else {
-                err.clone()
+                format!(
+                    "{}\n引擎退出码：{}\n--- 智能体引擎 stderr（头尾摘录） ---\n{}",
+                    err, exit_code, excerpt
+                )
             };
             // 日志侧保留 stderr 富化（log::warn/devlog 取证用）；界面消息
             // 只发中文主文案——v0.9.8 需求15-F1：stderr 原文含英文术语/
             // 本机路径/CLI 参数建议（jishu -ne），直出界面违反「说人话」
-            // （体验首跑 P1-1）。
+            //（体验首跑 P1-1）。治理成果（中文功能句）随消息带出。
             log::warn!("Pi RPC connection loop exited with error: {}", enriched_err);
             devlog(
                 "error",
                 "连接循环退出（异常——Error+TurnComplete 已发前端）",
                 &pending_session_id,
-                json!({ "error": enriched_err }),
+                json!({ "error": enriched_err, "exitCode": exit_code, "heal": heal_json }),
             );
             let events = vec![
                 NormalizedEvent::SessionResolved {
                     session_id: pending_session_id.clone(),
                 },
                 NormalizedEvent::Error {
-                    message: err.clone(),
+                    message: format!("{}{}", err, heal_suffix),
                     recoverable: false,
                 },
                 NormalizedEvent::TurnComplete {
@@ -495,7 +559,22 @@ async fn pi_rpc_connection_loop(
         }
         let msg: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
-            Err(_) => continue, // Skip non-JSON lines (startup diagnostics)
+            Err(_) => {
+                // 修复 A（2026-11-27）：启动期的非协议文本行此前被静默丢弃——
+                // 若引擎把启动诊断打到 stdout，取证时一行都看不到。截 300 字
+                // 进日志中心；不进事件流、不影响握手。
+                let mut snippet = line.trim().to_string();
+                if snippet.chars().count() > 300 {
+                    snippet = snippet.chars().take(300).collect();
+                }
+                devlog(
+                    "runtime",
+                    "握手期 stdout 非协议行",
+                    &pending_session_id,
+                    json!({ "line": snippet }),
+                );
+                continue; // Skip non-JSON lines (startup diagnostics)
+            }
         };
 
         if is_pi_response(&msg, "get_state") {
@@ -2486,4 +2565,37 @@ fn flush_buf(emit: &AcpEventEmit, session_id: &str, buf: &mut Vec<NormalizedEven
     }
     emit(buf, session_id);
     buf.clear();
+}
+
+/// stderr 诊断摘录（2026-11-27 公司连接中断修复 A）：头 + 尾各 1.5KB。
+///
+/// pi 的装载失败 `Error: Failed to load extension` 行打印在 package Warning
+/// **之前**（诊断数组顺序），此前错误富化只留尾部 500 字节，恰好把致命行
+/// 切掉——公司机上界面与日志中心都看不到坏件是谁。摘录不设总长上限依赖：
+/// stderr 捕获本身是 8KB 环形尾部（见上方 STDERR_TAIL_LIMIT），此处在其上
+/// 再取头尾。短文本（≤ 头+尾窗口）全保留；切口对齐 UTF-8 字符边界。
+pub(crate) fn stderr_excerpt(stderr: &str) -> String {
+    const WINDOW: usize = 1536;
+    let trimmed = stderr.trim_end();
+    if trimmed.len() <= WINDOW * 2 {
+        return trimmed.to_string();
+    }
+    let mut head_cut = WINDOW;
+    while !trimmed.is_char_boundary(head_cut) {
+        head_cut += 1;
+    }
+    let mut tail_cut = trimmed.len() - WINDOW;
+    while !trimmed.is_char_boundary(tail_cut) {
+        tail_cut += 1;
+    }
+    if tail_cut <= head_cut {
+        // 窗口因字符边界外扩后重叠——全保留更诚实
+        return trimmed.to_string();
+    }
+    format!(
+        "{}\n…（已省略中间 {} 字节）…\n{}",
+        &trimmed[..head_cut],
+        tail_cut - head_cut,
+        &trimmed[tail_cut..]
+    )
 }

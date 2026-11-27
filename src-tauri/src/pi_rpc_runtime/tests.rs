@@ -3492,3 +3492,233 @@ async fn handled_arriving_in_cancel_pending_resends_the_buffered_message() {
     assert_eq!(ledger_states(session), Vec::<String>::new(), "账本清空");
     crate::pending_messages::drop_session(session);
 }
+
+// ---------------------------------------------------------------------------
+// 2026-11-27 公司「连接中断」修复：stderr 头尾摘录（A）+ 存量坏件治理接线（B）
+// 用例：docs/v0.9.8/测试/BUG-公司连接中断-扩展装载失败/用例清单-CH.md
+// ---------------------------------------------------------------------------
+
+/// CH-U1/U2：短文本全保留；长文本头尾各 1.5KB + 中略标记；UTF-8 边界安全。
+#[test]
+fn stderr_excerpt_head_tail_windows() {
+    let short = "line1\nline2\n";
+    assert_eq!(super::stderr_excerpt(short), "line1\nline2");
+    // 长文本：头尾都在，中间被省略
+    let head = "H".repeat(2000);
+    let tail = "T".repeat(2000);
+    let long = format!("{head}{}{tail}", "M".repeat(5000));
+    let out = super::stderr_excerpt(&long);
+    assert!(out.starts_with(&"H".repeat(1536)), "头 1.5KB 保留");
+    assert!(out.ends_with(&"T".repeat(1536)), "尾窗口 1.5KB 保留（末段全 T）");
+    assert!(out.contains("…（已省略中间 "), "中略标记");
+    // 多字节字符横跨切口不 panic、切口不落在字符中间
+    let cjk = "中".repeat(4000); // 每字 3 字节，共 12000 字节
+    let out2 = super::stderr_excerpt(&cjk);
+    assert!(out2.contains("…（已省略中间"), "超长中文也走头尾窗口");
+    let head_part = out2.split('\n').next().unwrap();
+    assert!(head_part.chars().all(|c| c == '中'), "切口没切碎字符");
+}
+
+/// 假引擎：打印给定 stderr 行后按指定退出码退出（握手期死）。
+async fn spawn_broken_engine(stderr_lines: &[String], exit_code: i32) -> tokio::process::Child {
+    // 脚本内 JS 字符串的反斜杠由调用方按 JS 转义写好；raw 格式串原样传给 node -e。
+    let lines_js = stderr_lines
+        .iter()
+        .map(|l| format!("process.stderr.write({:?} + NL);", l))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let script = format!(
+        r#"
+const NL = String.fromCharCode(10);
+{lines_js}
+process.exit({exit_code});
+"#
+    );
+    tokio::process::Command::new("node")
+        .arg("-e")
+        .arg(script)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn broken fake pi")
+}
+
+type Captured = std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
+
+fn capturing_devlog() -> (super::DevLogEmit, Captured) {
+    let seen: Captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_clone = seen.clone();
+    let emit: super::DevLogEmit = std::sync::Arc::new(
+        move |level: &str, title: &str, _sid: &str, payload: serde_json::Value| {
+            seen_clone
+                .lock()
+                .unwrap()
+                .push((format!("{level}|{title}"), payload));
+        },
+    );
+    (emit, seen)
+}
+
+/// 隔离环境（pi settings + extensions.db + hub home），返回 tempdir（持有保活）。
+fn health_fixture(packages_json: &str) -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    std::env::set_var("JISHU_HUB_HOME", tmp.path());
+    std::env::set_var("JISHU_EXTENSIONS_DB", tmp.path().join("ext.db"));
+    let pi_settings = tmp.path().join("pi-settings.json");
+    std::fs::write(&pi_settings, format!("{{\"packages\": {packages_json}}}")).unwrap();
+    std::env::set_var("JISHU_PI_SETTINGS", &pi_settings);
+    tmp
+}
+
+fn clear_health_fixture() {
+    std::env::remove_var("JISHU_HUB_HOME");
+    std::env::remove_var("JISHU_PI_SETTINGS");
+    std::env::remove_var("JISHU_EXTENSIONS_DB");
+}
+
+/// 跑一个握手期死掉的假引擎会话，收尾后返回 (错误消息, devLog 捕获)。
+async fn run_dying_session(
+    stderr_lines: &[String],
+) -> (Vec<String>, Captured) {
+    let child = spawn_broken_engine(stderr_lines, 1).await;
+    let errors: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let errors_clone = errors.clone();
+    let emit: crate::acp_runtime::AcpEventEmit = std::sync::Arc::new(
+        move |events: &[crate::agent::normalized::NormalizedEvent], _sid: &str| {
+            for event in events {
+                if let crate::agent::normalized::NormalizedEvent::Error { message, .. } = event {
+                    errors_clone.lock().unwrap().push(message.clone());
+                }
+            }
+        },
+    );
+    let (devlog, seen) = capturing_devlog();
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let finished_clone = finished.clone();
+    let _control = super::spawn_pi_rpc_session_inner(
+        emit,
+        devlog,
+        "jishu-self".to_string(),
+        "pending-health-test".to_string(),
+        child,
+        Some("hello".to_string().into()),
+        None,
+        None,
+        None,
+        move || finished_clone.store(true, std::sync::atomic::Ordering::SeqCst),
+        |_sid: &str| {},
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !finished.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(std::time::Instant::now() < deadline, "15s 内未收尾");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let out = (errors.lock().unwrap().clone(), seen);
+    out
+}
+
+/// CH-U8：握手期死于装载失败 → ① 错误消息追加中文停用句（stderr 原文不进
+/// 界面消息）；② devLog 含退出码与含致命行的头尾摘录；③ pi 注册表移除坏件。
+#[tokio::test]
+async fn startup_extension_failure_heals_and_reports() {
+    let node_ok = tokio::process::Command::new("node")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !node_ok {
+        eprintln!("node 不可用，跳过");
+        return;
+    }
+    let _guard = crate::agent::manifest::env_test_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let _tmp = health_fixture("[\"npm:pi-lens@4.3.0\", \"npm:@juicesharp/rpiv-todo@2.11.0\"]");
+
+    let stderr_lines = vec![
+        "Error: Failed to load extension \"C:\\Users\\dell\\.jishu-agent\\agent\\npm\\node_modules\\@juicesharp\\rpiv-todo\\index.ts\": Failed to load extension: boom".to_string(),
+        "Warning: Extension package \"C:\\Users\\dell\\.jishu-agent\\agent\\npm\\node_modules\\@juicesharp\\rpiv-todo\\package.json\": Host-provided".to_string(),
+        "Hint: Start without extensions using \"jishu -ne\".".to_string(),
+    ];
+    let (msgs, devlog_seen) = run_dying_session(&stderr_lines).await;
+
+    assert!(!msgs.is_empty(), "应有错误事件");
+    let msg = msgs.last().unwrap();
+    assert!(
+        msg.contains("已自动停用无法装载的扩展") && msg.contains("「待办清单」"),
+        "① 错误消息带中文停用句: {msg}"
+    );
+    assert!(
+        !msg.contains("Failed to load") && !msg.contains("stderr"),
+        "界面消息不带 stderr 原文（F1 口径）: {msg}"
+    );
+    assert!(
+        msg.starts_with("智能体引擎在启动期间意外退出"),
+        "原中文主文案保留: {msg}"
+    );
+
+    let logs = devlog_seen.lock().unwrap().clone();
+    let err_log = logs
+        .iter()
+        .find(|(k, _)| k == "error|连接循环退出（异常——Error+TurnComplete 已发前端）")
+        .expect("② devLog 有错误条目");
+    assert_eq!(err_log.1["exitCode"], "1", "退出码入 devLog");
+    assert!(
+        err_log.1["error"]
+            .as_str()
+            .unwrap()
+            .contains("Failed to load extension"),
+        "stderr 摘录包含致命行（头尾窗口）"
+    );
+    assert_eq!(err_log.1["heal"]["disabled"].as_array().unwrap().len(), 1);
+
+    let pkgs = crate::agent::jishu_self::pi_registry::registered_packages();
+    assert!(
+        !pkgs.iter().any(|p| p.contains("rpiv-todo")),
+        "③ 注册已移除: {pkgs:?}"
+    );
+    assert!(pkgs.iter().any(|p| p.contains("pi-lens")), "其他注册不动");
+    clear_health_fixture();
+}
+
+/// CH-U9：握手期退出但 stderr 无装载失败签名 → 不治理（注册表原样、消息
+/// 无追加句）。中途退出（握手已完成）由 handshake 门闸同理不治理。
+#[tokio::test]
+async fn startup_exit_without_signature_does_not_heal() {
+    let node_ok = tokio::process::Command::new("node")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !node_ok {
+        eprintln!("node 不可用，跳过");
+        return;
+    }
+    let _guard = crate::agent::manifest::env_test_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let _tmp = health_fixture("[\"npm:@juicesharp/rpiv-todo@2.11.0\"]");
+
+    let stderr_lines = vec![
+        "Warning: Extension package \"C:\\x\\npm\\node_modules\\@juicesharp\\rpiv-todo\\package.json\": Host-provided".to_string(),
+        "Hint: Start without extensions using \"jishu -ne\".".to_string(),
+    ];
+    let (msgs, _devlog) = run_dying_session(&stderr_lines).await;
+
+    let msg = msgs.last().unwrap();
+    assert!(!msg.contains("已自动停用"), "无签名不追加治理句: {msg}");
+    let pkgs = crate::agent::jishu_self::pi_registry::registered_packages();
+    assert!(
+        pkgs.iter().any(|p| p.contains("rpiv-todo")),
+        "注册表原样: {pkgs:?}"
+    );
+    clear_health_fixture();
+}

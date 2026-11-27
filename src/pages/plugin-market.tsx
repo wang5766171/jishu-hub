@@ -1466,21 +1466,30 @@ export function PluginMarketPanel({
                         </Button>
 
                         {/* 需求15 方案 A：冲突停用态呈现（内置/用户一致——说明被谁
-                            替代；卸载替代者时自动恢复，此处只读）。 */}
-                        {overrideEntry && (
-                          <span
-                            className="max-w-32 truncate text-[10px] text-amber-600/90"
-                            title={t("market.overrideHint", {
-                              defaultValue: "已停用：被 {{name}} 替代（卸载该扩展时自动恢复）",
-                              name: pkgDirOf(overrideEntry.replaced_by),
-                            })}
-                          >
-                            {t("market.overrideBadge", {
-                              defaultValue: "已停用·被 {{name}} 替代",
-                              name: pkgDirOf(overrideEntry.replaced_by),
-                            })}
-                          </span>
-                        )}
+                            替代；卸载替代者时自动恢复，此处只读）。
+                            2026-11-27 公司连接中断修复：replaced_by 以 runtime: 开头的是
+                            「装载失败自动停用」（无替代者），换一套文案。 */}
+                        {overrideEntry &&
+                          (() => {
+                            const runtimeStop = (overrideEntry.replaced_by ?? "").startsWith("runtime:");
+                            const badge = runtimeStop
+                              ? t("market.runtimeDisableBadge", "已停用·装载失败自动停用")
+                              : t("market.overrideBadge", {
+                                  defaultValue: "已停用·被 {{name}} 替代",
+                                  name: pkgDirOf(overrideEntry.replaced_by),
+                                });
+                            const hint = runtimeStop
+                              ? t("market.runtimeDisableHint", "已停用：该扩展装载失败，已自动停用（更新或修复后可在详情中重新启用）")
+                              : t("market.overrideHint", {
+                                  defaultValue: "已停用：被 {{name}} 替代（卸载该扩展时自动恢复）",
+                                  name: pkgDirOf(overrideEntry.replaced_by),
+                                });
+                            return (
+                              <span className="max-w-32 truncate text-[10px] text-amber-600/90" title={hint}>
+                                {badge}
+                              </span>
+                            );
+                          })()}
                         {state === "installed" && (
                           <>
                             {/* 需求4 D4-8b：已装态界面行（登记簿驱动）+ D4-6

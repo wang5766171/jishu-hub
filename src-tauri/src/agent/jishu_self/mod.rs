@@ -2,6 +2,7 @@ pub(crate) mod config;
 pub(crate) mod jishu_settings;
 pub mod model_picker;
 pub(crate) mod paths;
+pub(crate) mod pi_health;
 pub(crate) mod pi_model;
 pub(crate) mod pi_models_config;
 pub(crate) mod pi_registry;
