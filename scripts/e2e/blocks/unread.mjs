@@ -58,10 +58,9 @@ const steps = () => {
 };
 
 /**
- * 造任务用：图上一个节点——不调用工具，只回复两个字（节点策略是无工具、审批 never）。
+ * 造任务用：留作任务主会话的一条最短消息——不调用工具（2026-11-27 用户裁决后造任务只走真实
+ * 用户路径：点「新任务」发这条目标，任务由发送链路真实创建，不再直调后端命令建图挂会话）。
  */
-const TASK_NODE = { nodeId: "node-reply", title: "只回复完成", prompt: "不要调用任何工具。只回复两个字：完成。" };
-/** 造任务用：留作任务主会话的一条最短消息——同样不调用工具。 */
 const TASK_MAIN_MESSAGE = "不要调用任何工具。只回复两个字：收到。";
 
 /** 项目根目录下的普通文件名（只看根这一层：会话文件、任务工作区都落在子目录里，那是产品自己的东西）。读不了返回 null。 */
@@ -78,10 +77,9 @@ const rootFiles = (root) => {
 };
 
 /**
- * 项目里没有任务会话时造一个（评审修复轮 R2 / E-3：不再让智能体往项目根目录写文件）。
- * 原先走「新任务」发一条「在项目根目录创建 task-demo.txt」——那会往用户的真实项目里落文件，
- * 审批档下还得靠框架自动放行才做得成。现在：主会话只回复文字；图上的节点不调用工具、审批 never。
- * 造完核对项目根目录没有多出普通文件。
+ * 项目里没有任务会话时造一个——**真实用户路径**（2026-11-27 用户裁决：测试禁止直造数据）：
+ * 点「新任务」发一条「只回复文字」的目标，任务由发送链路真实创建。目标提示词写明不调用工具，
+ * 不往用户的项目里写任何文件；造完核对项目根目录没有多出普通文件。
  */
 const createTask = async (ctx) => {
   const { app } = ctx;
@@ -90,18 +88,14 @@ const createTask = async (ctx) => {
   const before = rootFiles(project.path);
   let made;
   try {
-    made = await app.createTaskWithMainSession({
-      title: `未读验证${new Date().toTimeString().slice(0, 8).replace(/:/g, "")}`,
-      nodes: [TASK_NODE],
-      mainMessage: TASK_MAIN_MESSAGE,
-    });
+    made = await app.createTaskViaGui({ goal: TASK_MAIN_MESSAGE });
   } catch (e) {
     if (/^模型不可用/.test(String(e?.message || e))) ctx.skip(e.message);
     throw e;
   }
   if (before) {
     const added = (rootFiles(project.path) ?? []).filter((name) => !before.includes(name));
-    if (added.length) throw new Error(`造任务的过程中项目根目录多出了文件：${added.join("、")}（造数不该写任何文件）`);
+    if (added.length) throw new Error(`造任务的过程中项目根目录多出了文件：${added.join("、")}（造任务不该写任何文件）`);
   }
   ctx.state.unreadTask = made;
   await app.taskRows().first().waitFor({ state: "visible", timeout: 30000 });

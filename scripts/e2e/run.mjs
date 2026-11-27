@@ -10,7 +10,7 @@
  *   node scripts/e2e/run.mjs --suite compact                斜杠命令与上下文压缩（需要模型；会往测试会话发很长的消息）
  *   node scripts/e2e/run.mjs --suite search                 搜索体验与工具标签（SE-1~SE-3、SE-7、SE-8、SE-11、SE-13、SE-15 不需要模型；其余需要可用模型）
  *   node scripts/e2e/run.mjs --suite unread                 未读标记（需要模型；发一条慢消息并在回合结束前切走）
- *   node scripts/e2e/run.mjs --suite tasksession            任务会话：滚动位置 + 切节点（需要模型；TS-1、TS-3 会重载页面）
+ *   node scripts/e2e/run.mjs --suite tasksession            任务会话：滚动位置（需要模型；TS-1、TS-3 会重载页面；TS-4 切节点停用——带图任务暂无真实创建路径，待建图恢复）
  *   node scripts/e2e/run.mjs --suite approval               工具执行审批：同意 / 不同意 / 默认不表态（需要模型；会切访问权限档位，用例内还原）
  *   node scripts/e2e/run.mjs --suite full                   全量
  *   可选：--project <项目名>   在指定项目里跑（默认：应用当前所在项目）

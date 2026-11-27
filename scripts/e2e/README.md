@@ -20,7 +20,7 @@ node scripts/e2e/run.mjs --suite fixround       # 评审修复轮：需要模型
 node scripts/e2e/run.mjs --suite compact        # 斜杠命令与上下文压缩：需要模型；会向测试会话发送很长的消息（占模型用量）
 node scripts/e2e/run.mjs --suite search         # 搜索体验、补充轮与工具标签：八块不需要模型；其余要模型（新建两个测试会话）
 node scripts/e2e/run.mjs --suite unread         # 未读标记（侧栏绿点）：两条都要模型，各发一条慢消息
-node scripts/e2e/run.mjs --suite tasksession    # 任务会话：滚动位置五块 + 切节点一块；前四块要模型（会造任务、会重载页面）
+node scripts/e2e/run.mjs --suite tasksession    # 任务会话：滚动位置五块 + 切节点一块（停用）；前四块要模型（造任务走真实路径、会重载页面）
 node scripts/e2e/run.mjs --suite approval       # 工具执行审批：同意 / 不同意 / 框架默认不放行 + 还原；要模型；会切访问权限档位（用例内切回）
 node scripts/e2e/run.mjs --suite full           # 全量（smoke + conversation + market）
 
@@ -169,7 +169,7 @@ node scripts/e2e/check-not-bundled.mjs --selftest   # 打包守卫自身
 - **会切「访问权限」档位**（冒烟的 C4c，`approval` 的 AP-1~AP-3）：切档写 Hub 状态和 Pi 设置里的 `toolApproval`，产品行为上还会重启该智能体全部会话的引擎进程。用例内 `try/finally` 切回原档，`APX-1` 与运行器兜底，切回后读回档位值与触发钮文案核对。有回合在跑时这些用例跳过，不去打断你的回合。运行前从没设置过档位时，切回后后端会留下显式的「完全访问」——行为相同（都不弹审批），日志里如实写出。
 - **会建测试会话、占模型用量**：对话类用例都会新建会话，不删。`compact` 每个测试会话两条各约 9 万字符的消息，EC-10、EC-11 另各一条要写 2500 字的慢消息；`approval` 三个对话各让模型执行一条 `echo`；`search` 两个测试会话（一个连发几条短消息，SE-14 一个只发一条）；`tasksession`、`unread` 各有少量。
 - **`approval` 会让模型执行一条无害命令**（`echo` 一个带编号的字符串）：AP-1 点「仅本次允许」后它真的执行；AP-2 点「拒绝」；AP-3 由框架按 Esc 拒绝。不落盘、不改任何文件。
-- **会新建任务、任务图、节点会话**（留在项目里）：`tasksession` 的 TS-4 每次运行新建一个对话、一张任务图、一个带任务图的任务和两个节点子会话；`tasksession`、`unread` 在项目里一个任务都没有时另造一个。造数的提示词都不让智能体调用工具（图上的节点策略是无工具、审批 never），不往项目里写文件。
+- **会新建任务**（留在项目里，走真实路径——点「新任务」发目标，2026-11-27 裁决禁止直造数据）：`tasksession` 与 `unread` 在项目里没有任务时各造一个；TS-4 已停用（带图任务暂无真实创建路径）、一个带任务图的任务和两个节点子会话；`tasksession`、`unread` 在项目里一个任务都没有时另造一个。造数的提示词都不让智能体调用工具（图上的节点策略是无工具、审批 never），不往项目里写文件。
 - **会往项目里已有的任务会话发消息**：`tasksession` 的 TS-3 每次发一条「数到 600」（TS-1 量不出位置时也发）；`unread` 的 UN-1 发一条慢消息。这些消息留在任务会话里。
 - **会重载应用页面**：`tasksession` 的 TS-1、TS-3（造「启动后第一次进入」的状态；引擎进程不重启）；`search` 的 SE-14（回到自己那个会话，按回放路径量工具标签；有回合在跑时不重载）；`fixround` 的 F1、F4 与 `compact` 的 EC-4、EC-12（重开会话核对）。
 - **会清未读标记**：切会话、切项目会清掉对应的未读（产品的「查看即已读」行为）；`unread` 的 UN-1 会把任务列表里已有的绿点全部点开；`tasksession` 的 TS-5、TS-6 会打开项目里消息最多的几个会话；`search` 的 SE-15 会打开侧栏搜 `@[` 命中的最多 5 个已有会话。这些不可还原。

@@ -18,9 +18,14 @@
  *
  * TS-1~TS-3 需要一个消息比视口高的任务会话（内容不比视口高，停在哪都一样，量不出来）。优先用项目里
  * 现成的任务；都不够长就往第一个任务会话里发一条长回复请求把它变长；项目里一个任务都没有时自己造一个
- *（主会话直接要一条长回复，图上的节点不调用工具）。三块用同一个任务会话——TS-3「重开后不回到重载前
- * 离开的位置」因此成立。TS-4 自己造一个带任务图的任务（两个节点，执行时各跑出一个子会话；第二个的回复
- * 比视口高），留在项目里。测试发的消息、建的任务都不删。
+ *——**走真实用户路径**（点「新任务」发目标消息，任务由发送链路真实创建；2026-11-27 用户裁决：测试禁止
+ * 直造数据）。三块用同一个任务会话——TS-3「重开后不回到重载前离开的位置」因此成立。造出的任务留在
+ * 项目里供后续轮复用（ensureTallTask 优先认领现成任务，不重复造）。
+ *
+ * TS-4（切节点）需要「带任务图」的任务——**当前产品没有任何真实建图路径**（建图入口半隐藏：前端
+ * createGraph 无调用方、AI 提案要求先有图、runner 无图任务的看板藏画布入口、CLI 无建图命令；2026-11-27
+ * 用户裁决保持现状、待后续版本恢复）。按「测试只走真实路径」的裁决，本块停用为跳过，待建图路径恢复后
+ * 再改回真路径启用（原实现见 git 历史）。
  *
  * 落到哪个会话靠内容判断，不靠会话头的短号：相近时间建的会话前 8 位会重复。
  * 「切走」一律点一个普通会话行：点「新对话」离开不记滚动位置（普通会话也是这样）。
@@ -28,15 +33,6 @@
 import { expect } from "../lib-pw.mjs";
 
 const SLOW_MESSAGE = "不要调用任何工具。请从 1 数到 600，每行一个数字，只输出数字。";
-/** 留作任务主会话的一条最短消息。 */
-const MAIN_MESSAGE = "不要调用任何工具。只回复两个字：收到。";
-/** 带任务图的任务里的两个节点：第二个的回复比视口高。 */
-const GRAPH_NODES = [
-  { nodeId: "node-reply", title: "只回复完成", prompt: "不要调用任何工具。只回复两个字：完成。" },
-  { nodeId: "node-count", title: "数到 1500", prompt: "不要调用任何工具。请从 1 数到 1500，每行一个数字，只输出数字。" },
-];
-/** 造「够长的任务会话」时图上的那一个节点：不调用工具。 */
-const TALL_TASK_NODE = GRAPH_NODES[0];
 /** 任务标题里的时间戳（标题不要带「任务会话」四个字——驱动库按它找任务分组，会把这个任务的行漏掉）。 */
 const stamp = () => new Date().toTimeString().slice(0, 8).replace(/:/g, "");
 const messageRows = (page) => page.locator('[data-turn-scope="main"] [data-message-index]');
@@ -160,12 +156,12 @@ const ensureTallTask = async (ctx) => {
   if (!records.length) {
     let made;
     try {
-      made = await app.createTaskWithMainSession({ title: `滚动验证${stamp()}`, nodes: [TALL_TASK_NODE], mainMessage: SLOW_MESSAGE });
+      made = await app.createTaskViaGui({ goal: SLOW_MESSAGE });
     } catch (e) {
       if (/^模型不可用/.test(String(e?.message || e))) ctx.skip(e.message);
       throw e;
     }
-    ctx.state.tallTaskTitle = made.title;
+    ctx.state.tallTaskTitle = made.task.title;
     records = (await app.taskRecords()).filter((r) => r.task_session_id);
   }
   const known = ctx.state.tallTaskTitle;
@@ -502,85 +498,18 @@ export const taskSessionCases = [
   },
   {
     id: "TS-4",
-    name: "切节点：主区换成节点的会话，取消后回到任务主会话",
+    name: "切节点：主区换成节点的会话，取消后回到任务主会话（停用：待建图路径恢复）",
     feature: "任务工作台 / 节点会话 / 需求24 续",
-    steps: "新对话发一条最短的消息（留作任务的主会话）→ 造一个带任务图的任务（两个节点：只回复完成 / 数到 1500），等两个节点都执行完 → 把主会话挂到任务上 → 点任务行 → 点执行卡里的「只回复完成」→ 打开任务看板点「数到 1500」→ 点「主会话」",
-    expect: "每一步主区显示的都是对应会话的内容：主会话 → 节点一的会话 → 节点二的会话（视图在最底部）→ 主会话；一进任务任务看板就列出两个节点和「主会话」入口（任务图加载完就看板跟着刷新）",
+    steps: "（停用中）原步骤：造一个带任务图的任务（两个节点各跑出子会话）→ 点任务行 → 依次点两个节点与「主会话」，断言主区每步显示对应会话、视图在底部",
+    expect: "（停用中）主会话 → 节点一 → 节点二 → 主会话，主区内容逐步对应、节点会话打开停在底部；看板列出节点与主会话入口",
     needs: "model",
     timeoutMs: 480000,
     run: async (ctx) => {
-      const { app, page } = ctx;
-      await app.ensureWorkspace();
-      await app.closeGuideCards();
-      const mainArea = page.locator('[data-turn-scope="main"]');
-      const nodeReply = /只回复两个字：完成/;
-      const nodeCount = /1499\s+1500/;
-
-      // 主会话：新对话发一条最短的消息
-      await app.newConversation();
-      await app.send(MAIN_MESSAGE);
-      const started = await app.awaitTurnStart(20000);
-      if (!started) ctx.skip("模型不可用：主会话的消息发出后 20 秒内回合未启动");
-      const turn = await app.waitTurn({ budgetMs: 120000, settleMs: 3000 });
-      if (!turn.done) throw new Error("主会话的回合没有在时限内结束");
-      await app.waitIdle(2000, 60000);
-      const short = (await app.sessionHeader())?.id;
-      if (!short) throw new Error("读不到主会话的会话头");
-
-      // 带任务图的任务：两个节点各自跑出一个子会话
-      const title = `节点会话验证${new Date().toTimeString().slice(0, 8).replace(/:/g, "")}`;
-      const made = await app.createGraphTask({ title, nodes: GRAPH_NODES });
-      const mainId = await app.sessionFullId(short, made.encodedName);
-      if (!mainId) throw new Error("找不到主会话的完整 id");
-      await app.attachTaskMainSession({ taskId: made.taskId, sessionId: mainId, title });
-      const nodeRuns = await app.waitGraphRun(made.runId);
-      const missing = nodeRuns.filter((n) => n.status !== "succeeded" || !n.sessionId);
-      if (missing.length) ctx.skip(`有节点没有跑出子会话：${JSON.stringify(nodeRuns)}`);
-
-      // 打开任务：显示的是主会话
-      const row = app.taskRows().filter({ hasText: title }).first();
-      await expect(row).toBeVisible({ timeout: 12000 });
-      await app.newConversation();
-      await row.click();
-      await expect(mainArea).toContainText("只回复两个字：收到", { timeout: 15000 });
-      // 任务图加载完，看板要跟着从「没有图」刷新成两个节点（修前停在 0/0，直到面板重新挂载）
-      const board = page.locator('[data-panel-id="session.task-board"]');
-      await expect(board).toContainText("2/2", { timeout: 15000 });
-      await expect(board.locator('button[title="本任务的需求/规划/执行讨论会话"]')).toBeVisible();
-
-      // 相近时间建的会话短号会重复——落到哪个会话只能靠内容判断
-      await page.getByText("只回复完成", { exact: true }).first().click();
-      await expect(mainArea).toContainText(nodeReply, { timeout: 15000 });
-      await expect(mainArea).not.toContainText("只回复两个字：收到");
-      await ctx.shot("TS4-节点一的会话");
-
-      // 选中节点后执行卡不在了：换节点走任务看板
-      if (!(await board.count())) {
-        await page.getByRole("button", { name: "任务看板", exact: true }).first().click();
-        await board.waitFor({ state: "visible", timeout: 8000 });
-      }
-      await board.getByText("数到 1500", { exact: true }).first().click();
-      await expect(mainArea).toContainText(nodeCount, { timeout: 15000 });
-      await expect(mainArea).not.toContainText(nodeReply);
-      const view = await settleView(ctx);
-      if (!(view && view.scrollHeight > view.clientHeight + 80)) ctx.skip(`节点二的回复不够长（${JSON.stringify(view)}），量不出停在哪`);
-      if (!view.atBottom) throw new Error(`节点二的会话内容比视口高，打开后没有停在最底部：${JSON.stringify(view)}`);
-      await ctx.shot("TS4-节点二的会话");
-
-      // 回到任务主会话
-      if (!(await board.count())) {
-        await page.getByRole("button", { name: "任务看板", exact: true }).first().click();
-        await board.waitFor({ state: "visible", timeout: 8000 });
-      }
-      await board.locator('button[title="本任务的需求/规划/执行讨论会话"]').click();
-      await expect(mainArea).toContainText("只回复两个字：收到", { timeout: 15000 });
-      await expect(mainArea).not.toContainText(nodeCount);
-      await ctx.shot("TS4-回到主会话");
-      return {
-        任务: title,
-        节点: nodeRuns.map((n) => ({ 节点: n.nodeId, 状态: n.status, 有子会话: Boolean(n.sessionId) })),
-        节点二会话的视图: view,
-      };
+      // 2026-11-27 用户裁决：测试只走真实路径（GUI/CLI 模拟真实用户），禁止直造数据；而带图任务
+      // 当前没有任何真实创建路径（建图入口半隐藏，裁决保持现状待后续版本 B）。本块因此停用——
+      // 前提不成立标跳过，不算通过。原实现（直调后端命令造图的那版）见 git 历史，待建图路径
+      // 恢复后按真实路径重写启用。
+      ctx.skip("带图任务当前没有真实创建路径（建图入口半隐藏，2026-11-27 裁决保持现状待 B）——本块停用，待建图恢复后改真实路径启用");
     },
   },
   {

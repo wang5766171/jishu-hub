@@ -680,72 +680,34 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
   };
 
   /**
-   * 造一个带任务图的任务：建图 → 加几个「派发给智能体」的节点（前后依赖，依次执行）→ 启动执行
-   * → 用这张图建任务实例。节点执行时各自产生一个子会话，任务看板上就能点进去看。
-   * 图、任务实例、节点会话都留在项目里。返回 { taskId, graphId, runId, projectRoot, encodedName }。
-   * nodes: [{ nodeId, title, prompt }]
+   * 造一个任务——**全程真实用户操作**（2026-11-27 用户裁决：测试禁止直造数据，只能 GUI/CLI
+   * 模拟真实用户；原先直调后端命令建图建任务挂主会话的做法已废止）：点「新任务」→ 输入目标
+   * 并发送。任务实例由发送链路真实创建（发送时登记、会话解析后绑定），主会话就是这场对话本身。
+   * goal 的提示词要写明「不要调用任何工具」——不让智能体动项目里的文件、不弹审批卡。
+   * 返回 { task, mainShortId }（task 是任务列表里的那一条记录）。模型不可用时抛的错以
+   * 「模型不可用」开头，调用方据此标跳过。
+   * 任务留在项目里供后续用例复用（滚动/未读类用例优先用现成任务，不会重复造）。
    */
-  const createGraphTask = async ({ title, nodes }) => {
-    const project = await projectInfo();
-    if (!project) throw new Error("认不出当前项目，没法建任务图");
-    const projectRoot = project.path;
-    const created = await invoke("orchestrator_create_graph", {
-      input: { title, goal: title, project_root: projectRoot, owner: "e2e" },
-    });
-    const graph = Array.isArray(created) ? created[0] : created.graph;
-    const revision = Array.isArray(created) ? created[1] : created.revision;
-    const noTools = {
-      approval_policy: "never",
-      permission_scope: { can_read_files: false, can_write_files: false, can_run_commands: false, can_access_network: false, can_deploy: false },
-    };
-    const commands = nodes.map((n, i) => ({
-      op: "add_node",
-      command_id: `cmd-node-${i}`,
-      node: {
-        node_id: n.nodeId,
-        parent_id: "goal",
-        title: n.title,
-        description: n.title,
-        node_kind: "executable",
-        input_contract: { description: null, artifacts: [], schema: null },
-        output_contract: { description: n.title, artifacts: [], schema: null },
-        role_requirement: { role_id: "implementer", responsibility: n.title, required_capabilities: [], preferred_capabilities: [] },
-        capability_requirements: [],
-        agent_assignment_constraint: null,
-        policy: noTools,
-        metadata: {},
-        executable_payload: { type: "dispatch", role_id: "implementer", prompt: n.prompt, project: null, session: null },
-        loop_config: null,
-        approval_gate_config: null,
-      },
-    }));
-    for (let i = 1; i < nodes.length; i++) {
-      commands.push({
-        op: "add_edge",
-        command_id: `cmd-edge-${i}`,
-        edge: { edge_id: `edge-${i}`, source_node_id: nodes[i - 1].nodeId, target_node_id: nodes[i].nodeId, kind: "control_dependency" },
-      });
-    }
-    const applied = await invoke("orchestrator_apply_commands", {
-      graphId: graph.graph_id,
-      expectedRevisionId: revision.revision_id,
-      commands,
-      author: "e2e",
-    });
-    const revisionId = applied?.revision?.revision_id ?? applied?.revision_id;
-    const run = await invoke("orchestrator_start_run", { graphId: graph.graph_id, revisionId });
-    const instance = await invoke("task_launch_create_from_existing_graph", {
-      projectRoot,
-      graphId: graph.graph_id,
-      title,
-      skillId: "jishu-task-runner",
-    });
-    return { taskId: instance.task_id, graphId: graph.graph_id, runId: run.run_id, projectRoot, encodedName: project.encoded_name };
+  const createTaskViaGui = async ({ goal }) => {
+    await newConversation();
+    await page.locator('button[title="新任务"]').first().click();
+    const before = new Set((await taskRecords()).map((r) => r.task_id));
+    await send(goal);
+    const started = await awaitTurnStart(20000);
+    if (!started) throw new Error("模型不可用：任务首条消息发出后 20 秒内回合未启动");
+    const turn = await waitTurn({ budgetMs: 180000, settleMs: 3000 });
+    await waitIdle(2000, 120000);
+    if (!turn.done) throw new Error("任务的回合没有在时限内结束");
+    // 任务会话没有常规会话头——认领靠差集：发送链路新建的那条任务
+    const added = (await taskRecords()).filter((r) => !before.has(r.task_id) && r.task_session_id);
+    if (!added.length) throw new Error("发送链路没有建出任务（任务列表没有新增带会话的行）——任务创建失败");
+    const task = added[0];
+    return { task, mainShortId: (task.task_session_id ?? "").slice(0, 8) };
   };
 
   /**
    * 等一次执行里所有节点都跑完。返回 [{ nodeId, status, sessionId, agentId }]；超时返回当时的状态。
-   * sessionId 是这个节点那一轮执行产生的子会话。
+   * sessionId 是这个节点那一轮执行产生的子会话。（只读观测，不是造数。）
    */
   const waitGraphRun = async (runId, timeout = 240000, alive = null) => {
     const done = new Set(["succeeded", "failed", "cancelled", "canceled", "skipped"]);
@@ -768,39 +730,6 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
       out.push({ nodeId: r.node_id, status: r.status, sessionId: attempt?.session_id ?? null, agentId: attempt?.agent_assignment?.agent_id ?? null });
     }
     return out;
-  };
-
-  /** 把一个会话挂成任务的主会话（任务工作台一打开显示的就是它）。 */
-  const attachTaskMainSession = async ({ taskId, sessionId, title }) => {
-    const project = await projectInfo();
-    if (!project) throw new Error("认不出当前项目，没法挂主会话");
-    return invoke("task_launch_mark_session", { projectRoot: project.path, taskId, sessionId, skillId: "jishu-task-runner", title });
-  };
-
-  /**
-   * 造一个「带主会话」的带任务图的任务——任务会话类、未读类用例自己造数用，不去动用户已有的任务：
-   * 新对话发一条消息留作主会话 → 建图、加节点、启动执行（createGraphTask）→ 把这个会话挂成任务的主会话
-   * → 等节点都执行完。节点策略是无工具、审批 never；mainMessage 与节点提示词都要写明「不要调用任何工具」——
-   * 这样造数不让智能体动项目里的任何文件，也不会弹审批卡。图、任务、节点会话都留在项目里。
-   * 返回 { taskId, graphId, runId, title, mainShortId, mainId, nodeRuns, projectRoot, encodedName }。
-   * 模型不可用时抛的错以「模型不可用」开头，调用方据此标跳过。
-   */
-  const createTaskWithMainSession = async ({ title, nodes, mainMessage }) => {
-    await newConversation();
-    await send(mainMessage);
-    const started = await awaitTurnStart(20000);
-    if (!started) throw new Error("模型不可用：主会话的消息发出后 20 秒内回合未启动");
-    const turn = await waitTurn({ budgetMs: 180000, settleMs: 3000 });
-    await waitIdle(2000, 120000);
-    if (!turn.done) throw new Error("主会话的回合没有在时限内结束");
-    const short = (await sessionHeader())?.id;
-    if (!short) throw new Error("读不到主会话的会话头");
-    const made = await createGraphTask({ title, nodes });
-    const mainId = await sessionFullId(short, made.encodedName);
-    if (!mainId) throw new Error("找不到主会话的完整 id");
-    await attachTaskMainSession({ taskId: made.taskId, sessionId: mainId, title });
-    const nodeRuns = await waitGraphRun(made.runId);
-    return { ...made, title, mainShortId: short, mainId, nodeRuns };
   };
 
   // ── 访问权限档位（输入区的「访问权限」菜单；审批类用例切档、还原，冒烟的 C4c 也用）──
@@ -1365,10 +1294,8 @@ export async function open({ log = console.log, viewport = DEFAULT_VIEWPORT, act
     waitRowState,
     projectInfo,
     sessionFullId,
-    createGraphTask,
+    createTaskViaGui,
     waitGraphRun,
-    attachTaskMainSession,
-    createTaskWithMainSession,
     chatAgentId,
     readToolMode,
     accessMode,
