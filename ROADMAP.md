@@ -12,10 +12,10 @@
 - Session search that keeps up with long conversations: only matching messages are shown with hits highlighted; double-click a result to open the full conversation
 - Task sessions behave like regular sessions (unread dots clear on open; opening and scroll position follow the same rules)
 - Fix batch from hands-on testing (final state of retried commands, concurrent installs, first-run detection state, …)
+- Post-release fix batch: an extension that fails to load is disabled automatically instead of taking every conversation down; task session list no longer shows internal status words and keeps its order when you open a session; flow board header shows run status in plain language
 
 ## Next
 
-- Release feedback fix round and packaged-build verification
 - Scene bundle catalogue expansion pending review (office / education / data / content)
 - “Configuration” content assets (a one-click demo of connecting Codex to domestic API providers)
 
@@ -39,10 +39,10 @@
 - 会话搜索适配长对话：只显示命中的消息并高亮，双击结果即可进入完整会话
 - 任务会话与普通会话行为一致（未读绿点点开即清；打开与滚动位置走同一套规则）
 - 体验实测修复批（命令重试的最终呈现、并发安装、首启检测状态等）
+- 发版后修复批：装载失败的扩展自动停用，不再让所有对话「连接中断」；任务会话列表去掉内部状态词、点开查看不再跳位；流程看板顶栏运行状态用中文显示
 
 ## 近期
 
-- 收版反馈修复轮与装包活体验证
 - 场景套装清单扩列待审定（办公 / 教育 / 数据 / 内容）
 - 「配置引流」内容素材（codex 接国产 API 的一键配置演示）
 
